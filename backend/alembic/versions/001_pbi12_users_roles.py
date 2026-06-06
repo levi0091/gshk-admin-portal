@@ -26,7 +26,7 @@ def upgrade() -> None:
           id           UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
           display_name TEXT NOT NULL,
           email        TEXT NOT NULL,
-          role_id      UUID REFERENCES public.roles(id),
+          role_id      UUID NOT NULL REFERENCES public.roles(id),
           is_active    BOOLEAN NOT NULL DEFAULT TRUE,
           created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
