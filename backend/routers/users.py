@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 from middleware.auth import require_super_admin
 from db.supabase import get_supabase
@@ -9,7 +9,7 @@ router = APIRouter()
 
 class CreateUserRequest(BaseModel):
     display_name: str
-    email: str
+    email: EmailStr
     role_id: str
     password: str
 
@@ -57,6 +57,8 @@ async def create_user(
         )
         .execute()
     )
+    if not result.data:
+        raise HTTPException(status_code=400, detail="User profile insert failed")
     return result.data[0]
 
 
