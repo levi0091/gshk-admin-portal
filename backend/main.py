@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from routers import auth, users, roles
+from routers import auth, users, roles, cases_audit
 
 app = FastAPI(title="G-FlowDesk Admin API", version="0.1.0")
 
@@ -22,6 +22,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(roles.router, prefix="/roles", tags=["roles"])
+app.include_router(cases_audit.router, prefix="/cases", tags=["cases"])
 
 
 @app.get("/health")
