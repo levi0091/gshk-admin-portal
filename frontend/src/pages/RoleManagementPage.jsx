@@ -1,3 +1,202 @@
+import { useState, useEffect } from 'react'
+import { api } from '../lib/api.js'
+
+const MODULES = [{ id: 'nar1_data', label: 'NAR1 Data' }]
+
+function permSet(role) {
+  return new Set(
+    (role.role_permissions || []).map(p => `${p.module}:${p.permission}`)
+  )
+}
+
+function RoleModal({ role, onClose, onSaved }) {
+  const existing = role ? permSet(role) : new Set()
+  const [name, setName] = useState(role?.name || '')
+  const [perms, setPerms] = useState(existing)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  function toggle(module, permission) {
+    const key = `${module}:${permission}`
+    setPerms(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  function permissionsPayload() {
+    return Array.from(perms).map(key => {
+      const [module, permission] = key.split(':')
+      return { module, permission }
+    })
+  }
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      if (role) {
+        await api.patch(`/roles/${role.id}`, { name, permissions: permissionsPayload() })
+      } else {
+        await api.post('/roles/', { name, permissions: permissionsPayload() })
+      }
+      onSaved()
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-hdr">
+          <span className="modal-title">{role ? 'Edit Role' : 'Create Role'}</span>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <div className="f-group">
+              <label className="f-label">Role Name <span className="f-req">*</span></label>
+              <input className="f-input" required value={name} onChange={e => setName(e.target.value)} placeholder="e.g. nar1_reviewer" disabled={role?.name === 'super_admin'} />
+              <span className="f-hint">Use snake_case. e.g. nar1_staff</span>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.1em', color: 'var(--indigo)', marginBottom: 10 }}>
+                Module Permissions
+              </div>
+              {MODULES.map(mod => (
+                <div key={mod.id} style={{ background: 'var(--indigo-5)', borderRadius: 8, padding: 14, marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-head)', marginBottom: 10 }}>{mod.label}</div>
+                  <div style={{ display: 'flex', gap: 16 }}>
+                    {['read', 'write'].map(perm => {
+                      const key = `${mod.id}:${perm}`
+                      return (
+                        <label key={perm} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                          <input
+                            type="checkbox"
+                            checked={perms.has(key)}
+                            onChange={() => toggle(mod.id, perm)}
+                            style={{ width: 15, height: 15, accentColor: 'var(--indigo)' }}
+                            disabled={role?.name === 'super_admin'}
+                          />
+                          <span style={{ textTransform: 'capitalize', color: 'var(--t-body)' }}>{perm}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {error && (
+              <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C' }}>
+                {error}
+              </div>
+            )}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={loading || role?.name === 'super_admin'}>
+              {loading ? 'Saving…' : role ? 'Save Changes' : 'Create Role'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 export default function RoleManagementPage() {
-  return <div style={{ padding: 24, color: 'var(--t-muted)' }}>Role Management — coming soon</div>
+  const [roles, setRoles] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [editTarget, setEditTarget] = useState(null)
+  const [showModal, setShowModal] = useState(false)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const r = await api.get('/roles/')
+      setRoles(r)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  function openEdit(role) { setEditTarget(role); setShowModal(true) }
+  function openCreate() { setEditTarget(null); setShowModal(true) }
+  function closeModal() { setShowModal(false); setEditTarget(null) }
+
+  function permSummary(role) {
+    const perms = role.role_permissions || []
+    if (role.name === 'super_admin') return 'Full access — all modules'
+    if (perms.length === 0) return 'No permissions assigned'
+    return perms.map(p => `${p.module} (${p.permission})`).join(', ')
+  }
+
+  return (
+    <>
+      <div className="pg-hdr">
+        <div>
+          <div className="pg-title">Role Management</div>
+          <div className="pg-sub">Define roles and module-permission assignments</div>
+        </div>
+        <div className="pg-actions">
+          <button className="btn btn-primary" onClick={openCreate}>
+            <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 16 16"><path d="M8 1v14M1 8h14"/></svg>
+            New Role
+          </button>
+        </div>
+      </div>
+
+      <div className="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Role Name</th>
+              <th>Permissions</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--t-muted)', padding: 24 }}>Loading…</td></tr>
+            ) : roles.map(r => (
+              <tr key={r.id}>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 600, color: 'var(--t-head)' }}>{r.name}</span>
+                    {r.name === 'super_admin' && (
+                      <span className="badge b-admin" style={{ fontSize: 10 }}>Super Admin</span>
+                    )}
+                  </div>
+                </td>
+                <td style={{ color: 'var(--t-muted)', fontSize: 12 }}>{permSummary(r)}</td>
+                <td>
+                  <button className="btn btn-outline btn-sm" onClick={() => openEdit(r)}>
+                    {r.name === 'super_admin' ? 'View' : 'Edit'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showModal && (
+        <RoleModal
+          role={editTarget}
+          onClose={closeModal}
+          onSaved={load}
+        />
+      )}
+    </>
+  )
 }
