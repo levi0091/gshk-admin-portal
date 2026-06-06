@@ -61,6 +61,9 @@ async def update_role(
     body: UpdateRoleRequest,
     user=Depends(require_super_admin()),
 ):
+    if body.name is None and body.permissions is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
     sb = get_supabase()
 
     if body.name is not None:
