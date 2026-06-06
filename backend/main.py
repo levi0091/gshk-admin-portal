@@ -9,7 +9,7 @@ from routers import auth, users, roles
 
 app = FastAPI(title="G-FlowDesk Admin API", version="0.1.0")
 
-origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173").split(",")]
 
 app.add_middleware(
     CORSMiddleware,
