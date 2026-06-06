@@ -1,14 +1,55 @@
-import { AuthProvider } from './context/AuthContext'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './context/AuthContext.jsx'
+import LoginPage from './pages/LoginPage.jsx'
+import UserManagementPage from './pages/UserManagementPage.jsx'
+import RoleManagementPage from './pages/RoleManagementPage.jsx'
+import AppShell from './components/AppShell.jsx'
 
-function App() {
-  return (
-    <AuthProvider>
-      <div>
-        <h1>G-FlowDesk Admin Portal</h1>
-        <p>Frontend scaffold initialized</p>
-      </div>
-    </AuthProvider>
-  )
+function RequireAuth({ children }) {
+  const { session } = useAuth()
+  if (session === undefined) return null // loading
+  if (!session) return <Navigate to="/login" replace />
+  return children
 }
 
-export default App
+function RequireSuperAdmin({ children }) {
+  const { isSuperAdmin } = useAuth()
+  if (!isSuperAdmin) return <Navigate to="/" replace />
+  return children
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/"
+          element={
+            <RequireAuth>
+              <AppShell />
+            </RequireAuth>
+          }
+        >
+          <Route index element={<Navigate to="/users" replace />} />
+          <Route
+            path="users"
+            element={
+              <RequireSuperAdmin>
+                <UserManagementPage />
+              </RequireSuperAdmin>
+            }
+          />
+          <Route
+            path="roles"
+            element={
+              <RequireSuperAdmin>
+                <RoleManagementPage />
+              </RequireSuperAdmin>
+            }
+          />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  )
+}
