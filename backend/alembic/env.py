@@ -11,9 +11,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+database_url = os.environ.get("DATABASE_URL")
+if not database_url:
+    raise RuntimeError("DATABASE_URL environment variable is not set. Copy backend/.env.example to backend/.env and fill in the value.")
+config.set_main_option("sqlalchemy.url", database_url)
 
-target_metadata = None
+target_metadata = None  # No ORM models — all migrations are handwritten SQL via op.execute()
 
 
 def run_migrations_offline() -> None:
