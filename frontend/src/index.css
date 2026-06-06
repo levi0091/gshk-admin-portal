@@ -1,0 +1,38 @@
+:root {
+  --font: 'Outfit', sans-serif;
+  --indigo: #242C66;
+  --carrot: #F36C32;
+  --bg-page: #F5F6FB;
+  --bg-card: #FFFFFF;
+  --t-head: #1A2050;
+  --t-body: #3A4060;
+  --t-muted: #7C80A3;
+  --border: #E2E4ED;
+  --bang: #027248;
+  --peridot: #FEE000;
+  --carrot-10: #FEF0EB;
+  --bang-10: #E6F1ED;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: var(--font), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background-color: var(--bg-page);
+  color: var(--t-body);
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--t-head);
+  font-weight: 600;
+}
