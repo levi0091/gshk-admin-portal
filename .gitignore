@@ -1,10 +1,14 @@
 # Secrets — NEVER commit
 .env
-.env.local
-.env.*.local
+.env.*
 gshk/secrets/
 *.pem
 *.key
+
+# Local working folders — not part of the repo
+PRD/
+Wireframe/
+docs/
 
 # Python
 __pycache__/
