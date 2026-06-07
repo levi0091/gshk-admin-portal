@@ -27,7 +27,7 @@ export default function LoginPage() {
   return (
     <div style={{
       flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--indigo-5)', padding: 24, minHeight: '100vh',
+      background: 'var(--indigo-5)', padding: 24,
     }}>
       <div
         className="login-card-wrap"
