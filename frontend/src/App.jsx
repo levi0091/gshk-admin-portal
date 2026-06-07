@@ -13,8 +13,10 @@ function RequireAuth({ children }) {
 }
 
 function RequireSuperAdmin({ children }) {
-  const { isSuperAdmin } = useAuth()
-  if (!isSuperAdmin) return <Navigate to="/" replace />
+  const { isSuperAdmin, profileLoading } = useAuth()
+  // Wait for /auth/me to resolve before deciding — prevents redirect loop on slow/failing backend
+  if (profileLoading) return null
+  if (!isSuperAdmin) return <Navigate to="/login" replace />
   return children
 }
 
