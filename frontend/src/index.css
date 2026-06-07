@@ -191,3 +191,35 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   text-align: center; padding: 40px 20px; color: var(--t-muted); font-size: 13px;
 }
 .tag { display: inline-flex; padding: 2px 8px; background: var(--indigo-10); color: var(--indigo-80); font-size: 11px; font-weight: 600; border-radius: var(--r-xs); }
+
+/* ── HAMBURGER ───────────────────────────────────────────── */
+.hamburger {
+  display: none; width: 36px; height: 36px; border-radius: var(--r-sm);
+  align-items: center; justify-content: center; flex-shrink: 0;
+  color: rgba(255,255,255,.8); background: rgba(255,255,255,.08);
+  cursor: pointer; border: none;
+}
+.hamburger:hover { background: rgba(255,255,255,.15); color: #fff; }
+
+/* ── SIDEBAR OVERLAY (mobile) ────────────────────────────── */
+.sidebar-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.45); z-index: 100;
+}
+.sidebar-overlay.open { display: block; }
+
+/* ── MOBILE BREAKPOINTS ──────────────────────────────────── */
+@media (max-width: 768px) {
+  .hamburger { display: flex; }
+  .app-sidebar {
+    position: fixed; left: -240px; top: 0; bottom: 0; z-index: 200;
+    transition: left .22s ease;
+  }
+  .app-sidebar.open { left: 0; }
+  .app-main { padding: 16px !important; }
+}
+@media (max-width: 480px) {
+  .app-main { padding: 12px !important; }
+  .app-hdr-pad { padding: 0 12px !important; gap: 10px !important; }
+  .login-card-wrap { padding: 28px 20px !important; }
+}

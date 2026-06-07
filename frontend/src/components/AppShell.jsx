@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import Sidebar from './Sidebar.jsx'
@@ -8,48 +9,101 @@ function initials(name) {
 
 export default function AppShell() {
   const { profile } = useAuth()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       {/* Header */}
-      <header style={{
-        height: 60, background: 'var(--indigo)',
-        display: 'flex', alignItems: 'center', padding: '0 20px', gap: 16,
-        flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,.08)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <svg width="34" height="34" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
-            <path d="M38 11 A20 20 0 1 0 38 33" fill="none" stroke="white" strokeWidth="7" strokeLinecap="round"/>
-            <rect x="31" y="19" width="14" height="7" rx="3.5" fill="white"/>
-            <circle cx="40" cy="22.5" r="2.5" fill="#242C66"/>
-          </svg>
-          <div>
-            <div style={{ fontSize: 19, fontWeight: 900, display: 'flex', alignItems: 'baseline', lineHeight: 1 }}>
+      <header
+        className="app-hdr-pad"
+        style={{
+          height: 60, background: 'var(--indigo)',
+          display: 'flex', alignItems: 'center', padding: '0 20px', gap: 16,
+          flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,.08)',
+        }}
+      >
+        {/* GSHK logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <div style={{
+            background: '#fff', borderRadius: 6, padding: 3,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 34, height: 34, flexShrink: 0,
+          }}>
+            <img src="/gshk-logo.png" style={{ width: 28, height: 28, objectFit: 'contain' }} alt="GSHK" />
+          </div>
+          <div style={{ lineHeight: 1 }}>
+            <div style={{
+              fontSize: 19, fontWeight: 900, letterSpacing: '-.01em',
+              display: 'flex', alignItems: 'baseline',
+            }}>
               <span style={{ color: 'var(--carrot)' }}>G</span>
               <span style={{ color: '#fff' }}>SHK</span>
             </div>
-            <div style={{ fontSize: 9, fontWeight: 600, letterSpacing: '.18em', color: 'rgba(243,108,50,.85)', textTransform: 'uppercase', marginTop: 2 }}>
+            <div style={{
+              fontSize: 9, fontWeight: 600, letterSpacing: '.18em',
+              color: 'rgba(243,108,50,.85)', textTransform: 'uppercase', marginTop: 2,
+            }}>
               Get Started HK
             </div>
           </div>
         </div>
+
         <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,.15)' }} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.8)', letterSpacing: '.04em' }}>G-FlowDesk</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.8)', letterSpacing: '.04em' }}>
+          G-FlowDesk
+        </span>
+
         <div style={{ flex: 1 }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,.10)', borderRadius: 20, padding: '3px 12px 3px 3px', cursor: 'pointer' }}>
-          <div style={{ width: 26, height: 26, borderRadius: '50%', background: 'var(--carrot)', color: '#fff', fontWeight: 800, fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {initials(profile?.display_name)}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* Hamburger — shown on mobile via CSS */}
+          <button
+            className="hamburger"
+            onClick={() => setSidebarOpen(o => !o)}
+            aria-label="Menu"
+          >
+            <svg width="18" height="14" viewBox="0 0 18 14" fill="none">
+              <rect y="0" width="18" height="2" rx="1" fill="currentColor"/>
+              <rect y="6" width="18" height="2" rx="1" fill="currentColor"/>
+              <rect y="12" width="18" height="2" rx="1" fill="currentColor"/>
+            </svg>
+          </button>
+
+          {/* User chip */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            background: 'rgba(255,255,255,.10)', borderRadius: 20,
+            padding: '3px 12px 3px 3px', cursor: 'pointer',
+          }}>
+            <div style={{
+              width: 26, height: 26, borderRadius: '50%',
+              background: 'var(--carrot)', color: '#fff',
+              fontWeight: 800, fontSize: 11,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              {initials(profile?.display_name)}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.9)' }}>
+              {profile?.display_name}
+            </span>
           </div>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.9)' }}>
-            {profile?.display_name}
-          </span>
         </div>
       </header>
 
       {/* Body */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <Sidebar />
-        <main style={{ flex: 1, overflowY: 'auto', background: 'var(--bg-page)', padding: 28 }}>
+        {/* Sidebar overlay — shown on mobile when sidebar is open */}
+        <div
+          className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`}
+          onClick={() => setSidebarOpen(false)}
+        />
+
+        <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+
+        <main
+          className="app-main"
+          style={{ flex: 1, overflowY: 'auto', background: 'var(--bg-page)', padding: 28 }}
+        >
           <Outlet />
         </main>
       </div>

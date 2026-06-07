@@ -47,7 +47,7 @@ const SignOutIcon = () => (
   </svg>
 )
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen, onClose }) {
   const { isSuperAdmin, signOut } = useAuth()
   const navigate = useNavigate()
 
@@ -57,11 +57,14 @@ export default function Sidebar() {
   }
 
   return (
-    <nav style={{
-      width: 232, background: 'var(--bg-card)',
-      borderRight: '1px solid var(--border)',
-      flexShrink: 0, overflowY: 'auto', padding: '16px 0',
-    }}>
+    <nav
+      className={`app-sidebar${isOpen ? ' open' : ''}`}
+      style={{
+        width: 232, background: 'var(--bg-card)',
+        borderRight: '1px solid var(--border)',
+        flexShrink: 0, overflowY: 'auto', padding: '16px 0',
+      }}
+    >
       <div style={{ padding: '0 10px', marginBottom: 4 }}>
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t-muted)', padding: '10px 8px 4px' }}>
           Main

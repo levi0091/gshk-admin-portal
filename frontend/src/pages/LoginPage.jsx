@@ -29,26 +29,25 @@ export default function LoginPage() {
       flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: 'var(--indigo-5)', padding: 24, minHeight: '100vh',
     }}>
-      <div style={{
-        background: '#fff', border: '1px solid var(--border)',
-        borderRadius: 'var(--r-xl)', padding: '44px 40px',
-        width: '100%', maxWidth: 410, boxShadow: 'var(--sh-lg)',
-      }}>
+      <div
+        className="login-card-wrap"
+        style={{
+          background: '#fff', border: '1px solid var(--border)',
+          borderRadius: 'var(--r-xl)', padding: '44px 40px',
+          width: '100%', maxWidth: 410, boxShadow: 'var(--sh-lg)',
+        }}
+      >
         {/* Logo */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, marginBottom: 28 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
-              <path d="M38 11 A20 20 0 1 0 38 33" fill="none" stroke="#242C66" strokeWidth="7" strokeLinecap="round"/>
-              <rect x="31" y="19" width="14" height="7" rx="3.5" fill="#242C66"/>
-              <circle cx="40" cy="22.5" r="2.5" fill="white"/>
-            </svg>
+            <img src="/gshk-logo.png" style={{ width: 44, height: 44, objectFit: 'contain' }} alt="GSHK" />
             <div style={{ fontSize: 32, fontWeight: 900, letterSpacing: '-.01em', display: 'flex', alignItems: 'baseline', lineHeight: 1 }}>
               <span style={{ color: 'var(--carrot)' }}>G</span>
               <span style={{ color: 'var(--indigo)' }}>SHK</span>
             </div>
           </div>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.18em', color: 'var(--carrot)', textTransform: 'uppercase' }}>
-            GET STARTED HK
+            Get Started HK
           </div>
         </div>
 

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <!-- Indigo rounded square background (iOS corner radius ~40) -->
+  <rect width="180" height="180" rx="40" fill="#242C66"/>
+
+  <!-- G arc: white C-shape, opening right -->
+  <!-- Arc center ≈ (93, 90), r=48. Endpoints (124,54) and (124,126) -->
+  <path
+    d="M 124,54 A 48,48 0 1,0 124,126"
+    fill="none"
+    stroke="white"
+    stroke-width="20"
+    stroke-linecap="round"
+  />
+
+  <!-- Crossbar: orange flow accent at vertical midpoint -->
+  <line
+    x1="90" y1="90"
+    x2="135" y2="90"
+    stroke="#F36C32"
+    stroke-width="20"
+    stroke-linecap="round"
+  />
+</svg>
