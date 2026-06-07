@@ -29,7 +29,7 @@ export default function AppShell() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: 34, height: 34, flexShrink: 0,
           }}>
-            <img src="/gshk-logo.png" style={{ width: 28, height: 28, objectFit: 'contain' }} alt="GSHK" />
+            <img src="/gshk-icon.png" style={{ width: 28, height: 28, objectFit: 'contain' }} alt="GSHK" />
           </div>
           <div style={{ lineHeight: 1 }}>
             <div style={{

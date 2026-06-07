@@ -37,18 +37,13 @@ export default function LoginPage() {
           width: '100%', maxWidth: 410, boxShadow: 'var(--sh-lg)',
         }}
       >
-        {/* Logo */}
+        {/* Logo — full GSHK horizontal brand logo, text baked into image */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, marginBottom: 28 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <img src="/gshk-logo.png" style={{ width: 44, height: 44, objectFit: 'contain' }} alt="GSHK" />
-            <div style={{ fontSize: 32, fontWeight: 900, letterSpacing: '-.01em', display: 'flex', alignItems: 'baseline', lineHeight: 1 }}>
-              <span style={{ color: 'var(--carrot)' }}>G</span>
-              <span style={{ color: 'var(--indigo)' }}>SHK</span>
-            </div>
-          </div>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.18em', color: 'var(--carrot)', textTransform: 'uppercase' }}>
-            Get Started HK
-          </div>
+          <img
+            src="/gshk-logo.png"
+            style={{ maxWidth: 200, height: 'auto', display: 'block', marginBottom: 4 }}
+            alt="GetStartedHK"
+          />
         </div>
 
         <div style={{ height: 1, background: 'var(--border)', margin: '0 0 22px' }} />
