@@ -22,6 +22,19 @@ export default function AppShell() {
           flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,.08)',
         }}
       >
+        {/* Hamburger — left side on mobile so it's next to the sidebar it controls */}
+        <button
+          className="hamburger"
+          onClick={() => setSidebarOpen(o => !o)}
+          aria-label="Menu"
+        >
+          <svg width="18" height="14" viewBox="0 0 18 14" fill="none">
+            <rect y="0" width="18" height="2" rx="1" fill="currentColor"/>
+            <rect y="6" width="18" height="2" rx="1" fill="currentColor"/>
+            <rect y="12" width="18" height="2" rx="1" fill="currentColor"/>
+          </svg>
+        </button>
+
         {/* GSHK logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <div style={{
@@ -55,38 +68,24 @@ export default function AppShell() {
 
         <div style={{ flex: 1 }} />
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* Hamburger — shown on mobile via CSS */}
-          <button
-            className="hamburger"
-            onClick={() => setSidebarOpen(o => !o)}
-            aria-label="Menu"
-          >
-            <svg width="18" height="14" viewBox="0 0 18 14" fill="none">
-              <rect y="0" width="18" height="2" rx="1" fill="currentColor"/>
-              <rect y="6" width="18" height="2" rx="1" fill="currentColor"/>
-              <rect y="12" width="18" height="2" rx="1" fill="currentColor"/>
-            </svg>
-          </button>
-
-          {/* User chip */}
+        {/* User chip — name hidden on mobile, avatar only */}
+        <div className="hdr-chip" style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(255,255,255,.10)', borderRadius: 20,
+          padding: '3px 12px 3px 3px', cursor: 'pointer',
+        }}>
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            background: 'rgba(255,255,255,.10)', borderRadius: 20,
-            padding: '3px 12px 3px 3px', cursor: 'pointer',
+            width: 26, height: 26, borderRadius: '50%',
+            background: 'var(--carrot)', color: '#fff',
+            fontWeight: 800, fontSize: 11,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0,
           }}>
-            <div style={{
-              width: 26, height: 26, borderRadius: '50%',
-              background: 'var(--carrot)', color: '#fff',
-              fontWeight: 800, fontSize: 11,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              {initials(profile?.display_name)}
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.9)' }}>
-              {profile?.display_name}
-            </span>
+            {initials(profile?.display_name)}
           </div>
+          <span className="hdr-username" style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.9)' }}>
+            {profile?.display_name}
+          </span>
         </div>
       </header>
 

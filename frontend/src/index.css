@@ -217,6 +217,9 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   }
   .app-sidebar.open { left: 0; }
   .app-main { padding: 16px !important; }
+  /* Avatar only — hide name, collapse chip padding */
+  .hdr-username { display: none; }
+  .hdr-chip { padding: 3px !important; }
 }
 @media (max-width: 480px) {
   .app-main { padding: 12px !important; }
