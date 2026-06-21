@@ -78,6 +78,65 @@ function AddUserModal({ roles, onClose, onCreated }) {
   )
 }
 
+function EditUserModal({ user, roles, onClose, onSaved }) {
+  const [form, setForm] = useState({ display_name: user.display_name, role_id: user.role_id })
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  function set(field, val) { setForm(f => ({ ...f, [field]: val })) }
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      await api.patch(`/users/${user.id}`, form)
+      onSaved()
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-hdr">
+          <span className="modal-title">Edit User</span>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="f-group">
+              <label className="f-label">Display Name <span className="f-req">*</span></label>
+              <input className="f-input" required value={form.display_name} onChange={e => set('display_name', e.target.value)} />
+            </div>
+            <div className="f-group">
+              <label className="f-label">Role <span className="f-req">*</span></label>
+              <select className="f-select" required value={form.role_id} onChange={e => set('role_id', e.target.value)}>
+                {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
+            {error && (
+              <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C' }}>
+                {error}
+              </div>
+            )}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={loading}>
+              {loading ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function DeactivateModal({ user, onClose, onDeactivated }) {
   const [loading, setLoading] = useState(false)
 
@@ -120,6 +179,7 @@ export default function UserManagementPage() {
   const [roles, setRoles] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
+  const [editTarget, setEditTarget] = useState(null)
   const [deactivateTarget, setDeactivateTarget] = useState(null)
 
   async function load() {
@@ -178,15 +238,20 @@ export default function UserManagementPage() {
                 </td>
                 <td><StatusBadge isActive={u.is_active} /></td>
                 <td>
-                  {u.is_active && u.roles?.name !== 'super_admin' && (
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ color: '#C53030' }}
-                      onClick={() => setDeactivateTarget(u)}
-                    >
-                      Deactivate
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-outline btn-sm" onClick={() => setEditTarget(u)}>
+                      Edit
                     </button>
-                  )}
+                    {u.is_active && u.roles?.name !== 'super_admin' && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        style={{ color: '#C53030' }}
+                        onClick={() => setDeactivateTarget(u)}
+                      >
+                        Deactivate
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -199,6 +264,14 @@ export default function UserManagementPage() {
           roles={roles.filter(r => r.name !== 'super_admin')}
           onClose={() => setShowAdd(false)}
           onCreated={load}
+        />
+      )}
+      {editTarget && (
+        <EditUserModal
+          user={editTarget}
+          roles={roles}
+          onClose={() => setEditTarget(null)}
+          onSaved={load}
         />
       )}
       {deactivateTarget && (
