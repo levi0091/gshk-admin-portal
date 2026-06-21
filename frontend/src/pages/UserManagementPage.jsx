@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api.js'
+import { useAuth } from '../context/AuthContext.jsx'
 
 function StatusBadge({ isActive }) {
   return (
@@ -175,6 +176,7 @@ function DeactivateModal({ user, onClose, onDeactivated }) {
 }
 
 export default function UserManagementPage() {
+  const { profile } = useAuth()
   const [users, setUsers] = useState([])
   const [roles, setRoles] = useState([])
   const [loading, setLoading] = useState(true)
@@ -242,7 +244,7 @@ export default function UserManagementPage() {
                     <button className="btn btn-outline btn-sm" onClick={() => setEditTarget(u)}>
                       Edit
                     </button>
-                    {u.is_active && u.roles?.name !== 'super_admin' && (
+                    {u.is_active && u.id !== profile?.id && (
                       <button
                         className="btn btn-ghost btn-sm"
                         style={{ color: '#C53030' }}
