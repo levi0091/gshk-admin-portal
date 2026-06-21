@@ -35,33 +35,16 @@ export default function AppShell() {
           </svg>
         </button>
 
-        {/* GSHK logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-          <div style={{
-            background: '#fff', borderRadius: 6, padding: 3,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 34, height: 34, flexShrink: 0,
-          }}>
-            <img src="/gshk-icon.png" style={{ width: 28, height: 28, objectFit: 'contain' }} alt="GSHK" />
-          </div>
-          <div style={{ lineHeight: 1 }}>
-            <div style={{
-              fontSize: 19, fontWeight: 900, letterSpacing: '-.01em',
-              display: 'flex', alignItems: 'baseline',
-            }}>
-              <span style={{ color: 'var(--carrot)' }}>G</span>
-              <span style={{ color: '#fff' }}>SHK</span>
-            </div>
-            <div style={{
-              fontSize: 9, fontWeight: 600, letterSpacing: '.18em',
-              color: 'rgba(243,108,50,.85)', textTransform: 'uppercase', marginTop: 2,
-            }}>
-              Get Started HK
-            </div>
-          </div>
+        {/* GSHK icon — PNG only, white bg badge so dark icon is visible on indigo header */}
+        <div style={{
+          background: '#fff', borderRadius: 6, padding: 3,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 34, height: 34, flexShrink: 0,
+        }}>
+          <img src="/gshk-icon.png" style={{ width: 28, height: 28, objectFit: 'contain' }} alt="GSHK" />
         </div>
 
-        <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,.15)' }} />
+        <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,.15)', flexShrink: 0 }} />
         <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.8)', letterSpacing: '.04em' }}>
           G-FlowDesk
         </span>

@@ -76,7 +76,7 @@ export default function Sidebar({ isOpen, onClose }) {
             <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t-muted)', padding: '10px 8px 4px' }}>
               Admin
             </div>
-            <NavItem to="/users" icon={<UsersIcon />}>Users</NavItem>
+            <NavItem to="/users" icon={<UsersIcon />}>User Management</NavItem>
             <NavItem to="/roles" icon={<RolesIcon />}>Roles</NavItem>
           </>
         )}
