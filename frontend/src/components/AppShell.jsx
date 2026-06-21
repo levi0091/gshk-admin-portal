@@ -35,14 +35,8 @@ export default function AppShell() {
           </svg>
         </button>
 
-        {/* GSHK icon — PNG only, white bg badge so dark icon is visible on indigo header */}
-        <div style={{
-          background: '#fff', borderRadius: 6, padding: 3,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 34, height: 34, flexShrink: 0,
-        }}>
-          <img src="/gshk-icon.png" style={{ width: 28, height: 28, objectFit: 'contain' }} alt="GSHK" />
-        </div>
+        {/* GSHK icon — PNG inverted to white for dark header, per wireframe */}
+        <img src="/gshk-icon.png" style={{ width: 30, height: 30, objectFit: 'contain', filter: 'brightness(0) invert(1)', flexShrink: 0 }} alt="GSHK" />
 
         <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,.15)', flexShrink: 0 }} />
         <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.8)', letterSpacing: '.04em' }}>

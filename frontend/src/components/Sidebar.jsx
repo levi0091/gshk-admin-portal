@@ -36,7 +36,8 @@ const UsersIcon = () => (
 )
 const RolesIcon = () => (
   <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 16 16">
-    <path d="M8 1l1.9 3.8 4.2.6-3 2.9.7 4.2L8 10.4l-3.8 2.1.7-4.2-3-2.9 4.2-.6L8 1z"/>
+    <path d="M8 1.5L2 4v4c0 3.3 2.6 5.7 6 6.5 3.4-.8 6-3.2 6-6.5V4L8 1.5z"/>
+    <path d="M5.5 8l1.8 1.8L10.5 6"/>
   </svg>
 )
 const SignOutIcon = () => (

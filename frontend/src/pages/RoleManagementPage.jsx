@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api.js'
 
-const MODULES = [{ id: 'nar1_data', label: 'NAR1 Data' }]
+const MODULES = [
+  { id: 'nar1_data',    label: 'NAR1 Data',    permissions: ['read', 'write'] },
+  { id: 'audit_trail',  label: 'Audit Trail',   permissions: ['read'] },
+]
 
 function permSet(role) {
   return new Set(
@@ -74,7 +77,7 @@ function RoleModal({ role, onClose, onSaved }) {
                 <div key={mod.id} style={{ background: 'var(--indigo-5)', borderRadius: 8, padding: 14, marginBottom: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-head)', marginBottom: 10 }}>{mod.label}</div>
                   <div style={{ display: 'flex', gap: 16 }}>
-                    {['read', 'write'].map(perm => {
+                    {mod.permissions.map(perm => {
                       const key = `${mod.id}:${perm}`
                       return (
                         <label key={perm} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
