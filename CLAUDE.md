@@ -2,6 +2,17 @@
 
 Claude Code working instructions for this repo. Read this fully before touching any code.
 
+<!-- ── SHARED BA MEMORY ─────────────────────────────────────────────── -->
+<!-- Pull in project-wide context the BA maintains in the parent workspace. -->
+<!-- Always read these before starting any feature work.                   -->
+@../CLAUDE.md
+@../gshk/CLAUDE.md
+@../memory/terminology.md
+@../memory/people.md
+@../memory/gshk/context.md
+@../memory/gshk/audit-system.md
+<!-- ─────────────────────────────────────────────────────────────────── -->
+
 ---
 
 ## What this repo is
@@ -95,16 +106,18 @@ gshk-admin-portal/
 
 Open and study the wireframe before building any screen. Do not invent layouts or components — match the wireframe exactly.
 
-**Screens defined in wireframe (9):**
+**Screens defined in wireframe (8):**
 1. Login
-2. Dashboard / case list
-3. Case Detail
+2. Dashboard — company list (all companies, full lifecycle — not split by NAR1/NNC1)
+3. Case / Company Detail
 4. Post-Incorp Data Input Form
 5. Client Verification (send email screen)
 6. Revision View (case flagged for changes)
 7. NAR Submission confirmation
-8. NNC1 Cases list
-9. NAR1 Cases list
+8. Audit Trail (global, permission-gated — `audit_trail:read` required)
+
+> Screens 8 (NNC1 Cases list) and 9 (NAR1 Cases list) were removed from the wireframe on 2026-06-21.
+> Companies are now managed through their full lifecycle from a single Dashboard screen.
 
 **When building UI — use the `frontend-design` skill in Claude Code:**
 The `frontend-design` skill is available in Claude Code and must be used when generating new screens or components for the Admin Portal. Reference the wireframe HTML as the design spec. All output must match the brand tokens below verbatim.
@@ -156,10 +169,13 @@ async def submit_case(user=Depends(require_permission("nar1_data", "write"))):
 - When adding a new module (e.g. `nnc1_data`), register the module identifier and seed role permissions in the DB before shipping
 
 **Module identifiers (snake_case):**
-| Module | Identifier |
-|--------|-----------|
-| NAR1 Data | `nar1_data` |
-| NNC1 Data | `nnc1_data` *(future)* |
+| Module | Identifier | Permitted permission levels |
+|--------|-----------|----------------------------|
+| NAR1 Data | `nar1_data` | `read`, `write` |
+| NNC1 Data | `nnc1_data` *(future)* | `read`, `write` |
+| Audit Trail | `audit_trail` | `read` **only** — no write or admin level exists |
+
+> `audit_trail` is intentionally read-only at the permission level. Do not add a `write` permission for this module under any circumstances.
 
 ### 2. Audit Trail — PBI-11
 
@@ -193,21 +209,21 @@ await log_event(
 )
 ```
 
+**Audit scope:** workflow events and base data changes for NAR1, NNC1, and entity (company/case) records only. User management events (login, deactivation) and read-only operations are **not** audited.
+
 **Audit event types:**
 
-| `action_type` | When to fire |
-|--------------|-------------|
-| `CASE_STATUS_CHANGED` | Any case status transition |
-| `CASE_FIELD_UPDATED` | Any edit to a case data field (name, shares, address, etc.) — one entry per changed field |
-| `AML_STATUS_CHANGED` | Admin updates AML screening status |
-| `DOCUMENT_GENERATED` | Any document (AoA, FWR, NNC1, CoI) generated |
-| `EMAIL_SENT` | Any email sent via Resend |
-| `TPSI_SUBMISSION_ATTEMPTED` | Before calling any TPSI submit endpoint |
-| `TPSI_SUBMISSION_SUCCESS` | On successful TPSI response |
-| `TPSI_SUBMISSION_FAILED` | On TPSI error |
-| `CLIENT_APPROVAL_RECEIVED` | Client Yes/No response recorded |
-| `USER_LOGIN` | Admin user logs in |
-| `USER_DEACTIVATED` | Super Admin deactivates a user |
+| `action_type` | Scope | When to fire |
+|--------------|-------|-------------|
+| `CASE_STATUS_CHANGED` | Entity | Any case/company workflow status transition |
+| `CASE_FIELD_UPDATED` | Entity | Any edit to a case data field — one entry per changed field |
+| `AML_STATUS_CHANGED` | NAR1 / NNC1 | Admin updates AML screening status |
+| `DOCUMENT_GENERATED` | NAR1 / NNC1 | Any document (AoA, FWR, NNC1, CoI, NAR1) generated |
+| `EMAIL_SENT` | NAR1 / NNC1 | Any workflow email sent via Resend |
+| `TPSI_SUBMISSION_ATTEMPTED` | NAR1 / NNC1 | Before calling any TPSI submit endpoint |
+| `TPSI_SUBMISSION_SUCCESS` | NAR1 / NNC1 | On successful TPSI response |
+| `TPSI_SUBMISSION_FAILED` | NAR1 / NNC1 | On TPSI error |
+| `CLIENT_APPROVAL_RECEIVED` | NNC1 | Client Yes/No response recorded |
 
 **Rules:**
 - `audit_service.log_event()` failures must NOT block the primary operation — wrap in try/except and log to stderr
