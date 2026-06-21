@@ -19,14 +19,15 @@ export function AuthProvider({ children }) {
       }
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
-      if (session) {
+      if (event === 'SIGNED_IN') {
         fetchProfile()
-      } else {
+      } else if (event === 'SIGNED_OUT') {
         setProfile(null)
         setProfileLoading(false)
       }
+      // TOKEN_REFRESHED: session token updated silently — profile unchanged, no re-fetch
     })
 
     return () => listener.subscription.unsubscribe()
@@ -55,8 +56,13 @@ export function AuthProvider({ children }) {
 
   const isSuperAdmin = profile?.role_name === 'super_admin'
 
+  function hasPermission(module, permission) {
+    if (isSuperAdmin) return true
+    return (profile?.permissions || []).includes(`${module}:${permission}`)
+  }
+
   return (
-    <AuthContext.Provider value={{ session, profile, isSuperAdmin, profileLoading, signIn, signOut }}>
+    <AuthContext.Provider value={{ session, profile, isSuperAdmin, hasPermission, profileLoading, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )

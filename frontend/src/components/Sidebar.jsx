@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 
+
 const NavItem = ({ to, icon, children }) => (
   <NavLink
     to={to}
@@ -40,6 +41,12 @@ const RolesIcon = () => (
     <path d="M5.5 8l1.8 1.8L10.5 6"/>
   </svg>
 )
+const AuditIcon = () => (
+  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="6.5"/>
+    <polyline points="8 4.5 8 8 10.5 9.5"/>
+  </svg>
+)
 const SignOutIcon = () => (
   <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 16 16">
     <path d="M10 3h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-3"/>
@@ -49,7 +56,7 @@ const SignOutIcon = () => (
 )
 
 export default function Sidebar({ isOpen, onClose }) {
-  const { isSuperAdmin, signOut } = useAuth()
+  const { isSuperAdmin, hasPermission, signOut } = useAuth()
   const navigate = useNavigate()
 
   async function handleSignOut() {
@@ -79,6 +86,9 @@ export default function Sidebar({ isOpen, onClose }) {
             </div>
             <NavItem to="/users" icon={<UsersIcon />}>User Management</NavItem>
             <NavItem to="/roles" icon={<RolesIcon />}>Roles</NavItem>
+            {hasPermission('audit_trail', 'read') && (
+              <NavItem to="/audit-log" icon={<AuditIcon />}>Audit Log</NavItem>
+            )}
           </>
         )}
 

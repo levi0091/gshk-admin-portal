@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext.jsx'
 import LoginPage from './pages/LoginPage.jsx'
 import UserManagementPage from './pages/UserManagementPage.jsx'
 import RoleManagementPage from './pages/RoleManagementPage.jsx'
+import AuditLogPage from './pages/AuditLogPage.jsx'
 import AppShell from './components/AppShell.jsx'
 
 function RequireAuth({ children }) {
@@ -50,6 +51,7 @@ export default function App() {
               </RequireSuperAdmin>
             }
           />
+          <Route path="audit-log" element={<AuditLogPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
