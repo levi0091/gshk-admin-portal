@@ -21,13 +21,13 @@ export function AuthProvider({ children }) {
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
-      if (event === 'SIGNED_IN') {
-        fetchProfile()
-      } else if (event === 'SIGNED_OUT') {
+      if (event === 'SIGNED_OUT') {
         setProfile(null)
         setProfileLoading(false)
       }
-      // TOKEN_REFRESHED: session token updated silently — profile unchanged, no re-fetch
+      // SIGNED_IN / TOKEN_REFRESHED / INITIAL_SESSION: only update the session token.
+      // Profile is fetched once on mount (via getSession) and once after signIn().
+      // Never re-fetch here — it sets profileLoading(true) which unmounts the current page.
     })
 
     return () => listener.subscription.unsubscribe()
@@ -48,6 +48,7 @@ export function AuthProvider({ children }) {
   async function signIn(email, password) {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
+    await fetchProfile() // explicit fetch after successful sign-in (onAuthStateChange won't do it)
   }
 
   async function signOut() {
