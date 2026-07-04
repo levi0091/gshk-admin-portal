@@ -1,0 +1,73 @@
+name: Backend CI
+
+on:
+  push:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+
+jobs:
+  # Unit tests — supabase client is mocked; no DB or network needed.
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      - name: pytest (mocked)
+        run: uv run pytest -q
+        env:
+          SUPABASE_URL: http://localhost
+          SUPABASE_SERVICE_ROLE_KEY: dummy
+
+  # Migration up/down against an ephemeral Postgres, plus greenfield assertions.
+  migrations:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gflowdesk_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gflowdesk_test
+      RUN_DB_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+
+      # 001/002 reference Supabase objects (auth.users FK, `authenticated` role).
+      # Bootstrap minimal stand-ins so the migrations run on vanilla Postgres.
+      - name: Bootstrap Supabase prerequisites
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated; END IF; END \$\$;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS auth;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY);"
+
+      - name: alembic upgrade head
+        run: uv run alembic upgrade head
+
+      - name: seed + greenfield assertions
+        run: uv run pytest -q tests/test_documents_migration_seed.py
+
+      - name: alembic downgrade (reversibility)
+        run: uv run alembic downgrade base
