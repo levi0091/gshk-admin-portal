@@ -129,7 +129,8 @@ def main() -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     report.save(f"etl/reports/checkpoint_a_{timestamp}.json")
 
-    if report.has_errors():
+    # Only exit non-zero on actual runs with errors; dry-run always exits 0 (validation is informational)
+    if not args.dry_run and report.has_errors():
         raise SystemExit(1)
 
 
