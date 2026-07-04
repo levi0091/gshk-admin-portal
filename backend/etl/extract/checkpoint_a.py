@@ -104,3 +104,16 @@ def extract_officers(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(OFFICERS_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+BENEFICIAL_OWNERS_QUERY = text("""
+    SELECT EntCode, SeqNr, RefCode, EntOwnCountry,
+           PercInterest, PercVote, DateFrom, DateTo
+    FROM EntityOwners
+""")
+
+
+def extract_beneficial_owners(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(BENEFICIAL_OWNERS_QUERY)
+        return [dict(row._mapping) for row in result]

@@ -24,3 +24,7 @@ def load_entity_officers(engine: Engine, rows: list[dict], dry_run: bool = False
 
 def load_company_secretaries(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
     return upsert_rows(engine, "company_secretaries", rows, dry_run=dry_run)
+
+
+def load_beneficial_owners(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    return upsert_rows(engine, "beneficial_owners", rows, dry_run=dry_run)

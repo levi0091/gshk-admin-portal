@@ -1,4 +1,5 @@
 from etl.transform.checkpoint_a import transform_address, transform_entity, transform_person, transform_identity_document, transform_entity_officer
+from etl.transform.checkpoint_a import transform_beneficial_owner
 from etl.reconciliation import ReconciliationReport
 
 
@@ -275,3 +276,36 @@ def test_transform_company_secretary_from_entity_officer_row():
         "appointed_date": "2020-01-01",
         "is_current": True,
     }
+
+
+def test_transform_beneficial_owner_individual():
+    entity_ids = {"E1": "e-uuid"}
+    person_ids = {"P1": "p-uuid"}
+    refcode_types = {"P1": "I"}
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "E1", "SeqNr": 1, "RefCode": "P1", "EntOwnCountry": "HK",
+        "PercInterest": 60.0, "PercVote": 60.0,
+        "DateFrom": "2020-01-01", "DateTo": None,
+    }
+    result = transform_beneficial_owner(vp_row, entity_ids, person_ids, refcode_types, report)
+    assert result["entity_id"] == "e-uuid"
+    assert result["person_id"] == "p-uuid"
+    assert result["party_type"] == "individual"
+    assert result["percent_interest"] == 60.0
+    assert result["is_current"] is True
+
+
+def test_transform_beneficial_owner_corporate_has_no_person_id():
+    entity_ids = {"E1": "e-uuid"}
+    refcode_types = {"C1": "C"}
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "E1", "SeqNr": 2, "RefCode": "C1", "EntOwnCountry": "HK",
+        "PercInterest": 40.0, "PercVote": 40.0,
+        "DateFrom": "2020-01-01", "DateTo": "2022-01-01",
+    }
+    result = transform_beneficial_owner(vp_row, entity_ids, {}, refcode_types, report)
+    assert result["party_type"] == "corporate"
+    assert result["person_id"] is None
+    assert result["is_current"] is False

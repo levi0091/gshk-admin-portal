@@ -157,3 +157,41 @@ def transform_company_secretary(entity_officer_row: dict) -> dict:
         "appointed_date": entity_officer_row["appointed_date"],
         "is_current": entity_officer_row["is_current"],
     }
+
+
+def transform_beneficial_owner(
+    row: dict,
+    entity_id_by_vp_key: dict[str, str],
+    person_id_by_vp_key: dict[str, str],
+    refcode_type_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
+    """EntityOwners row -> beneficial_owners insert dict. A beneficial owner
+    can be an individual or a corporate entity, determined by looking up the
+    owner's RefCode in RefMaster.RefType ('I' = individual, else corporate).
+    Returns None (and logs) if the parent entity is unresolved."""
+    vp_key = f"{row['EntCode']}:{row['SeqNr']}"
+    entity_id = entity_id_by_vp_key.get(row["EntCode"])
+    if entity_id is None:
+        report.record_error("beneficial_owners", vp_key, f"unresolved entity_id for EntCode={row['EntCode']}")
+        return None
+
+    ref_type = refcode_type_by_vp_key.get(row["RefCode"])
+    is_individual = ref_type == "I"
+    person_id = person_id_by_vp_key.get(row["RefCode"]) if is_individual else None
+    if is_individual and person_id is None:
+        report.record_error("beneficial_owners", vp_key, f"unresolved person_id for RefCode={row['RefCode']}")
+
+    return {
+        "vp_source_key": vp_key,
+        "entity_id": entity_id,
+        "person_id": person_id,
+        "party_type": "individual" if is_individual else "corporate",
+        "corporate_name": None if is_individual else row["RefCode"],
+        "owner_type": None,
+        "percent_interest": row.get("PercInterest"),
+        "percent_vote": row.get("PercVote"),
+        "date_from": row.get("DateFrom"),
+        "date_to": row.get("DateTo"),
+        "is_current": row.get("DateTo") is None,
+    }
