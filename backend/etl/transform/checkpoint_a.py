@@ -20,3 +20,28 @@ def transform_address(row: dict) -> dict:
         "city_zh": row.get("CityLoc"),
         "is_hk_address": country in ("HK", ""),
     }
+
+
+def transform_person(row: dict) -> dict:
+    """Joined RefMaster (RefType='I') + Compliance row -> persons insert dict."""
+    full_name = (row.get("Name") or row.get("SearchName") or "UNKNOWN").strip()
+    former_name = row.get("FormerName") or row.get("Aliases")
+    return {
+        "vp_source_key": row["RefCode"],
+        "full_name": full_name,
+        "given_names": row.get("GivenNames"),
+        "surname": None,
+        "full_name_zh": row.get("ChnsName"),
+        "former_name": former_name,
+        "email": row.get("Email"),
+        "phone": None,
+        "date_of_birth": row.get("BirthDate"),
+        "gender": row.get("Gender"),
+        "nationality": row.get("Nationality"),
+        "nationality_code": row.get("NationalityCode"),
+        "occupation": row.get("Occupation"),
+        "place_of_birth": row.get("PlaceBirth"),
+        "marital_status": row.get("MaritalStatus"),
+        "date_of_death": row.get("DateDeath"),
+        "residential_address_id": None,  # backfilled in Checkpoint C from RefAddress
+    }

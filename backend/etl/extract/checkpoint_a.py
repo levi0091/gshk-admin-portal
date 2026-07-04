@@ -13,3 +13,20 @@ def extract_addresses(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(ADDRESSES_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+PERSONS_QUERY = text("""
+    SELECT rm.RefCode, rm.Name, rm.ChnsName, rm.SearchName,
+           c.GivenNames, c.FormerName, c.FormerGivenNames, c.Aliases,
+           c.Email, c.BirthDate, c.Gender, c.Nationality, c.NationalityCode,
+           c.Occupation, c.PlaceBirth, c.MaritalStatus, c.DateDeath
+    FROM RefMaster rm
+    LEFT JOIN Compliance c ON rm.RefCode = c.AddrCode
+    WHERE rm.RefType = 'I'
+""")
+
+
+def extract_persons(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(PERSONS_QUERY)
+        return [dict(row._mapping) for row in result]
