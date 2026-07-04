@@ -8,3 +8,7 @@ def load_addresses(engine: Engine, rows: list[dict], dry_run: bool = False) -> i
 
 def load_persons(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
     return upsert_rows(engine, "persons", rows, dry_run=dry_run)
+
+
+def load_entities(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    return upsert_rows(engine, "entities", rows, dry_run=dry_run)

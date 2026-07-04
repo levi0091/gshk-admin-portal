@@ -45,3 +45,33 @@ def transform_person(row: dict) -> dict:
         "date_of_death": row.get("DateDeath"),
         "residential_address_id": None,  # backfilled in Checkpoint C from RefAddress
     }
+
+
+def transform_entity(row: dict, bus_name: dict | None) -> dict:
+    """Entity JOIN RefMaster row (+ optional principal BusNames row) -> entities insert dict."""
+    status_code = (row.get("Status") or "").strip().upper()
+    ceased = status_code == "C" or bool(bus_name and bus_name.get("DateCessation"))
+    company_name = row.get("CompName") or row.get("Name") or "UNKNOWN"
+    notes = ", ".join(n for n in (row.get("Note"), row.get("AccountNote")) if n)
+    return {
+        "vp_source_key": row["EntCode"],
+        "company_name": company_name,
+        "company_name_zh": (bus_name or {}).get("ChineseBusName"),
+        "br_number": (bus_name or {}).get("BusRegNr"),
+        "cr_number": row.get("IncorpNr"),
+        "status": "ceased" if ceased else "live",
+        "registered_address_id": None,  # backfilled in Checkpoint C from RefAddress
+        "incorporation_date": row.get("IncorpDate"),
+        "incorporation_place": row.get("IncorpPlace") or "Hong Kong",
+        "ar_last_date": row.get("DateLastAnRe"),
+        "ar_next_date": row.get("DateNextAnRe"),
+        "ar_due_date": row.get("DateDueAnRe"),
+        "agm_next_date": row.get("DateNextAGM"),
+        "aoa_director_min": row.get("MA_DirMin"),
+        "aoa_director_max": row.get("MA_DirMax"),
+        "aoa_agm_waived": bool(row.get("MA_AgmWaived")),
+        "previous_name": row.get("PrevEntName"),
+        "date_name_changed": row.get("DateNameChanged"),
+        "case_notes": notes or None,
+        "assigned_to": None,  # no VP admin-code -> new-user mapping (confirmed)
+    }

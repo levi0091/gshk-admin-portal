@@ -1,4 +1,4 @@
-from etl.transform.checkpoint_a import transform_address, transform_person
+from etl.transform.checkpoint_a import transform_address, transform_entity, transform_person
 
 
 def test_transform_address_maps_core_fields():
@@ -106,3 +106,53 @@ def test_transform_person_merges_aliases_into_former_name():
     }
     result = transform_person(vp_row)
     assert result["former_name"] == "Jane Smith"
+
+
+def _entity_row(**overrides):
+    base = {
+        "EntCode": "FACTORALIM",
+        "CompName": "Xactoro Limited",
+        "Name": "Xactoro Limited",
+        "IncorpNr": "1234567",
+        "IncorpDate": "2020-01-15",
+        "IncorpPlace": "HK",
+        "Status": "0",
+        "DateLastAnRe": None, "DateNextAnRe": None, "DateDueAnRe": None,
+        "DateNextAGM": None,
+        "MA_DirMin": 1, "MA_DirMax": 10, "MA_AgmWaived": False,
+        "PrevEntName": None, "DateNameChanged": None,
+        "Note": "Internal note", "AccountNote": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_transform_entity_defaults_to_live_status():
+    result = transform_entity(_entity_row(), bus_name=None)
+    assert result["status"] == "live"
+    assert result["vp_source_key"] == "FACTORALIM"
+    assert result["company_name"] == "Xactoro Limited"
+    assert result["cr_number"] == "1234567"
+
+
+def test_transform_entity_ceased_when_status_code_c():
+    result = transform_entity(_entity_row(Status="C"), bus_name=None)
+    assert result["status"] == "ceased"
+
+
+def test_transform_entity_ceased_when_bus_name_has_cessation_date():
+    bus_name = {"BusRegNr": "12345678", "ChineseBusName": None, "DateCessation": "2023-05-01"}
+    result = transform_entity(_entity_row(), bus_name=bus_name)
+    assert result["status"] == "ceased"
+
+
+def test_transform_entity_takes_br_number_from_bus_name():
+    bus_name = {"BusRegNr": "87654321", "ChineseBusName": "測試", "DateCessation": None}
+    result = transform_entity(_entity_row(), bus_name=bus_name)
+    assert result["br_number"] == "87654321"
+    assert result["company_name_zh"] == "測試"
+
+
+def test_transform_entity_assigned_to_is_always_none():
+    result = transform_entity(_entity_row(), bus_name=None)
+    assert result["assigned_to"] is None
