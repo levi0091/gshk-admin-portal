@@ -251,3 +251,27 @@ def test_transform_entity_officer_missing_person_returns_dict_with_none_person_i
     assert result["role"] == "director"
     assert report.has_errors() is True
     assert "GHOSTPERSON" in report.errors[0]["message"]
+
+
+def test_transform_company_secretary_from_entity_officer_row():
+    from etl.transform.checkpoint_a import transform_company_secretary
+
+    entity_officer_row = {
+        "vp_source_key": "E1:2",
+        "entity_id": "e-uuid",
+        "person_id": "p-uuid",
+        "role": "company_secretary",
+        "appointed_date": "2020-01-01",
+        "is_current": True,
+    }
+    result = transform_company_secretary(entity_officer_row)
+    assert result == {
+        "vp_source_key": "E1:2",
+        "entity_id": "e-uuid",
+        "is_gshk": True,
+        "secretary_name": "Get Started HK Limited",
+        "tcsp_number": "TC000807",
+        "person_id": "p-uuid",
+        "appointed_date": "2020-01-01",
+        "is_current": True,
+    }

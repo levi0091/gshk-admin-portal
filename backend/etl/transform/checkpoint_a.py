@@ -140,3 +140,20 @@ def transform_entity_officer(
         "resignation_reason": row.get("ReasonResign"),
         "is_current": row.get("DateResign") is None,
     }
+
+
+def transform_company_secretary(entity_officer_row: dict) -> dict:
+    """Takes a transform_entity_officer() output row already filtered to
+    role == 'company_secretary' and reshapes it for company_secretaries.
+    GSHK (TCSP TC000807) is the default corporate secretary per field-mapping.md;
+    an individual secretary still carries person_id."""
+    return {
+        "vp_source_key": entity_officer_row["vp_source_key"],
+        "entity_id": entity_officer_row["entity_id"],
+        "is_gshk": True,
+        "secretary_name": "Get Started HK Limited",
+        "tcsp_number": "TC000807",
+        "person_id": entity_officer_row["person_id"],
+        "appointed_date": entity_officer_row["appointed_date"],
+        "is_current": entity_officer_row["is_current"],
+    }
