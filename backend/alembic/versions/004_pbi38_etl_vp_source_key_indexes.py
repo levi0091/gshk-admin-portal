@@ -31,7 +31,7 @@ def upgrade() -> None:
     )
     for t in TABLES_WITH_EXISTING_COLUMN + ["company_secretaries"]:
         op.execute(
-            f"CREATE UNIQUE INDEX ux_{t}_vp_source_key ON public.{t} (vp_source_key) "
+            f"CREATE UNIQUE INDEX IF NOT EXISTS ux_{t}_vp_source_key ON public.{t} (vp_source_key) "
             f"WHERE vp_source_key IS NOT NULL;"
         )
 
