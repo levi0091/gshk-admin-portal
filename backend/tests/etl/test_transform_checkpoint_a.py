@@ -235,3 +235,19 @@ def test_transform_entity_officer_missing_entity_returns_none_and_logs():
     result = transform_entity_officer(vp_row, {}, {"P1": "p-uuid"}, report)
     assert result is None
     assert report.has_errors() is True
+
+
+def test_transform_entity_officer_missing_person_returns_dict_with_none_person_id():
+    entity_ids = {"E1": "e-uuid"}
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "E1", "SeqNr": 4, "AddrCode": "GHOSTPERSON", "OfficerType": "DIR",
+        "Position": None, "DateAppoint": None, "DateResign": None, "ReasonResign": None,
+    }
+    result = transform_entity_officer(vp_row, entity_ids, {}, report)
+    assert result is not None
+    assert result["entity_id"] == "e-uuid"
+    assert result["person_id"] is None
+    assert result["role"] == "director"
+    assert report.has_errors() is True
+    assert "GHOSTPERSON" in report.errors[0]["message"]
