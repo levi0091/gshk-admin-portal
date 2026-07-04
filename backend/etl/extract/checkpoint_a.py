@@ -76,3 +76,18 @@ def extract_principal_business_names(engine: Engine) -> dict[str, dict]:
                 by_entity[code] = row
     by_entity["_ties"] = ties  # inspected by the loader to log to reconciliation
     return by_entity
+
+
+IDENTITY_DOCUMENTS_QUERY = text("""
+    SELECT ir.RefCode, ir.SeqNr, ir.IdType, ir.IdCode, ir.Country,
+           ir.FromDate, ir.ToDate
+    FROM IdentityRegister ir
+    JOIN RefMaster rm ON ir.RefCode = rm.RefCode
+    WHERE rm.RefType = 'I'
+""")
+
+
+def extract_identity_documents(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(IDENTITY_DOCUMENTS_QUERY)
+        return [dict(row._mapping) for row in result]

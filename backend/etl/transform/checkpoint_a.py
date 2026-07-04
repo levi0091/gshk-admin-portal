@@ -1,3 +1,6 @@
+from etl.reference_data import decode_id_type
+
+
 def _collapse_line3(*parts: str | None) -> str | None:
     non_empty = [p.strip() for p in parts if p and p.strip()]
     return ", ".join(non_empty) if non_empty else None
@@ -74,4 +77,23 @@ def transform_entity(row: dict, bus_name: dict | None) -> dict:
         "date_name_changed": row.get("DateNameChanged"),
         "case_notes": notes or None,
         "assigned_to": None,  # no VP admin-code -> new-user mapping (confirmed)
+    }
+
+
+def transform_identity_document(row: dict, person_id_by_vp_key: dict[str, str]) -> dict | None:
+    """IdentityRegister row (RefType='I' only) -> person_identity_documents insert dict.
+    Returns None if the parent person wasn't loaded (caller logs this as an error)."""
+    person_id = person_id_by_vp_key.get(row["RefCode"])
+    if person_id is None:
+        return None
+    return {
+        "vp_source_key": f"{row['RefCode']}:{row['SeqNr']}",
+        "person_id": person_id,
+        "id_type": decode_id_type(row.get("IdType")),
+        "id_number": row.get("IdCode"),
+        "issuing_country": row.get("Country"),
+        "issue_date": row.get("FromDate"),
+        "expiry_date": row.get("ToDate"),
+        "is_primary": False,
+        "scan_document_id": None,  # documents are greenfield, never migrated
     }

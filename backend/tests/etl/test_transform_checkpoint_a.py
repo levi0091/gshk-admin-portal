@@ -1,4 +1,4 @@
-from etl.transform.checkpoint_a import transform_address, transform_entity, transform_person
+from etl.transform.checkpoint_a import transform_address, transform_entity, transform_person, transform_identity_document
 
 
 def test_transform_address_maps_core_fields():
@@ -156,3 +156,26 @@ def test_transform_entity_takes_br_number_from_bus_name():
 def test_transform_entity_assigned_to_is_always_none():
     result = transform_entity(_entity_row(), bus_name=None)
     assert result["assigned_to"] is None
+
+
+def test_transform_identity_document_resolves_person_id():
+    person_ids = {"LEUNGP": "11111111-1111-1111-1111-111111111111"}
+    vp_row = {
+        "RefCode": "LEUNGP", "SeqNr": 1, "IdType": "PSP", "IdCode": "K1234567",
+        "Country": "HK", "FromDate": "2018-01-01", "ToDate": "2028-01-01",
+    }
+    result = transform_identity_document(vp_row, person_ids)
+    assert result is not None
+    assert result["person_id"] == "11111111-1111-1111-1111-111111111111"
+    assert result["id_type"] == "passport"
+    assert result["id_number"] == "K1234567"
+    assert result["vp_source_key"] == "LEUNGP:1"
+
+
+def test_transform_identity_document_returns_none_when_person_missing():
+    vp_row = {
+        "RefCode": "GHOST", "SeqNr": 1, "IdType": "PSP", "IdCode": "X1",
+        "Country": None, "FromDate": None, "ToDate": None,
+    }
+    result = transform_identity_document(vp_row, {})
+    assert result is None

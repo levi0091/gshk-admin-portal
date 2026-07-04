@@ -12,3 +12,7 @@ def load_persons(engine: Engine, rows: list[dict], dry_run: bool = False) -> int
 
 def load_entities(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
     return upsert_rows(engine, "entities", rows, dry_run=dry_run)
+
+
+def load_identity_documents(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    return upsert_rows(engine, "person_identity_documents", rows, dry_run=dry_run)
