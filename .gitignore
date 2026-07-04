@@ -40,3 +40,4 @@ yarn-error.log
 .idea/
 *.swp
 .superpowers/
+backend/etl/reports/

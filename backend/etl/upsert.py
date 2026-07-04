@@ -1,0 +1,35 @@
+from sqlalchemy import Table, MetaData
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import Engine
+
+
+def upsert_rows(
+    engine: Engine,
+    table_name: str,
+    rows: list[dict],
+    conflict_column: str = "vp_source_key",
+    dry_run: bool = False,
+) -> int:
+    """Idempotent bulk upsert: INSERT ... ON CONFLICT (conflict_column) DO UPDATE.
+
+    Returns the number of rows the operation would affect / did affect.
+    In dry-run mode, no statement is executed against the database at all.
+    """
+    if not rows:
+        return 0
+    if dry_run:
+        return 0
+
+    with engine.begin() as conn:
+        table = Table(table_name, MetaData(), autoload_with=engine)
+        stmt = insert(table).values(rows)
+        update_columns = {
+            c.name: stmt.excluded[c.name]
+            for c in table.columns
+            if c.name not in (conflict_column, "id", "created_at")
+        }
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[conflict_column], set_=update_columns
+        )
+        conn.execute(stmt)
+    return len(rows)
