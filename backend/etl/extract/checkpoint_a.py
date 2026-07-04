@@ -91,3 +91,16 @@ def extract_identity_documents(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(IDENTITY_DOCUMENTS_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+OFFICERS_QUERY = text("""
+    SELECT EntCode, SeqNr, AddrCode, OfficerType, Position,
+           DateAppoint, DateResign, ReasonResign
+    FROM Officers
+""")
+
+
+def extract_officers(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(OFFICERS_QUERY)
+        return [dict(row._mapping) for row in result]

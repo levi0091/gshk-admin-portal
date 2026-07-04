@@ -1,4 +1,5 @@
-from etl.transform.checkpoint_a import transform_address, transform_entity, transform_person, transform_identity_document
+from etl.transform.checkpoint_a import transform_address, transform_entity, transform_person, transform_identity_document, transform_entity_officer
+from etl.reconciliation import ReconciliationReport
 
 
 def test_transform_address_maps_core_fields():
@@ -179,3 +180,58 @@ def test_transform_identity_document_returns_none_when_person_missing():
     }
     result = transform_identity_document(vp_row, {})
     assert result is None
+
+
+def test_transform_entity_officer_maps_director():
+    entity_ids = {"FACTORALIM": "e-uuid-1"}
+    person_ids = {"LEUNGP": "p-uuid-1"}
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "FACTORALIM", "SeqNr": 1, "AddrCode": "LEUNGP",
+        "OfficerType": "DIR", "Position": None,
+        "DateAppoint": "2020-01-15", "DateResign": None, "ReasonResign": None,
+    }
+    result = transform_entity_officer(vp_row, entity_ids, person_ids, report)
+    assert result["entity_id"] == "e-uuid-1"
+    assert result["person_id"] == "p-uuid-1"
+    assert result["role"] == "director"
+    assert result["is_current"] is True
+    assert report.has_errors() is False
+
+
+def test_transform_entity_officer_resigned_is_not_current():
+    entity_ids = {"E1": "e-uuid"}
+    person_ids = {"P1": "p-uuid"}
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "E1", "SeqNr": 2, "AddrCode": "P1", "OfficerType": "DIR",
+        "Position": None, "DateAppoint": "2019-01-01",
+        "DateResign": "2021-01-01", "ReasonResign": "R",
+    }
+    result = transform_entity_officer(vp_row, entity_ids, person_ids, report)
+    assert result["is_current"] is False
+    assert result["resigned_date"] == "2021-01-01"
+
+
+def test_transform_entity_officer_ambiguous_role_is_logged():
+    entity_ids = {"E1": "e-uuid"}
+    person_ids = {"P1": "p-uuid"}
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "E1", "SeqNr": 3, "AddrCode": "P1", "OfficerType": "RPD",
+        "Position": None, "DateAppoint": None, "DateResign": None, "ReasonResign": None,
+    }
+    transform_entity_officer(vp_row, entity_ids, person_ids, report)
+    assert report.has_errors() is True
+    assert "RPD" in report.errors[0]["message"]
+
+
+def test_transform_entity_officer_missing_entity_returns_none_and_logs():
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "GHOST", "SeqNr": 1, "AddrCode": "P1", "OfficerType": "DIR",
+        "Position": None, "DateAppoint": None, "DateResign": None, "ReasonResign": None,
+    }
+    result = transform_entity_officer(vp_row, {}, {"P1": "p-uuid"}, report)
+    assert result is None
+    assert report.has_errors() is True

@@ -1,4 +1,5 @@
-from etl.reference_data import decode_id_type
+from etl.reference_data import decode_id_type, decode_officer_role, AMBIGUOUS_OFFICER_CODES
+from etl.reconciliation import ReconciliationReport
 
 
 def _collapse_line3(*parts: str | None) -> str | None:
@@ -96,4 +97,46 @@ def transform_identity_document(row: dict, person_id_by_vp_key: dict[str, str]) 
         "expiry_date": row.get("ToDate"),
         "is_primary": False,
         "scan_document_id": None,  # documents are greenfield, never migrated
+    }
+
+
+def transform_entity_officer(
+    row: dict,
+    entity_id_by_vp_key: dict[str, str],
+    person_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
+    """Officers row -> entity_officers insert dict. Returns None (and logs) if
+    the parent entity is unresolved — the child row is never silently dropped
+    without a trace (PRD key test case: 'a child row whose parent failed to
+    load is caught and logged, not silently dropped')."""
+    vp_key = f"{row['EntCode']}:{row['SeqNr']}"
+    entity_id = entity_id_by_vp_key.get(row["EntCode"])
+    if entity_id is None:
+        report.record_error("entity_officers", vp_key, f"unresolved entity_id for EntCode={row['EntCode']}")
+        return None
+
+    person_id = person_id_by_vp_key.get(row["AddrCode"])
+    if person_id is None:
+        report.record_error("entity_officers", vp_key, f"unresolved person_id for AddrCode={row['AddrCode']}")
+
+    officer_type = (row.get("OfficerType") or "").strip().upper()
+    if officer_type in AMBIGUOUS_OFFICER_CODES:
+        report.record_error(
+            "entity_officers", vp_key,
+            f"ambiguous OfficerType={officer_type!r} mapped to "
+            f"{decode_officer_role(officer_type)!r} — confirm with GSHK",
+        )
+
+    return {
+        "vp_source_key": vp_key,
+        "entity_id": entity_id,
+        "person_id": person_id,
+        "party_type": "individual",
+        "role": decode_officer_role(officer_type),
+        "position": row.get("Position"),
+        "appointed_date": row.get("DateAppoint"),
+        "resigned_date": row.get("DateResign"),
+        "resignation_reason": row.get("ReasonResign"),
+        "is_current": row.get("DateResign") is None,
     }
