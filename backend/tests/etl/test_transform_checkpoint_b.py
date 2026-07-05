@@ -208,3 +208,71 @@ def test_transform_share_certificate_unresolved_entity_returns_none_and_logs():
         _cert(EntCode="GHOST"), {}, {}, {}, {}, report)
     assert out is None
     assert report.has_errors() is True
+
+
+from etl.transform.checkpoint_b import derive_shareholdings
+
+
+def _tx(entcode, addr, cls, bal, paid=1, posted=1):
+    return {
+        "EntCode": entcode, "AddrCode": addr, "ShareClass": cls,
+        "BalanceShare": bal, "Paid": paid, "Posted": posted,
+        "IssueNr": 1,  # ignored by the aggregation
+    }
+
+
+def test_derive_shareholdings_aggregates_and_flags_current():
+    txs = [
+        _tx("E1", "P1", "OR01", 60),
+        _tx("E1", "P1", "OR01", 40),   # same member/class -> summed to 100
+        _tx("E1", "P2", "OR01", 0),    # net zero -> is_current False
+    ]
+    out = derive_shareholdings(
+        txs, {"E1": "e-uuid"}, {"P1": "p1", "P2": "p2"},
+        {"P1": "I", "P2": "I"}, {"E1:OR01": "sc-uuid"}, ReconciliationReport())
+    by_key = {r["vp_source_key"]: r for r in out}
+    assert by_key["E1:P1:OR01"]["shares_held"] == 100
+    assert by_key["E1:P1:OR01"]["is_current"] is True
+    assert by_key["E1:P1:OR01"]["person_id"] == "p1"
+    assert by_key["E1:P1:OR01"]["party_type"] == "individual"
+    assert by_key["E1:P1:OR01"]["share_class_id"] == "sc-uuid"
+    assert by_key["E1:P2:OR01"]["is_current"] is False
+
+
+def test_derive_shareholdings_excludes_issue_and_unposted():
+    txs = [
+        _tx("E1", "ISSUE", "OR01", 100),   # ISSUE side excluded
+        _tx("E1", "P1", "OR01", 50, posted=0),  # unposted excluded
+    ]
+    out = derive_shareholdings(
+        txs, {"E1": "e-uuid"}, {"P1": "p1"}, {"P1": "I"},
+        {"E1:OR01": "sc-uuid"}, ReconciliationReport())
+    assert out == []
+
+
+def test_derive_shareholdings_corporate_member():
+    txs = [_tx("E1", "C1", "OR01", 100)]
+    report = ReconciliationReport()
+    out = derive_shareholdings(
+        txs, {"E1": "e-uuid"}, {}, {"C1": "C"}, {"E1:OR01": "sc-uuid"}, report)
+    assert out[0]["party_type"] == "corporate"
+    assert out[0]["person_id"] is None
+    assert out[0]["corporate_name"] == "C1"
+    assert report.has_errors() is False
+
+
+def test_derive_shareholdings_unresolved_share_class_dropped_and_logged():
+    txs = [_tx("E1", "P1", "ZZ99", 100)]
+    report = ReconciliationReport()
+    out = derive_shareholdings(
+        txs, {"E1": "e-uuid"}, {"P1": "p1"}, {"P1": "I"}, {}, report)
+    assert out == []
+    assert report.has_errors() is True
+
+
+def test_derive_shareholdings_unresolved_entity_dropped_and_logged():
+    txs = [_tx("GHOST", "P1", "OR01", 100)]
+    report = ReconciliationReport()
+    out = derive_shareholdings(txs, {}, {"P1": "p1"}, {"P1": "I"}, {"GHOST:OR01": "x"}, report)
+    assert out == []
+    assert report.has_errors() is True

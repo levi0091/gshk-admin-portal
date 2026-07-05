@@ -169,3 +169,60 @@ def transform_share_certificate(
         "cancelled_date": row.get("CancelDate"),
         "document_id": None,
     }
+
+
+def derive_shareholdings(
+    transaction_rows: list[dict],
+    entity_id_by_vp_key: dict[str, str],
+    person_id_by_vp_key: dict[str, str],
+    refcode_type_by_vp_key: dict[str, str],
+    share_class_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> list[dict]:
+    """Derive current shareholdings from the raw Share_Transactions ledger,
+    mirroring VP's C_MemberBase view: posted, non-ISSUE rows grouped by
+    (EntCode, AddrCode, ShareClass); shares_held = SUM(BalanceShare),
+    amount_paid = SUM(Paid * BalanceShare), is_current = shares_held > 0.
+    share_class_id is NOT NULL in the target, so a group whose class is
+    unresolved is dropped and logged."""
+    groups: dict[tuple[str, str, str], dict] = {}
+    for row in transaction_rows:
+        if not row.get("Posted") or row.get("AddrCode") == "ISSUE":
+            continue
+        addr = row.get("AddrCode")
+        if not addr:
+            continue
+        key = (row["EntCode"], addr, row.get("ShareClass"))
+        agg = groups.setdefault(key, {"shares_held": 0, "amount_paid": 0})
+        bal = row.get("BalanceShare") or 0
+        paid = row.get("Paid") or 0
+        agg["shares_held"] += bal
+        agg["amount_paid"] += paid * bal
+
+    out: list[dict] = []
+    for (entcode, addr, shareclass), agg in groups.items():
+        vp_key = f"{entcode}:{addr}:{shareclass}"
+        entity_id = entity_id_by_vp_key.get(entcode)
+        if entity_id is None:
+            report.record_error("shareholdings", vp_key, f"unresolved entity_id for EntCode={entcode}")
+            continue
+        share_class_id = share_class_id_by_vp_key.get(f"{entcode}:{shareclass}")
+        if share_class_id is None:
+            report.record_error("shareholdings", vp_key, f"unresolved share_class_id for {entcode}:{shareclass}")
+            continue
+        is_individual = refcode_type_by_vp_key.get(addr) == "I"
+        person_id = person_id_by_vp_key.get(addr) if is_individual else None
+        if is_individual and person_id is None:
+            report.record_error("shareholdings", vp_key, f"unresolved person_id for AddrCode={addr}")
+        out.append({
+            "vp_source_key": vp_key,
+            "entity_id": entity_id,
+            "share_class_id": share_class_id,
+            "person_id": person_id,
+            "party_type": "individual" if is_individual else "corporate",
+            "corporate_name": None if is_individual else addr,
+            "shares_held": agg["shares_held"],
+            "amount_paid": agg["amount_paid"],
+            "is_current": agg["shares_held"] > 0,
+        })
+    return out

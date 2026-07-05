@@ -20,3 +20,7 @@ def load_share_transactions(engine: Engine, rows: list[dict], dry_run: bool = Fa
 
 def load_share_certificates(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
     return upsert_rows(engine, "share_certificates", rows, dry_run=dry_run)
+
+
+def load_shareholdings(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    return upsert_rows(engine, "shareholdings", rows, dry_run=dry_run)
