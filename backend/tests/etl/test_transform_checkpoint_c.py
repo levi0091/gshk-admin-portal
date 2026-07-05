@@ -1,5 +1,6 @@
 from etl.transform.checkpoint_c import (
     transform_contact, transform_charge, transform_task, transform_address_assignment,
+    transform_form_filing,
 )
 from etl.reconciliation import ReconciliationReport
 
@@ -175,3 +176,75 @@ def test_transform_address_assignment_unresolved_party_dropped_and_logged():
         _addr_assignment(RefCode="GHOST"), {}, {}, {}, {"100": "addr-uuid"}, report)
     assert out is None
     assert report.has_errors() is True
+
+
+def _form_filing(**kw):
+    base = {
+        "FQnumber": "FQ025280", "EntCode": "E1", "FormCode": "HK23NAR1",
+        "DateGenerate": "2026-01-01", "DateSigned": "2026-01-02",
+        "DateFiled": "2026-01-03", "DateFileDeadLine": "2026-02-01",
+        "FiledROC": 1, "FieldDetails": "some field text",
+    }
+    base.update(kw)
+    return base
+
+
+def test_transform_form_filing_workflow_nar1():
+    out = transform_form_filing(_form_filing(), {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["workflow"] == "nar1"
+
+
+def test_transform_form_filing_workflow_nnc1():
+    out = transform_form_filing(
+        _form_filing(FormCode="HK14eNNC1"), {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["workflow"] == "nnc1"
+
+
+def test_transform_form_filing_workflow_other_is_none():
+    out = transform_form_filing(
+        _form_filing(FormCode="HK23IRBR200"), {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["workflow"] is None
+
+
+def test_transform_form_filing_status_filed_wins():
+    out = transform_form_filing(_form_filing(), {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["status"] == "filed"
+
+
+def test_transform_form_filing_status_queued_fallback():
+    out = transform_form_filing(
+        _form_filing(DateGenerate=None, DateSigned=None, DateFiled=None),
+        {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["status"] == "queued"
+
+
+def test_transform_form_filing_field_details_wrapped():
+    out = transform_form_filing(_form_filing(), {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["field_details"] == {"vp_field_details": "some field text"}
+
+
+def test_transform_form_filing_field_details_none_when_blank():
+    out = transform_form_filing(
+        _form_filing(FieldDetails=None), {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["field_details"] is None
+
+
+def test_transform_form_filing_unresolved_entity_dropped_and_logged():
+    report = ReconciliationReport()
+    out = transform_form_filing(_form_filing(EntCode="GHOST"), {}, report)
+    assert out is None
+    assert report.has_errors() is True
+
+
+def test_transform_form_filing_full_happy_path():
+    out = transform_form_filing(_form_filing(), {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["vp_source_key"] == "FQ025280"
+    assert out["entity_id"] == "e-uuid"
+    assert out["form_code"] == "HK23NAR1"
+    assert out["generated_date"] == "2026-01-01"
+    assert out["signed_date"] == "2026-01-02"
+    assert out["filed_date"] == "2026-01-03"
+    assert out["file_deadline"] == "2026-02-01"
+    assert out["filed_with_cr"] is True
+    assert out["document_id"] is None
+    assert out["source"] == "viewpoint_import"

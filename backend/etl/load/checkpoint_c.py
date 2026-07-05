@@ -18,6 +18,10 @@ def load_address_assignments(engine: Engine, rows: list[dict], dry_run: bool = F
     return upsert_rows(engine, "address_assignments", rows, dry_run=dry_run)
 
 
+def load_form_filings(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    return upsert_rows(engine, "form_filings", rows, dry_run=dry_run)
+
+
 def backfill_primary_addresses(engine: Engine, dry_run: bool = False) -> dict:
     """Point entities.registered_address_id at the current Registered Office
     assignment and persons.residential_address_id at the current Residential

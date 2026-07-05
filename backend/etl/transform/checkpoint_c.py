@@ -149,3 +149,57 @@ def transform_address_assignment(
         "cancelled_date": cancelled_date,
         "is_current": cancelled_date is None,
     }
+
+
+def transform_form_filing(
+    row: dict,
+    entity_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
+    """VP FormQue row -> form_filings insert dict (singular). entity_id
+    required (drop+log if unresolved). workflow decoded from FormCode
+    (case-insensitive NAR1/NNC1 containment); status derived from the
+    filed > signed > generated > queued ladder over the three date columns."""
+    vp_key = row["FQnumber"]
+    entcode = row["EntCode"]
+    entity_id = entity_id_by_vp_key.get(entcode)
+    if entity_id is None:
+        report.record_error("form_filings", vp_key, f"unresolved entity_id for EntCode={entcode}")
+        return None
+
+    form_code = row.get("FormCode")
+    code = (form_code or "").upper()
+    if "NAR1" in code:
+        workflow = "nar1"
+    elif "NNC1" in code:
+        workflow = "nnc1"
+    else:
+        workflow = None
+
+    if row.get("DateFiled"):
+        status = "filed"
+    elif row.get("DateSigned"):
+        status = "signed"
+    elif row.get("DateGenerate"):
+        status = "generated"
+    else:
+        status = "queued"
+
+    field_details_raw = row.get("FieldDetails")
+    field_details = {"vp_field_details": field_details_raw} if field_details_raw else None
+
+    return {
+        "vp_source_key": vp_key,
+        "entity_id": entity_id,
+        "form_code": form_code,
+        "workflow": workflow,
+        "status": status,
+        "field_details": field_details,
+        "generated_date": row.get("DateGenerate"),
+        "signed_date": row.get("DateSigned"),
+        "filed_date": row.get("DateFiled"),
+        "file_deadline": row.get("DateFileDeadLine"),
+        "filed_with_cr": bool(row.get("FiledROC")),
+        "document_id": None,
+        "source": "viewpoint_import",
+    }

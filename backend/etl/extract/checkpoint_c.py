@@ -49,3 +49,16 @@ def extract_address_assignments(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(ADDRESS_ASSIGNMENTS_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+FORM_FILINGS_QUERY = text("""
+    SELECT FQnumber, EntCode, FormCode, DateGenerate, DateSigned, DateFiled,
+           DateFileDeadLine, FiledROC, FieldDetails
+    FROM FormQue
+""")
+
+
+def extract_form_filings(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(FORM_FILINGS_QUERY)
+        return [dict(row._mapping) for row in result]
