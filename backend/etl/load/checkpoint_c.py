@@ -1,5 +1,5 @@
 from sqlalchemy.engine import Engine
-from etl.upsert import upsert_rows
+from etl.upsert import upsert_rows, insert_rows_ignore_conflicts
 
 
 def load_contacts(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
@@ -20,6 +20,13 @@ def load_address_assignments(engine: Engine, rows: list[dict], dry_run: bool = F
 
 def load_form_filings(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
     return upsert_rows(engine, "form_filings", rows, dry_run=dry_run)
+
+
+def load_audit_log(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    """audit_log is insert-only (PBI-11 — no UPDATE/DELETE ever). A re-run
+    must skip rows already loaded rather than updating them, so this uses
+    insert_rows_ignore_conflicts (ON CONFLICT DO NOTHING), never upsert_rows."""
+    return insert_rows_ignore_conflicts(engine, "audit_log", rows, dry_run=dry_run)
 
 
 def backfill_primary_addresses(engine: Engine, dry_run: bool = False) -> dict:
