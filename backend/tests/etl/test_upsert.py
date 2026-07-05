@@ -76,3 +76,26 @@ def test_upsert_rows_empty_list_is_a_noop():
     written = upsert_rows(engine, "addresses", [], dry_run=False)
     assert written == 0
     engine.begin.assert_not_called()
+
+
+def test_upsert_rows_duplicate_conflict_key_in_batch_raises():
+    import pytest
+    engine = MagicMock()
+    rows = [
+        {"vp_source_key": "A1", "line1": "x"},
+        {"vp_source_key": "A1", "line1": "y"},
+    ]
+    with pytest.raises(ValueError, match="duplicate vp_source_key.*addresses.*A1"):
+        upsert_rows(engine, "addresses", rows, dry_run=False)
+    engine.begin.assert_not_called()
+
+
+def test_upsert_rows_duplicate_key_detected_even_in_dry_run():
+    import pytest
+    engine = MagicMock()
+    rows = [
+        {"vp_source_key": "B2", "line1": "x"},
+        {"vp_source_key": "B2", "line1": "y"},
+    ]
+    with pytest.raises(ValueError):
+        upsert_rows(engine, "addresses", rows, dry_run=True)
