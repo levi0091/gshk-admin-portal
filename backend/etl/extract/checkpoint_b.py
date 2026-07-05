@@ -38,3 +38,16 @@ def extract_entity_name_changes(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(ENTITY_NAME_CHANGES_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+SHARE_TRANSACTIONS_QUERY = text("""
+    SELECT EntCode, IssueNr, ShareClass, AddrCode, TransType, TransDate,
+           NrShare, BalanceShare, IssuePrice, Paid, CertificateNr, Posted
+    FROM Share_Transactions
+""")
+
+
+def extract_share_transactions(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(SHARE_TRANSACTIONS_QUERY)
+        return [dict(row._mapping) for row in result]

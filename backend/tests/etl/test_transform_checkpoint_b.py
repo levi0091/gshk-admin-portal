@@ -1,4 +1,5 @@
 from etl.transform.checkpoint_b import transform_share_classes, transform_business_name, transform_entity_name_change
+from etl.transform.checkpoint_b import transform_share_transaction
 from etl.reconciliation import ReconciliationReport
 
 
@@ -107,5 +108,61 @@ def test_transform_entity_name_change_unresolved_entity_returns_none_and_logs():
     row = {"EntCode": "GHOST", "SeqNr": 1, "OldName": None, "OldChnsName": None,
            "NewName": None, "NewChnsName": None, "DateApplied": None, "DateConfirmed": None}
     out = transform_entity_name_change(row, {}, report)
+    assert out is None
+    assert report.has_errors() is True
+
+
+def _st(**kw):
+    base = {
+        "EntCode": "E1", "IssueNr": 5, "ShareClass": "OR01", "AddrCode": "P1",
+        "TransType": "IS", "TransDate": "2020-01-01", "NrShare": 100,
+        "BalanceShare": 100, "IssuePrice": 1, "CertificateNr": 7,
+    }
+    base.update(kw)
+    return base
+
+
+def test_transform_share_transaction_individual_holder():
+    out = transform_share_transaction(
+        _st(), {"E1": "e-uuid"}, {"P1": "p-uuid"}, {"P1": "I"},
+        {"E1:OR01": "sc-uuid"}, ReconciliationReport())
+    assert out["vp_source_key"] == "E1:5"
+    assert out["entity_id"] == "e-uuid"
+    assert out["share_class_id"] == "sc-uuid"
+    assert out["person_id"] == "p-uuid"
+    assert out["transaction_type"] == "IS"
+    assert out["shares"] == 100
+    assert out["balance"] == 100
+    assert out["issue_price"] == 1
+    assert out["certificate_no"] == "7"
+
+
+def test_transform_share_transaction_issue_row_has_no_person():
+    out = transform_share_transaction(
+        _st(AddrCode="ISSUE"), {"E1": "e-uuid"}, {}, {},
+        {"E1:OR01": "sc-uuid"}, ReconciliationReport())
+    assert out["person_id"] is None
+
+
+def test_transform_share_transaction_corporate_holder_no_person_no_error():
+    report = ReconciliationReport()
+    out = transform_share_transaction(
+        _st(AddrCode="C1"), {"E1": "e-uuid"}, {}, {"C1": "C"},
+        {"E1:OR01": "sc-uuid"}, report)
+    assert out["person_id"] is None
+    assert report.has_errors() is False
+
+
+def test_transform_share_transaction_orphan_class_null_share_class_id():
+    out = transform_share_transaction(
+        _st(ShareClass="ZZ99"), {"E1": "e-uuid"}, {"P1": "p-uuid"}, {"P1": "I"},
+        {}, ReconciliationReport())
+    assert out["share_class_id"] is None
+
+
+def test_transform_share_transaction_unresolved_entity_returns_none_and_logs():
+    report = ReconciliationReport()
+    out = transform_share_transaction(
+        _st(EntCode="GHOST"), {}, {}, {}, {}, report)
     assert out is None
     assert report.has_errors() is True

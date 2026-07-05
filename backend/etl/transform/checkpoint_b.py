@@ -92,3 +92,43 @@ def transform_entity_name_change(row: dict, entity_id_by_vp_key: dict[str, str],
         "applied_date": row.get("DateApplied"),
         "confirmed_date": row.get("DateConfirmed"),
     }
+
+
+def transform_share_transaction(
+    row: dict,
+    entity_id_by_vp_key: dict[str, str],
+    person_id_by_vp_key: dict[str, str],
+    refcode_type_by_vp_key: dict[str, str],
+    share_class_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
+    """Share_Transactions row -> share_transactions insert dict (full ledger).
+    entity_id required (drop+log if unresolved); share_class_id nullable;
+    person_id only for individual holders (ISSUE/corporate -> None, no error)."""
+    entcode = row["EntCode"]
+    vp_key = f"{entcode}:{row['IssueNr']}"
+    entity_id = entity_id_by_vp_key.get(entcode)
+    if entity_id is None:
+        report.record_error("share_transactions", vp_key, f"unresolved entity_id for EntCode={entcode}")
+        return None
+
+    share_class_id = share_class_id_by_vp_key.get(f"{entcode}:{row.get('ShareClass')}")
+
+    addr = row.get("AddrCode")
+    person_id = None
+    if addr and addr != "ISSUE" and refcode_type_by_vp_key.get(addr) == "I":
+        person_id = person_id_by_vp_key.get(addr)
+
+    cert = row.get("CertificateNr")
+    return {
+        "vp_source_key": vp_key,
+        "entity_id": entity_id,
+        "share_class_id": share_class_id,
+        "person_id": person_id,
+        "transaction_type": row.get("TransType"),
+        "transaction_date": row.get("TransDate"),
+        "shares": row.get("NrShare"),
+        "balance": row.get("BalanceShare"),
+        "issue_price": row.get("IssuePrice"),
+        "certificate_no": str(cert) if cert is not None else None,
+    }
