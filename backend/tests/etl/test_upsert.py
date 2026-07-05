@@ -99,3 +99,51 @@ def test_upsert_rows_duplicate_key_detected_even_in_dry_run():
     ]
     with pytest.raises(ValueError):
         upsert_rows(engine, "addresses", rows, dry_run=True)
+
+
+def test_upsert_rows_chunks_large_batches():
+    import pytest
+    from unittest.mock import patch as _patch
+    import etl.upsert as upsert_mod
+    engine = MagicMock()
+    conn = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    rows = [{"vp_source_key": f"K{i}", "line1": "x"} for i in range(5)]
+    with _patch.object(upsert_mod, "CHUNK_SIZE", 2), \
+         _patch("etl.upsert.Table", _fake_addresses_table):
+        written = upsert_mod.upsert_rows(engine, "addresses", rows, dry_run=False)
+    assert written == 5
+    assert conn.execute.call_count == 3          # ceil(5/2) chunks
+    assert engine.begin.call_count == 1          # one transaction for all chunks
+
+
+def test_insert_rows_ignore_conflicts_sums_rowcounts():
+    from unittest.mock import patch as _patch
+    import etl.upsert as upsert_mod
+    from etl.upsert import insert_rows_ignore_conflicts
+    engine = MagicMock()
+    conn = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    conn.execute.return_value.rowcount = 2       # each chunk "inserts" 2
+    rows = [{"vp_source_key": f"K{i}", "line1": "x"} for i in range(5)]
+    with _patch.object(upsert_mod, "CHUNK_SIZE", 2), \
+         _patch("etl.upsert.Table", _fake_addresses_table):
+        inserted = insert_rows_ignore_conflicts(engine, "addresses", rows, dry_run=False)
+    assert conn.execute.call_count == 3
+    assert inserted == 6                          # 3 chunks x rowcount 2
+
+
+def test_insert_rows_ignore_conflicts_guards_and_dry_run():
+    import pytest
+    from etl.upsert import insert_rows_ignore_conflicts
+    engine = MagicMock()
+    # dup guard applies
+    with pytest.raises(ValueError):
+        insert_rows_ignore_conflicts(engine, "audit_log", [
+            {"vp_source_key": "EL:1"}, {"vp_source_key": "EL:1"},
+        ])
+    # dry-run executes nothing, returns 0
+    assert insert_rows_ignore_conflicts(engine, "audit_log", [{"vp_source_key": "EL:2"}], dry_run=True) == 0
+    engine.begin.assert_not_called()
+    # empty no-op
+    assert insert_rows_ignore_conflicts(engine, "audit_log", []) == 0
