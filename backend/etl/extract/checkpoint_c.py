@@ -37,3 +37,15 @@ def extract_tasks(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(TASKS_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+ADDRESS_ASSIGNMENTS_QUERY = text("""
+    SELECT RefCode, SeqNr, AddrType, AddrNr, Effective, Cancelled
+    FROM RefAddress
+""")
+
+
+def extract_address_assignments(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(ADDRESS_ASSIGNMENTS_QUERY)
+        return [dict(row._mapping) for row in result]

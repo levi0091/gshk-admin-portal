@@ -1,4 +1,6 @@
-from etl.transform.checkpoint_c import transform_contact, transform_charge, transform_task
+from etl.transform.checkpoint_c import (
+    transform_contact, transform_charge, transform_task, transform_address_assignment,
+)
 from etl.reconciliation import ReconciliationReport
 
 
@@ -118,5 +120,58 @@ def test_transform_task_both_description_and_remark_blank_is_none():
 def test_transform_task_unresolved_dropped_and_logged():
     report = ReconciliationReport()
     out = transform_task(_task(RefCode="GHOST"), {}, {}, {}, report)
+    assert out is None
+    assert report.has_errors() is True
+
+
+def _addr_assignment(**kw):
+    base = {
+        "RefCode": "E1", "SeqNr": 1, "AddrType": "RO", "AddrNr": 100,
+        "Effective": "2020-01-01", "Cancelled": None,
+    }
+    base.update(kw)
+    return base
+
+
+def test_transform_address_assignment_entity_route():
+    out = transform_address_assignment(
+        _addr_assignment(), {"E1": "e-uuid"}, {}, {"E1": "C"}, {"100": "addr-uuid"},
+        ReconciliationReport())
+    assert out["vp_source_key"] == "E1:1"
+    assert out["address_id"] == "addr-uuid"
+    assert out["party_type"] == "entity"
+    assert out["entity_id"] == "e-uuid"
+    assert out["person_id"] is None
+    assert out["address_role"] == "RO"
+    assert out["effective_date"] == "2020-01-01"
+    assert out["cancelled_date"] is None
+    assert out["is_current"] is True
+
+
+def test_transform_address_assignment_person_route():
+    out = transform_address_assignment(
+        _addr_assignment(RefCode="P1", AddrType="RA", Cancelled="2021-01-01"),
+        {}, {"P1": "p-uuid"}, {"P1": "I"}, {"100": "addr-uuid"},
+        ReconciliationReport())
+    assert out["party_type"] == "person"
+    assert out["entity_id"] is None
+    assert out["person_id"] == "p-uuid"
+    assert out["address_role"] == "RA"
+    assert out["cancelled_date"] == "2021-01-01"
+    assert out["is_current"] is False
+
+
+def test_transform_address_assignment_unresolved_address_dropped_and_logged():
+    report = ReconciliationReport()
+    out = transform_address_assignment(
+        _addr_assignment(AddrNr=999), {"E1": "e-uuid"}, {}, {"E1": "C"}, {}, report)
+    assert out is None
+    assert report.has_errors() is True
+
+
+def test_transform_address_assignment_unresolved_party_dropped_and_logged():
+    report = ReconciliationReport()
+    out = transform_address_assignment(
+        _addr_assignment(RefCode="GHOST"), {}, {}, {}, {"100": "addr-uuid"}, report)
     assert out is None
     assert report.has_errors() is True

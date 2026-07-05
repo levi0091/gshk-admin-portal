@@ -108,3 +108,44 @@ def transform_task(
         "completed_date": None,
         "assigned_to": None,
     }
+
+
+def transform_address_assignment(
+    row: dict,
+    entity_id_by_vp_key: dict[str, str],
+    person_id_by_vp_key: dict[str, str],
+    refcode_type_by_vp_key: dict[str, str],
+    address_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
+    """VP RefAddress row -> address_assignments insert dict (singular).
+
+    address_id is NOT NULL in the target — unresolved AddrNr drops+logs.
+    Routes RefCode to entity or person via refcode_types; drops+logs if
+    neither resolves (target CHECK requires entity_id OR person_id)."""
+    refcode = row["RefCode"]
+    vp_key = f"{refcode}:{row['SeqNr']}"
+    address_id = address_id_by_vp_key.get(str(row["AddrNr"]))
+    if address_id is None:
+        report.record_error("address_assignments", vp_key, f"unresolved address_id for AddrNr={row['AddrNr']}")
+        return None
+
+    entity_id, person_id = _resolve_party(
+        refcode, entity_id_by_vp_key, person_id_by_vp_key, refcode_type_by_vp_key)
+    if entity_id is None and person_id is None:
+        report.record_error("address_assignments", vp_key, f"unresolved entity/person for RefCode={refcode}")
+        return None
+
+    party_type = "person" if refcode_type_by_vp_key.get(refcode) == "I" else "entity"
+    cancelled_date = row.get("Cancelled")
+    return {
+        "vp_source_key": vp_key,
+        "address_id": address_id,
+        "party_type": party_type,
+        "entity_id": entity_id,
+        "person_id": person_id,
+        "address_role": row.get("AddrType"),
+        "effective_date": row.get("Effective"),
+        "cancelled_date": cancelled_date,
+        "is_current": cancelled_date is None,
+    }
