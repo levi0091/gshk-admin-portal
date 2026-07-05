@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock, patch
-from etl.load.checkpoint_c import backfill_primary_addresses, load_audit_log
+from etl.load.checkpoint_c import backfill_primary_addresses, load_audit_log, load_audit_form_filings
 
 
 def test_backfill_dry_run_returns_zeros_and_never_touches_engine():
@@ -26,4 +26,16 @@ def test_load_audit_log_delegates_to_insert_rows_ignore_conflicts():
         out = load_audit_log(engine, rows, dry_run=False)
     mock_insert.assert_called_once_with(engine, "audit_log", rows, dry_run=False)
     mock_upsert.assert_not_called()
+    assert out == 1
+
+
+def test_load_audit_form_filings_delegates_to_upsert_rows():
+    engine = MagicMock()
+    rows = [{"vp_source_key": "181993:FQ025280"}]
+    with patch("etl.load.checkpoint_c.upsert_rows") as mock_upsert, \
+         patch("etl.load.checkpoint_c.insert_rows_ignore_conflicts") as mock_insert:
+        mock_upsert.return_value = 1
+        out = load_audit_form_filings(engine, rows, dry_run=False)
+    mock_upsert.assert_called_once_with(engine, "audit_form_filings", rows, dry_run=False)
+    mock_insert.assert_not_called()
     assert out == 1

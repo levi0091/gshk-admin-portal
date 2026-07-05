@@ -101,3 +101,15 @@ def extract_vp_users(engine: Engine) -> dict[str, str]:
     with engine.connect() as conn:
         result = conn.execute(VP_USERS_QUERY)
         return {row.Ucode: row.Uname for row in result}
+
+
+EVENTS_FORM_QUERY = text("""
+    SELECT EventNr, FQNumber
+    FROM EventsForm
+""")
+
+
+def extract_events_form(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(EVENTS_FORM_QUERY)
+        return [dict(row._mapping) for row in result]

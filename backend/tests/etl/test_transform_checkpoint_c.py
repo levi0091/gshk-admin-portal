@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from etl.transform.checkpoint_c import (
     transform_contact, transform_charge, transform_task, transform_address_assignment,
     transform_form_filing, parse_event_string, transform_event_log_row,
-    transform_ref_status_row,
+    transform_ref_status_row, transform_audit_form_filing,
 )
 from etl.reconciliation import ReconciliationReport
 
@@ -461,3 +461,63 @@ def test_transform_ref_status_row_metadata_none_dropping():
 def test_transform_ref_status_row_date_change_none_uses_sentinel():
     out = transform_ref_status_row(_ref_status_row(DateChange=None), {}, {})
     assert out["created_at"] == datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _events_form(**kw):
+    base = {"EventNr": 181993.0, "FQNumber": "FQ025280"}
+    base.update(kw)
+    return base
+
+
+def test_transform_audit_form_filing_both_resolve():
+    report = ReconciliationReport()
+    out = transform_audit_form_filing(
+        _events_form(),
+        {"EL:181993": "audit-uuid"},
+        {"FQ025280": "filing-uuid"},
+        report,
+    )
+    assert out["vp_source_key"] == "181993:FQ025280"
+    assert out["audit_log_id"] == "audit-uuid"
+    assert out["form_filing_id"] == "filing-uuid"
+    assert out["vp_event_nr"] == "181993"
+    assert out["vp_fq_number"] == "FQ025280"
+    assert report.has_errors() is False
+
+
+def test_transform_audit_form_filing_one_side_missing_returned_and_logged():
+    report = ReconciliationReport()
+    out = transform_audit_form_filing(
+        _events_form(), {}, {"FQ025280": "filing-uuid"}, report)
+    assert out is not None
+    assert out["audit_log_id"] is None
+    assert out["form_filing_id"] == "filing-uuid"
+    assert report.has_errors() is True
+
+    report2 = ReconciliationReport()
+    out2 = transform_audit_form_filing(
+        _events_form(), {"EL:181993": "audit-uuid"}, {}, report2)
+    assert out2 is not None
+    assert out2["audit_log_id"] == "audit-uuid"
+    assert out2["form_filing_id"] is None
+    assert report2.has_errors() is True
+
+
+def test_transform_audit_form_filing_both_missing_dropped_and_logged():
+    report = ReconciliationReport()
+    out = transform_audit_form_filing(_events_form(), {}, {}, report)
+    assert out is None
+    assert report.has_errors() is True
+
+
+def test_transform_audit_form_filing_float_event_nr_normalized():
+    report = ReconciliationReport()
+    out = transform_audit_form_filing(
+        _events_form(EventNr=181993.0),
+        {"EL:181993": "audit-uuid"},
+        {"FQ025280": "filing-uuid"},
+        report,
+    )
+    assert out["vp_source_key"] == "181993:FQ025280"
+    assert out["vp_event_nr"] == "181993"
+    assert "181993.0" not in out["vp_source_key"]

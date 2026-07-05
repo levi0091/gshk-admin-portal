@@ -29,6 +29,13 @@ def load_audit_log(engine: Engine, rows: list[dict], dry_run: bool = False) -> i
     return insert_rows_ignore_conflicts(engine, "audit_log", rows, dry_run=dry_run)
 
 
+def load_audit_form_filings(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    """audit_form_filings is a junction table, not insert-only — re-runs may
+    need to update a previously NULL FK once the other side resolves, so
+    this uses upsert_rows (ON CONFLICT DO UPDATE), never insert_rows_ignore_conflicts."""
+    return upsert_rows(engine, "audit_form_filings", rows, dry_run=dry_run)
+
+
 def backfill_primary_addresses(engine: Engine, dry_run: bool = False) -> dict:
     """Point entities.registered_address_id at the current Registered Office
     assignment and persons.residential_address_id at the current Residential

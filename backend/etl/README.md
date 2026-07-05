@@ -107,3 +107,94 @@ names are disambiguated with the VP class code when an entity has two classes
 of the same name. Corporate shareholders carry `party_type='corporate'` in
 `shareholdings`; in `share_transactions`/`share_certificates` a corporate holder
 has `person_id=NULL` (those tables have no corporate-name column).
+
+## Checkpoint C — contacts, charges, tasks, address history, filings, audit trail
+
+Covers `contacts`, `charges`, `tasks`, `address_assignments` (+ the
+`entities.registered_address_id` / `persons.residential_address_id`
+backfill), `form_filings`, `audit_log` (`EventLog` + `RefStatus`), and the
+`audit_form_filings` junction linking the two.
+
+### Prerequisites
+
+1. Checkpoints A and B already run (entities, persons, addresses, and
+   share_classes populated in Supabase dev) — Checkpoint C resolves
+   `entity_id`/`person_id`/`address_id` against those tables.
+2. Alembic at head (`.venv\Scripts\alembic.exe upgrade head` from `backend/`)
+   — includes migration `006` (adds `vp_source_key` to `audit_log` and
+   `audit_form_filings`, plus the Checkpoint C partial-unique indexes).
+
+### Running
+
+```powershell
+cd backend
+.venv\Scripts\python.exe -m etl.run_checkpoint_c --dry-run   # validates contacts/charges/tasks/address_assignments/form_filings/audit_log; audit_form_filings + the address backfill need a real run (they resolve against this run's own writes)
+.venv\Scripts\python.exe -m etl.run_checkpoint_c              # real run
+```
+
+### `audit_log` is insert-only — re-run semantics
+
+`audit_log` is PBI-11's audit trail: **INSERT-only, never UPDATE or DELETE**.
+It is loaded via `insert_rows_ignore_conflicts` (`ON CONFLICT (vp_source_key)
+DO NOTHING`), not `upsert_rows`. The reconciliation report's `audit_log` line
+reads `source=<rows produced this run>`, `loaded=<rows newly inserted this
+run>`. On a first run against empty history these are equal; on a **re-run**
+against already-imported Viewpoint history, `loaded` legitimately drops
+towards 0 — that is **by design, not a failure**. Do not treat a re-run
+`loaded < source` mismatch as a bug: reconcile against the DB's total
+`audit_log` row count instead of expecting `loaded == source` on every
+invocation.
+
+`audit_form_filings`, in contrast, **is** a normal upsertable junction table
+(`upsert_rows`, `ON CONFLICT DO UPDATE`) — a re-run can legitimately need to
+fill in a previously-NULL `audit_log_id`/`form_filing_id` once the other side
+resolves, so updates (not just first-inserts) are expected there.
+
+### Address role codes (VP `RefAddress.AddrType` → `address_assignments.address_role`)
+
+The VP `ADRT` reference table's codes are carried through verbatim as the
+`address_role` value (no remapping):
+
+| Code | Meaning |
+|------|---------|
+| `RO` | Registered Office |
+| `RA` | Residential Address |
+| `RC` | Correspondence |
+| `BA` | Business Address |
+| `MA` | Mailing Address |
+| `AA` | Alt Residential Address |
+| `AD` | Administration |
+| `RB` | Business Registration |
+| `S*` | Statutory register locations (various `S`-prefixed codes) |
+
+### Primary address backfill
+
+After `address_assignments` loads, `backfill_primary_addresses` runs two
+`UPDATE ... FROM (SELECT DISTINCT ON ...)` statements:
+
+- `entities.registered_address_id` ← the **current** (`cancelled_date IS
+  NULL`) `RO`-role assignment for that entity, latest `effective_date` wins.
+- `persons.residential_address_id` ← the **current** `RA`-role assignment
+  for that person, latest `effective_date` wins.
+
+This is the only source for those two FK columns — Viewpoint's own
+`ContactAddrCode`/`ResAddress` shortcut columns are blank on every live row,
+so the full `address_assignments` history is derived and then collapsed to
+"whichever assignment is current and most recent" per entity/person. The
+backfill only runs on a real run (it needs this run's `address_assignments`
+writes) and is skipped, along with `audit_form_filings`, when `--dry-run` is
+passed.
+
+### `audit_form_filings` — linking audit history to form filings
+
+Sourced from VP `EventsForm` (PK `EventNr` + `FQNumber`, both delivered as a
+float/nvarchar pair from SQL Server). `vp_source_key` is `f"{int(EventNr)}:
+{FQNumber}"`; `audit_log_id` resolves via the `EL:<int(EventNr)>` key format
+Checkpoint C's own `EventLog` transform writes to `audit_log.vp_source_key`;
+`form_filing_id` resolves via `form_filings.vp_source_key` (the raw
+`FQNumber`). Both FKs are nullable in the target: if neither side resolves
+the row is dropped and logged; if exactly one resolves the row is still
+loaded with the other FK `NULL` (and logged); if both resolve it loads
+clean. Because a later re-run of Checkpoint A/B/C could resolve a
+previously-missing side, this table uses `upsert_rows`, not the insert-only
+loader.

@@ -353,3 +353,50 @@ def transform_ref_status_row(
         "before_state": None,
         "after_state": None,
     }
+
+
+def transform_audit_form_filing(
+    row: dict,
+    audit_id_by_vp_key: dict[str, str],
+    filing_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
+    """VP EventsForm row -> audit_form_filings insert dict (singular).
+
+    PK is (EventNr, FQNumber); EventNr arrives as a float. Both FKs are
+    nullable in the target: if neither audit_log nor form_filing resolves,
+    drop+log; if exactly one resolves, still return the row with the other
+    FK NULL (and log which side missed); if both resolve, return the row
+    with no error."""
+    event_nr = int(row["EventNr"])
+    fq_number = row["FQNumber"]
+    vp_key = f"{event_nr}:{fq_number}"
+
+    audit_log_id = audit_id_by_vp_key.get(f"EL:{event_nr}")
+    form_filing_id = filing_id_by_vp_key.get(fq_number)
+
+    if audit_log_id is None and form_filing_id is None:
+        report.record_error(
+            "audit_form_filings", vp_key,
+            f"neither audit_log nor form_filing resolved for EventNr={event_nr}, FQNumber={fq_number}",
+        )
+        return None
+
+    if audit_log_id is None:
+        report.record_error(
+            "audit_form_filings", vp_key,
+            f"unresolved audit_log_id for EventNr={event_nr} (EL:{event_nr})",
+        )
+    elif form_filing_id is None:
+        report.record_error(
+            "audit_form_filings", vp_key,
+            f"unresolved form_filing_id for FQNumber={fq_number}",
+        )
+
+    return {
+        "vp_source_key": vp_key,
+        "audit_log_id": audit_log_id,
+        "form_filing_id": form_filing_id,
+        "vp_event_nr": str(event_nr),
+        "vp_fq_number": fq_number,
+    }
