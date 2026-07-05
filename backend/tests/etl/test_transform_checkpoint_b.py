@@ -276,3 +276,29 @@ def test_derive_shareholdings_unresolved_entity_dropped_and_logged():
     out = derive_shareholdings(txs, {}, {"P1": "p1"}, {"P1": "I"}, {"GHOST:OR01": "x"}, report)
     assert out == []
     assert report.has_errors() is True
+
+
+def test_transform_share_classes_residual_collision_guard():
+    # Pathological: a lone class literally named like another pair's suffixed form.
+    rows = [
+        _sc("E1", "OR01", "Ordinary"),
+        _sc("E1", "OR02", "Ordinary"),            # pair -> "Ordinary (OR01/02)"
+        _sc("E1", "OR05", "Ordinary (OR02)"),     # literal name collides with suffixed form
+    ]
+    report = ReconciliationReport()
+    out = transform_share_classes(rows, {"E1": "e1"}, report)
+    names = [r["class_name"] for r in out]
+    assert len(names) == len(set(names))  # UNIQUE(entity_id, class_name) preserved
+    assert report.has_errors() is True    # residual collision is logged, not silent
+
+
+def test_derive_shareholdings_blank_addr_posted_row_logged():
+    txs = [{
+        "EntCode": "E1", "AddrCode": None, "ShareClass": "OR01",
+        "BalanceShare": 100, "Paid": 1, "Posted": 1, "IssueNr": 9,
+    }]
+    report = ReconciliationReport()
+    out = derive_shareholdings(txs, {"E1": "e1"}, {}, {}, {"E1:OR01": "sc"}, report)
+    assert out == []
+    assert report.has_errors() is True
+    assert "blank AddrCode" in report.errors[0]["message"]
