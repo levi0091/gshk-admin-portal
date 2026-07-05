@@ -9,11 +9,13 @@ from etl.reconciliation import ReconciliationReport
 from etl.extract.checkpoint_a import (
     extract_addresses, extract_persons, extract_entities,
     extract_principal_business_names, extract_identity_documents,
+    extract_compliance_identity_documents,
     extract_officers, extract_beneficial_owners,
 )
 from etl.transform.checkpoint_a import (
     transform_address, transform_person, transform_entity,
-    transform_identity_document, transform_entity_officer,
+    transform_identity_document, transform_compliance_identity_documents,
+    transform_entity_officer,
     transform_company_secretary, transform_beneficial_owner,
 )
 from etl.load.checkpoint_a import (
@@ -75,6 +77,7 @@ def run(dry_run: bool) -> ReconciliationReport:
     refcode_types = _refcode_types(vp_engine)
 
     # 4. person_identity_documents (needs persons loaded)
+    # Primary source: IdentityRegister.
     vp_ids = extract_identity_documents(vp_engine)
     id_doc_rows = []
     for r in vp_ids:
@@ -84,6 +87,23 @@ def run(dry_run: bool) -> ReconciliationReport:
         id_doc_rows.append(transformed)
     loaded = load_identity_documents(sb_engine, id_doc_rows, dry_run=dry_run)
     report.record_entity("person_identity_documents", len(vp_ids), loaded)
+
+    # Secondary source: Compliance (passport/HKID columns), deduped against
+    # what IdentityRegister already produced above. Recorded as a SEPARATE
+    # reconciliation line (not folded into "person_identity_documents") so the
+    # report stays attributable to source table — a "source=N loaded=N" line
+    # here can't be confused with IdentityRegister's own count, and rows
+    # skipped as duplicates are visible as a source/loaded discrepancy rather
+    # than silently vanishing into a combined total.
+    existing_doc_keys = {(r["person_id"], r["id_type"], r["id_number"]) for r in id_doc_rows}
+    vp_compliance_ids = extract_compliance_identity_documents(vp_engine)
+    compliance_id_doc_rows = []
+    for r in vp_compliance_ids:
+        compliance_id_doc_rows.extend(
+            transform_compliance_identity_documents(r, person_id_by_vp_key, existing_doc_keys, report)
+        )
+    loaded = load_identity_documents(sb_engine, compliance_id_doc_rows, dry_run=dry_run)
+    report.record_entity("person_identity_documents_compliance", len(vp_compliance_ids), loaded)
 
     # 5. entity_officers (needs entities + persons loaded)
     vp_officers = extract_officers(vp_engine)

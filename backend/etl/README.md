@@ -44,6 +44,11 @@ Covers `addresses`, `persons`, `entities`, `person_identity_documents`,
 full design (in particular: why `registered_address_id`/`residential_address_id`
 are NULL after this checkpoint, and the `entities.status` live/ceased rule).
 
+`person_identity_documents` is loaded from **two** Viewpoint sources —
+`IdentityRegister` (primary) and `Compliance` (passport/HKID columns,
+secondary) — deduplicated against each other so a person with only a
+Compliance-sourced ID doc is no longer missed.
+
 ### Prerequisites
 
 1. ViewPoint SQL Server restored and running on `localhost` (default instance,

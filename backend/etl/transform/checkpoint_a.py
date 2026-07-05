@@ -113,6 +113,61 @@ def transform_identity_document(
     }
 
 
+def transform_compliance_identity_documents(
+    row: dict,
+    person_id_by_vp_key: dict[str, str],
+    existing_doc_keys: set[tuple],
+    report: ReconciliationReport,
+) -> list[dict]:
+    """Compliance row -> up to 2 person_identity_documents insert dicts
+    (passport, hkid). This is a SECONDARY source alongside IdentityRegister
+    (see transform_identity_document) — some persons only ever had their ID
+    captured on the Compliance record, never in IdentityRegister, and were
+    being missed entirely. `existing_doc_keys` is the set of
+    (person_id, id_type, id_number) tuples already produced from
+    IdentityRegister; candidates matching a key in that set are skipped as
+    legitimate duplicates (not logged as errors). Returns [] (and logs) if
+    the parent person wasn't loaded."""
+    person_id = person_id_by_vp_key.get(row["AddrCode"])
+    if person_id is None:
+        report.record_error(
+            "person_identity_documents", row["AddrCode"],
+            f"unresolved person_id for Compliance AddrCode={row['AddrCode']}",
+        )
+        return []
+
+    candidates = []
+    if row.get("PassportNr"):
+        candidates.append({
+            "vp_source_key": f"{row['AddrCode']}:compliance-passport",
+            "person_id": person_id,
+            "id_type": "passport",
+            "id_number": row["PassportNr"],
+            "issuing_country": row.get("PasPlaceIssue"),
+            "issue_date": row.get("PasDateIssue"),
+            "expiry_date": row.get("PasDateExpire"),
+            "is_primary": False,
+            "scan_document_id": None,
+        })
+    if row.get("IDcardNr"):
+        candidates.append({
+            "vp_source_key": f"{row['AddrCode']}:compliance-hkid",
+            "person_id": person_id,
+            "id_type": "hkid",
+            "id_number": row["IDcardNr"],
+            "issuing_country": None,
+            "issue_date": row.get("IDcardDateIssue"),
+            "expiry_date": None,
+            "is_primary": False,
+            "scan_document_id": None,
+        })
+
+    return [
+        c for c in candidates
+        if (c["person_id"], c["id_type"], c["id_number"]) not in existing_doc_keys
+    ]
+
+
 def transform_entity_officer(
     row: dict,
     entity_id_by_vp_key: dict[str, str],

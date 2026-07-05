@@ -1,5 +1,6 @@
 from etl.transform.checkpoint_a import transform_address, transform_entity, transform_person, transform_identity_document, transform_entity_officer
 from etl.transform.checkpoint_a import transform_beneficial_owner
+from etl.transform.checkpoint_a import transform_compliance_identity_documents
 from etl.reconciliation import ReconciliationReport
 
 
@@ -198,6 +199,115 @@ def test_transform_identity_document_returns_none_when_id_number_missing():
     assert result is None
     assert report.has_errors() is True
     assert "id_number" in report.errors[0]["message"]
+
+
+def test_transform_compliance_identity_documents_returns_passport_and_hkid():
+    person_ids = {"LEUNGP": "11111111-1111-1111-1111-111111111111"}
+    report = ReconciliationReport()
+    vp_row = {
+        "AddrCode": "LEUNGP",
+        "PassportNr": "K1234567",
+        "PasPlaceIssue": "Hong Kong",
+        "PasDateIssue": "2018-01-01",
+        "PasDateExpire": "2028-01-01",
+        "IDcardNr": "A1234567",
+        "IDcardDateIssue": "2015-06-01",
+    }
+    result = transform_compliance_identity_documents(vp_row, person_ids, set(), report)
+    assert len(result) == 2
+    passport = next(r for r in result if r["id_type"] == "passport")
+    hkid = next(r for r in result if r["id_type"] == "hkid")
+    assert passport["person_id"] == "11111111-1111-1111-1111-111111111111"
+    assert passport["id_number"] == "K1234567"
+    assert passport["issuing_country"] == "Hong Kong"
+    assert passport["issue_date"] == "2018-01-01"
+    assert passport["expiry_date"] == "2028-01-01"
+    assert passport["vp_source_key"] == "LEUNGP:compliance-passport"
+    assert passport["is_primary"] is False
+    assert passport["scan_document_id"] is None
+    assert hkid["person_id"] == "11111111-1111-1111-1111-111111111111"
+    assert hkid["id_number"] == "A1234567"
+    assert hkid["issuing_country"] is None
+    assert hkid["issue_date"] == "2015-06-01"
+    assert hkid["expiry_date"] is None
+    assert hkid["vp_source_key"] == "LEUNGP:compliance-hkid"
+    assert report.has_errors() is False
+
+
+def test_transform_compliance_identity_documents_passport_only():
+    person_ids = {"LEUNGP": "p-uuid"}
+    report = ReconciliationReport()
+    vp_row = {
+        "AddrCode": "LEUNGP",
+        "PassportNr": "K1234567",
+        "PasPlaceIssue": "Hong Kong",
+        "PasDateIssue": "2018-01-01",
+        "PasDateExpire": "2028-01-01",
+        "IDcardNr": None,
+        "IDcardDateIssue": None,
+    }
+    result = transform_compliance_identity_documents(vp_row, person_ids, set(), report)
+    assert len(result) == 1
+    assert result[0]["id_type"] == "passport"
+    assert result[0]["id_number"] == "K1234567"
+
+
+def test_transform_compliance_identity_documents_skips_duplicate_of_identity_register():
+    person_ids = {"LEUNGP": "p-uuid"}
+    report = ReconciliationReport()
+    vp_row = {
+        "AddrCode": "LEUNGP",
+        "PassportNr": "K1234567",
+        "PasPlaceIssue": "Hong Kong",
+        "PasDateIssue": "2018-01-01",
+        "PasDateExpire": "2028-01-01",
+        "IDcardNr": "A1234567",
+        "IDcardDateIssue": "2015-06-01",
+    }
+    existing_doc_keys = {("p-uuid", "passport", "K1234567")}
+    result = transform_compliance_identity_documents(vp_row, person_ids, existing_doc_keys, report)
+    assert len(result) == 1
+    assert result[0]["id_type"] == "hkid"
+    assert result[0]["id_number"] == "A1234567"
+    assert report.has_errors() is False
+
+
+def test_transform_compliance_identity_documents_both_duplicates_returns_empty():
+    person_ids = {"LEUNGP": "p-uuid"}
+    report = ReconciliationReport()
+    vp_row = {
+        "AddrCode": "LEUNGP",
+        "PassportNr": "K1234567",
+        "PasPlaceIssue": "Hong Kong",
+        "PasDateIssue": "2018-01-01",
+        "PasDateExpire": "2028-01-01",
+        "IDcardNr": "A1234567",
+        "IDcardDateIssue": "2015-06-01",
+    }
+    existing_doc_keys = {
+        ("p-uuid", "passport", "K1234567"),
+        ("p-uuid", "hkid", "A1234567"),
+    }
+    result = transform_compliance_identity_documents(vp_row, person_ids, existing_doc_keys, report)
+    assert result == []
+    assert report.has_errors() is False
+
+
+def test_transform_compliance_identity_documents_unresolved_person_returns_empty_and_logs():
+    report = ReconciliationReport()
+    vp_row = {
+        "AddrCode": "GHOST",
+        "PassportNr": "K1234567",
+        "PasPlaceIssue": None,
+        "PasDateIssue": None,
+        "PasDateExpire": None,
+        "IDcardNr": None,
+        "IDcardDateIssue": None,
+    }
+    result = transform_compliance_identity_documents(vp_row, {}, set(), report)
+    assert result == []
+    assert report.has_errors() is True
+    assert "GHOST" in report.errors[0]["message"]
 
 
 def test_transform_entity_officer_maps_director():

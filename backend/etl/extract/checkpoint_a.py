@@ -93,6 +93,22 @@ def extract_identity_documents(engine: Engine) -> list[dict]:
         return [dict(row._mapping) for row in result]
 
 
+COMPLIANCE_IDENTITY_DOCUMENTS_QUERY = text("""
+    SELECT c.AddrCode, c.PassportNr, c.PasPlaceIssue, c.PasDateIssue,
+           c.PasDateExpire, c.IDcardNr, c.IDcardDateIssue
+    FROM Compliance c
+    JOIN RefMaster rm ON c.AddrCode = rm.RefCode
+    WHERE rm.RefType = 'I'
+      AND (c.PassportNr IS NOT NULL OR c.IDcardNr IS NOT NULL)
+""")
+
+
+def extract_compliance_identity_documents(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(COMPLIANCE_IDENTITY_DOCUMENTS_QUERY)
+        return [dict(row._mapping) for row in result]
+
+
 OFFICERS_QUERY = text("""
     SELECT EntCode, SeqNr, AddrCode, OfficerType, Position,
            DateAppoint, DateResign, ReasonResign
