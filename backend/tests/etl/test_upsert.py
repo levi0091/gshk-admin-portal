@@ -13,6 +13,10 @@ def _fake_addresses_table(*args, **kwargs):
     defined Table (same columns as the `addresses` migration) so the rest of
     `upsert_rows` — building the insert/on_conflict_do_update statement —
     exercises real SQLAlchemy Core code and can be inspected afterwards.
+
+    `active_workflow` stands in for a column the ETL never populates (e.g.
+    entities.active_workflow) — it must NOT appear in the SET clause, since
+    including it would reset it to its insert-time default on every re-run.
     """
     metadata = MetaData()
     return Table(
@@ -21,6 +25,7 @@ def _fake_addresses_table(*args, **kwargs):
         Column("id", String, primary_key=True),
         Column("vp_source_key", String),
         Column("line1", String),
+        Column("active_workflow", String),
         Column("created_at", DateTime),
     )
 
@@ -58,7 +63,10 @@ def test_upsert_rows_executes_on_conflict_upsert(mock_table):
     # Conflict target is vp_source_key.
     assert on_conflict_clause.inferred_target_elements == ["vp_source_key"]
 
-    # SET clause updates only line1 — vp_source_key/id/created_at excluded.
+    # SET clause updates exactly the payload's non-conflict/non-id/non-created_at
+    # keys. `active_workflow` exists on the reflected table but is absent from
+    # the payload rows, so it must be excluded — this guards against resetting
+    # ETL-unmanaged columns back to their insert-time defaults on every re-run.
     set_columns = {key for key, _ in on_conflict_clause.update_values_to_set}
     assert set_columns == {"line1"}
 

@@ -81,17 +81,30 @@ def transform_entity(row: dict, bus_name: dict | None) -> dict:
     }
 
 
-def transform_identity_document(row: dict, person_id_by_vp_key: dict[str, str]) -> dict | None:
+def transform_identity_document(
+    row: dict,
+    person_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
     """IdentityRegister row (RefType='I' only) -> person_identity_documents insert dict.
-    Returns None if the parent person wasn't loaded (caller logs this as an error)."""
+    Returns None (and logs) if the parent person wasn't loaded, or if the row is
+    missing its mandatory id_number (IdCode) — person_identity_documents.id_number
+    is NOT NULL, so a null IdCode must be dropped-and-logged rather than allowed
+    to abort the whole batched insert."""
+    vp_key = f"{row['RefCode']}:{row['SeqNr']}"
     person_id = person_id_by_vp_key.get(row["RefCode"])
     if person_id is None:
+        report.record_error("person_identity_documents", vp_key, f"unresolved person_id for RefCode={row['RefCode']}")
+        return None
+    id_number = row.get("IdCode")
+    if not id_number:
+        report.record_error("person_identity_documents", vp_key, "missing id_number (IdCode is null)")
         return None
     return {
-        "vp_source_key": f"{row['RefCode']}:{row['SeqNr']}",
+        "vp_source_key": vp_key,
         "person_id": person_id,
         "id_type": decode_id_type(row.get("IdType")),
-        "id_number": row.get("IdCode"),
+        "id_number": id_number,
         "issuing_country": row.get("Country"),
         "issue_date": row.get("FromDate"),
         "expiry_date": row.get("ToDate"),
@@ -104,20 +117,28 @@ def transform_entity_officer(
     row: dict,
     entity_id_by_vp_key: dict[str, str],
     person_id_by_vp_key: dict[str, str],
+    refcode_type_by_vp_key: dict[str, str],
     report: ReconciliationReport,
 ) -> dict | None:
     """Officers row -> entity_officers insert dict. Returns None (and logs) if
     the parent entity is unresolved — the child row is never silently dropped
     without a trace (PRD key test case: 'a child row whose parent failed to
-    load is caught and logged, not silently dropped')."""
+    load is caught and logged, not silently dropped').
+
+    An officer can be an individual or a corporate entity (e.g. GSHK itself as
+    company secretary), determined by looking up the officer's AddrCode in
+    RefMaster.RefType ('I' = individual, else corporate) — mirrors
+    transform_beneficial_owner."""
     vp_key = f"{row['EntCode']}:{row['SeqNr']}"
     entity_id = entity_id_by_vp_key.get(row["EntCode"])
     if entity_id is None:
         report.record_error("entity_officers", vp_key, f"unresolved entity_id for EntCode={row['EntCode']}")
         return None
 
-    person_id = person_id_by_vp_key.get(row["AddrCode"])
-    if person_id is None:
+    ref_type = refcode_type_by_vp_key.get(row["AddrCode"])
+    is_individual = ref_type == "I"
+    person_id = person_id_by_vp_key.get(row["AddrCode"]) if is_individual else None
+    if is_individual and person_id is None:
         report.record_error("entity_officers", vp_key, f"unresolved person_id for AddrCode={row['AddrCode']}")
 
     officer_type = (row.get("OfficerType") or "").strip().upper()
@@ -132,7 +153,8 @@ def transform_entity_officer(
         "vp_source_key": vp_key,
         "entity_id": entity_id,
         "person_id": person_id,
-        "party_type": "individual",
+        "party_type": "individual" if is_individual else "corporate",
+        "corporate_name": None if is_individual else row["AddrCode"],
         "role": decode_officer_role(officer_type),
         "position": row.get("Position"),
         "appointed_date": row.get("DateAppoint"),

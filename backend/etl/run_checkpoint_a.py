@@ -78,9 +78,8 @@ def run(dry_run: bool) -> ReconciliationReport:
     vp_ids = extract_identity_documents(vp_engine)
     id_doc_rows = []
     for r in vp_ids:
-        transformed = transform_identity_document(r, person_id_by_vp_key)
+        transformed = transform_identity_document(r, person_id_by_vp_key, report)
         if transformed is None:
-            report.record_error("person_identity_documents", f"{r['RefCode']}:{r['SeqNr']}", "unresolved person_id")
             continue
         id_doc_rows.append(transformed)
     loaded = load_identity_documents(sb_engine, id_doc_rows, dry_run=dry_run)
@@ -91,7 +90,7 @@ def run(dry_run: bool) -> ReconciliationReport:
     officer_rows = []
     secretary_rows = []
     for r in vp_officers:
-        transformed = transform_entity_officer(r, entity_id_by_vp_key, person_id_by_vp_key, report)
+        transformed = transform_entity_officer(r, entity_id_by_vp_key, person_id_by_vp_key, refcode_types, report)
         if transformed is None:
             continue
         officer_rows.append(transformed)

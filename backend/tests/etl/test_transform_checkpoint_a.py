@@ -162,39 +162,58 @@ def test_transform_entity_assigned_to_is_always_none():
 
 def test_transform_identity_document_resolves_person_id():
     person_ids = {"LEUNGP": "11111111-1111-1111-1111-111111111111"}
+    report = ReconciliationReport()
     vp_row = {
         "RefCode": "LEUNGP", "SeqNr": 1, "IdType": "PSP", "IdCode": "K1234567",
         "Country": "HK", "FromDate": "2018-01-01", "ToDate": "2028-01-01",
     }
-    result = transform_identity_document(vp_row, person_ids)
+    result = transform_identity_document(vp_row, person_ids, report)
     assert result is not None
     assert result["person_id"] == "11111111-1111-1111-1111-111111111111"
     assert result["id_type"] == "passport"
     assert result["id_number"] == "K1234567"
     assert result["vp_source_key"] == "LEUNGP:1"
+    assert report.has_errors() is False
 
 
 def test_transform_identity_document_returns_none_when_person_missing():
+    report = ReconciliationReport()
     vp_row = {
         "RefCode": "GHOST", "SeqNr": 1, "IdType": "PSP", "IdCode": "X1",
         "Country": None, "FromDate": None, "ToDate": None,
     }
-    result = transform_identity_document(vp_row, {})
+    result = transform_identity_document(vp_row, {}, report)
     assert result is None
+    assert report.has_errors() is True
+
+
+def test_transform_identity_document_returns_none_when_id_number_missing():
+    person_ids = {"LEUNGP": "11111111-1111-1111-1111-111111111111"}
+    report = ReconciliationReport()
+    vp_row = {
+        "RefCode": "LEUNGP", "SeqNr": 2, "IdType": "PSP", "IdCode": None,
+        "Country": "HK", "FromDate": None, "ToDate": None,
+    }
+    result = transform_identity_document(vp_row, person_ids, report)
+    assert result is None
+    assert report.has_errors() is True
+    assert "id_number" in report.errors[0]["message"]
 
 
 def test_transform_entity_officer_maps_director():
     entity_ids = {"FACTORALIM": "e-uuid-1"}
     person_ids = {"LEUNGP": "p-uuid-1"}
+    refcode_types = {"LEUNGP": "I"}
     report = ReconciliationReport()
     vp_row = {
         "EntCode": "FACTORALIM", "SeqNr": 1, "AddrCode": "LEUNGP",
         "OfficerType": "DIR", "Position": None,
         "DateAppoint": "2020-01-15", "DateResign": None, "ReasonResign": None,
     }
-    result = transform_entity_officer(vp_row, entity_ids, person_ids, report)
+    result = transform_entity_officer(vp_row, entity_ids, person_ids, refcode_types, report)
     assert result["entity_id"] == "e-uuid-1"
     assert result["person_id"] == "p-uuid-1"
+    assert result["party_type"] == "individual"
     assert result["role"] == "director"
     assert result["is_current"] is True
     assert report.has_errors() is False
@@ -203,13 +222,14 @@ def test_transform_entity_officer_maps_director():
 def test_transform_entity_officer_resigned_is_not_current():
     entity_ids = {"E1": "e-uuid"}
     person_ids = {"P1": "p-uuid"}
+    refcode_types = {"P1": "I"}
     report = ReconciliationReport()
     vp_row = {
         "EntCode": "E1", "SeqNr": 2, "AddrCode": "P1", "OfficerType": "DIR",
         "Position": None, "DateAppoint": "2019-01-01",
         "DateResign": "2021-01-01", "ReasonResign": "R",
     }
-    result = transform_entity_officer(vp_row, entity_ids, person_ids, report)
+    result = transform_entity_officer(vp_row, entity_ids, person_ids, refcode_types, report)
     assert result["is_current"] is False
     assert result["resigned_date"] == "2021-01-01"
 
@@ -217,41 +237,63 @@ def test_transform_entity_officer_resigned_is_not_current():
 def test_transform_entity_officer_ambiguous_role_is_logged():
     entity_ids = {"E1": "e-uuid"}
     person_ids = {"P1": "p-uuid"}
+    refcode_types = {"P1": "I"}
     report = ReconciliationReport()
     vp_row = {
         "EntCode": "E1", "SeqNr": 3, "AddrCode": "P1", "OfficerType": "RPD",
         "Position": None, "DateAppoint": None, "DateResign": None, "ReasonResign": None,
     }
-    transform_entity_officer(vp_row, entity_ids, person_ids, report)
+    transform_entity_officer(vp_row, entity_ids, person_ids, refcode_types, report)
     assert report.has_errors() is True
     assert "RPD" in report.errors[0]["message"]
 
 
 def test_transform_entity_officer_missing_entity_returns_none_and_logs():
     report = ReconciliationReport()
+    refcode_types = {"P1": "I"}
     vp_row = {
         "EntCode": "GHOST", "SeqNr": 1, "AddrCode": "P1", "OfficerType": "DIR",
         "Position": None, "DateAppoint": None, "DateResign": None, "ReasonResign": None,
     }
-    result = transform_entity_officer(vp_row, {}, {"P1": "p-uuid"}, report)
+    result = transform_entity_officer(vp_row, {}, {"P1": "p-uuid"}, refcode_types, report)
     assert result is None
     assert report.has_errors() is True
 
 
 def test_transform_entity_officer_missing_person_returns_dict_with_none_person_id():
     entity_ids = {"E1": "e-uuid"}
+    refcode_types = {"GHOSTPERSON": "I"}
     report = ReconciliationReport()
     vp_row = {
         "EntCode": "E1", "SeqNr": 4, "AddrCode": "GHOSTPERSON", "OfficerType": "DIR",
         "Position": None, "DateAppoint": None, "DateResign": None, "ReasonResign": None,
     }
-    result = transform_entity_officer(vp_row, entity_ids, {}, report)
+    result = transform_entity_officer(vp_row, entity_ids, {}, refcode_types, report)
     assert result is not None
     assert result["entity_id"] == "e-uuid"
     assert result["person_id"] is None
+    assert result["party_type"] == "individual"
     assert result["role"] == "director"
     assert report.has_errors() is True
     assert "GHOSTPERSON" in report.errors[0]["message"]
+
+
+def test_transform_entity_officer_corporate_secretary_no_person_no_error():
+    entity_ids = {"E1": "e-uuid"}
+    person_ids = {}
+    refcode_types = {"GETSTA": "C"}
+    report = ReconciliationReport()
+    vp_row = {
+        "EntCode": "E1", "SeqNr": 5, "AddrCode": "GETSTA", "OfficerType": "SEC",
+        "Position": None, "DateAppoint": "2020-01-01", "DateResign": None, "ReasonResign": None,
+    }
+    result = transform_entity_officer(vp_row, entity_ids, person_ids, refcode_types, report)
+    assert result is not None
+    assert result["entity_id"] == "e-uuid"
+    assert result["party_type"] == "corporate"
+    assert result["person_id"] is None
+    assert result["corporate_name"] == "GETSTA"
+    assert report.has_errors() is False
 
 
 def test_transform_company_secretary_from_entity_officer_row():

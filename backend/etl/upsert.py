@@ -23,10 +23,15 @@ def upsert_rows(
     with engine.begin() as conn:
         table = Table(table_name, MetaData(), autoload_with=engine)
         stmt = insert(table).values(rows)
+        # Restrict the ON CONFLICT SET clause to columns the ETL actually
+        # populates. Iterating table.columns instead would include columns the
+        # ETL never sets (e.g. entities.active_workflow), whose `excluded.<col>`
+        # is the INSERT-time default — resetting them to that default on every
+        # re-run instead of leaving the existing value untouched.
         update_columns = {
-            c.name: stmt.excluded[c.name]
-            for c in table.columns
-            if c.name not in (conflict_column, "id", "created_at")
+            k: stmt.excluded[k]
+            for k in rows[0]
+            if k not in (conflict_column, "id", "created_at")
         }
         stmt = stmt.on_conflict_do_update(
             index_elements=[conflict_column], set_=update_columns
