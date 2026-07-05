@@ -90,11 +90,14 @@ def run(dry_run: bool) -> ReconciliationReport:
 
     # Secondary source: Compliance (passport/HKID columns), deduped against
     # what IdentityRegister already produced above. Recorded as a SEPARATE
-    # reconciliation line (not folded into "person_identity_documents") so the
-    # report stays attributable to source table — a "source=N loaded=N" line
-    # here can't be confused with IdentityRegister's own count, and rows
-    # skipped as duplicates are visible as a source/loaded discrepancy rather
-    # than silently vanishing into a combined total.
+    # reconciliation line (not folded into "person_identity_documents") so each
+    # source table stays attributable. source_count is the number of
+    # Compliance-sourced docs handed to the loader (after per-field null-guards
+    # and dedup against IdentityRegister) — NOT the number of Compliance rows
+    # scanned. A Compliance row fans out to 0/1/2 docs, so counting scanned rows
+    # against loaded docs would flag a false MISMATCH on every healthy run;
+    # counting produced-docs vs loaded-docs keeps discrepancy at 0 unless a load
+    # genuinely drops rows. (Compliance rows scanned: len(vp_compliance_ids).)
     existing_doc_keys = {(r["person_id"], r["id_type"], r["id_number"]) for r in id_doc_rows}
     vp_compliance_ids = extract_compliance_identity_documents(vp_engine)
     compliance_id_doc_rows = []
@@ -103,7 +106,7 @@ def run(dry_run: bool) -> ReconciliationReport:
             transform_compliance_identity_documents(r, person_id_by_vp_key, existing_doc_keys, report)
         )
     loaded = load_identity_documents(sb_engine, compliance_id_doc_rows, dry_run=dry_run)
-    report.record_entity("person_identity_documents_compliance", len(vp_compliance_ids), loaded)
+    report.record_entity("person_identity_documents_compliance", len(compliance_id_doc_rows), loaded)
 
     # 5. entity_officers (needs entities + persons loaded)
     vp_officers = extract_officers(vp_engine)
