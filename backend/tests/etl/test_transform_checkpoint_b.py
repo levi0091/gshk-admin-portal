@@ -1,4 +1,4 @@
-from etl.transform.checkpoint_b import transform_share_classes, transform_business_name
+from etl.transform.checkpoint_b import transform_share_classes, transform_business_name, transform_entity_name_change
 from etl.reconciliation import ReconciliationReport
 
 
@@ -81,5 +81,31 @@ def test_transform_business_name_unresolved_entity_returns_none_and_logs():
            "ChineseBusName": None, "DateRegistration": None, "DateRenew": None,
            "DateCessation": None, "Status": None}
     out = transform_business_name(row, {}, report)
+    assert out is None
+    assert report.has_errors() is True
+
+
+def test_transform_entity_name_change_maps_fields():
+    row = {
+        "EntCode": "E1", "SeqNr": 1, "OldName": "Old Co Ltd", "OldChnsName": "舊名",
+        "NewName": "New Co Ltd", "NewChnsName": "新名",
+        "DateApplied": "2021-01-01", "DateConfirmed": "2021-02-01",
+    }
+    out = transform_entity_name_change(row, {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["vp_source_key"] == "E1:1"
+    assert out["entity_id"] == "e-uuid"
+    assert out["old_name"] == "Old Co Ltd"
+    assert out["old_name_zh"] == "舊名"
+    assert out["new_name"] == "New Co Ltd"
+    assert out["new_name_zh"] == "新名"
+    assert out["applied_date"] == "2021-01-01"
+    assert out["confirmed_date"] == "2021-02-01"
+
+
+def test_transform_entity_name_change_unresolved_entity_returns_none_and_logs():
+    report = ReconciliationReport()
+    row = {"EntCode": "GHOST", "SeqNr": 1, "OldName": None, "OldChnsName": None,
+           "NewName": None, "NewChnsName": None, "DateApplied": None, "DateConfirmed": None}
+    out = transform_entity_name_change(row, {}, report)
     assert out is None
     assert report.has_errors() is True

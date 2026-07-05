@@ -25,3 +25,16 @@ def extract_business_names(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(BUSINESS_NAMES_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+ENTITY_NAME_CHANGES_QUERY = text("""
+    SELECT EntCode, SeqNr, OldName, OldChnsName, NewName, NewChnsName,
+           DateApplied, DateConfirmed
+    FROM EntNameChanges
+""")
+
+
+def extract_entity_name_changes(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(ENTITY_NAME_CHANGES_QUERY)
+        return [dict(row._mapping) for row in result]

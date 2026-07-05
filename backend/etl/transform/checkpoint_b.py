@@ -69,3 +69,26 @@ def transform_business_name(row: dict, entity_id_by_vp_key: dict[str, str], repo
         "cessation_date": row.get("DateCessation"),
         "status": row.get("Status"),
     }
+
+
+def transform_entity_name_change(row: dict, entity_id_by_vp_key: dict[str, str], report: ReconciliationReport) -> dict | None:
+    """VP EntNameChanges row -> entity_name_changes insert dict (singular).
+
+    Resolves entity_id (drops+logs unresolved).
+    """
+    entcode = row["EntCode"]
+    vp_key = f"{entcode}:{row['SeqNr']}"
+    entity_id = entity_id_by_vp_key.get(entcode)
+    if entity_id is None:
+        report.record_error("entity_name_changes", vp_key, f"unresolved entity_id for EntCode={entcode}")
+        return None
+    return {
+        "vp_source_key": vp_key,
+        "entity_id": entity_id,
+        "old_name": row.get("OldName"),
+        "old_name_zh": row.get("OldChnsName"),
+        "new_name": row.get("NewName"),
+        "new_name_zh": row.get("NewChnsName"),
+        "applied_date": row.get("DateApplied"),
+        "confirmed_date": row.get("DateConfirmed"),
+    }
