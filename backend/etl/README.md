@@ -77,3 +77,33 @@ errors are still loaded; the flagged rows need manual review.
 Every load is `INSERT ... ON CONFLICT (vp_source_key) DO UPDATE` — safe to
 re-run after fixing an issue; already-loaded rows are updated in place, not
 duplicated.
+
+## Checkpoint B — shares, business names, name changes
+
+Covers `share_classes`, `business_names`, `entity_name_changes`,
+`share_transactions` (full ledger), `share_certificates`, and the derived
+`shareholdings`. See `docs/superpowers/plans/2026-07-05-viewpoint-etl-checkpoint-b.md`
+for the full design.
+
+### Prerequisites
+
+1. Checkpoint A already run (entities + persons populated in Supabase dev) —
+   Checkpoint B resolves `entity_id`/`person_id` against those tables.
+2. Alembic at head (`.venv\Scripts\alembic.exe upgrade head` from `backend/`) —
+   includes migration `005` (Checkpoint B `vp_source_key` indexes).
+
+### Running
+
+```powershell
+cd backend
+.venv\Scripts\python.exe -m etl.run_checkpoint_b --dry-run   # validates share_classes/business_names/entity_name_changes; the three share-detail tables need a real run (their share_class_id resolves against the share_classes write)
+.venv\Scripts\python.exe -m etl.run_checkpoint_b              # real run
+```
+
+Key derivations: `shareholdings` is computed from the posted, non-`ISSUE`
+`Share_Transactions` ledger (VP `C_MemberBase` logic); a member/class group
+with net-zero balance is loaded with `is_current=false`. Share-class display
+names are disambiguated with the VP class code when an entity has two classes
+of the same name. Corporate shareholders carry `party_type='corporate'` in
+`shareholdings`; in `share_transactions`/`share_certificates` a corporate holder
+has `person_id=NULL` (those tables have no corporate-name column).
