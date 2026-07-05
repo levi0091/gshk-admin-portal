@@ -1,4 +1,4 @@
-from etl.transform.checkpoint_b import transform_share_classes
+from etl.transform.checkpoint_b import transform_share_classes, transform_business_name
 from etl.reconciliation import ReconciliationReport
 
 
@@ -54,4 +54,32 @@ def test_transform_share_classes_unresolved_entity_dropped_and_logged():
     report = ReconciliationReport()
     out = transform_share_classes(rows, {}, report)
     assert out == []
+    assert report.has_errors() is True
+
+
+def test_transform_business_name_maps_fields():
+    row = {
+        "EntCode": "E1", "SeqNr": 1, "BusRegNr": "12345678",
+        "BusName": "Acme Trading", "ChineseBusName": "測試",
+        "DateRegistration": "2020-01-01", "DateRenew": "2021-01-01",
+        "DateCessation": None, "Status": None,
+    }
+    out = transform_business_name(row, {"E1": "e-uuid"}, ReconciliationReport())
+    assert out["vp_source_key"] == "E1:1"
+    assert out["entity_id"] == "e-uuid"
+    assert out["br_number"] == "12345678"
+    assert out["business_name"] == "Acme Trading"
+    assert out["business_name_zh"] == "測試"
+    assert out["registration_date"] == "2020-01-01"
+    assert out["renewal_date"] == "2021-01-01"
+    assert out["cessation_date"] is None
+
+
+def test_transform_business_name_unresolved_entity_returns_none_and_logs():
+    report = ReconciliationReport()
+    row = {"EntCode": "GHOST", "SeqNr": 1, "BusRegNr": None, "BusName": None,
+           "ChineseBusName": None, "DateRegistration": None, "DateRenew": None,
+           "DateCessation": None, "Status": None}
+    out = transform_business_name(row, {}, report)
+    assert out is None
     assert report.has_errors() is True

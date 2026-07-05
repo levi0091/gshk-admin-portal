@@ -45,3 +45,27 @@ def transform_share_classes(
             "total_paid": row.get("PaidCap"),
         })
     return out
+
+
+def transform_business_name(row: dict, entity_id_by_vp_key: dict[str, str], report: ReconciliationReport) -> dict | None:
+    """VP BusNames row -> business_names insert dict (singular).
+
+    Resolves entity_id (drops+logs unresolved).
+    """
+    entcode = row["EntCode"]
+    vp_key = f"{entcode}:{row['SeqNr']}"
+    entity_id = entity_id_by_vp_key.get(entcode)
+    if entity_id is None:
+        report.record_error("business_names", vp_key, f"unresolved entity_id for EntCode={entcode}")
+        return None
+    return {
+        "vp_source_key": vp_key,
+        "entity_id": entity_id,
+        "br_number": row.get("BusRegNr"),
+        "business_name": row.get("BusName"),
+        "business_name_zh": row.get("ChineseBusName"),
+        "registration_date": row.get("DateRegistration"),
+        "renewal_date": row.get("DateRenew"),
+        "cessation_date": row.get("DateCessation"),
+        "status": row.get("Status"),
+    }
