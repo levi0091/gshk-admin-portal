@@ -16,3 +16,7 @@ def load_entity_name_changes(engine: Engine, rows: list[dict], dry_run: bool = F
 
 def load_share_transactions(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
     return upsert_rows(engine, "share_transactions", rows, dry_run=dry_run)
+
+
+def load_share_certificates(engine: Engine, rows: list[dict], dry_run: bool = False) -> int:
+    return upsert_rows(engine, "share_certificates", rows, dry_run=dry_run)

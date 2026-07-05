@@ -132,3 +132,40 @@ def transform_share_transaction(
         "issue_price": row.get("IssuePrice"),
         "certificate_no": str(cert) if cert is not None else None,
     }
+
+
+def transform_share_certificate(
+    row: dict,
+    entity_id_by_vp_key: dict[str, str],
+    person_id_by_vp_key: dict[str, str],
+    refcode_type_by_vp_key: dict[str, str],
+    share_class_id_by_vp_key: dict[str, str],
+    report: ReconciliationReport,
+) -> dict | None:
+    """Share_Certificates row -> share_certificates insert dict."""
+    entcode = row.get("EntCode")
+    vp_key = str(row["SeqNr"])
+    entity_id = entity_id_by_vp_key.get(entcode)
+    if entity_id is None:
+        report.record_error("share_certificates", vp_key, f"unresolved entity_id for EntCode={entcode}")
+        return None
+
+    share_class_id = share_class_id_by_vp_key.get(f"{entcode}:{row.get('ShareClass')}")
+
+    addr = row.get("AddrCode")
+    person_id = None
+    if addr and addr != "ISSUE" and refcode_type_by_vp_key.get(addr) == "I":
+        person_id = person_id_by_vp_key.get(addr)
+
+    cert = row.get("CertificateNr")
+    return {
+        "vp_source_key": vp_key,
+        "entity_id": entity_id,
+        "share_class_id": share_class_id,
+        "person_id": person_id,
+        "certificate_no": str(cert) if cert is not None else None,
+        "shares": row.get("NrShare"),
+        "issue_date": row.get("IssueDate"),
+        "cancelled_date": row.get("CancelDate"),
+        "document_id": None,
+    }

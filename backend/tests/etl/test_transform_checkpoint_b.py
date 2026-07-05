@@ -1,5 +1,5 @@
 from etl.transform.checkpoint_b import transform_share_classes, transform_business_name, transform_entity_name_change
-from etl.transform.checkpoint_b import transform_share_transaction
+from etl.transform.checkpoint_b import transform_share_transaction, transform_share_certificate
 from etl.reconciliation import ReconciliationReport
 
 
@@ -164,5 +164,47 @@ def test_transform_share_transaction_unresolved_entity_returns_none_and_logs():
     report = ReconciliationReport()
     out = transform_share_transaction(
         _st(EntCode="GHOST"), {}, {}, {}, {}, report)
+    assert out is None
+    assert report.has_errors() is True
+
+
+def _cert(**kw):
+    base = {
+        "SeqNr": 42, "EntCode": "E1", "AddrCode": "P1", "ShareClass": "OR01",
+        "IssueDate": "2020-01-01", "CertificateNr": 7, "NrShare": 100,
+        "CancelDate": None,
+    }
+    base.update(kw)
+    return base
+
+
+def test_transform_share_certificate_individual_holder():
+    out = transform_share_certificate(
+        _cert(), {"E1": "e-uuid"}, {"P1": "p-uuid"}, {"P1": "I"},
+        {"E1:OR01": "sc-uuid"}, ReconciliationReport())
+    assert out["vp_source_key"] == "42"
+    assert out["entity_id"] == "e-uuid"
+    assert out["share_class_id"] == "sc-uuid"
+    assert out["person_id"] == "p-uuid"
+    assert out["certificate_no"] == "7"
+    assert out["shares"] == 100
+    assert out["issue_date"] == "2020-01-01"
+    assert out["cancelled_date"] is None
+    assert out["document_id"] is None
+
+
+def test_transform_share_certificate_corporate_holder_no_person_no_error():
+    report = ReconciliationReport()
+    out = transform_share_certificate(
+        _cert(AddrCode="C1"), {"E1": "e-uuid"}, {}, {"C1": "C"},
+        {"E1:OR01": "sc-uuid"}, report)
+    assert out["person_id"] is None
+    assert report.has_errors() is False
+
+
+def test_transform_share_certificate_unresolved_entity_returns_none_and_logs():
+    report = ReconciliationReport()
+    out = transform_share_certificate(
+        _cert(EntCode="GHOST"), {}, {}, {}, {}, report)
     assert out is None
     assert report.has_errors() is True

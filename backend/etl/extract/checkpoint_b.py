@@ -51,3 +51,16 @@ def extract_share_transactions(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(SHARE_TRANSACTIONS_QUERY)
         return [dict(row._mapping) for row in result]
+
+
+SHARE_CERTIFICATES_QUERY = text("""
+    SELECT SeqNr, EntCode, AddrCode, ShareClass, IssueDate, CertificateNr,
+           NrShare, CancelDate
+    FROM Share_Certificates
+""")
+
+
+def extract_share_certificates(engine: Engine) -> list[dict]:
+    with engine.connect() as conn:
+        result = conn.execute(SHARE_CERTIFICATES_QUERY)
+        return [dict(row._mapping) for row in result]
