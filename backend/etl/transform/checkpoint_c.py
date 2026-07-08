@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from etl.reconciliation import ReconciliationReport
 
@@ -6,7 +6,11 @@ from etl.reconciliation import ReconciliationReport
 # is None. A fabricated "now()" would misrepresent legacy events as recent;
 # this epoch sentinel unambiguously flags "date unknown" and is paired with
 # metadata["vp_date_missing"] = True so it's queryable/filterable downstream.
-_MISSING_DATE_SENTINEL = datetime(1970, 1, 1, tzinfo=timezone.utc)
+# Kept tz-NAIVE to match Viewpoint's own DateEvent/DateChange (naive datetimes):
+# a mixed naive/aware batch would make psycopg2 interpret rows inconsistently
+# on insert into the timestamptz column. All audit_log rows are therefore naive
+# and interpreted uniformly in the DB session timezone.
+_MISSING_DATE_SENTINEL = datetime(1970, 1, 1)
 
 
 def _resolve_party(

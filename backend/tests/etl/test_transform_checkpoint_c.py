@@ -398,7 +398,7 @@ def test_transform_event_log_row_eventclass_none_is_vp():
 
 def test_transform_event_log_row_date_event_none_uses_sentinel():
     out = transform_event_log_row(_event_log_row(DateEvent=None), {}, {})
-    assert out["created_at"] == datetime(1970, 1, 1, tzinfo=timezone.utc)
+    assert out["created_at"] == datetime(1970, 1, 1)
     assert out["metadata"]["vp_date_missing"] is True
 
 
@@ -460,7 +460,7 @@ def test_transform_ref_status_row_metadata_none_dropping():
 
 def test_transform_ref_status_row_date_change_none_uses_sentinel():
     out = transform_ref_status_row(_ref_status_row(DateChange=None), {}, {})
-    assert out["created_at"] == datetime(1970, 1, 1, tzinfo=timezone.utc)
+    assert out["created_at"] == datetime(1970, 1, 1)
 
 
 def _events_form(**kw):

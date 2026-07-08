@@ -36,9 +36,12 @@ def _refcode_types(engine) -> dict[str, str]:
 
 
 def _audit_ids(engine) -> dict[str, str]:
+    # Only EL:<n> keys are consumed (audit_form_filings links EventLog events to
+    # form filings); RS:<code>:<n> RefStatus rows would ~double the dict for
+    # nothing, so filter them out at the source.
     with engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT vp_source_key, id FROM audit_log WHERE vp_source_key IS NOT NULL")
+            text("SELECT vp_source_key, id FROM audit_log WHERE vp_source_key LIKE 'EL:%'")
         )
         return {r.vp_source_key: str(r.id) for r in rows}
 
