@@ -72,8 +72,16 @@ def upsert_rows(
                 for k in chunk[0]
                 if k not in (conflict_column, "id", "created_at")
             }
+            # index_where mirrors the PARTIAL unique index's predicate
+            # (migrations 004/005/006: `... WHERE vp_source_key IS NOT NULL`).
+            # Postgres only accepts a partial unique index as an ON CONFLICT
+            # arbiter when the statement repeats that predicate — without it
+            # the load fails with "no unique or exclusion constraint matching
+            # the ON CONFLICT specification".
             stmt = stmt.on_conflict_do_update(
-                index_elements=[conflict_column], set_=update_columns
+                index_elements=[conflict_column],
+                index_where=table.c[conflict_column].isnot(None),
+                set_=update_columns,
             )
             conn.execute(stmt)
     return len(rows)
@@ -107,8 +115,12 @@ def insert_rows_ignore_conflicts(
     with engine.begin() as conn:
         table = Table(table_name, MetaData(), autoload_with=engine)
         for chunk in _chunks(rows):
+            # index_where mirrors the partial unique index predicate — see the
+            # note in upsert_rows(); required for the partial index to serve as
+            # the ON CONFLICT arbiter.
             stmt = insert(table).values(chunk).on_conflict_do_nothing(
-                index_elements=[conflict_column]
+                index_elements=[conflict_column],
+                index_where=table.c[conflict_column].isnot(None),
             )
             result = conn.execute(stmt)
             inserted += result.rowcount or 0
