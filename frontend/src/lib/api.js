@@ -22,8 +22,24 @@ export async function apiFetch(path, options = {}) {
   return resp.json()
 }
 
+/** Multipart upload — must NOT set Content-Type; the browser adds the boundary. */
+async function apiUpload(path, formData) {
+  const resp = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: formData,
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+    throw new Error(err.detail || 'Upload failed')
+  }
+  return resp.json()
+}
+
 export const api = {
   get: (path) => apiFetch(path),
   post: (path, body) => apiFetch(path, { method: 'POST', body: JSON.stringify(body) }),
   patch: (path, body) => apiFetch(path, { method: 'PATCH', body: JSON.stringify(body) }),
+  del: (path) => apiFetch(path, { method: 'DELETE' }),
+  upload: apiUpload,
 }
