@@ -10,6 +10,7 @@ function initials(name) {
 export default function AppShell() {
   const { profile } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -53,7 +54,21 @@ export default function AppShell() {
           onClick={() => setSidebarOpen(false)}
         />
 
-        <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        <div className="sidebar-wrap">
+          <Sidebar
+            isOpen={sidebarOpen}
+            collapsed={collapsed}
+            onClose={() => setSidebarOpen(false)}
+          />
+          <button
+            className="sidebar-toggle"
+            onClick={() => setCollapsed(c => !c)}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? '❯' : '❮'}
+          </button>
+        </div>
 
         <main
           className="app-main"
