@@ -59,10 +59,32 @@ def test_greenfield_drops_applied():
 
 
 def test_document_type_fk_rejects_unknown_code():
+    """An owner is supplied so the FK on document_type_code is what actually fails.
+
+    Migration 007 (PBI-40) added the `documents_owner_present` CHECK, so an
+    ownerless insert now trips that constraint first and never reaches the FK.
+    """
     with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO entities (company_name) VALUES ('FK Probe Ltd') RETURNING id"
+        )
+        entity_id = cur.fetchone()[0]
+
         with pytest.raises(psycopg2.errors.ForeignKeyViolation):
             cur.execute(
+                "INSERT INTO documents (entity_id, document_type_code, storage_path) "
+                "VALUES (%s, 'does_not_exist', 'p/q.pdf')",
+                (entity_id,),
+            )
+        conn.rollback()
+
+
+def test_documents_owner_present_check_rejects_ownerless_document():
+    """Polymorphic owner (PBI-40): a document must belong to a company OR a person."""
+    with _conn() as conn, conn.cursor() as cur:
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
                 "INSERT INTO documents (document_type_code, storage_path) "
-                "VALUES ('does_not_exist', 'p/q.pdf')"
+                "VALUES ('other', 'p/q.pdf')"
             )
         conn.rollback()
