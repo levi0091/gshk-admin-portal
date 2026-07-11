@@ -6,6 +6,7 @@ import CompanyRegistryPage from './pages/CompanyRegistryPage.jsx'
 import CompanyProfilePage from './pages/CompanyProfilePage.jsx'
 import PersonsRegistryPage from './pages/PersonsRegistryPage.jsx'
 import PersonProfilePage from './pages/PersonProfilePage.jsx'
+import SettingsPage from './pages/SettingsPage.jsx'
 import UserManagementPage from './pages/UserManagementPage.jsx'
 import RoleManagementPage from './pages/RoleManagementPage.jsx'
 import AuditLogPage from './pages/AuditLogPage.jsx'
@@ -62,6 +63,7 @@ export default function App() {
             }
           />
           <Route path="audit-log" element={<AuditLogPage />} />
+          <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

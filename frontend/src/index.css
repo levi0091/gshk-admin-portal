@@ -223,6 +223,24 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 }
 .user-name { font-size: 12px; font-weight: 600; color: var(--t-head); }
 
+/* ── SIDEBAR COLLAPSE (wireframe_v7) ─────────────────────── */
+.sidebar-wrap { position: relative; flex-shrink: 0; display: flex; }
+.app-sidebar { transition: width .2s ease; overflow-x: hidden; }
+.app-sidebar.collapsed { width: 56px !important; }
+.app-sidebar.collapsed .nav-label,
+.app-sidebar.collapsed .nav-section-lbl { display: none; }
+.app-sidebar.collapsed .nav-item { justify-content: center; padding: 10px; gap: 0; }
+.sidebar-toggle {
+  position: absolute; right: -14px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 64px; border-radius: 10px;
+  background: var(--indigo); border: 2px solid var(--white);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: #fff; font-size: 16px; font-weight: 700; z-index: 20;
+  box-shadow: var(--sh-lg); transition: background .15s;
+}
+.sidebar-toggle:hover { background: var(--carrot); }
+.nav-divider { height: 1px; background: var(--border); margin: 8px 10px; }
+
 /* ── HAMBURGER ───────────────────────────────────────────── */
 .hamburger {
   display: none; width: 36px; height: 36px; border-radius: var(--r-sm);

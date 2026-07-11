@@ -2,9 +2,11 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 
 
-const NavItem = ({ to, icon, children }) => (
+const NavItem = ({ to, icon, children, title }) => (
   <NavLink
     to={to}
+    className="nav-item"
+    title={title}
     style={({ isActive }) => ({
       display: 'flex', alignItems: 'center', gap: 9,
       padding: '8px 10px', borderRadius: 6,
@@ -15,8 +17,15 @@ const NavItem = ({ to, icon, children }) => (
     })}
   >
     <span style={{ opacity: .65, flexShrink: 0 }}>{icon}</span>
-    {children}
+    <span className="nav-label">{children}</span>
   </NavLink>
+)
+
+const SettingsIcon = () => (
+  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="2.2"/>
+    <path d="M13 8a5 5 0 0 0-.1-1l1.3-1-1.5-2.6-1.6.6a5 5 0 0 0-1.7-1L9.1 1H6.1l-.3 1.7a5 5 0 0 0-1.7 1l-1.6-.6L1 5.7l1.3 1a5 5 0 0 0 0 2l-1.3 1 1.5 2.6 1.6-.6a5 5 0 0 0 1.7 1l.3 1.7h3l.3-1.7a5 5 0 0 0 1.7-1l1.6.6 1.5-2.6-1.3-1c.06-.3.1-.65.1-1z"/>
+  </svg>
 )
 
 const DashIcon = () => (
@@ -68,7 +77,7 @@ const SignOutIcon = () => (
   </svg>
 )
 
-export default function Sidebar({ isOpen, onClose }) {
+export default function Sidebar({ isOpen, collapsed, onClose }) {
   const { isSuperAdmin, hasPermission, signOut } = useAuth()
   const navigate = useNavigate()
 
@@ -77,9 +86,14 @@ export default function Sidebar({ isOpen, onClose }) {
     navigate('/login')
   }
 
+  const sectionLbl = {
+    fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase',
+    color: 'var(--t-muted)', padding: '10px 8px 4px',
+  }
+
   return (
     <nav
-      className={`app-sidebar${isOpen ? ' open' : ''}`}
+      className={`app-sidebar${isOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}
       style={{
         width: 232, background: 'var(--bg-card)',
         borderRight: '1px solid var(--border)',
@@ -87,7 +101,7 @@ export default function Sidebar({ isOpen, onClose }) {
       }}
     >
       <div style={{ padding: '0 10px', marginBottom: 4 }}>
-        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t-muted)', padding: '10px 8px 4px' }}>
+        <div className="nav-section-lbl" style={sectionLbl}>
           Main
         </div>
         {hasPermission('companies', 'read') && (
@@ -102,24 +116,27 @@ export default function Sidebar({ isOpen, onClose }) {
 
         {isSuperAdmin && (
           <>
-            <div style={{ height: 1, background: 'var(--border)', margin: '8px 0' }} />
-            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t-muted)', padding: '10px 8px 4px' }}>
+            <div className="nav-divider" />
+            <div className="nav-section-lbl" style={sectionLbl}>
               Admin
             </div>
-            <NavItem to="/users" icon={<UsersIcon />}>User Management</NavItem>
-            <NavItem to="/roles" icon={<RolesIcon />}>Roles</NavItem>
+            <NavItem to="/users" icon={<UsersIcon />} title="User Management">User Management</NavItem>
+            <NavItem to="/roles" icon={<RolesIcon />} title="Roles">Roles</NavItem>
             {hasPermission('audit_trail', 'read') && (
-              <NavItem to="/audit-log" icon={<AuditIcon />}>Audit Log</NavItem>
+              <NavItem to="/audit-log" icon={<AuditIcon />} title="Audit Log">Audit Log</NavItem>
             )}
           </>
         )}
 
-        <div style={{ height: 1, background: 'var(--border)', margin: '8px 0' }} />
-        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t-muted)', padding: '10px 8px 4px' }}>
+        <div className="nav-divider" />
+        <div className="nav-section-lbl" style={sectionLbl}>
           System
         </div>
+        <NavItem to="/settings" icon={<SettingsIcon />} title="Settings">Settings</NavItem>
         <button
+          className="nav-item"
           onClick={handleSignOut}
+          title="Log Out"
           style={{
             display: 'flex', alignItems: 'center', gap: 9,
             padding: '8px 10px', borderRadius: 6, width: '100%',
@@ -127,7 +144,8 @@ export default function Sidebar({ isOpen, onClose }) {
             background: 'none', border: 'none', cursor: 'pointer', transition: '.15s',
           }}
         >
-          <SignOutIcon /> Sign Out
+          <SignOutIcon />
+          <span className="nav-label">Log Out</span>
         </button>
       </div>
     </nav>
