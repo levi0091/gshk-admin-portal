@@ -13,16 +13,9 @@ export default function AppShell() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      {/* Header */}
-      <header
-        className="app-hdr-pad"
-        style={{
-          height: 60, background: 'var(--indigo)',
-          display: 'flex', alignItems: 'center', padding: '0 20px', gap: 16,
-          flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,.08)',
-        }}
-      >
-        {/* Hamburger — left side on mobile so it's next to the sidebar it controls */}
+      {/* Header — white, full-colour GSHK logo (wireframe_v7). The logo is the
+          PNG asset, never reconstructed in markup, and is NOT inverted. */}
+      <header className="app-hdr app-hdr-pad">
         <button
           className="hamburger"
           onClick={() => setSidebarOpen(o => !o)}
@@ -35,34 +28,20 @@ export default function AppShell() {
           </svg>
         </button>
 
-        {/* GSHK icon — PNG inverted to white for dark header, per wireframe */}
-        <img src="/gshk-icon.png" style={{ width: 30, height: 30, objectFit: 'contain', filter: 'brightness(0) invert(1)', flexShrink: 0 }} alt="GSHK" />
+        <div className="hdr-logo">
+          <img src="/gshk-logo.png" alt="Get Started HK"
+               style={{ height: 30, width: 'auto', objectFit: 'contain' }} />
+        </div>
 
-        <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,.15)', flexShrink: 0 }} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.8)', letterSpacing: '.04em' }}>
-          G-FlowDesk
-        </span>
+        <div className="hdr-vdiv" />
+        <span className="hdr-app-name">G-FlowDesk</span>
 
-        <div style={{ flex: 1 }} />
+        <div className="hdr-spacer" />
 
         {/* User chip — name hidden on mobile, avatar only */}
-        <div className="hdr-chip" style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          background: 'rgba(255,255,255,.10)', borderRadius: 20,
-          padding: '3px 12px 3px 3px', cursor: 'pointer',
-        }}>
-          <div style={{
-            width: 26, height: 26, borderRadius: '50%',
-            background: 'var(--carrot)', color: '#fff',
-            fontWeight: 800, fontSize: 11,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0,
-          }}>
-            {initials(profile?.display_name)}
-          </div>
-          <span className="hdr-username" style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.9)' }}>
-            {profile?.display_name}
-          </span>
+        <div className="user-chip hdr-chip">
+          <div className="user-avatar">{initials(profile?.display_name)}</div>
+          <span className="user-name hdr-username">{profile?.display_name}</span>
         </div>
       </header>
 
