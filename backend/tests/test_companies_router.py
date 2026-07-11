@@ -131,6 +131,39 @@ def test_list_registry_returns_paginated_envelope():
         assert "tiles" not in body
 
 
+def test_sort_rejects_non_whitelisted_column():
+    """`sort` reaches PostgREST's order clause — it must never be free text."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb:
+        _wire_list(msb.return_value, counts={None: 0}, pending_rows=[], terminal_rows=[])
+        resp = client.get("/companies?sort=company_name;drop", headers=H)
+        assert resp.status_code == 422
+
+
+def test_sort_orders_by_the_requested_column():
+    """An explicit sort replaces the pending-first grouping."""
+    captured = {}
+
+    class _Q:
+        def eq(self, *a, **k): return self
+        def or_(self, *a, **k): return self
+        def in_(self, *a, **k): return self
+        def limit(self, *a, **k): return self
+        def order(self, col, desc=False):
+            captured["order"] = (col, desc)
+            return self
+        def range(self, *a, **k): return self
+        def execute(self):
+            return SimpleNamespace(data=[], count=5)
+
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb:
+        msb.return_value.table.return_value.select.side_effect = lambda cols, count=None: _Q()
+        resp = client.get("/companies?sort=created_at&dir=desc", headers=H)
+        assert resp.status_code == 200
+        assert captured["order"] == ("created_at", True)
+
+
 def test_registry_non_client_flag_filters_is_client_false():
     """flag=non_client must select is_client=false (the 68 corporate-party-only rows)."""
     captured = {}

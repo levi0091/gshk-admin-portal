@@ -110,11 +110,19 @@ _ROLE_FLAGS = {
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
 
+# Whitelisted — `sort` reaches PostgREST's order clause.
+_SORTABLE = {
+    "full_name", "full_name_zh", "email", "nationality", "date_of_birth",
+    "primary_id_type", "primary_id_number", "created_at", "updated_at",
+}
+
 
 @router.get("")
 async def list_persons(
     search: Optional[str] = Query(None),
     role: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None),
+    dir: str = Query("asc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     user=Depends(require_permission("persons", "read")),
@@ -127,6 +135,8 @@ async def list_persons(
     """
     if role and role not in _ROLE_FLAGS:
         raise HTTPException(status_code=422, detail=f"Unknown role: {role}")
+    if sort and sort not in _SORTABLE:
+        raise HTTPException(status_code=422, detail=f"Cannot sort by '{sort}'")
 
     sb = get_supabase()
 
@@ -157,7 +167,8 @@ async def list_persons(
         q = q.eq(_ROLE_FLAGS[role], True)
     offset = (page - 1) * page_size
     rows = (
-        q.order("full_name").range(offset, offset + page_size - 1).execute().data
+        q.order(sort or "full_name", desc=(dir == "desc"))
+        .range(offset, offset + page_size - 1).execute().data
     ) or []
 
     total = role_counts[role] if role else role_counts["all"]

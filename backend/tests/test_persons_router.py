@@ -91,6 +91,12 @@ def test_list_persons_role_filter_uses_view_flag():
         assert resp.json()["total"] == 6259
 
 
+def test_list_persons_rejects_non_whitelisted_sort():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase"):
+        assert client.get("/persons?sort=;drop", headers=H).status_code == 422
+
+
 def test_list_persons_rejects_unknown_role():
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.persons.get_supabase"):

@@ -4,6 +4,7 @@ import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
+import SortableTh from '../components/SortableTh.jsx'
 
 const PAGE_SIZE = 50
 
@@ -29,6 +30,14 @@ export default function DashboardPage() {
   const [status, setStatus] = useState(null)
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
+  const [sort, setSort] = useState(null)
+  const [dir, setDir] = useState('asc')
+
+  function onSort(col, nextDir) {
+    setSort(col)
+    setDir(nextDir)
+    setPage(1)
+  }
 
   // Debounce the search box so typing doesn't fire a request per keystroke.
   useEffect(() => {
@@ -44,12 +53,13 @@ export default function DashboardPage() {
     })
     if (query) params.set('search', query)
     if (status) params.set('status', status)
+    if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
     api.get(`/companies?${params}`)
       .then(setData)
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [query, status, page])
+  }, [query, status, page, sort, dir])
 
   const companies = data?.companies || []
   const counts = data?.status_counts || {}
@@ -123,7 +133,8 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      <div className="sort-note">
+      {/* Only true while the default ordering is in force. */}
+      <div className="sort-note" style={{ visibility: sort ? 'hidden' : 'visible' }}>
         <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2"
              viewBox="0 0 16 16" aria-hidden="true">
           <path d="M4 3v10M4 13l-2-2M4 13l2-2M9 4h5M9 8h3M9 12h1" strokeLinecap="round" />
@@ -144,14 +155,20 @@ export default function DashboardPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Entity ID</th>
-                  <th>Last Updated</th>
-                  <th>Company Name</th>
-                  <th>BRN</th>
-                  <th>Status</th>
-                  <th>Workflow</th>
-                  <th>Create Date</th>
-                  <th>Incorporation Date</th>
+                  {[
+                    ['vp_source_key', 'Entity ID'],
+                    ['updated_at', 'Last Updated'],
+                    ['company_name', 'Company Name'],
+                    ['br_number', 'BRN'],
+                    ['status', 'Status'],
+                    ['active_workflow', 'Workflow'],
+                    ['created_at', 'Create Date'],
+                    ['incorporation_date', 'Incorporation Date'],
+                  ].map(([col, label]) => (
+                    <SortableTh key={col} col={col} sort={sort} dir={dir} onSort={onSort}>
+                      {label}
+                    </SortableTh>
+                  ))}
                 </tr>
               </thead>
               <tbody>
