@@ -50,6 +50,14 @@ _LIST_COLS = (
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
 
+# Columns the table headers may sort by. Whitelisted — `sort` reaches PostgREST's
+# order clause, so it must never be caller-controlled free text.
+_SORTABLE = {
+    "vp_source_key", "company_name", "br_number", "cr_number", "status",
+    "active_workflow", "company_type", "created_at", "updated_at",
+    "incorporation_date", "is_client", "is_corporate_party",
+}
+
 _SECRETARY_ROLE = "company_secretary"
 
 # Party-linking: URL relation segment -> table + editable attribute columns.
@@ -171,6 +179,8 @@ async def list_companies(
     search: Optional[str] = Query(None),
     flag: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None),
+    dir: str = Query("asc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     user=Depends(require_permission("companies", "read")),
@@ -219,9 +229,25 @@ async def list_companies(
     action = sum(counts.get(s, 0) for s in _TILE_ACTION)
     pending_n = sum(counts.get(s, 0) for s in _TILE_PENDING)
 
+    if sort and sort not in _SORTABLE:
+        raise HTTPException(status_code=422, detail=f"Cannot sort by '{sort}'")
+
     offset = (page - 1) * page_size
 
-    if status:
+    if sort:
+        # An explicit column sort replaces the default pending-work-first
+        # grouping — the user asked for that order, so honour it exactly.
+        total = counts.get(status) if status else counts["all"]
+        if total is None:
+            total = count_of(status=status) if status else counts["all"]
+        q = base(_LIST_COLS)
+        if status:
+            q = q.eq("status", status)
+        rows = (
+            q.order(sort, desc=(dir == "desc"))
+            .range(offset, offset + page_size - 1).execute().data
+        ) or []
+    elif status:
         total = counts.get(status) or count_of(status=status)
         rows = (
             base(_LIST_COLS).eq("status", status)

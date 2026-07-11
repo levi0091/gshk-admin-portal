@@ -105,6 +105,23 @@ describe('DashboardPage', () => {
     expect(navigate).toHaveBeenCalledWith('/companies/e1')
   })
 
+  it('sorts server-side when a column header is clicked, and toggles direction', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Acme Ltd')
+
+    await user.click(screen.getByRole('columnheader', { name: /Create Date/ }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(c => c[0].includes('sort=created_at&dir=asc'))).toBe(true)
+    })
+
+    // clicking the same column again flips to descending
+    await user.click(screen.getByRole('columnheader', { name: /Create Date/ }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(c => c[0].includes('sort=created_at&dir=desc'))).toBe(true)
+    })
+  })
+
   it('renders an empty state when no companies match', async () => {
     api.get.mockResolvedValue({ ...PAYLOAD, companies: [], total: 0 })
     renderPage()

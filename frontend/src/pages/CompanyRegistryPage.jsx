@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import StatusBadge, { FlagBadges } from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
+import SortableTh from '../components/SortableTh.jsx'
 
 const PAGE_SIZE = 50
 
@@ -25,6 +26,14 @@ export default function CompanyRegistryPage() {
   const [flag, setFlag] = useState(null)
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
+  const [sort, setSort] = useState(null)
+  const [dir, setDir] = useState('asc')
+
+  function onSort(col, nextDir) {
+    setSort(col)
+    setDir(nextDir)
+    setPage(1)
+  }
 
   useEffect(() => {
     const t = setTimeout(() => { setQuery(search); setPage(1) }, 300)
@@ -39,12 +48,13 @@ export default function CompanyRegistryPage() {
     })
     if (query) params.set('search', query)
     if (flag) params.set('flag', flag)
+    if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
     api.get(`/companies?${params}`)
       .then(setData)
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [query, flag, page])
+  }, [query, flag, page, sort, dir])
 
   const companies = data?.companies || []
   const flagCounts = data?.flag_counts || {}
@@ -112,11 +122,17 @@ export default function CompanyRegistryPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Company Name</th>
-                  <th>BRN</th>
-                  <th>CR No.</th>
-                  <th>Type</th>
-                  <th>Status</th>
+                  {[
+                    ['company_name', 'Company Name'],
+                    ['br_number', 'BRN'],
+                    ['cr_number', 'CR No.'],
+                    ['is_client', 'Type'],
+                    ['status', 'Status'],
+                  ].map(([col, label]) => (
+                    <SortableTh key={col} col={col} sort={sort} dir={dir} onSort={onSort}>
+                      {label}
+                    </SortableTh>
+                  ))}
                 </tr>
               </thead>
               <tbody>

@@ -4,6 +4,7 @@ import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
 import RoleTags, { initials } from '../components/RoleTags.jsx'
 import AddPersonModal from '../components/AddPersonModal.jsx'
+import SortableTh from '../components/SortableTh.jsx'
 
 const PAGE_SIZE = 50
 
@@ -25,6 +26,14 @@ export default function PersonsRegistryPage() {
   const [role, setRole] = useState(null)
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
+  const [sort, setSort] = useState(null)
+  const [dir, setDir] = useState('asc')
+
+  function onSort(col, nextDir) {
+    setSort(col)
+    setDir(nextDir)
+    setPage(1)
+  }
 
   useEffect(() => {
     const t = setTimeout(() => { setQuery(search); setPage(1) }, 300)
@@ -37,12 +46,13 @@ export default function PersonsRegistryPage() {
     const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) })
     if (query) params.set('search', query)
     if (role) params.set('role', role)
+    if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
     api.get(`/persons?${params}`)
       .then(setData)
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [query, role, page])
+  }, [query, role, page, sort, dir])
 
   const persons = data?.persons || []
   const counts = data?.role_counts || {}
@@ -110,11 +120,17 @@ export default function PersonsRegistryPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Identity</th>
-                  <th>Nationality</th>
-                  <th>Roles</th>
-                  <th>Last Updated</th>
+                  {[
+                    ['full_name', 'Name'],
+                    ['primary_id_number', 'Identity'],
+                    ['nationality', 'Nationality'],
+                    [null, 'Roles'],
+                    ['updated_at', 'Last Updated'],
+                  ].map(([col, label]) => (
+                    <SortableTh key={label} col={col} sort={sort} dir={dir} onSort={onSort}>
+                      {label}
+                    </SortableTh>
+                  ))}
                 </tr>
               </thead>
               <tbody>
