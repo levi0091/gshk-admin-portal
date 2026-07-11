@@ -26,6 +26,21 @@ def _conn():
     return psycopg2.connect(os.environ["DATABASE_URL"])
 
 
+def _has_super_admin() -> bool:
+    """The super_admin role is seeded outside Alembic, so a fresh CI database
+    has no roles at all. Migration 008 is role-existence-guarded and seeds
+    nothing there — these assertions only apply where the role exists (DEV)."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM roles WHERE name = 'super_admin'")
+        return cur.fetchone() is not None
+
+
+requires_super_admin = pytest.mark.skipif(
+    not os.environ.get("RUN_DB_TESTS") or not _has_super_admin(),
+    reason="no super_admin role in this database (fresh CI DB — seeded outside Alembic)",
+)
+
+
 def test_check_allows_delete():
     """documents:delete requires the permission CHECK to accept 'delete'."""
     with _conn() as conn, conn.cursor() as cur:
@@ -38,6 +53,7 @@ def test_check_allows_delete():
     assert "'read'" in defs and "'write'" in defs
 
 
+@requires_super_admin
 def test_super_admin_new_modules_seeded():
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -50,6 +66,7 @@ def test_super_admin_new_modules_seeded():
     assert got == EXPECTED_SUPER_ADMIN
 
 
+@requires_super_admin
 def test_non_super_admin_roles_have_no_new_modules():
     """nar1_write / all_access were intentionally NOT granted the new modules."""
     with _conn() as conn, conn.cursor() as cur:
@@ -91,6 +108,7 @@ def test_person_registry_view_role_flags_match_distinct_persons():
         assert rows == cur.fetchone()[0]
 
 
+@requires_super_admin
 def test_seed_is_idempotent():
     """Re-inserting the seed must not create duplicates (ON CONFLICT DO NOTHING)."""
     with _conn() as conn, conn.cursor() as cur:

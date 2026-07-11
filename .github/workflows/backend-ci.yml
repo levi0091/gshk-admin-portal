@@ -67,7 +67,10 @@ jobs:
         run: uv run alembic upgrade head
 
       - name: seed + greenfield assertions
-        run: uv run pytest -q tests/test_documents_migration_seed.py
+        run: >-
+          uv run pytest -q
+          tests/test_documents_migration_seed.py
+          tests/test_module_permissions_seed.py
 
       - name: alembic downgrade (reversibility)
         run: uv run alembic downgrade base

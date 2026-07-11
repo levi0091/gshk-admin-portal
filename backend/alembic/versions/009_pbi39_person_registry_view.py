@@ -73,8 +73,19 @@ def upgrade() -> None:
         ) AS idoc ON TRUE
     """)
 
-    op.execute("GRANT SELECT ON public.person_registry TO authenticated")
-    op.execute("GRANT SELECT ON public.person_registry TO service_role")
+    # Supabase-only roles. Guarded so the migration also applies to a vanilla
+    # Postgres (the CI `migrations` job), where these roles do not exist.
+    op.execute("""
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+            GRANT SELECT ON public.person_registry TO authenticated;
+          END IF;
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+            GRANT SELECT ON public.person_registry TO service_role;
+          END IF;
+        END $$;
+    """)
 
 
 def downgrade() -> None:
