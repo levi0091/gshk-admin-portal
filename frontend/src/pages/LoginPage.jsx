@@ -2,17 +2,25 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 
+// Self-service reset and access requests are not built (out of PBI-39 scope).
+// The wireframe shows both links, so they are present and say what to do rather
+// than being dead controls.
+const RESET_NOTICE = 'Password resets are handled by a Super Admin — contact levi@zenexflow.com.'
+const ACCESS_NOTICE = 'Accounts are created by a Super Admin — contact levi@zenexflow.com to request access.'
+
 export default function LoginPage() {
   const { signIn } = useAuth()
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
+    setNotice('')
     setLoading(true)
     try {
       await signIn(email, password)
@@ -52,7 +60,7 @@ export default function LoginPage() {
           G-FlowDesk Admin Portal
         </div>
         <div style={{ fontSize: 12, color: 'var(--t-muted)', textAlign: 'center', marginBottom: 22 }}>
-          Sign in to access the NAR1 case management system
+          Sign in to G-FlowDesk — company lifecycle management
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -84,6 +92,12 @@ export default function LoginPage() {
             />
           </div>
 
+          <div className="forgot-row">
+            <span className="forgot-link" onClick={() => setNotice(RESET_NOTICE)}>
+              Forgot password?
+            </span>
+          </div>
+
           {error && (
             <div style={{
               background: '#FEE2E2', border: '1px solid #FCA5A5',
@@ -91,6 +105,16 @@ export default function LoginPage() {
               fontSize: 13, color: '#B91C1C',
             }}>
               {error}
+            </div>
+          )}
+
+          {notice && (
+            <div style={{
+              background: 'var(--indigo-5)', border: '1px solid var(--border)',
+              borderRadius: 'var(--r-sm)', padding: '10px 14px',
+              fontSize: 12, color: 'var(--t-body)',
+            }}>
+              {notice}
             </div>
           )}
 
@@ -109,8 +133,11 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--t-muted)', marginTop: 18 }}>
-          Access restricted to authorised ZenexFlow administrators.
+        <div className="login-footer">
+          Don&apos;t have an account?{' '}
+          <span className="login-lnk" onClick={() => setNotice(ACCESS_NOTICE)}>
+            Request access
+          </span>
         </div>
       </div>
     </div>

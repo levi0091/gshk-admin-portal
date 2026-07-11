@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
@@ -62,7 +62,7 @@ export default function DashboardPage() {
       <div className="pg-hdr">
         <div>
           <div className="pg-title">Dashboard</div>
-          <div className="pg-sub">Client companies — full lifecycle</div>
+          <div className="pg-sub">Client companies — pending work first, most recently updated on top</div>
         </div>
         <div className="pg-actions">
           <button className="btn btn-action" onClick={() => setShowAdd(true)}>
@@ -159,8 +159,16 @@ export default function DashboardPage() {
                   <tr><td colSpan={8} className="empty-state">Loading…</td></tr>
                 ) : companies.length === 0 ? (
                   <tr><td colSpan={8} className="empty-state">No companies match this view.</td></tr>
-                ) : companies.map(c => (
-                  <tr key={c.id} className="clickable" onClick={() => navigate(`/companies/${c.id}`)}>
+                ) : companies.map((c, i) => (
+                  <Fragment key={c.id}>
+                    {/* Separator at the pending → completed boundary (wireframe_v7).
+                        Only rendered when the page actually contains both. */}
+                    {i > 0 && companies[i - 1].has_pending_case && !c.has_pending_case && (
+                      <tr className="tbl-group-row">
+                        <td colSpan={8}>Completed — no pending case</td>
+                      </tr>
+                    )}
+                  <tr className="clickable" onClick={() => navigate(`/companies/${c.id}`)}>
                     <td data-label="Entity ID"><span className="td-id">{c.vp_source_key || '—'}</span></td>
                     <td data-label="Last Updated"><span className="td-muted">{formatDate(c.updated_at)}</span></td>
                     <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>
@@ -174,6 +182,7 @@ export default function DashboardPage() {
                     <td data-label="Create Date"><span className="td-muted">{formatDate(c.created_at)}</span></td>
                     <td data-label="Incorporation Date"><span className="td-muted">{formatDate(c.incorporation_date)}</span></td>
                   </tr>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

@@ -108,6 +108,20 @@ def test_person_registry_view_role_flags_match_distinct_persons():
         assert rows == cur.fetchone()[0]
 
 
+def test_audit_entity_id_is_indexed():
+    """Migration 010: person-scoped audit events carry case_id=NULL and
+    entity_id=<person id>. Without an index on entity_id that read seq-scans the
+    whole audit_log (226k rows) and hits the statement timeout."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "EXPLAIN SELECT * FROM audit_log "
+            "WHERE entity_id = 'probe' ORDER BY created_at DESC"
+        )
+        plan = " ".join(r[0] for r in cur.fetchall())
+    assert "idx_audit_log_entity" in plan, plan
+    assert "Seq Scan" not in plan, plan
+
+
 @requires_super_admin
 def test_seed_is_idempotent():
     """Re-inserting the seed must not create duplicates (ON CONFLICT DO NOTHING)."""
