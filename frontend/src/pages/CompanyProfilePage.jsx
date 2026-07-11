@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
+import { downloadDocument } from '../lib/download.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
@@ -59,20 +60,20 @@ function FlagToggle({ on, label, sub, onToggle, busy }) {
 }
 
 function DocumentList({ documents }) {
-  async function download(id) {
-    const { url } = await api.get(`/documents/${id}/download`)
-    window.open(url, '_blank', 'noopener')
-  }
   if (!documents?.length) {
     return <div className="empty-state" style={{ padding: '16px 0' }}>No documents uploaded yet.</div>
   }
   return documents.map(d => (
     <div className="doc-item" key={d.id}>
       <span className="doc-name">
-        {d.title || d.file_name || d.document_type_code}
+        {/* What the document IS, not just the file it happened to be uploaded as. */}
+        {d.document_types?.label || d.document_type_code}
         {d.current_version > 1 && <span className="filing-tag">v{d.current_version}</span>}
+        <span className="td-muted" style={{ display: 'block', fontSize: 11, fontWeight: 400 }}>
+          {d.title && d.title !== d.file_name ? `${d.title} · ` : ''}{d.file_name}
+        </span>
       </span>
-      <button className="doc-dl" onClick={() => download(d.id)}>Download</button>
+      <button className="doc-dl" onClick={() => downloadDocument(d.id)}>Download</button>
     </div>
   ))
 }

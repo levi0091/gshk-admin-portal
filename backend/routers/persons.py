@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event
-from services import document_service
+from services import audit_events, document_service
 
 router = APIRouter()
 
@@ -229,7 +229,10 @@ async def create_person(
     await log_event(
         case_id=None, user_id=user["id"],
         user_display_name=user["display_name"], action_type="PERSON_CREATED",
-        entity_type="person", entity_id=str(person["id"]), after_state=row,
+        event_code=audit_events.VP_NEW_MASTER_FILE,   # Viewpoint: New Master File
+        company_name=person["full_name"],             # subject of the event
+        entity_type="person", entity_id=str(person["id"]),
+        new_value=person["full_name"], after_state=row,
     )
     return person
 
@@ -263,7 +266,11 @@ async def update_person(
         await log_event(
             case_id=None, user_id=user["id"],
             user_display_name=user["display_name"], action_type="PERSON_FIELD_UPDATED",
+            # KYC fields are Compliance (CPC) in Viewpoint; names/contact are ADC.
+            event_code=audit_events.person_field_code(field),
+            company_name=current.get("full_name"),
             entity_type="person", entity_id=str(person_id),
+            old_value=old_val, new_value=new_val,
             before_state={"field": field, "old": old_val},
             after_state={"field": field, "new": new_val},
         )

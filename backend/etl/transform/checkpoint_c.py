@@ -255,10 +255,35 @@ def _resolve_display_name(ucode, uname_by_ucode: dict[str, str]) -> str:
     return uname_by_ucode.get(ucode) or ucode or "viewpoint"
 
 
+
+def collapse_uniform_kv(value):
+    """"AdNrS1=2311; AdNrS2=2311; ... AdNrSU=2311" is 15 fields all set to the
+    same value — one change, not fifteen. Collapse it to "2311"; the full map is
+    still in metadata. Leaves genuinely multi-valued strings untouched."""
+    if not value or "=" not in value:
+        return value
+    vals = {part.split("=", 1)[1].strip() for part in value.split(";") if "=" in part}
+    if len(vals) == 1:
+        only = vals.pop()
+        return only or value
+    return value
+
+
+def audit_context(event_code, key_code, label_by_code, name_by_vp_key):
+    """The context every audit row carries, whatever its source: the generic
+    action name (never the per-record description) and the subject's name."""
+    return {
+        "action_label": (label_by_code or {}).get(event_code),
+        "company_name": (name_by_vp_key or {}).get(key_code),
+    }
+
+
 def transform_event_log_row(
     row: dict,
     entity_id_by_vp_key: dict[str, str],
     uname_by_ucode: dict[str, str],
+    label_by_code: dict[str, str] | None = None,
+    name_by_vp_key: dict[str, str] | None = None,
 ) -> dict:
     """VP EventLog row -> audit_log insert dict (singular). No drops — every
     EventLog row imports, including ShowInLog=0 rows, per Levi's explicit
@@ -293,10 +318,12 @@ def transform_event_log_row(
         or None
     )
 
+    event_code = row.get("EventCode")
     return {
+        **audit_context(event_code, key_code, label_by_code, name_by_vp_key),
         "vp_source_key": vp_key,
         "created_at": date_event if date_event is not None else _MISSING_DATE_SENTINEL,
-        "event_code": row.get("EventCode"),
+        "event_code": event_code,
         "source_keycode": key_code,
         "case_id": entity_id_by_vp_key.get(key_code),
         "entity_type": str(event_class) if event_class is not None else "vp",
@@ -311,8 +338,8 @@ def transform_event_log_row(
         "metadata": metadata or None,
         "before_state": before_state,
         "after_state": after_state,
-        "old_value": old_value,
-        "new_value": new_value,
+        "old_value": collapse_uniform_kv(old_value),
+        "new_value": collapse_uniform_kv(new_value),
     }
 
 
@@ -320,6 +347,8 @@ def transform_ref_status_row(
     row: dict,
     entity_id_by_vp_key: dict[str, str],
     uname_by_ucode: dict[str, str],
+    label_by_code: dict[str, str] | None = None,
+    name_by_vp_key: dict[str, str] | None = None,
 ) -> dict:
     """VP RefStatus row -> audit_log insert dict (singular). No drops.
     audit_log is insert-only (PBI-11): loaded via insert_rows_ignore_conflicts,
@@ -337,6 +366,7 @@ def transform_ref_status_row(
         metadata["vp_date_missing"] = True
 
     return {
+        **audit_context("STATUS", ref_code, label_by_code, name_by_vp_key),
         "vp_source_key": vp_key,
         "event_code": "STATUS",
         "old_value": row.get("OldStat"),

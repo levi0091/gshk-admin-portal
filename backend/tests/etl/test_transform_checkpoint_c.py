@@ -521,3 +521,43 @@ def test_transform_audit_form_filing_float_event_nr_normalized():
     assert out["vp_source_key"] == "181993:FQ025280"
     assert out["vp_event_nr"] == "181993"
     assert "181993.0" not in out["vp_source_key"]
+
+
+# ---- audit context (migration 012) ----------------------------------------
+
+def test_collapse_uniform_kv_collapses_identical_values():
+    """Viewpoint packs a whole field map into one string. When every field got
+    the same value it is ONE change, not fifteen."""
+    from etl.transform.checkpoint_c import collapse_uniform_kv
+    blob = "AdNrS1=2311; AdNrS2=2311; AdNrS3=2311; AdNrSU=2311"
+    assert collapse_uniform_kv(blob) == "2311"
+
+
+def test_collapse_uniform_kv_leaves_real_multi_value_strings_alone():
+    from etl.transform.checkpoint_c import collapse_uniform_kv
+    blob = "CapAmt=Nil; CapCur=HKD"
+    assert collapse_uniform_kv(blob) == blob
+    assert collapse_uniform_kv(None) is None
+    assert collapse_uniform_kv("plain") == "plain"
+
+
+def test_event_log_row_carries_generic_action_and_subject_name():
+    """A re-run of the ETL must produce the same shape the app now expects:
+    the GENERIC action name, never the per-record description."""
+    from etl.transform.checkpoint_c import transform_event_log_row
+    row = {
+        "EventNr": 1, "EventCode": "ADC", "KeyCode": "ACME",
+        "RecordID": "r1", "Ucode": "JAC", "EventClass": "C",
+        "DateEvent": None, "EventString": None,
+        "Description": "Master File Details of Miss Ilze TSERKEZIS Changed",
+    }
+    out = transform_event_log_row(
+        row, {"ACME": "e1"}, {},
+        label_by_code={"ADC": "Change Master File Details"},
+        name_by_vp_key={"ACME": "Acme Limited"},
+    )
+    assert out["action_label"] == "Change Master File Details"
+    assert out["company_name"] == "Acme Limited"
+    assert out["event_code"] == "ADC"
+    # the per-record description is retained in metadata, not used as the action
+    assert out["metadata"]["description"].startswith("Master File Details of")
