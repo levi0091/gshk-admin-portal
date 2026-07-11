@@ -336,7 +336,7 @@ def test_update_company_audits_only_changed_fields():
     current = {"id": "e1", "company_name": "Old", "case_notes": "same"}
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.companies.get_supabase") as msb, \
-         patch("routers.companies.log_event", new=AsyncMock()) as audit:
+         patch("routers.companies.log_events", new=AsyncMock()) as audit:
         sb = msb.return_value
         sb.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = current
         sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
@@ -344,9 +344,12 @@ def test_update_company_audits_only_changed_fields():
         ]
         resp = client.patch("/companies/e1", json={"company_name": "New", "case_notes": "same"}, headers=H)
         assert resp.status_code == 200
-        # only company_name changed → exactly one audit entry
-        audit.assert_awaited_once()
-        assert audit.await_args.kwargs["action_type"] == "CASE_FIELD_UPDATED"
+        # one entry per CHANGED field, batched into a single insert
+        events = audit.await_args.args[0]
+        assert len(events) == 1                       # case_notes was unchanged
+        assert events[0]["action_type"] == "CASE_FIELD_UPDATED"
+        assert events[0]["old_value"] == "Old" and events[0]["new_value"] == "New"
+        assert events[0]["event_code"] == "ADC"       # Viewpoint's master-file code
 
 
 def test_update_company_no_fields_400():
@@ -470,7 +473,7 @@ def test_unknown_relation_404():
 def test_update_link_audits_party_updated():
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.companies.get_supabase") as msb, \
-         patch("routers.companies.log_event", new=AsyncMock()) as audit:
+         patch("routers.companies.log_events", new=AsyncMock()) as audit:
         sb = msb.return_value
         sb.table.return_value.select.return_value.eq.return_value.eq.return_value.single.return_value.execute.return_value.data = {
             "id": "lnk-1", "entity_id": "e1", "position": "old"}
@@ -478,7 +481,9 @@ def test_update_link_audits_party_updated():
             {"id": "lnk-1", "position": "new"}]
         resp = client.patch("/companies/e1/officers/lnk-1", json={"position": "new"}, headers=H)
         assert resp.status_code == 200
-        assert audit.await_args.kwargs["action_type"] == "PARTY_UPDATED"
+        events = audit.await_args.args[0]
+        assert events[0]["action_type"] == "PARTY_UPDATED"
+        assert events[0]["event_code"] == "OFC"       # Viewpoint's officer-change code
 
 
 def test_unlink_audits_party_unlinked():

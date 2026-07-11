@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-from middleware.auth import require_super_admin
+from middleware.auth import require_super_admin, clear_auth_cache
 from db.supabase import get_supabase
 
 router = APIRouter()
@@ -75,6 +75,7 @@ async def update_user(
     result = sb.table("users").update(updates).eq("id", user_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="User not found")
+    clear_auth_cache()   # a role change must take effect now, not after the TTL
     return result.data[0]
 
 
@@ -87,6 +88,7 @@ async def deactivate_user(
     result = sb.table("users").update({"is_active": False}).eq("id", user_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="User not found")
+    clear_auth_cache()   # a deactivated user must lose access immediately
 
     try:
         sb.auth.admin.update_user_by_id(user_id, {"ban_duration": "876600h"})

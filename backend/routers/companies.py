@@ -3,6 +3,7 @@
 All routes gated by require_permission("companies", ...). Every mutation audits
 before returning (PBI-11). Company = row in `entities` (PBI-40 superset).
 """
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -10,7 +11,7 @@ from pydantic import BaseModel
 
 from middleware.auth import require_permission
 from db.supabase import get_supabase
-from services.audit_service import log_event
+from services.audit_service import log_event, log_events
 from services import audit_events, document_service
 
 router = APIRouter()
@@ -223,9 +224,16 @@ async def list_companies(
     # Counts / tiles cover the whole filtered set, not just the page. Use exact
     # COUNT queries — PostgREST caps returned rows at 1000, so counting fetched
     # rows would silently under-report on a 5.9k-row table.
-    counts: dict[str, int] = {"all": count_of()}
-    for s in _TAB_STATUSES:
-        counts[s] = count_of(status=s)
+    #
+    # These 7 counts are independent; run concurrently. Sequentially they were
+    # 7 x ~200ms of pure round-trip latency on every dashboard load.
+    count_values = await asyncio.gather(
+        asyncio.to_thread(count_of),
+        *[asyncio.to_thread(lambda s=s: count_of(status=s)) for s in _TAB_STATUSES],
+    )
+    counts: dict[str, int] = {"all": count_values[0]}
+    for s, v in zip(_TAB_STATUSES, count_values[1:]):
+        counts[s] = v
     action = sum(counts.get(s, 0) for s in _TILE_ACTION)
     pending_n = sum(counts.get(s, 0) for s in _TILE_PENDING)
 
@@ -319,17 +327,29 @@ async def get_company(
     # (company_secretaries is a denormalized ETL mirror of the same rows and is
     # NOT corporate-party aware — it has no corporate_entity_id — so the profile
     # reads entity_officers instead.)
-    officers = (sb.table("entity_officers").select(f"*, {person_cols}")
-                .eq("entity_id", company_id).neq("role", _SECRETARY_ROLE)
-                .execute().data) or []
-    secretaries = (sb.table("entity_officers").select(f"*, {person_cols}")
+    #
+    # These are independent of each other and each is a ~200ms round trip to
+    # Supabase, so running them sequentially made the profile take ~2s. The
+    # supabase client is synchronous — to_thread lets them overlap.
+    async def q(fn):
+        return await asyncio.to_thread(fn)
+
+    officers, secretaries, shareholders, ben_owners, contacts, documents = await asyncio.gather(
+        q(lambda: (sb.table("entity_officers").select(f"*, {person_cols}")
+                   .eq("entity_id", company_id).neq("role", _SECRETARY_ROLE)
+                   .execute().data) or []),
+        q(lambda: (sb.table("entity_officers").select(f"*, {person_cols}")
                    .eq("entity_id", company_id).eq("role", _SECRETARY_ROLE)
-                   .execute().data) or []
-    shareholders = (sb.table("shareholdings")
-                    .select(f"*, {person_cols}, share_classes(class_name, currency)")
-                    .eq("entity_id", company_id).execute().data) or []
-    ben_owners = (sb.table("beneficial_owners").select(f"*, {person_cols}")
-                  .eq("entity_id", company_id).execute().data) or []
+                   .execute().data) or []),
+        q(lambda: (sb.table("shareholdings")
+                   .select(f"*, {person_cols}, share_classes(class_name, currency)")
+                   .eq("entity_id", company_id).execute().data) or []),
+        q(lambda: (sb.table("beneficial_owners").select(f"*, {person_cols}")
+                   .eq("entity_id", company_id).execute().data) or []),
+        q(lambda: (sb.table("contacts").select("*")
+                   .eq("entity_id", company_id).execute().data) or []),
+        q(lambda: document_service.list_documents(owner_kind="entity", owner_id=company_id)),
+    )
 
     linked = officers + secretaries + shareholders + ben_owners
     corp_ids = {r["corporate_entity_id"] for r in linked if r.get("corporate_entity_id")}
@@ -346,11 +366,10 @@ async def get_company(
 
     address = None
     if entity.get("registered_address_id"):
-        address = (sb.table("addresses").select("*")
-                   .eq("id", entity["registered_address_id"]).single().execute()).data
-    contacts = (sb.table("contacts").select("*")
-                .eq("entity_id", company_id).execute().data) or []
-    documents = document_service.list_documents(owner_kind="entity", owner_id=company_id)
+        address = await asyncio.to_thread(
+            lambda: (sb.table("addresses").select("*")
+                     .eq("id", entity["registered_address_id"]).single().execute()).data
+        )
 
     result = {
         **entity,
@@ -364,8 +383,10 @@ async def get_company(
     }
     # Cases pane only for client entities (§6 visibility).
     if entity.get("is_client"):
-        nar1 = (sb.table("nar1_cases").select("*").eq("entity_id", company_id).execute().data) or []
-        nnc1 = (sb.table("nnc1_cases").select("*").eq("entity_id", company_id).execute().data) or []
+        nar1, nnc1 = await asyncio.gather(
+            q(lambda: (sb.table("nar1_cases").select("*").eq("entity_id", company_id).execute().data) or []),
+            q(lambda: (sb.table("nnc1_cases").select("*").eq("entity_id", company_id).execute().data) or []),
+        )
         result["cases"] = {"nar1": nar1, "nnc1": nnc1}
     return result
 
@@ -440,11 +461,10 @@ async def update_company(
         sb.table("entities").update(updates).eq("id", company_id).execute()
     ).data[0]
 
-    for field, new_val in updates.items():
-        old_val = current.get(field)
-        if old_val == new_val:
-            continue
-        await log_event(
+    # One entry per changed field, but a SINGLE insert — a form save changes
+    # several fields and one round trip per field is most of the save latency.
+    await log_events([
+        dict(
             case_id=company_id, user_id=user["id"],
             user_display_name=user["display_name"], action_type="CASE_FIELD_UPDATED",
             # Which Viewpoint folder owns the field decides the code — the same
@@ -456,6 +476,10 @@ async def update_company(
             before_state={"field": field, "old": old_val},
             after_state={"field": field, "new": new_val},
         )
+        for field, new_val in updates.items()
+        for old_val in [current.get(field)]
+        if old_val != new_val
+    ])
     return updated
 
 
@@ -655,11 +679,8 @@ async def update_link(
     party = _party_name(sb, current.get("person_id"), current.get("corporate_entity_id"),
                         current.get("corporate_name"))
     company = _company_name(sb, company_id)
-    for field, new_val in updates.items():
-        old_val = current.get(field)
-        if old_val == new_val:
-            continue
-        await log_event(
+    await log_events([
+        dict(
             case_id=company_id, user_id=user["id"],
             user_display_name=user["display_name"], action_type="PARTY_UPDATED",
             event_code=audit_events.party_code(relation, "update"),
@@ -672,6 +693,10 @@ async def update_link(
             after_state={"relation": relation, "link_id": link_id, "party": party,
                          "field": field, "new": new_val},
         )
+        for field, new_val in updates.items()
+        for old_val in [current.get(field)]
+        if old_val != new_val
+    ])
     return updated
 
 
