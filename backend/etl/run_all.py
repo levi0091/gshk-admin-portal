@@ -34,7 +34,15 @@ from sqlalchemy import text
 
 from etl.db import get_supabase_engine
 
-_REQUIRED_MIGRATION = "012"
+_REQUIRED_MIGRATION = "014"
+
+# Tables Checkpoint C reads to make the audit trail legible. Without them it
+# still loads — it just loads the useless version, which is the failure mode
+# that is hardest to notice.
+_REQUIRED_TABLES = {
+    "audit_event_types": "the generic action name for each event code",
+    "audit_field_labels": "the field captions that decode the EventString blob",
+}
 
 
 def _check_schema() -> None:
@@ -48,17 +56,22 @@ def _check_schema() -> None:
         except Exception:
             sys.exit("No alembic_version table — run `alembic upgrade head` first.")
 
-        exists = conn.execute(text(
-            "SELECT to_regclass('public.audit_event_types')"
-        )).scalar()
+        missing = [
+            f"{table} ({why})"
+            for table, why in _REQUIRED_TABLES.items()
+            if not conn.execute(text(f"SELECT to_regclass('public.{table}')")).scalar()
+        ]
 
-    if not exists:
+    if missing:
         sys.exit(
-            f"audit_event_types is missing (alembic is at {version!r}). "
-            f"Run `alembic upgrade head` — migration {_REQUIRED_MIGRATION} is required "
-            "before the ETL, because Checkpoint C reads the event-type registry."
+            f"Schema is behind (alembic is at {version!r}) — missing:\n"
+            + "".join(f"  - {m}\n" for m in missing)
+            + f"Run `alembic upgrade head`; migration {_REQUIRED_MIGRATION} is required "
+            "before the ETL, because Checkpoint C reads these to build a readable "
+            "audit trail. Without them it loads, but every entry reads "
+            '"LEGACY_VP_EVENT" with no action and no change.'
         )
-    print(f"  schema at {version} — audit_event_types present")
+    print(f"  schema at {version} — {', '.join(_REQUIRED_TABLES)} present")
 
 
 def _ensure_storage_bucket(dry_run: bool) -> None:

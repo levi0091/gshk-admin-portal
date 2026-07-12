@@ -6,6 +6,8 @@ import { downloadDocument } from '../lib/download.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
+import FormField, { displayValue } from '../components/FormField.jsx'
+import { useLookups } from '../lib/lookups.js'
 
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
@@ -13,6 +15,7 @@ const EDITABLE = [
   { key: 'br_number', label: 'BRN' },
   { key: 'cr_number', label: 'CR No.' },
   { key: 'company_type', label: 'Company Type' },
+  { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'country' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
   { key: 'case_notes', label: 'Case Notes' },
 ]
@@ -86,6 +89,7 @@ export default function CompanyProfilePage() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
+  const lookups = useLookups()
   const [busy, setBusy] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
@@ -243,12 +247,13 @@ export default function CompanyProfilePage() {
             {editing ? (
               <div className="form-grid">
                 {EDITABLE.map(f => (
-                  <div className="f-group full" key={f.key}>
-                    <label className="f-label" htmlFor={f.key}>{f.label}</label>
-                    <input id={f.key} className="f-input" type={f.type || 'text'}
-                           value={draft[f.key] ?? ''}
-                           onChange={e => setDraft(d => ({ ...d, [f.key]: e.target.value }))} />
-                  </div>
+                  <FormField
+                    key={f.key}
+                    field={{ ...f, full: true }}
+                    value={draft[f.key]}
+                    lookups={lookups}
+                    onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
+                  />
                 ))}
               </div>
             ) : (
@@ -287,7 +292,9 @@ export default function CompanyProfilePage() {
               </div>
               <div className="kv-list">
                 <Kv label="Company Type">{company.company_type}</Kv>
-                <Kv label="Country of Incorporation">{company.incorporation_place}</Kv>
+                <Kv label="Country of Incorporation">
+                  {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
+                </Kv>
                 <Kv label="TCSP Licence">{company.tcsp_licence_no}</Kv>
                 <Kv label="TCSP Exemption">{company.tcsp_exemption_reason}</Kv>
               </div>

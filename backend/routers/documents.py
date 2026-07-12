@@ -3,7 +3,7 @@
 Upload / list live under the owner routes (companies.py / persons.py). These
 two are keyed by document id directly.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from middleware.auth import require_permission
 from db.supabase import get_supabase
@@ -14,17 +14,25 @@ router = APIRouter()
 
 @router.get("/types")
 async def list_document_types(
+    owner_type: str | None = None,
     user=Depends(require_permission("documents", "read")),
 ):
     """Seeded `document_types` lookup — drives the upload type picker.
 
+    `owner_type` ("company" | "person") narrows the list to what that owner can
+    actually hold: a Certificate of Incorporation is not a person's document, and
+    offering it on a person profile only invites a miscategorised upload.
+
     Declared before /{document_id}/... so "types" isn't matched as a document id.
     """
+    if owner_type not in (None, "company", "person"):
+        raise HTTPException(400, "owner_type must be 'company' or 'person'")
+
     sb = get_supabase()
-    return (
-        sb.table("document_types").select("*")
-        .eq("is_active", True).order("sort_order").execute().data
-    ) or []
+    query = sb.table("document_types").select("*").eq("is_active", True)
+    if owner_type:
+        query = query.in_("applies_to", [owner_type, "both"])
+    return query.order("sort_order").execute().data or []
 
 
 @router.get("/{document_id}/download")

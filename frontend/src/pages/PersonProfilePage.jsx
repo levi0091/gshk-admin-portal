@@ -4,7 +4,12 @@ import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
+import FormField, { displayValue } from '../components/FormField.jsx'
+import { useLookups } from '../lib/lookups.js'
 
+// `lookup` names the controlled vocabulary a field draws from (migration 013,
+// lifted from Viewpoint). Without it these were free-text, which is how the same
+// nationality got in under several spellings.
 const EDITABLE = [
   { key: 'full_name', label: 'Full Name', full: true },
   { key: 'given_names', label: 'Given Names' },
@@ -12,11 +17,11 @@ const EDITABLE = [
   { key: 'full_name_zh', label: 'Chinese Name' },
   { key: 'former_name', label: 'Former Name' },
   { key: 'date_of_birth', label: 'Date of Birth', type: 'date' },
-  { key: 'gender', label: 'Gender' },
-  { key: 'nationality', label: 'Nationality' },
-  { key: 'nationality_origin', label: 'Nationality Origin' },
-  { key: 'place_of_birth', label: 'Place of Birth' },
-  { key: 'marital_status', label: 'Marital Status' },
+  { key: 'gender', label: 'Gender', lookup: 'gender' },
+  { key: 'nationality', label: 'Nationality', lookup: 'nationality' },
+  { key: 'nationality_origin', label: 'Nationality Origin', lookup: 'nationality' },
+  { key: 'place_of_birth', label: 'Place of Birth', lookup: 'country' },
+  { key: 'marital_status', label: 'Marital Status', lookup: 'marital_status' },
   { key: 'occupation', label: 'Occupation' },
   { key: 'email', label: 'Email' },
   { key: 'phone', label: 'Phone' },
@@ -82,6 +87,7 @@ export default function PersonProfilePage() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
+  const lookups = useLookups()
   const [busy, setBusy] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
 
@@ -200,19 +206,22 @@ export default function PersonProfilePage() {
             {editing ? (
               <div className="form-grid">
                 {EDITABLE.map(f => (
-                  <div className={`f-group${f.full ? ' full' : ''}`} key={f.key}>
-                    <label className="f-label" htmlFor={f.key}>{f.label}</label>
-                    <input id={f.key} className="f-input" type={f.type || 'text'}
-                           value={draft[f.key] ?? ''}
-                           onChange={e => setDraft(d => ({ ...d, [f.key]: e.target.value }))} />
-                  </div>
+                  <FormField
+                    key={f.key}
+                    field={f}
+                    value={draft[f.key]}
+                    lookups={lookups}
+                    onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
+                  />
                 ))}
               </div>
             ) : (
               <div className="kv-list">
                 {EDITABLE.map(f => (
                   <Kv key={f.key} label={f.label}>
-                    {f.type === 'date' ? formatDate(person[f.key]) : person[f.key]}
+                    {f.type === 'date'
+                      ? formatDate(person[f.key])
+                      : displayValue(f, person[f.key], lookups)}
                   </Kv>
                 ))}
                 <Kv label="Residential Address">{addressText(person.residential_address)}</Kv>

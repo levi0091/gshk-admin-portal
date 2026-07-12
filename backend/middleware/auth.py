@@ -74,6 +74,24 @@ def _resolve_user(token: str) -> dict:
     return user
 
 
+def _permissions_for(user: dict, module: str) -> set[str]:
+    """The permissions this user's role holds on one module."""
+    key = (user["role_id"], module)
+    allowed = _cache_get(_perm_cache, key)
+    if allowed is None:
+        sb = get_supabase()
+        perms = (
+            sb.table("role_permissions")
+            .select("permission")
+            .eq("role_id", user["role_id"])
+            .eq("module", module)
+            .execute()
+        )
+        allowed = {row["permission"] for row in (perms.data or [])}
+        _perm_cache[key] = (time.monotonic() + _PERM_TTL, allowed)
+    return allowed
+
+
 def require_permission(module: str, permission: str):
     """FastAPI dependency factory. Returns a dependency that checks module permission."""
 
@@ -85,24 +103,35 @@ def require_permission(module: str, permission: str):
         if user["role_name"] == "super_admin":
             return user
 
-        key = (user["role_id"], module)
-        allowed = _cache_get(_perm_cache, key)
-        if allowed is None:
-            sb = get_supabase()
-            perms = (
-                sb.table("role_permissions")
-                .select("permission")
-                .eq("role_id", user["role_id"])
-                .eq("module", module)
-                .execute()
-            )
-            allowed = {row["permission"] for row in (perms.data or [])}
-            _perm_cache[key] = (time.monotonic() + _PERM_TTL, allowed)
-
-        if permission not in allowed:
+        if permission not in _permissions_for(user, module):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         return user
+
+    return check
+
+
+def require_any_permission(*modules: tuple[str, str]):
+    """Guard for endpoints serving data that belongs to no single module.
+
+    The reference vocabularies (gender, nationality, country...) are needed by
+    both the company and the person forms, so gating them on one module would
+    lock out a role that only holds the other. Passes if the caller holds ANY of
+    the given (module, permission) pairs.
+    """
+
+    async def check(
+        credentials: HTTPAuthorizationCredentials = Depends(security),
+    ) -> dict:
+        user = _resolve_user(credentials.credentials)
+
+        if user["role_name"] == "super_admin":
+            return user
+
+        if any(perm in _permissions_for(user, module) for module, perm in modules):
+            return user
+
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     return check
 

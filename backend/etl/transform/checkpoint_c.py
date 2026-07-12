@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from etl.reconciliation import ReconciliationReport
+from services.audit_changes import describe, render, status_change
 
 # Sentinel for audit_log.created_at (NOT NULL) when the source VP date column
 # is None. A fabricated "now()" would misrepresent legacy events as recent;
@@ -284,6 +285,8 @@ def transform_event_log_row(
     uname_by_ucode: dict[str, str],
     label_by_code: dict[str, str] | None = None,
     name_by_vp_key: dict[str, str] | None = None,
+    field_labels: dict[str, str] | None = None,
+    address_labels: dict[str, str] | None = None,
 ) -> dict:
     """VP EventLog row -> audit_log insert dict (singular). No drops — every
     EventLog row imports, including ShowInLog=0 rows, per Levi's explicit
@@ -300,6 +303,7 @@ def transform_event_log_row(
     description = row.get("Description")
 
     parsed = parse_event_string(row.get("EventString"))
+    event_code = row.get("EventCode")
 
     metadata: dict = dict(parsed)
     if description is not None:
@@ -307,20 +311,16 @@ def transform_event_log_row(
     if date_event is None:
         metadata["vp_date_missing"] = True
 
-    before_state = {k[3:]: v for k, v in parsed.items() if k.startswith("Old")} or None
-    after_state = {k[3:]: v for k, v in parsed.items() if k.startswith("New")} or None
-    old_value = (
-        "; ".join(f"{k[3:]}={v}" for k, v in sorted(parsed.items()) if k.startswith("Old"))
-        or None
-    )
-    new_value = (
-        "; ".join(f"{k[3:]}={v}" for k, v in sorted(parsed.items()) if k.startswith("New"))
-        or None
-    )
+    # What actually changed, decoded out of the EventString blob. Reading the
+    # blob raw is why the trail was unusable: the change is in there, buried
+    # under unchanged context and Viewpoint's internal checklist flags.
+    changes = describe(event_code, parsed, field_labels, address_labels)
+    before_state = {c["field"]: c["old"] for c in changes if c["old"]} or None
+    after_state = {c["field"]: c["new"] for c in changes if c["new"]} or None
 
-    event_code = row.get("EventCode")
     return {
         **audit_context(event_code, key_code, label_by_code, name_by_vp_key),
+        "changed_fields": changes or None,
         "vp_source_key": vp_key,
         "created_at": date_event if date_event is not None else _MISSING_DATE_SENTINEL,
         "event_code": event_code,
@@ -338,8 +338,8 @@ def transform_event_log_row(
         "metadata": metadata or None,
         "before_state": before_state,
         "after_state": after_state,
-        "old_value": collapse_uniform_kv(old_value),
-        "new_value": collapse_uniform_kv(new_value),
+        "old_value": render(changes, "old"),
+        "new_value": render(changes, "new"),
     }
 
 
@@ -365,12 +365,16 @@ def transform_ref_status_row(
     if date_change is None:
         metadata["vp_date_missing"] = True
 
+    # Viewpoint stores the status as a bare code; "0 -> 8" is not a status trail.
+    changes = status_change(row.get("OldStat"), row.get("NewStat"))
+
     return {
         **audit_context("STATUS", ref_code, label_by_code, name_by_vp_key),
         "vp_source_key": vp_key,
         "event_code": "STATUS",
-        "old_value": row.get("OldStat"),
-        "new_value": row.get("NewStat"),
+        "changed_fields": changes or None,
+        "old_value": render(changes, "old"),
+        "new_value": render(changes, "new"),
         "created_at": date_change if date_change is not None else _MISSING_DATE_SENTINEL,
         "case_id": entity_id_by_vp_key.get(ref_code),
         "source_keycode": ref_code,
