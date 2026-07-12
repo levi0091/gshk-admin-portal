@@ -1,6 +1,12 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
+
+// lookups.js imports api.js, which constructs the Supabase client at module
+// load and throws without VITE_SUPABASE_URL. CI has no .env, so the import
+// must be stubbed even though these tests never make a request.
+vi.mock('../lib/api.js', () => ({ api: { get: vi.fn() } }))
+
 import FormField, { displayValue } from './FormField.jsx'
 import { optionsFor } from '../lib/lookups.js'
 
