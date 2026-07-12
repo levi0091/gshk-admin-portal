@@ -198,3 +198,26 @@ loaded with the other FK `NULL` (and logged); if both resolve it loads
 clean. Because a later re-run of Checkpoint A/B/C could resolve a
 previously-missing side, this table uses `upsert_rows`, not the insert-only
 loader.
+
+## New deployment — run this, not the checkpoints on their own
+
+```bash
+alembic upgrade head          # MUST be at head first (Checkpoint C reads audit_event_types)
+python -m etl.run_all         # checkpoints A-D, then the derived steps, then the bucket
+python -m etl.run_all --dry-run
+```
+
+Running the checkpoints alone is **not enough**, and what they miss fails quietly:
+
+| step | why it cannot happen during the checkpoints |
+|---|---|
+| `backfill_timestamps` | `updated_at` is the newest imported EventLog entry for a record, so it can only be derived once Checkpoint C has loaded `audit_log`. Skip it and every date shows the day the ETL ran. (`created_at` **is** set during Checkpoint A, from `RefMaster.DateEntered`.) |
+| `backfill_audit_context` | fills anything the checkpoints could not, and collapses Viewpoint's packed field maps. Skip it and the audit trail reads "LEGACY_VP_EVENT" with no company or action. |
+| storage bucket | nothing else creates the private `gflowdesk-documents` bucket; uploads fail without it. |
+
+`run_all` does all of it in the right order. Every step is idempotent — safe to
+re-run and safe to resume after a failure.
+
+**Long backfills must commit per step.** `audit_log` has 226k rows and a single
+statement takes ~8 minutes; running several in one transaction keeps it open long
+enough that the connection is dropped and nothing lands.

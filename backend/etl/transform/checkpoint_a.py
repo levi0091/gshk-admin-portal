@@ -47,6 +47,11 @@ def transform_person(row: dict) -> dict:
         "place_of_birth": row.get("PlaceBirth"),
         "marital_status": row.get("MaritalStatus"),
         "date_of_death": row.get("DateDeath"),
+        # Real creation date, not the moment the ETL happened to run. Viewpoint
+        # records it as RefMaster.DateEntered; without this every migrated row
+        # would show the ETL run date. (updated_at cannot be known here — it is
+        # derived from the imported EventLog once Checkpoint C has loaded it.)
+        "created_at": row.get("DateEntered"),
         "residential_address_id": None,  # backfilled in Checkpoint C from RefAddress
     }
 
@@ -64,6 +69,11 @@ def transform_entity(row: dict, bus_name: dict | None) -> dict:
         "br_number": (bus_name or {}).get("BusRegNr"),
         "cr_number": row.get("IncorpNr"),
         "status": "ceased" if ceased else "live",
+        # Real creation date, not the moment the ETL happened to run. Viewpoint
+        # records it as RefMaster.DateEntered; without this every migrated row
+        # would show the ETL run date. (updated_at cannot be known here — it is
+        # derived from the imported EventLog once Checkpoint C has loaded it.)
+        "created_at": row.get("DateEntered"),
         "registered_address_id": None,  # backfilled in Checkpoint C from RefAddress
         "incorporation_date": row.get("IncorpDate"),
         "incorporation_place": row.get("IncorpPlace") or "Hong Kong",
