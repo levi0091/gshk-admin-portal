@@ -33,6 +33,20 @@ beforeEach(() => {
 })
 
 describe('UploadDocumentModal', () => {
+  it('only offers types the owner can hold', async () => {
+    // A Certificate of Incorporation is not a person's document. Asking the
+    // server to scope the list is what stops it being offered here.
+    renderModal({ ownerKind: 'person', ownerId: 'p1', ownerName: 'John Smith' })
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith('/documents/types?owner_type=person'))
+  })
+
+  it('asks for company types on a company profile', async () => {
+    renderModal()
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith('/documents/types?owner_type=company'))
+  })
+
   it('loads the document types into the picker', async () => {
     renderModal()
     await waitFor(() => {

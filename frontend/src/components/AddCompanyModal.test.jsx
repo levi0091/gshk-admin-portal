@@ -4,8 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import AddCompanyModal from './AddCompanyModal.jsx'
 
-vi.mock('../lib/api.js', () => ({ api: { post: vi.fn() } }))
+vi.mock('../lib/api.js', () => ({ api: { post: vi.fn(), get: vi.fn() } }))
 import { api } from '../lib/api.js'
+import { _resetLookups } from '../lib/lookups.js'
 
 const onClose = vi.fn()
 const onCreated = vi.fn()
@@ -13,6 +14,9 @@ const renderModal = () => render(<AddCompanyModal onClose={onClose} onCreated={o
 
 beforeEach(() => {
   vi.clearAllMocks()
+  _resetLookups()
+  // the Country of Incorporation select reads /lookups
+  api.get.mockResolvedValue({ country: [{ code: 'HK', label: 'Hong Kong' }] })
   api.post.mockResolvedValue({ id: 'new-1', company_name: 'NewCo' })
 })
 

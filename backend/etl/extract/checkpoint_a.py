@@ -16,7 +16,7 @@ def extract_addresses(engine: Engine) -> list[dict]:
 
 
 PERSONS_QUERY = text("""
-    SELECT rm.RefCode, rm.Name, rm.ChnsName, rm.SearchName,
+    SELECT rm.RefCode, rm.Name, rm.ChnsName, rm.SearchName, rm.DateEntered,
            c.GivenNames, c.FormerName, c.FormerGivenNames, c.Aliases,
            c.Email, c.BirthDate, c.Gender, c.Nationality, c.NationalityCode,
            c.Occupation, c.PlaceBirth, c.MaritalStatus, c.DateDeath
@@ -33,7 +33,7 @@ def extract_persons(engine: Engine) -> list[dict]:
 
 
 ENTITIES_QUERY = text("""
-    SELECT e.EntCode, rm.CompName, rm.Name, e.IncorpNr, e.IncorpDate,
+    SELECT e.EntCode, rm.CompName, rm.Name, rm.DateEntered, e.IncorpNr, e.IncorpDate,
            e.IncorpPlace, e.Status, e.DateLastAnRe, e.DateNextAnRe,
            e.DateDueAnRe, e.DateNextAGM, e.MA_DirMin, e.MA_DirMax,
            e.MA_AgmWaived, e.PrevEntName, e.DateNameChanged, e.Note,

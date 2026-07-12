@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import FormField from './FormField.jsx'
+import { useLookups } from '../lib/lookups.js'
 import { api } from '../lib/api.js'
 
 const FIELDS = [
@@ -7,7 +9,9 @@ const FIELDS = [
   { key: 'surname', label: 'Surname' },
   { key: 'full_name_zh', label: 'Chinese Name' },
   { key: 'date_of_birth', label: 'Date of Birth', type: 'date' },
-  { key: 'nationality', label: 'Nationality' },
+  { key: 'gender', label: 'Gender', lookup: 'gender' },
+  { key: 'nationality', label: 'Nationality', lookup: 'nationality' },
+  { key: 'marital_status', label: 'Marital Status', lookup: 'marital_status' },
   { key: 'occupation', label: 'Occupation' },
   { key: 'email', label: 'Email', type: 'email' },
   { key: 'phone', label: 'Phone' },
@@ -15,6 +19,7 @@ const FIELDS = [
 
 export default function AddPersonModal({ onClose, onCreated }) {
   const [form, setForm] = useState({})
+  const lookups = useLookups()
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [apiError, setApiError] = useState('')
@@ -61,17 +66,12 @@ export default function AddPersonModal({ onClose, onCreated }) {
           )}
           <div className="form-grid">
             {FIELDS.map(f => (
-              <div className={`f-group${f.full ? ' full' : ''}`} key={f.key}>
-                <label className="f-label" htmlFor={f.key}>
-                  {f.label} {f.required && <span className="f-req">*</span>}
-                </label>
-                <input
-                  id={f.key}
-                  className="f-input"
-                  type={f.type || 'text'}
-                  placeholder={f.placeholder || ''}
-                  value={form[f.key] ?? ''}
-                  onChange={e => setForm(s => ({ ...s, [f.key]: e.target.value }))}
+              <div key={f.key}>
+                <FormField
+                  field={f}
+                  value={form[f.key]}
+                  lookups={lookups}
+                  onChange={(k, v) => setForm(s => ({ ...s, [k]: v }))}
                 />
                 {errors[f.key] && (
                   <span className="f-hint" style={{ color: '#C53030' }}>{errors[f.key]}</span>

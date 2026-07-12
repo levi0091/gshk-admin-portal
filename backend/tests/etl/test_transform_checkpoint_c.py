@@ -346,10 +346,21 @@ def test_transform_event_log_row_happy_path():
     assert out["user_id"] is None
     assert out["metadata"]["FQnumber"] == "FQ025280"
     assert out["metadata"]["description"] == "Form generated"
+    # A form generation changes nothing, so there is no diff to show — but
+    # "Form Generated" with no form is exactly the useless entry we set out to
+    # fix. It reports WHICH form instead.
+    assert out["changed_fields"] == [
+        {"field": "FormName", "label": "FormName", "old": None,
+         "new": "NAR1 - Annual Return Private Company"},
+        {"field": "FQnumber", "label": "FQnumber", "old": None, "new": "FQ025280"},
+    ]
     assert out["before_state"] is None
-    assert out["after_state"] is None
+    assert out["after_state"] == {
+        "FormName": "NAR1 - Annual Return Private Company",
+        "FQnumber": "FQ025280",
+    }
     assert out["old_value"] is None
-    assert out["new_value"] is None
+    assert "NAR1 - Annual Return Private Company" in out["new_value"]
 
 
 def test_transform_event_log_row_old_new_lifted():
@@ -360,8 +371,51 @@ def test_transform_event_log_row_old_new_lifted():
     out = transform_event_log_row(row, {}, {})
     assert out["before_state"] == {"AdNrRA": "6030", "AdNrRC": "100"}
     assert out["after_state"] == {"AdNrRA": "8029", "AdNrRC": "200"}
-    assert out["old_value"] == "AdNrRA=6030; AdNrRC=100"
-    assert out["new_value"] == "AdNrRA=8029; AdNrRC=200"
+    assert out["old_value"] == "AdNrRA: 6030; AdNrRC: 100"
+    assert out["new_value"] == "AdNrRA: 8029; AdNrRC: 200"
+
+
+def test_transform_event_log_row_decodes_pipe_as_new_old():
+    """Viewpoint's own convention: "Field=new|old". It is where most changes
+    hide — reading only the explicit Old/New pairs missed them, which is why
+    the imported trail looked empty."""
+    row = _event_log_row(
+        EventCode="CMA",
+        EventString="{CMA\x0cEntCode=HKHWLI\x0cDateLastAnRe=2025-07-21|2024-07-21"
+                    "\x0cConfidential=False|False\x0cDIxchkD=1|0\x0c}",
+        Description=None,
+    )
+    out = transform_event_log_row(
+        row, {}, {}, field_labels={"DateLastAnRe": "Last Annual Return"})
+
+    # the real change, labelled
+    assert out["changed_fields"] == [
+        {"field": "DateLastAnRe", "label": "Last Annual Return",
+         "old": "2024-07-21", "new": "2025-07-21"},
+    ]
+    # Confidential=False|False is context written in change form, not a change.
+    # DIxchkD is a Viewpoint internal checklist flag — noise, never shown.
+    assert out["old_value"] == "2024-07-21"
+    assert out["new_value"] == "2025-07-21"
+
+
+def test_transform_event_log_row_resolves_address_cards():
+    """Viewpoint records an address change as a change of card NUMBER.
+    "Business Address: 6030 -> 8029" tells a reader nothing."""
+    row = _event_log_row(
+        EventCode="ADC",
+        EventString="{ADC\x0cOldAdNrBA=6030\x0cNewAdNrBA=8029\x0c}",
+        Description=None,
+    )
+    out = transform_event_log_row(
+        row, {}, {},
+        field_labels={"AdNrBA": "Business Address"},
+        address_labels={"6030": "Old Road, ZA", "8029": "Unit 301, Illovo Towers, ZA"},
+    )
+    assert out["changed_fields"] == [{
+        "field": "AdNrBA", "label": "Business Address",
+        "old": "Old Road, ZA", "new": "Unit 301, Illovo Towers, ZA",
+    }]
 
 
 def test_transform_event_log_row_eventnr_float_to_int():

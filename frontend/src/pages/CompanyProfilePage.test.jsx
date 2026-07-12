@@ -13,6 +13,7 @@ vi.mock('react-router-dom', async () => {
 
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() } }))
 import { api } from '../lib/api.js'
+import { _resetLookups } from '../lib/lookups.js'
 
 const CLIENT = {
   id: 'e1', company_name: 'Skyline Capital', vp_source_key: 'SKYLINE01',
@@ -45,9 +46,22 @@ const CORP_ONLY = {
 
 const renderPage = () => render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
 
+// The profile forms now read their dropdowns from /lookups, so api.get has to
+// answer per-URL rather than returning the same payload for everything.
+const LOOKUPS = {
+  gender: [{ code: 'M', label: 'Male' }, { code: 'F', label: 'Female' }],
+  nationality: [{ code: 'Dutch', label: 'Dutch' }, { code: 'British', label: 'British' }],
+  marital_status: [{ code: 'SI', label: 'Single' }, { code: 'MA', label: 'Married' }],
+  country: [{ code: 'HK', label: 'Hong Kong' }, { code: 'ZA', label: 'South Africa' }],
+}
+const mockGet = (data) =>
+  api.get.mockImplementation(url =>
+    Promise.resolve(url === '/lookups' ? LOOKUPS : data))
+
 beforeEach(() => {
   vi.clearAllMocks()
-  api.get.mockResolvedValue(CLIENT)
+  _resetLookups()
+  mockGet(CLIENT)
   api.patch.mockResolvedValue({})
 })
 
@@ -78,7 +92,7 @@ describe('CompanyProfilePage', () => {
   })
 
   it('hides client tiles + Cases pane and reveals the corporate tile for a non-client', async () => {
-    api.get.mockResolvedValue(CORP_ONLY)
+    mockGet(CORP_ONLY)
     renderPage()
     await screen.findByText('Company Information')
     expect(screen.getByText('Corporate Party Details')).toBeInTheDocument()

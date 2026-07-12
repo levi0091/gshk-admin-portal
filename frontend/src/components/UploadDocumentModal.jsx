@@ -16,9 +16,15 @@ export default function UploadDocumentModal({ ownerKind, ownerId, ownerName, exi
   const [saving, setSaving] = useState(false)
   const fileRef = useRef(null)
 
+  // Only the types this owner can actually hold — a Certificate of Incorporation
+  // is not a person's document, and offering it here only invites a bad upload.
+  const ownerType = ownerKind === 'person' ? 'person' : 'company'
+
   useEffect(() => {
-    api.get('/documents/types').then(setTypes).catch(err => setError(err.message))
-  }, [])
+    api.get(`/documents/types?owner_type=${ownerType}`)
+      .then(setTypes)
+      .catch(err => setError(err.message))
+  }, [ownerType])
 
   const isNewVersion = typeCode && existingTypes.includes(typeCode)
 

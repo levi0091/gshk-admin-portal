@@ -13,6 +13,7 @@ vi.mock('react-router-dom', async () => {
 
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), upload: vi.fn() } }))
 import { api } from '../lib/api.js'
+import { _resetLookups } from '../lib/lookups.js'
 
 const PERSON = {
   id: 'p1', full_name: 'John Smith Junior', given_names: 'John Smith', surname: 'Smith',
@@ -40,9 +41,22 @@ const PERSON = {
 
 const renderPage = () => render(<MemoryRouter><PersonProfilePage /></MemoryRouter>)
 
+// The profile forms now read their dropdowns from /lookups, so api.get has to
+// answer per-URL rather than returning the same payload for everything.
+const LOOKUPS = {
+  gender: [{ code: 'M', label: 'Male' }, { code: 'F', label: 'Female' }],
+  nationality: [{ code: 'Dutch', label: 'Dutch' }, { code: 'British', label: 'British' }],
+  marital_status: [{ code: 'SI', label: 'Single' }, { code: 'MA', label: 'Married' }],
+  country: [{ code: 'HK', label: 'Hong Kong' }, { code: 'ZA', label: 'South Africa' }],
+}
+const mockGet = (data) =>
+  api.get.mockImplementation(url =>
+    Promise.resolve(url === '/lookups' ? LOOKUPS : data))
+
 beforeEach(() => {
   vi.clearAllMocks()
-  api.get.mockResolvedValue(PERSON)
+  _resetLookups()
+  mockGet(PERSON)
   api.patch.mockResolvedValue({})
 })
 

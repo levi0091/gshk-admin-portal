@@ -59,36 +59,50 @@ function actionOf(e) {
   return ACTION_LABELS[e.action_type] || e.action_type
 }
 
-/** What changed: old → new. */
-function changeOf(e) {
-  // Native field edits record {field, old} / {field, new}.
+/**
+ * What changed, as a list of {label, old, new}.
+ *
+ * Viewpoint-imported rows carry `changed_fields`, decoded out of the EventString
+ * by the ETL (migration 014). Native rows record a single field edit in
+ * before_state/after_state. Both end up in the same shape so the two sources
+ * render identically — which is the whole point of the shared audit model.
+ */
+function changesOf(e) {
+  if (e.changed_fields?.length) return e.changed_fields
+
   if (e.after_state?.field) {
-    const field = String(e.after_state.field).replace(/_/g, ' ')
-    return { field, old: e.before_state?.old, next: e.after_state.new }
+    return [{
+      label: String(e.after_state.field).replace(/_/g, ' '),
+      old: e.before_state?.old,
+      new: e.after_state.new,
+    }]
   }
   if (e.action_type === 'COMPANY_FLAG_CHANGED' && e.after_state) {
-    const field = Object.keys(e.after_state)[0]
-    return { field: field?.replace(/_/g, ' '), old: String(e.before_state?.[field]), next: String(e.after_state[field]) }
+    return Object.keys(e.after_state).map(f => ({
+      label: f.replace(/_/g, ' '),
+      old: String(e.before_state?.[f]),
+      new: String(e.after_state[f]),
+    }))
   }
-  // Imported rows lift the scalar change out of the EventString.
   if (e.old_value || e.new_value) {
-    return { field: null, old: e.old_value || null, next: e.new_value || null }
+    return [{ label: null, old: e.old_value, new: e.new_value }]
   }
-  if (e.action_type === 'LEGACY_VP_EVENT' && e.metadata?.descr) {
-    return { field: null, old: null, next: e.metadata.descr }
-  }
-  return null
+  return []
 }
 
 function Change({ e }) {
-  const c = changeOf(e)
-  if (!c) return <span className="td-muted">—</span>
+  const changes = changesOf(e)
+  if (!changes.length) return <span className="td-muted">—</span>
   return (
     <span style={{ fontSize: 12 }}>
-      {c.field && <span className="td-muted">{c.field}: </span>}
-      {c.old ? <span className="diff-old">{c.old}</span> : null}
-      {c.old && c.next ? <span className="td-muted"> → </span> : null}
-      {c.next ? <span className="diff-new">{c.next}</span> : null}
+      {changes.map((c, i) => (
+        <span key={i} style={{ display: 'block' }}>
+          {c.label && <span className="td-muted">{c.label}: </span>}
+          {c.old ? <span className="diff-old">{c.old}</span> : null}
+          {c.old && c.new ? <span className="td-muted"> → </span> : null}
+          {c.new ? <span className="diff-new">{c.new}</span> : null}
+        </span>
+      ))}
     </span>
   )
 }

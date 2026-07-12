@@ -461,3 +461,30 @@ def test_transform_beneficial_owner_corporate_has_no_person_id():
     assert result["party_type"] == "corporate"
     assert result["person_id"] is None
     assert result["is_current"] is False
+
+
+# ---- real creation dates on a fresh load ----------------------------------
+
+def test_entity_created_at_comes_from_viewpoint_not_the_etl_run():
+    """A fresh ETL must set the REAL creation date. Without this every migrated
+    company shows the day the ETL happened to run (the DB default)."""
+    from etl.transform.checkpoint_a import transform_entity
+    from datetime import datetime
+
+    row = {
+        "EntCode": "ACME", "CompName": "Acme Limited", "Name": "Acme Limited",
+        "DateEntered": datetime(2019, 7, 8), "IncorpNr": "123", "IncorpDate": None,
+        "IncorpPlace": None, "Status": "L",
+    }
+    out = transform_entity(row, None)
+    assert out["created_at"] == datetime(2019, 7, 8)
+
+
+def test_person_created_at_comes_from_viewpoint():
+    from etl.transform.checkpoint_a import transform_person
+    from datetime import datetime
+
+    row = {"RefCode": "SMITHJ", "Name": "SMITH, John",
+           "DateEntered": datetime(2020, 1, 2)}
+    out = transform_person(row)
+    assert out["created_at"] == datetime(2020, 1, 2)

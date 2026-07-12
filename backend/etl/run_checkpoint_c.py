@@ -49,6 +49,27 @@ def _subject_names(sb_engine) -> dict[str, str]:
     return names
 
 
+def _field_labels(sb_engine) -> dict[str, str]:
+    """VP column name -> caption, so a change reads "Last Annual Return" and
+    not "DateLastAnRe"."""
+    with sb_engine.connect() as conn:
+        return {r[0]: r[1] for r in conn.execute(
+            text("SELECT field, label FROM audit_field_labels"))}
+
+
+def _address_labels(sb_engine) -> dict[str, str]:
+    """VP address-card number -> the address text it points at. Viewpoint records
+    an address change as a change of card number, which on its own says nothing."""
+    with sb_engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT vp_source_key, line1, line2, city, country FROM addresses "
+            "WHERE vp_source_key IS NOT NULL"))
+        return {
+            key: ", ".join(p for p in (l1, l2, city, country) if p) or key
+            for key, l1, l2, city, country in rows
+        }
+
+
 def _refcode_types(engine) -> dict[str, str]:
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT RefCode, RefType FROM RefMaster"))
@@ -83,6 +104,8 @@ def run(dry_run: bool) -> ReconciliationReport:
     # row reads exactly like a native G-FlowDesk one.
     label_by_code = _audit_labels(sb_engine)
     name_by_vp_key = _subject_names(sb_engine)
+    field_labels = _field_labels(sb_engine)
+    address_labels = _address_labels(sb_engine)
 
     # 1. contacts (needs entities/persons)
     vp_contacts = extract_contacts(vp_engine)
@@ -141,7 +164,8 @@ def run(dry_run: bool) -> ReconciliationReport:
     vp_events = extract_event_log(vp_engine)
     audit_rows = [
         transform_event_log_row(r, entity_id_by_vp_key, uname_by_ucode,
-                                label_by_code, name_by_vp_key)
+                                label_by_code, name_by_vp_key,
+                                field_labels, address_labels)
         for r in vp_events
     ]
     vp_ref_status = extract_ref_status(vp_engine)

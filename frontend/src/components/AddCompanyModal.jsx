@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../lib/api.js'
+import { useLookups } from '../lib/lookups.js'
 
 // Create-time status is restricted to Pre-Incorporation / Live (OQ-3);
 // Ceased is reached later via a status action, never at create.
@@ -17,8 +18,9 @@ const COMPANY_TYPES = [
 export default function AddCompanyModal({ onClose, onCreated }) {
   const [form, setForm] = useState({
     company_name: '', br_number: '', status: '', company_type: '',
-    registered_address: '', company_phone: '',
+    incorporation_place: '', registered_address: '', company_phone: '',
   })
+  const lookups = useLookups()
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [apiError, setApiError] = useState('')
@@ -102,6 +104,17 @@ export default function AddCompanyModal({ onClose, onCreated }) {
                 {COMPANY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
               {errors.company_type && <span className="f-hint" style={{ color: '#C53030' }}>{errors.company_type}</span>}
+            </div>
+
+            <div className="f-group">
+              <label className="f-label" htmlFor="incorporation_place">Country of Incorporation</label>
+              <select id="incorporation_place" className="f-select"
+                      value={form.incorporation_place} onChange={set('incorporation_place')}>
+                <option value="">Select…</option>
+                {(lookups.country || []).map(c => (
+                  <option key={c.code} value={c.code}>{c.label}</option>
+                ))}
+              </select>
             </div>
 
             <div className="f-group full">
