@@ -146,15 +146,16 @@ def test_update_person_audits_per_changed_field():
     current = {"id": "p1", "email": "old@e.com", "phone": "123"}
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.persons.get_supabase") as msb, \
-         patch("routers.persons.log_event", new=AsyncMock()) as audit:
+         patch("routers.persons.log_events", new=AsyncMock()) as audit:
         sb = msb.return_value
         sb.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = current
         sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
             {"id": "p1", "email": "new@e.com", "phone": "123"}]
         resp = client.patch("/persons/p1", json={"email": "new@e.com", "phone": "123"}, headers=H)
         assert resp.status_code == 200
-        audit.assert_awaited_once()  # only email changed
-        assert audit.await_args.kwargs["action_type"] == "PERSON_FIELD_UPDATED"
+        events = audit.await_args.args[0]
+        assert len(events) == 1                       # phone was unchanged
+        assert events[0]["action_type"] == "PERSON_FIELD_UPDATED"
 
 
 def test_update_person_no_fields_400():

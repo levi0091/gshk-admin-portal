@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
+import { downloadDocument } from '../lib/download.js'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 
 const EDITABLE = [
@@ -39,11 +40,6 @@ function addressText(a) {
   return [a.line1, a.line2, a.line3, a.city, a.country].filter(Boolean).join(', ') || null
 }
 
-async function download(id) {
-  const { url } = await api.get(`/documents/${id}/download`)
-  window.open(url, '_blank', 'noopener')
-}
-
 /** Document history: grouped by type, newest version current, older preserved. */
 function DocumentHistory({ documents }) {
   if (!documents?.length) {
@@ -55,7 +51,7 @@ function DocumentHistory({ documents }) {
     return (
       <div key={doc.id}>
         <div className="doc-hist-type">
-          {doc.document_type_code}
+          {doc.document_types?.label || doc.document_type_code}
           <span className="cnt">{versions.length} version{versions.length === 1 ? '' : 's'}</span>
         </div>
         {versions.map(v => {
@@ -69,7 +65,7 @@ function DocumentHistory({ documents }) {
                 <span>v{v.version_number} · {v.file_name}</span>
                 <span className="dv-meta">{formatDate(v.created_at)}</span>
               </span>
-              <button className="dv-dl" onClick={() => download(doc.id)}>Download</button>
+              <button className="dv-dl" onClick={() => downloadDocument(doc.id)}>Download</button>
             </div>
           )
         })}

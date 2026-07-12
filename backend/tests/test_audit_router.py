@@ -58,8 +58,10 @@ LEGACY_ROW = {
     "id": "log-9", "created_at": "2026-06-18T12:07:00Z",
     "action_type": "LEGACY_VP_EVENT", "source": "viewpoint_import",
     "event_code": "OFA", "source_keycode": "ITUTORS",
-    "case_id": "e1", "created_by": "JAC", "user_display_name": None,
-    "old_value": None, "new_value": None,
+    "action_label": "Statutory Officer (Director/Secretary) Appointment",
+    "company_name": "iTutors Limited",
+    "case_id": "e1", "created_by": "JAC", "user_display_name": "JAC",
+    "old_value": None, "new_value": "Get Started HK Limited (company_secretary)",
     "metadata": {"description": "Get Started HK Limited Appointed as Secretary"},
 }
 
@@ -76,20 +78,20 @@ def _wire(sb, rows, total=1, entities=None):
     q.in_.return_value.execute.return_value.data = entities or []
 
 
-def test_global_audit_resolves_company_name():
-    """audit_log.case_id has no FK, so the company name is looked up separately."""
+def test_global_audit_returns_denormalized_context():
+    """Every row answers the same questions regardless of source: generic action,
+    which company, old -> new, who. All denormalized (migration 012)."""
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.audit.get_supabase") as msb:
-        _wire(msb.return_value, [dict(LEGACY_ROW)], total=226351,
-              entities=[{"id": "e1", "company_name": "iTutors Limited"}])
+        _wire(msb.return_value, [dict(LEGACY_ROW)], total=226351)
         resp = client.get("/audit/", headers=auth_headers())
         assert resp.status_code == 200
         body = resp.json()
         assert body["total"] == 226351
         entry = body["entries"][0]
-        assert entry["company"]["company_name"] == "iTutors Limited"
-        # the real action survives on the imported row for the UI to render
-        assert entry["metadata"]["description"] == "Get Started HK Limited Appointed as Secretary"
+        assert entry["company_name"] == "iTutors Limited"
+        # GENERIC action, not the per-record Viewpoint description
+        assert entry["action_label"] == "Statutory Officer (Director/Secretary) Appointment"
         assert entry["event_code"] == "OFA"
 
 
@@ -103,6 +105,25 @@ def test_global_audit_filters_by_source():
         assert resp.json()["total"] == 12
         q = sb.table.return_value.select.return_value
         assert ("source", "g_flowdesk") in [c.args for c in q.eq.call_args_list]
+
+
+def test_global_audit_filters_to_one_company():
+    """Pinning the trail to a company is how you see everything done to it."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        sb = msb.return_value
+        _wire(sb, [], total=7)
+        resp = client.get("/audit/?company_id=e1", headers=auth_headers())
+        assert resp.status_code == 200
+        q = sb.table.return_value.select.return_value
+        assert ("case_id", "e1") in [c.args for c in q.eq.call_args_list]
+
+
+def test_global_audit_rejects_non_whitelisted_sort():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        _wire(msb.return_value, [], total=0)
+        assert client.get("/audit/?sort=;drop", headers=auth_headers()).status_code == 422
 
 
 def test_global_audit_requires_audit_trail_read():

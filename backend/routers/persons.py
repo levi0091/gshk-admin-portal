@@ -4,6 +4,7 @@ Gated by require_permission("persons"/"documents", ...). Every mutation audits.
 Person Profile carries fields, identity documents, residential address, a role
 roll-up (read-only from the link tables), and document history.
 """
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -11,8 +12,8 @@ from pydantic import BaseModel
 
 from middleware.auth import require_permission
 from db.supabase import get_supabase
-from services.audit_service import log_event
-from services import document_service
+from services.audit_service import log_event, log_events
+from services import audit_events, document_service
 
 router = APIRouter()
 
@@ -158,18 +159,26 @@ async def list_persons(
             q = q.eq(flag, True)
         return q.limit(1).execute().count or 0
 
-    role_counts = {"all": count_of(None)}
-    for name, flag in _ROLE_FLAGS.items():
-        role_counts[name] = count_of(flag)
-
     q = base("*")
     if role:
         q = q.eq(_ROLE_FLAGS[role], True)
     offset = (page - 1) * page_size
-    rows = (
-        q.order(sort or "full_name", desc=(dir == "desc"))
-        .range(offset, offset + page_size - 1).execute().data
-    ) or []
+
+    # The 5 role counts and the page query are independent of one another. Run
+    # sequentially they were 6 x ~200ms of pure round-trip latency on every load.
+    names = list(_ROLE_FLAGS)
+    results = await asyncio.gather(
+        asyncio.to_thread(count_of, None),
+        *[asyncio.to_thread(count_of, _ROLE_FLAGS[n]) for n in names],
+        asyncio.to_thread(
+            lambda: (q.order(sort or "full_name", desc=(dir == "desc"))
+                     .range(offset, offset + page_size - 1).execute().data) or []
+        ),
+    )
+    role_counts = {"all": results[0]}
+    for n, v in zip(names, results[1:-1]):
+        role_counts[n] = v
+    rows = results[-1]
 
     total = role_counts[role] if role else role_counts["all"]
     return {
@@ -229,7 +238,10 @@ async def create_person(
     await log_event(
         case_id=None, user_id=user["id"],
         user_display_name=user["display_name"], action_type="PERSON_CREATED",
-        entity_type="person", entity_id=str(person["id"]), after_state=row,
+        event_code=audit_events.VP_NEW_MASTER_FILE,   # Viewpoint: New Master File
+        company_name=person["full_name"],             # subject of the event
+        entity_type="person", entity_id=str(person["id"]),
+        new_value=person["full_name"], after_state=row,
     )
     return person
 
@@ -256,17 +268,22 @@ async def update_person(
         sb.table("persons").update(updates).eq("id", person_id).execute()
     ).data[0]
 
-    for field, new_val in updates.items():
-        old_val = current.get(field)
-        if old_val == new_val:
-            continue
-        await log_event(
+    await log_events([
+        dict(
             case_id=None, user_id=user["id"],
             user_display_name=user["display_name"], action_type="PERSON_FIELD_UPDATED",
+            # KYC fields are Compliance (CPC) in Viewpoint; names/contact are ADC.
+            event_code=audit_events.person_field_code(field),
+            company_name=current.get("full_name"),
             entity_type="person", entity_id=str(person_id),
+            old_value=old_val, new_value=new_val,
             before_state={"field": field, "old": old_val},
             after_state={"field": field, "new": new_val},
         )
+        for field, new_val in updates.items()
+        for old_val in [current.get(field)]
+        if old_val != new_val
+    ])
     return updated
 
 

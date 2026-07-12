@@ -22,7 +22,11 @@ const CLIENT = {
   is_client: true, is_corporate_party: false,
   registered_address: { line1: 'Unit 12A', city: 'Central', country: 'HK' },
   contacts: [{ id: 'c1', contact_type: 'phone', contact_value: '+852 3500 1234' }],
-  documents: [{ id: 'd1', title: 'Certificate of Incorporation', current_version: 1 }],
+  documents: [{
+    id: 'd1', document_type_code: 'coi', current_version: 1,
+    file_name: 'brand-guideline-v3.pdf',
+    document_types: { code: 'coi', label: 'Certificate of Incorporation' },
+  }],
   officers: [{
     id: 'o1', role: 'director', appointed_date: '2024-05-20', is_current: true,
     persons: { id: 'p1', full_name: 'John Smith', email: 'js@x.com' },
@@ -117,9 +121,12 @@ describe('CompanyProfilePage', () => {
     })
   })
 
-  it('renders documents with a download action', async () => {
+  it('names the document TYPE, not just the uploaded file name', async () => {
     renderPage()
+    // the file name alone ("brand-guideline-v3.pdf") does not say what the
+    // document IS — the type must be shown
     await screen.findByText('Certificate of Incorporation')
+    expect(screen.getByText(/brand-guideline-v3\.pdf/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument()
   })
 

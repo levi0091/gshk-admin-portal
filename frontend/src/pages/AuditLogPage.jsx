@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
+import SortableTh from '../components/SortableTh.jsx'
 
 const PAGE_SIZE = 100
 
@@ -50,11 +51,11 @@ function formatTs(iso) {
  * to the native action label.
  */
 function actionOf(e) {
-  const description = e.metadata?.description
-  if (description) return description
-  if (e.action_type === 'LEGACY_VP_EVENT' && e.metadata?.descr) {
-    return `Status — ${e.metadata.descr}`
-  }
+  // The GENERIC action from the event-type registry — the same name whether the
+  // change happened in Viewpoint or G-FlowDesk. Never the per-record description
+  // ("Master File Details of Miss Ilze TSERKEZIS Changed"), which cannot be
+  // grouped or filtered.
+  if (e.action_label) return e.action_label
   return ACTION_LABELS[e.action_type] || e.action_type
 }
 
@@ -101,6 +102,14 @@ export default function AuditLogPage() {
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
+  const [sort, setSort] = useState(null)
+  const [dir, setDir] = useState('desc')
+
+  function onSort(col, nextDir) {
+    setSort(col)
+    setDir(nextDir)
+    setPage(1)
+  }
 
   useEffect(() => {
     const t = setTimeout(() => { setQuery(search); setPage(1) }, 300)
@@ -113,12 +122,13 @@ export default function AuditLogPage() {
     const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
     if (source) params.set('source', source)
     if (query) params.set('search', query)
+    if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
     api.get(`/audit/?${params}`)
       .then(setData)
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [source, query, page])
+  }, [source, query, page, sort, dir])
 
   const entries = data?.entries || []
   const total = data?.total || 0
@@ -141,8 +151,8 @@ export default function AuditLogPage() {
           <circle cx="6.5" cy="6.5" r="5" /><path d="M11 11l3 3" strokeLinecap="round" />
         </svg>
         <input className="search-input" type="text"
-               aria-label="Search action, event code or user"
-               placeholder="Search action, event code or user"
+               aria-label="Search company, action, event code or user"
+               placeholder="Search company, action, event code or user"
                value={search} onChange={e => setSearch(e.target.value)} />
       </div>
 
@@ -166,11 +176,18 @@ export default function AuditLogPage() {
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: 150 }}>Time (HKT)</th>
-                  <th>Action</th>
-                  <th>Company / Case</th>
-                  <th>What changed</th>
-                  <th>User</th>
+                  {[
+                    ['created_at', 'Time (HKT)'],
+                    ['action_label', 'Action'],
+                    ['company_name', 'Company / Case'],
+                    ['new_value', 'What changed'],
+                    ['user_display_name', 'User'],
+                  ].map(([col, label]) => (
+                    <SortableTh key={col} col={col} sort={sort} dir={dir} onSort={onSort}
+                                style={col === 'created_at' ? { width: 150 } : undefined}>
+                      {label}
+                    </SortableTh>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -188,13 +205,17 @@ export default function AuditLogPage() {
                       {e.event_code && <span className="filing-tag">{e.event_code}</span>}
                     </td>
                     <td data-label="Company / Case">
-                      {e.company ? (
-                        <span className="bc-link" style={{ color: 'var(--indigo)', fontWeight: 600, fontSize: 12 }}
-                              onClick={() => navigate(`/companies/${e.case_id}`)}>
-                          {e.company.company_name}
-                        </span>
+                      {e.company_name ? (
+                        e.case_id ? (
+                          <span className="bc-link" style={{ color: 'var(--indigo)', fontWeight: 600, fontSize: 12 }}
+                                onClick={() => navigate(`/companies/${e.case_id}`)}>
+                            {e.company_name}
+                          </span>
+                        ) : (
+                          <span className="td-primary" style={{ fontSize: 12 }}>{e.company_name}</span>
+                        )
                       ) : e.source_keycode ? (
-                        <span className="td-muted" title="Viewpoint key — no matching company">
+                        <span className="td-muted" title="Viewpoint key — no matching record">
                           {e.source_keycode}
                         </span>
                       ) : (

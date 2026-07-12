@@ -29,6 +29,26 @@ def _vp_key_to_id(engine, table: str) -> dict[str, str]:
         return {r.vp_source_key: str(r.id) for r in rows}
 
 
+def _audit_labels(sb_engine) -> dict[str, str]:
+    """code -> generic action name, from the audit_event_types registry."""
+    with sb_engine.connect() as conn:
+        rows = conn.execute(text("SELECT code, name FROM audit_event_types"))
+        return {r[0]: r[1] for r in rows}
+
+
+def _subject_names(sb_engine) -> dict[str, str]:
+    """Viewpoint RefCode -> the company or person the event is about."""
+    names: dict[str, str] = {}
+    with sb_engine.connect() as conn:
+        for sql in (
+            "SELECT vp_source_key, company_name FROM entities WHERE vp_source_key IS NOT NULL",
+            "SELECT vp_source_key, full_name FROM persons WHERE vp_source_key IS NOT NULL",
+        ):
+            for key, name in conn.execute(text(sql)):
+                names.setdefault(key, name)
+    return names
+
+
 def _refcode_types(engine) -> dict[str, str]:
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT RefCode, RefType FROM RefMaster"))
@@ -57,6 +77,12 @@ def run(dry_run: bool) -> ReconciliationReport:
     address_id_by_vp_key = _vp_key_to_id(sb_engine, "addresses")
     refcode_types = _refcode_types(vp_engine)
     uname_by_ucode = extract_vp_users(vp_engine)
+
+    # Audit context (migration 012): every audit row carries the GENERIC action
+    # name from the event-type registry and the subject's name, so an imported
+    # row reads exactly like a native G-FlowDesk one.
+    label_by_code = _audit_labels(sb_engine)
+    name_by_vp_key = _subject_names(sb_engine)
 
     # 1. contacts (needs entities/persons)
     vp_contacts = extract_contacts(vp_engine)
@@ -113,9 +139,17 @@ def run(dry_run: bool) -> ReconciliationReport:
 
     # 6. audit_log (EventLog + RefStatus) — no drops, insert-only via DO NOTHING.
     vp_events = extract_event_log(vp_engine)
-    audit_rows = [transform_event_log_row(r, entity_id_by_vp_key, uname_by_ucode) for r in vp_events]
+    audit_rows = [
+        transform_event_log_row(r, entity_id_by_vp_key, uname_by_ucode,
+                                label_by_code, name_by_vp_key)
+        for r in vp_events
+    ]
     vp_ref_status = extract_ref_status(vp_engine)
-    audit_rows += [transform_ref_status_row(r, entity_id_by_vp_key, uname_by_ucode) for r in vp_ref_status]
+    audit_rows += [
+        transform_ref_status_row(r, entity_id_by_vp_key, uname_by_ucode,
+                                 label_by_code, name_by_vp_key)
+        for r in vp_ref_status
+    ]
     inserted = load_audit_log(sb_engine, audit_rows, dry_run=dry_run)
     # Honest DO-NOTHING convention: source=produced rows this run, loaded=newly
     # inserted. On a re-run against already-imported history, loaded legitimately
