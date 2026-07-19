@@ -92,6 +92,20 @@ def _permissions_for(user: dict, module: str) -> set[str]:
     return allowed
 
 
+async def require_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> dict:
+    """Just an authenticated, active user — no module permission required.
+
+    For the identity bootstrap (`/auth/me`): the frontend calls it right after
+    login to learn who it is and what it may see. Gating that on a business
+    module would lock a valid user out of the whole app for lacking one specific
+    permission — e.g. a persons-only role could never load the page that would
+    have told it it can read persons.
+    """
+    return _resolve_user(credentials.credentials)
+
+
 def require_permission(module: str, permission: str):
     """FastAPI dependency factory. Returns a dependency that checks module permission."""
 

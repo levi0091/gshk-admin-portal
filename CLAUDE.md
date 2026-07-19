@@ -152,12 +152,12 @@ Every API endpoint must be protected by the `require_permission(module, permissi
 
 ```python
 # Every route handler follows this pattern:
-@router.get("/cases")
-async def list_cases(user=Depends(require_permission("nar1_data", "read"))):
+@router.get("/companies")
+async def list_companies(user=Depends(require_permission("companies", "read"))):
     ...
 
-@router.post("/cases/{id}/submit")
-async def submit_case(user=Depends(require_permission("nar1_data", "write"))):
+@router.post("/companies/{id}/submit")
+async def submit_company(user=Depends(require_permission("companies", "write"))):
     ...
 ```
 
@@ -171,9 +171,13 @@ async def submit_case(user=Depends(require_permission("nar1_data", "write"))):
 **Module identifiers (snake_case):**
 | Module | Identifier | Permitted permission levels |
 |--------|-----------|----------------------------|
-| NAR1 Data | `nar1_data` | `read`, `write` |
+| Companies | `companies` | `read`, `write` |
+| Persons | `persons` | `read`, `write` |
+| Documents | `documents` | `read`, `write`, `delete` |
 | NNC1 Data | `nnc1_data` *(future)* | `read`, `write` |
 | Audit Trail | `audit_trail` | `read` **only** — no write or admin level exists |
+
+> The old `nar1_data` module was removed (migration 015) — the portal manages companies through their full lifecycle, and a distinct "NAR1 data" surface was never built. `/auth/me` is gated on authentication only (`require_user`), not a business module, so a role can hold any subset of modules and still log in.
 
 > `audit_trail` is intentionally read-only at the permission level. Do not add a `write` permission for this module under any circumstances.
 
