@@ -144,4 +144,23 @@ describe('CompanyProfilePage', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
-      expect(api.patch).toHaveBe
+      expect(api.patch).toHaveBeenCalledWith('/companies/e1',
+        { company_name: 'Skyline Capital Management' })
+    })
+  })
+
+  it('names the document TYPE, not just the uploaded file name', async () => {
+    renderPage()
+    // the file name alone ("brand-guideline-v3.pdf") does not say what the
+    // document IS — the type must be shown
+    await screen.findByText('Certificate of Incorporation')
+    expect(screen.getByText(/brand-guideline-v3\.pdf/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument()
+  })
+
+  it('renders an error state when the fetch fails', async () => {
+    api.get.mockRejectedValue(new Error('boom'))
+    renderPage()
+    expect(await screen.findByText(/Failed to load company: boom/)).toBeInTheDocument()
+  })
+})

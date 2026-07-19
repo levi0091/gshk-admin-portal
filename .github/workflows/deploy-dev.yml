@@ -1,0 +1,68 @@
+name: Deploy Dev — Cloudflare Pages
+
+# Frontend was never actually deploying from `dev`: the Cloudflare Pages project
+# builds its Production environment (admin-dev.g-flowdesk.com) from `master`, so
+# `dev` pushes only produced throwaway preview URLs. This deploys the `dev`
+# frontend to that Pages project on every push to `dev`, so admin-dev reflects
+# the dev branch.
+#
+# One-time setup — add these in GitHub → Settings → Secrets and variables → Actions:
+#   Secrets:
+#     CLOUDFLARE_API_TOKEN     — a token with the "Cloudflare Pages: Edit" permission
+#     CLOUDFLARE_ACCOUNT_ID    — the account that owns the Pages project
+#     VITE_SUPABASE_URL        — DEV Supabase URL   (baked into the client at build)
+#     VITE_SUPABASE_ANON_KEY   — DEV Supabase anon key
+#
+# NOTE: this project also has Cloudflare's own Git integration enabled. To avoid
+# two builds racing for admin-dev, either turn OFF automatic builds in the Pages
+# project (Settings → Builds & deployments) and rely on this workflow, or point
+# the Pages production branch at `dev` and delete this workflow. Don't run both.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-dev.yml'
+
+# One deploy at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # A broken build must not deploy — the tests run in frontend-ci.yml; this
+      # build failing is the last gate before the artifact ships.
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: https://api-dev-admin.g-flowdesk.com
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # --branch=master marks this a PRODUCTION deployment so it aliases to
+          # the custom domain (admin-dev.g-flowdesk.com), even though the git ref
+          # is dev. If the Pages production branch is ever changed, update this.
+          command: pages deploy dist --project-name=gshk-admin-portal --branch=master
+          workingDirectory: frontend
