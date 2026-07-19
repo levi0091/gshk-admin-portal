@@ -21,7 +21,7 @@ def test_get_audit_trail_returns_entries():
          patch("middleware.auth.get_supabase") as mock_perm_sb, \
          patch("routers.cases_audit.get_supabase") as mock_sb:
 
-        # Permission check passes (nar1_staff has read on nar1_data)
+        # Permission check passes (role has audit_trail:read)
         # Chain: .table().select().eq(role_id).eq(module).execute()
         mock_perm_sb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             {"permission": "read"}

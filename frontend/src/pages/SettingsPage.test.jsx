@@ -43,15 +43,15 @@ describe('SettingsPage', () => {
 
   it('lists the granted permissions for a non-super-admin', () => {
     auth = {
-      profile: { display_name: 'Staff', email: 's@x.com', role_name: 'nar1_write',
-                 permissions: ['nar1_data:read', 'nar1_data:write'] },
+      profile: { display_name: 'Staff', email: 's@x.com', role_name: 'reviewer',
+                 permissions: ['companies:read', 'companies:write'] },
       isSuperAdmin: false,
       hasPermission: () => false,
       signOut,
     }
     renderPage()
-    expect(screen.getByText('nar1_data:read')).toBeInTheDocument()
-    expect(screen.getByText('nar1_data:write')).toBeInTheDocument()
+    expect(screen.getByText('companies:read')).toBeInTheDocument()
+    expect(screen.getByText('companies:write')).toBeInTheDocument()
     // no admin tools for a role without them
     expect(screen.queryByText('User Management')).not.toBeInTheDocument()
   })

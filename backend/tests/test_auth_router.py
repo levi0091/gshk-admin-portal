@@ -18,14 +18,35 @@ def test_me_returns_user_profile():
         sb = MagicMock()
         mock_sb.return_value = sb
         sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-            {"module": "nar1_data", "permission": "read"},
+            {"module": "companies", "permission": "read"},
         ]
         resp = client.get("/auth/me", headers={"Authorization": "Bearer tok"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["display_name"] == "Levi Z."
         assert data["role_name"] == "super_admin"
-        assert data["permissions"] == ["nar1_data:read"]
+        assert data["permissions"] == ["companies:read"]
+
+
+def test_me_works_for_a_user_with_no_module_permissions():
+    """The identity bootstrap must not be gated on a business module — otherwise
+    a role that only holds, say, persons access could never load the page that
+    would have told it what it can do. Any authenticated, active user gets /me."""
+    with patch("middleware.auth._resolve_user") as mock_resolve, patch(
+        "routers.auth.get_supabase"
+    ) as mock_sb:
+        mock_resolve.return_value = {
+            "id": "user-9",
+            "display_name": "New Staff",
+            "role_name": "onboarding",  # not super_admin
+            "role_id": "role-onboarding",
+        }
+        sb = MagicMock()
+        mock_sb.return_value = sb
+        sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        resp = client.get("/auth/me", headers={"Authorization": "Bearer tok"})
+        assert resp.status_code == 200
+        assert resp.json()["permissions"] == []
 
 
 def test_me_without_token_returns_403():

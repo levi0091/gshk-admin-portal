@@ -16,7 +16,7 @@ def make_app(module: str, permission: str):
 
 
 def test_missing_token_returns_403():
-    client = make_app("nar1_data", "read")
+    client = make_app("companies", "read")
     resp = client.get("/test")
     assert resp.status_code == 403  # HTTPBearer returns 403 when no creds
 
@@ -24,7 +24,7 @@ def test_missing_token_returns_403():
 def test_invalid_token_returns_401():
     with patch("middleware.auth.get_supabase") as mock_sb:
         mock_sb.return_value.auth.get_user.side_effect = Exception("invalid")
-        client = make_app("nar1_data", "read")
+        client = make_app("companies", "read")
         resp = client.get("/test", headers={"Authorization": "Bearer bad_token"})
         assert resp.status_code == 401
 
@@ -46,7 +46,7 @@ def test_super_admin_bypasses_permission_check():
             "roles": {"name": "super_admin"},
         }
 
-        client = make_app("nar1_data", "write")
+        client = make_app("companies", "write")
         resp = client.get("/test", headers={"Authorization": "Bearer valid_token"})
         assert resp.status_code == 200
 
@@ -73,6 +73,6 @@ def test_user_without_permission_returns_403():
 
         sb.table.side_effect = lambda table_name: users_mock if table_name == "users" else perms_mock
 
-        client = make_app("nar1_data", "write")
+        client = make_app("companies", "write")
         resp = client.get("/test", headers={"Authorization": "Bearer valid_token"})
         assert resp.status_code == 403

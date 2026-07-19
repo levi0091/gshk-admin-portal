@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends
-from middleware.auth import require_permission
+from middleware.auth import require_user
 from db.supabase import get_supabase
 
 router = APIRouter()
 
 
 @router.get("/me")
-async def get_me(user=Depends(require_permission("nar1_data", "read"))):
+async def get_me(user=Depends(require_user)):
     sb = get_supabase()
     perms_res = (
         sb.table("role_permissions")

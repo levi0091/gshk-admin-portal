@@ -8,7 +8,7 @@ router = APIRouter()
 @router.get("/{case_id}/audit")
 async def get_case_audit(
     case_id: str,
-    user=Depends(require_permission("nar1_data", "read")),
+    user=Depends(require_permission("audit_trail", "read")),
 ):
     """Returns audit log entries for a case, newest first. PRD: GET /cases/{case_id}/audit"""
     sb = get_supabase()

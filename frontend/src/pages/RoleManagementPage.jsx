@@ -1,9 +1,19 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api.js'
 
+// A permission entry is { value, label } — value is the module permission the
+// backend checks ('read'/'write'/'delete'), label is what the user sees. They
+// differ where "Edit" reads better than the literal 'write'.
+// A permission entry is { value, label } — value is the module permission the
+// backend checks ('read'/'write'/'delete'), label is what the user sees. They
+// differ where "Edit" reads better than the literal 'write'.
+const READ = { value: 'read', label: 'Read' }
+const EDIT = { value: 'write', label: 'Edit' }
+
 const MODULES = [
-  { id: 'nar1_data',    label: 'NAR1 Data',    permissions: ['read', 'write'] },
-  { id: 'audit_trail',  label: 'Audit Trail',   permissions: ['read'] },
+  { id: 'companies',    label: 'Companies',    permissions: [READ, EDIT] },
+  { id: 'persons',      label: 'Persons',      permissions: [READ, EDIT] },
+  { id: 'audit_trail',  label: 'Audit Trail',  permissions: [READ] },
 ]
 
 function permSet(role) {
@@ -65,8 +75,8 @@ function RoleModal({ role, onClose, onSaved }) {
           <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             <div className="f-group">
               <label className="f-label">Role Name <span className="f-req">*</span></label>
-              <input className="f-input" required value={name} onChange={e => setName(e.target.value)} placeholder="e.g. nar1_reviewer" disabled={role?.name === 'super_admin'} />
-              <span className="f-hint">Use snake_case. e.g. nar1_staff</span>
+              <input className="f-input" required value={name} onChange={e => setName(e.target.value)} placeholder="e.g. company_reviewer" disabled={role?.name === 'super_admin'} />
+              <span className="f-hint">Use snake_case. e.g. compliance_staff</span>
             </div>
 
             <div>
@@ -78,17 +88,17 @@ function RoleModal({ role, onClose, onSaved }) {
                   <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-head)', marginBottom: 10 }}>{mod.label}</div>
                   <div style={{ display: 'flex', gap: 16 }}>
                     {mod.permissions.map(perm => {
-                      const key = `${mod.id}:${perm}`
+                      const key = `${mod.id}:${perm.value}`
                       return (
-                        <label key={perm} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                        <label key={perm.value} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
                           <input
                             type="checkbox"
                             checked={perms.has(key)}
-                            onChange={() => toggle(mod.id, perm)}
+                            onChange={() => toggle(mod.id, perm.value)}
                             style={{ width: 15, height: 15, accentColor: 'var(--indigo)' }}
                             disabled={role?.name === 'super_admin'}
                           />
-                          <span style={{ textTransform: 'capitalize', color: 'var(--t-body)' }}>{perm}</span>
+                          <span style={{ color: 'var(--t-body)' }}>{perm.label}</span>
                         </label>
                       )
                     })}

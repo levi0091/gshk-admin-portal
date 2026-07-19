@@ -22,7 +22,7 @@ def test_list_roles_returns_list():
         mock_sb.return_value.table.return_value.select.return_value.order.return_value.execute.return_value.data = [
             {"id": "r1", "name": "super_admin", "role_permissions": []},
             {"id": "r2", "name": "nar1_staff", "role_permissions": [
-                {"module": "nar1_data", "permission": "read"}
+                {"module": "companies", "permission": "read"}
             ]},
         ]
         resp = client.get("/roles/", headers=auth_headers())
@@ -59,7 +59,7 @@ def test_update_role_permissions():
         sb.table.return_value.insert.return_value.execute.return_value.data = []
         resp = client.patch(
             "/roles/r2",
-            json={"permissions": [{"module": "nar1_data", "permission": "read"}]},
+            json={"permissions": [{"module": "companies", "permission": "read"}]},
             headers=auth_headers(),
         )
         assert resp.status_code == 200
