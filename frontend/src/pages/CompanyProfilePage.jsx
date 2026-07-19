@@ -265,6 +265,9 @@ export default function CompanyProfilePage() {
                 <Kv label="CR No.">{company.cr_number}</Kv>
                 <Kv label="Status"><StatusBadge status={company.status} /></Kv>
                 <Kv label="Company Type">{company.company_type}</Kv>
+                <Kv label="Country of Incorporation">
+                  {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
+                </Kv>
                 <Kv label="Registered Address">{addressText(company.registered_address)}</Kv>
                 <Kv label="Company Phone">
                   {company.contacts?.find(c => c.contact_type === 'phone')?.contact_value}
@@ -292,9 +295,6 @@ export default function CompanyProfilePage() {
               </div>
               <div className="kv-list">
                 <Kv label="Company Type">{company.company_type}</Kv>
-                <Kv label="Country of Incorporation">
-                  {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
-                </Kv>
                 <Kv label="TCSP Licence">{company.tcsp_licence_no}</Kv>
                 <Kv label="TCSP Exemption">{company.tcsp_exemption_reason}</Kv>
               </div>
