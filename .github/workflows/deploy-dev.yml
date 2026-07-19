@@ -46,15 +46,21 @@ jobs:
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SB_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SB_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
           missing=
           [ -z "$CF_TOKEN" ]   && missing="$missing CLOUDFLARE_API_TOKEN"
           [ -z "$CF_ACCOUNT" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          # Consumed by the build below — an empty Supabase URL/key deploys a
+          # bundle that can't authenticate, so treat them as required too.
+          [ -z "$SB_URL" ]     && missing="$missing VITE_SUPABASE_URL"
+          [ -z "$SB_KEY" ]     && missing="$missing VITE_SUPABASE_ANON_KEY"
           if [ -n "$missing" ]; then
             echo "::error::Missing repo secret(s):$missing — add them in Settings → Secrets and variables → Actions (repo), then re-run."
             exit 1
           fi
-          echo "Cloudflare secrets present."
+          echo "All required secrets present."
 
       - uses: actions/setup-node@v4
         with:
