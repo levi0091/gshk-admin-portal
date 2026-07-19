@@ -49,13 +49,15 @@ jobs:
           SB_URL: ${{ secrets.VITE_SUPABASE_URL }}
           SB_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
+          # Plain if-blocks, not `[ -z ] && ...`: under `set -e` the &&-form can
+          # false-fail when a value IS present. VITE_* are consumed by the build
+          # below — empty ones deploy a bundle that can't authenticate — so they
+          # are required too.
           missing=
-          [ -z "$CF_TOKEN" ]   && missing="$missing CLOUDFLARE_API_TOKEN"
-          [ -z "$CF_ACCOUNT" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
-          # Consumed by the build below — an empty Supabase URL/key deploys a
-          # bundle that can't authenticate, so treat them as required too.
-          [ -z "$SB_URL" ]     && missing="$missing VITE_SUPABASE_URL"
-          [ -z "$SB_KEY" ]     && missing="$missing VITE_SUPABASE_ANON_KEY"
+          if [ -z "$CF_TOKEN" ];   then missing="$missing CLOUDFLARE_API_TOKEN"; fi
+          if [ -z "$CF_ACCOUNT" ]; then missing="$missing CLOUDFLARE_ACCOUNT_ID"; fi
+          if [ -z "$SB_URL" ];     then missing="$missing VITE_SUPABASE_URL"; fi
+          if [ -z "$SB_KEY" ];     then missing="$missing VITE_SUPABASE_ANON_KEY"; fi
           if [ -n "$missing" ]; then
             echo "::error::Missing repo secret(s):$missing — add them in Settings → Secrets and variables → Actions (repo), then re-run."
             exit 1
