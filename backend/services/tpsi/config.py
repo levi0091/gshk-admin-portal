@@ -57,6 +57,30 @@ def _require(name: str) -> str:
     return value
 
 
+def _resolve_cr_public_key() -> str:
+    # Spec §9: the CR public key is an environment variable like BASE_URL and
+    # TLS_VERIFY, so TEST -> PROD stays a config swap with zero code change.
+    # TPSI_CR_PUBLIC_KEY_PATH (a file on disk) is a local-dev convenience only
+    # and is checked second.
+    inline = os.environ.get("TPSI_CR_PUBLIC_KEY")
+    if inline:
+        # Railway's env UI mangles multi-line values into literal "\n"
+        # escapes rather than real newlines — normalise both forms so a
+        # pasted-in key doesn't silently fail PEM parsing on deploy.
+        return inline.replace("\\n", "\n")
+
+    path = os.environ.get("TPSI_CR_PUBLIC_KEY_PATH")
+    if path:
+        with open(path, encoding="utf8") as fh:
+            return fh.read()
+
+    # Name only — never key content; this message reaches logs.
+    raise RuntimeError(
+        "TPSI_CR_PUBLIC_KEY or TPSI_CR_PUBLIC_KEY_PATH must be set for TPSI "
+        "integration"
+    )
+
+
 @lru_cache(maxsize=1)
 def get_config() -> TpsiConfig:
     env = _require("TPSI_ENV")
@@ -69,9 +93,7 @@ def get_config() -> TpsiConfig:
         # setting anyone may switch off by editing an env var.
         verify = True
 
-    key_path = _require("TPSI_CR_PUBLIC_KEY_PATH")
-    with open(key_path, encoding="utf8") as fh:
-        pem = fh.read()
+    pem = _resolve_cr_public_key()
 
     return TpsiConfig(
         env=env,

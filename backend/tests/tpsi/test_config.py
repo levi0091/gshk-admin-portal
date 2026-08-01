@@ -49,6 +49,58 @@ def test_prod_env_forces_tls_verify(monkeypatch, tmp_path):
     assert cfg.get_config().tls_verify is True
 
 
+def test_inline_key_takes_precedence_over_path(monkeypatch, tmp_path):
+    """TPSI_CR_PUBLIC_KEY (spec §9 env var) wins over the local-dev file path
+    when both are set."""
+    key = tmp_path / "k.pem"
+    key.write_text("-----BEGIN PUBLIC KEY-----\nFROM_PATH\n-----END PUBLIC KEY-----\n")
+    monkeypatch.setenv("TPSI_ENV", "test")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
+    monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
+    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.setenv("TPSI_CR_PUBLIC_KEY_PATH", str(key))
+    monkeypatch.setenv(
+        "TPSI_CR_PUBLIC_KEY",
+        "-----BEGIN PUBLIC KEY-----\nFROM_INLINE\n-----END PUBLIC KEY-----\n",
+    )
+
+    c = cfg.get_config()
+    assert "FROM_INLINE" in c.cr_public_key_pem
+    assert "FROM_PATH" not in c.cr_public_key_pem
+
+
+def test_inline_key_normalises_literal_newline_escapes(monkeypatch):
+    """Railway's env UI mangles multi-line values into literal backslash-n
+    escapes rather than real newlines — this must not break PEM parsing."""
+    monkeypatch.setenv("TPSI_ENV", "test")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
+    monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
+    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.delenv("TPSI_CR_PUBLIC_KEY_PATH", raising=False)
+    monkeypatch.setenv(
+        "TPSI_CR_PUBLIC_KEY",
+        "-----BEGIN PUBLIC KEY-----\\nAAAA\\n-----END PUBLIC KEY-----\\n",
+    )
+
+    c = cfg.get_config()
+    assert c.cr_public_key_pem.startswith("-----BEGIN PUBLIC KEY-----\n")
+    assert "\\n" not in c.cr_public_key_pem
+
+
+def test_missing_both_key_vars_raises_mentioning_both_names(monkeypatch):
+    monkeypatch.setenv("TPSI_ENV", "test")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
+    monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
+    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.delenv("TPSI_CR_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("TPSI_CR_PUBLIC_KEY_PATH", raising=False)
+
+    with pytest.raises(RuntimeError) as exc:
+        cfg.get_config()
+    assert "TPSI_CR_PUBLIC_KEY" in str(exc.value)
+    assert "TPSI_CR_PUBLIC_KEY_PATH" in str(exc.value)
+
+
 def test_nar1_is_chargeable_with_a_recorded_fee():
     assert cfg.is_chargeable("Nar1") is True
     assert cfg.fee_for("Nar1") > Decimal("0")
