@@ -71,21 +71,36 @@ def leaf_paths() -> list[str]:
     return out
 
 
+def _is_repeating_wrapper(node: "Node") -> bool:
+    """CR's repeating pattern: a wrapper holding one repeated child, whose name
+    the wrapper's own name extends.
+
+        shareCapitals/shareCapital   indSecList/indSec   corpDirList/corpDir
+        shares/share                 shareHolderGrps/shareHolderGrp
+        allotteeRec/allottee
+
+    The name relationship is the load-bearing part. Detecting on structure alone
+    ("one child, and that child has children") is too loose: `schedule1` has a
+    single `shares` child, so it would be misread as repeating, and the builder
+    would then emit one `<share>` where CR sent two — silently losing every
+    share class after the first.
+    """
+    if len(node.children) != 1:
+        return False
+    child = node.children[0]
+    return bool(child.children) and node.name.startswith(child.name)
+
+
 @lru_cache(maxsize=1)
 def repeating_containers() -> frozenset[str]:
-    """Containers whose single child is the repeating item.
-
-    CR's pattern is a plural wrapper holding one repeated singular child:
-    shareCapitals/shareCapital, indSecList/indSec, corpDirList/corpDir,
-    shares/share, allotteeRec/allottee. Detected structurally rather than from
-    a hardcoded list, so a new worksheet needs no code change here.
-    """
+    """Paths of the repeating wrappers, derived from the schema rather than a
+    hardcoded list, so a new worksheet needs no code change here."""
     out: set[str] = set()
 
     def walk(node: Node, prefix: str) -> None:
         for child in node.children:
             path = f"{prefix}/{child.name}" if prefix else child.name
-            if len(child.children) == 1 and child.children[0].children:
+            if _is_repeating_wrapper(child):
                 out.add(path)
             walk(child, path)
 
