@@ -15,6 +15,7 @@ from typing import Callable
 import psycopg2
 
 from db.supabase import get_supabase
+from services.tpsi.config import get_config
 from services.tpsi.secrets import decrypt, encrypt
 
 # Never hand out a token that could expire mid-request.
@@ -69,11 +70,33 @@ def _with_lock(account_id: str, fn: Callable):
     """
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
-        # No direct connection configured (e.g. a unit-test environment).
-        # Correctness under concurrency needs the lock, so this is a
-        # single-process fallback only. In production DATABASE_URL is
-        # mandatory (set alongside SUPABASE_URL) — this branch should never
-        # be reached there, so a loud warning beats a silent skip if it is.
+        # No direct connection configured. Without the lock, two workers can
+        # both log in and stomp each other's token — surfacing as a 401
+        # part-way through a chargeable, irreversible submission. In
+        # production that risk is never acceptable, so fail fast instead of
+        # proceeding unlocked.
+        #
+        # get_config() needs TPSI_ENV etc. to already be configured; a bare
+        # unit-test process that hasn't set up TPSI config at all must not
+        # explode here just from asking "are we in prod?" — treat a raising
+        # get_config() as "not prod" and fall through to the warned,
+        # unlocked path below, same as before.
+        try:
+            is_prod = get_config().env == "prod"
+        except Exception:
+            is_prod = False
+
+        if is_prod:
+            raise RuntimeError(
+                "DATABASE_URL is not set: the Postgres advisory lock is "
+                "unavailable, so TPSI token acquisition cannot be "
+                "serialised across workers/replicas. Refusing to acquire a "
+                "token unlocked in production."
+            )
+
+        # Non-prod (or config not even loaded, e.g. plain unit tests):
+        # single-process fallback only, loudly flagged so it's never mistaken
+        # for the locked path if seen in a real deployment's logs.
         print(
             "tpsi.tokens: DATABASE_URL not set — acquiring token WITHOUT the "
             "advisory lock. Safe for single-process tests only; unsafe with "

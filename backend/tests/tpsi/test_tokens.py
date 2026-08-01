@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -115,3 +114,29 @@ def test_stored_token_is_encrypted_not_plaintext(monkeypatch):
     monkeypatch.setattr(tokens, "_with_lock", lambda a, fn: fn())
     tokens.acquire_token("ACCT", _auth("SECRET-JWT"))
     assert "SECRET-JWT" not in captured["enc"]
+
+
+def test_with_lock_raises_in_prod_without_database_url(monkeypatch):
+    """The whole point of this file is serialising acquisition. In prod,
+    losing DATABASE_URL must fail loudly, not silently reopen the
+    concurrent-login race."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("TPSI_ENV", "prod")
+    cfg.get_config.cache_clear()
+
+    with pytest.raises(RuntimeError, match="advisory lock"):
+        tokens._with_lock("ACCT", lambda: pytest.fail("must not run unlocked"))
+
+
+def test_with_lock_falls_back_and_warns_in_non_prod_without_database_url(
+    monkeypatch, capsys
+):
+    """Outside prod (e.g. this test suite), the unlocked fallback still runs
+    the function — but must warn on stderr so it's never mistaken for the
+    locked path."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    # _env fixture already set TPSI_ENV=test.
+
+    assert tokens._with_lock("ACCT", lambda: "ran") == "ran"
+
+    assert "DATABASE_URL" in capsys.readouterr().err
