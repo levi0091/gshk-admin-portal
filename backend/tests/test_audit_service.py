@@ -60,6 +60,18 @@ async def test_log_event_scrubs_credentials_from_metadata():
         assert logged_meta["response_status"] == 200
 
 
+def test_scrub_removes_tpsi_signature_material():
+    from services.audit_service import _scrub
+    out = _scrub({
+        "userSignature": "TVUwZzhr...",
+        "encryptionKey": "QWTTIcS1...",
+        "endpoint": "submitFormNar1",
+    })
+    assert out["endpoint"] == "submitFormNar1"
+    assert "TVUwZzhr" not in str(out)
+    assert "QWTTIcS1" not in str(out)
+
+
 @pytest.mark.asyncio
 async def test_log_event_failure_does_not_raise():
     with patch("services.audit_service.get_supabase") as mock_sb:
