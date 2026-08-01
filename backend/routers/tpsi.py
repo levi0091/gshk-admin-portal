@@ -6,6 +6,7 @@ not on our own ledger.
     write  -> changes something at CR or stores a credential (sign, e-Drive)
     submit -> chargeable and irreversible
 """
+import sys
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -50,10 +51,18 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
     audit trail shows when a session opened rather than once per API call. Also
     persists `password_expires_in` — the 180-day expiry has to surface before it
     blocks a filing, not when someone is mid-submission.
+
+    The CR call that got us here already succeeded — record_password_expiry is
+    bookkeeping on top of that success, not part of it. Same never-raise
+    discipline as `log_event`: a Supabase hiccup here must not turn a
+    successful balance/status read into a 500.
     """
     if client.last_auth is None:
         return
-    credentials.record_password_expiry(user["id"], client.last_auth.password_expires_in)
+    try:
+        credentials.record_password_expiry(user["id"], client.last_auth.password_expires_in)
+    except Exception as exc:
+        print(f"[routers.tpsi] ERROR: failed to persist password_expires_in: {exc}", file=sys.stderr)
     await log_event(
         user_id=user["id"],
         user_display_name=user["display_name"],
@@ -66,7 +75,7 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
 
 
 def _handle(exc: Exception) -> HTTPException:
-    if isinstance(exc, LookupError):
+    if isinstance(exc, (LookupError, ValueError)):
         return HTTPException(400, str(exc))
     if isinstance(exc, TpsiPasswordExpiredError):
         return HTTPException(409, str(exc))
@@ -192,8 +201,6 @@ async def doc_status(
             case_no=case_no,
             document_ref_no=document_ref_no,
         )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
     except Exception as exc:
         raise _handle(exc)
 
