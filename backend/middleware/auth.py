@@ -1,4 +1,5 @@
 import time
+from functools import lru_cache
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -106,8 +107,18 @@ async def require_user(
     return _resolve_user(credentials.credentials)
 
 
+@lru_cache(maxsize=None)
 def require_permission(module: str, permission: str):
-    """FastAPI dependency factory. Returns a dependency that checks module permission."""
+    """FastAPI dependency factory. Returns a dependency that checks module permission.
+
+    Memoized so `require_permission(module, level)` returns the SAME callable on
+    every call with the same arguments. Two routes guarding the same
+    (module, level) then share one dependency object, which is what makes
+    `app.dependency_overrides[require_permission(module, level)] = ...` work in
+    tests — dependency_overrides keys by callable identity, and a fresh closure
+    per call would never match the one FastAPI captured at route-registration
+    time.
+    """
 
     async def check(
         credentials: HTTPAuthorizationCredentials = Depends(security),
