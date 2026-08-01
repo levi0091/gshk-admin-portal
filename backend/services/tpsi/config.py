@@ -3,6 +3,10 @@
 TEST -> PROD is a config swap with zero code change (spec §9). Everything that
 differs between environments — base URL, CR public key, TLS behaviour — is read
 here and nowhere else.
+
+The CR public key PEM is never committed to this repo (see the breadcrumb
+comment above `_resolve_cr_public_key` for where it actually comes from and
+why `TPSI_CR_PUBLIC_KEY_PATH` alone isn't enough on a fresh clone or CI).
 """
 import os
 from dataclasses import dataclass
@@ -78,8 +82,22 @@ def _validate_pem(pem: str, source_name: str) -> None:
 def _resolve_cr_public_key() -> str:
     # Spec §9: the CR public key is an environment variable like BASE_URL and
     # TLS_VERIFY, so TEST -> PROD stays a config swap with zero code change.
-    # TPSI_CR_PUBLIC_KEY_PATH (a file on disk) is a local-dev convenience only
-    # and is checked second.
+    #
+    # BREADCRUMB (read this if you're staring at one of the RuntimeErrors
+    # below): the CR public key PEM is NOT in this repo. `*.pem` and `docs/`
+    # are both gitignored repo-wide, so backend/docs/tpsi/*.pem exists only
+    # on machines where someone placed it by hand — a fresh clone or CI
+    # checkout will not have it. TPSI_CR_PUBLIC_KEY (inline PEM) is therefore
+    # the real, deployed mechanism — Railway and CI set it directly — and is
+    # resolved first, below. TPSI_CR_PUBLIC_KEY_PATH (a file on disk) is a
+    # local-dev-only fallback for whoever already has the file, checked
+    # second.
+    #
+    # Either way, the key value itself comes from spec §7.4 "For TPSIT"
+    # (test) / "For TPSI Production" (prod) of
+    # `docs/TPSI API Interface v1.0.14.docx` — never commit it anywhere.
+    # TEST and PROD are different key values: the TEST key must never be
+    # set when TPSI_ENV=prod.
     inline = os.environ.get("TPSI_CR_PUBLIC_KEY")
     if inline:
         # Railway's env UI mangles multi-line values into literal "\n"
