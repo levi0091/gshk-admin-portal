@@ -134,7 +134,14 @@ class TpsiClient:
         if response.status_code == 401:
             if _retrying:
                 # Second 401 in a row. Stop — do not loop against a locking API.
+                # Clear the cache too: leaving the rejected token in
+                # _token_cache would make the NEXT call on this instance
+                # re-send it, 401, and re-run the whole invalidate/re-auth/
+                # retry cycle — compounding auth attempts against an
+                # account-locking API, which is exactly what this file exists
+                # to prevent.
                 tokens.invalidate(self.account_id)
+                self._token_cache = None
                 raise TpsiAuthError("TPSI rejected the token twice; giving up")
             # The one permitted retry: the cached token was stale.
             tokens.invalidate(self.account_id)
@@ -153,12 +160,18 @@ class TpsiClient:
 
     def logout(self) -> None:
         try:
-            with self._http() as http:
-                http.post(
-                    self._url("/oauth/revoke.do"),
-                    headers={"Authorization": f"Bearer {self.token()}"},
-                )
-        except httpx.HTTPError:
+            # Only revoke a token we actually have in-process. self.token()
+            # would call acquire_token() and, absent a live DB row, perform a
+            # genuine login just to get something to immediately revoke — a
+            # wasted real login against an account-locking API. If there is
+            # nothing cached, there is nothing to revoke; skip the call.
+            if self._token_cache:
+                with self._http() as http:
+                    http.post(
+                        self._url("/oauth/revoke.do"),
+                        headers={"Authorization": f"Bearer {self._token_cache}"},
+                    )
+        except (httpx.HTTPError, TpsiError):
             pass  # best-effort; the token expires on its own in 30 minutes
         finally:
             tokens.invalidate(self.account_id)

@@ -142,3 +142,109 @@ def test_tls_verify_follows_config(monkeypatch):
     monkeypatch.setenv("TPSI_BASE_URL", "https://www.e-services.cr.gov.hk/ICRIS3EF")
     cfg.get_config.cache_clear()
     assert cfg.get_config().tls_verify is True
+
+
+def test_terminal_double_401_clears_token_cache():
+    """Regression: the terminal (_retrying=True) 401 branch used to raise
+    without clearing _token_cache, so the NEXT call on the same instance would
+    re-send the known-bad token and re-run the whole invalidate/re-auth/retry
+    cycle — extra real logins against an account-locking API."""
+
+    def handler(request):
+        if "token.do" in str(request.url):
+            return httpx.Response(200, json={"access_token": "T2", "expires_in": 1800})
+        return httpx.Response(401, text="token expired")
+
+    c = _client(handler)
+    c._token_cache = "STALE"
+    with pytest.raises(errors.TpsiAuthError):
+        c.post_soap("/tpsi/enquireDepositAccount", "<x/>")
+
+    assert c._token_cache is None
+
+
+def test_logout_with_cached_token_revokes_and_clears():
+    calls = {"revoke": 0, "auth": 0}
+    seen = {}
+
+    def handler(request):
+        if "token.do" in str(request.url):
+            calls["auth"] += 1
+            return httpx.Response(200, json={"access_token": "NEW", "expires_in": 1800})
+        calls["revoke"] += 1
+        seen["url"] = str(request.url)
+        seen["auth_header"] = request.headers["Authorization"]
+        return httpx.Response(200)
+
+    c = _client(handler)
+    c._token_cache = "TOK"
+    c.logout()
+
+    assert calls["revoke"] == 1
+    assert calls["auth"] == 0  # must not manufacture a login just to revoke
+    assert "/oauth/revoke.do" in seen["url"]
+    assert seen["auth_header"] == "Bearer TOK"
+    assert c._token_cache is None
+
+
+def test_logout_with_no_token_makes_no_request():
+    """No cached token and no live DB row: there is nothing to revoke.
+    Manufacturing a login just to immediately revoke it would be a wasted
+    real login against an account-locking API — logout must skip the call
+    entirely rather than fall through to token()."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200)
+
+    c = _client(handler)
+    assert c._token_cache is None
+
+    c.logout()  # must not raise
+
+    assert calls == []
+    assert c._token_cache is None
+
+
+def test_logout_swallows_transport_failure():
+    """logout()'s own comment promises best-effort — a transport error during
+    the revoke call must not escape."""
+
+    def handler(request):
+        raise httpx.ConnectError("no route to host")
+
+    c = _client(handler)
+    c._token_cache = "TOK"
+
+    c.logout()  # must not raise
+
+    assert c._token_cache is None
+
+
+def test_change_password_hashes_exist_and_encrypts_new():
+    from services.tpsi.secrets import sha256_hex
+
+    captured = {}
+
+    def handler(request):
+        if "token.do" in str(request.url):
+            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 1800})
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            content=(
+                b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+                b"<soap:Body><changeTpsiPasswordResponse><result>OK</result>"
+                b"</changeTpsiPasswordResponse></soap:Body></soap:Envelope>"
+            ),
+        )
+
+    c = _client(handler, password="old-pw")
+    c._token_cache = "TOK"
+    result = c.change_password("brand-new-secret")
+
+    body = captured["body"]
+    assert f"<existPassword>{sha256_hex('old-pw')}</existPassword>".encode() in body
+    assert b"brand-new-secret" not in body  # RSA-encrypted, never sent raw
+    assert result == "OK"
