@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from services import audit_events as ev
 from services.audit_service import log_event
-from services.tpsi import credentials, reads
+from services.tpsi import credentials, filings, reads
 from services.tpsi.client import TpsiClient
 from services.tpsi.errors import (
     TpsiAuthError,
@@ -215,3 +215,75 @@ async def doc_status(
         metadata={"results": len(rows)},
     )
     return rows
+
+
+class FilingIn(BaseModel):
+    entity_id: str
+    form_code: str
+    form_xml: str
+    nar1_case_id: str | None = None
+    form_filing_id: str | None = None
+
+
+@router.post("/filings")
+async def create_filing(
+    body: FilingIn, user=Depends(require_permission("tpsi", "write"))
+):
+    try:
+        row = filings.create_filing(
+            entity_id=body.entity_id,
+            form_code=body.form_code,
+            form_xml=body.form_xml,
+            user_id=user["id"],
+            nar1_case_id=body.nar1_case_id,
+            form_filing_id=body.form_filing_id,
+        )
+    except KeyError:
+        raise HTTPException(400, f"unknown form code {body.form_code}")
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_FILING_CREATED, event_code=ev.TPSI_FILING_CREATED,
+        entity_type="tpsi_filing", entity_id=row["id"],
+        metadata={"form_code": body.form_code, "entity_id": body.entity_id},
+    )
+    return row
+
+
+@router.post("/filings/{filing_id}/validate")
+async def validate_filing(
+    filing_id: str, user=Depends(require_permission("tpsi", "read"))
+):
+    """`read`: no CR-side effect and no charge (spec §6)."""
+    try:
+        row = filings.validate(client_for(user), filing_id)
+    except Exception as exc:
+        raise _handle(exc)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_VALIDATE, event_code=ev.TPSI_VALIDATE,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        metadata={"stage": row["stage"]},
+    )
+    return {"filing_id": filing_id, "stage": row["stage"]}
+
+
+@router.post("/filings/{filing_id}/edrive")
+async def edrive_filing(
+    filing_id: str, user=Depends(require_permission("tpsi", "write"))
+):
+    try:
+        result = filings.upload_edrive(client_for(user), filing_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise _handle(exc)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_EDRIVE, event_code=ev.TPSI_EDRIVE,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        metadata={"result": result["result"]},
+    )
+    return result
