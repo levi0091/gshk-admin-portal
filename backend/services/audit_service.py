@@ -3,7 +3,12 @@ from typing import Optional, Any
 
 from db.supabase import get_supabase
 
-_CREDENTIAL_KEYS = {"authorization", "password", "pin", "token", "secret"}
+_CREDENTIAL_KEYS = {
+    "authorization", "password", "pin", "token", "secret",
+    # TPSI: signature material is as sensitive as the password that made it.
+    "eservice_password", "tpsi_password", "access_token",
+    "usercredentialhash", "usersignature", "encryptionkey",
+}
 
 # code -> generic action name, from the audit_event_types registry (migration
 # 012). Cached: the registry is small and effectively static at runtime.

@@ -1,0 +1,1875 @@
+{
+  "name": "submission",
+  "depth": -1,
+  "data_type": "",
+  "mandatory": false,
+  "max_length": null,
+  "remark": "",
+  "children": [
+    {
+      "name": "EForm",
+      "depth": 1,
+      "data_type": "",
+      "mandatory": false,
+      "max_length": null,
+      "remark": "",
+      "children": [
+        {
+          "name": "formModel",
+          "depth": 2,
+          "data_type": "",
+          "mandatory": false,
+          "max_length": null,
+          "remark": "",
+          "children": [
+            {
+              "name": "formCode",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 20,
+              "remark": "Form Code. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "language",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 1,
+              "remark": "Filing language: E - English, C - Chinese",
+              "children": []
+            },
+            {
+              "name": "compNameE",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 150,
+              "remark": "English Company Name. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "compNameC",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 150,
+              "remark": "Chinese Company Name. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "coyStatus",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 1,
+              "remark": "Type of Company. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "brNo",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 20,
+              "remark": "Business Registration Number",
+              "children": []
+            },
+            {
+              "name": "brName",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 150,
+              "remark": "Business Name",
+              "children": []
+            },
+            {
+              "name": "nature",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 5,
+              "remark": "Business Nature Code. Refer to Business Nature sheet for Business Nature code",
+              "children": []
+            },
+            {
+              "name": "natureDesc",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 160,
+              "remark": "Business Nature Description. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "yearAnnualReturn",
+              "depth": 3,
+              "data_type": "Integer",
+              "mandatory": true,
+              "max_length": 4,
+              "remark": "Year of annual return to be filed (Private Company)",
+              "children": []
+            },
+            {
+              "name": "dateReturnMadeUp",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 10,
+              "remark": "Date to which this Return is Made Up. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "dateReturnFrom",
+              "depth": 3,
+              "data_type": "Date",
+              "mandatory": true,
+              "max_length": 10,
+              "remark": "Period Covered by Financial Statements Delivered with this Form - From (Non Private Company)",
+              "children": []
+            },
+            {
+              "name": "dateReturnTo",
+              "depth": 3,
+              "data_type": "Date",
+              "mandatory": true,
+              "max_length": 10,
+              "remark": "Period Covered by Financial Statements Delivered with this Form - To (Non Private Company)",
+              "children": []
+            },
+            {
+              "name": "docReferenceNo",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 20,
+              "remark": "If this return is redelivery of a returned electronic Form NAR1, please input the document reference number of the return electronic Form NAR1",
+              "children": []
+            },
+            {
+              "name": "roAddr",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": true,
+              "max_length": null,
+              "remark": "Address of Registered Office in Hong Kong",
+              "children": [
+                {
+                  "name": "addrLangInd",
+                  "depth": 4,
+                  "data_type": "String",
+                  "mandatory": true,
+                  "max_length": 1,
+                  "remark": "Address Language: E - English, C - Chinese",
+                  "children": []
+                },
+                {
+                  "name": "flatFlrBlk",
+                  "depth": 4,
+                  "data_type": "String",
+                  "mandatory": false,
+                  "max_length": 60,
+                  "remark": "Flat / Floor / Block etc.",
+                  "children": []
+                },
+                {
+                  "name": "bldg",
+                  "depth": 4,
+                  "data_type": "String",
+                  "mandatory": false,
+                  "max_length": 60,
+                  "remark": "Building",
+                  "children": []
+                },
+                {
+                  "name": "stEstLotVlg",
+                  "depth": 4,
+                  "data_type": "String",
+                  "mandatory": false,
+                  "max_length": 60,
+                  "remark": "Street / Estate / Lot / Village etc.",
+                  "children": []
+                },
+                {
+                  "name": "dstCtyStatePostal",
+                  "depth": 4,
+                  "data_type": "String",
+                  "mandatory": false,
+                  "max_length": 60,
+                  "remark": "District. Refer to District sheet for District code",
+                  "children": []
+                },
+                {
+                  "name": "ctryRegion",
+                  "depth": 4,
+                  "data_type": "String",
+                  "mandatory": true,
+                  "max_length": 4,
+                  "remark": "Region. Must be HKG",
+                  "children": []
+                }
+              ]
+            },
+            {
+              "name": "emailAddr",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 60,
+              "remark": "Email Address",
+              "children": []
+            },
+            {
+              "name": "telNo",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 8,
+              "remark": "Hong Kong Contact Telephone Number",
+              "children": []
+            },
+            {
+              "name": "totalAmountMortCharge",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 120,
+              "remark": "Mortgages and Charges",
+              "children": []
+            },
+            {
+              "name": "memberNumAtDateReturn",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 7,
+              "remark": "Number of Member(s) of a Company Not Having a Share Capital",
+              "children": []
+            },
+            {
+              "name": "finStatAttachSpeRez",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "A PDF file containing the financial statement. In BASE64 format (Required if Non Private Company)",
+              "children": []
+            },
+            {
+              "name": "shareCapitals",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Share Capital List",
+              "children": [
+                {
+                  "name": "shareCapital",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Share Capital",
+                  "children": [
+                    {
+                      "name": "clsOfShares",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": true,
+                      "max_length": 100,
+                      "remark": "Class of Shares",
+                      "children": []
+                    },
+                    {
+                      "name": "currency",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": true,
+                      "max_length": 3,
+                      "remark": "Currency. Refer to Currency sheet for Currency code",
+                      "children": []
+                    },
+                    {
+                      "name": "noOfShareIssuedOnThisCls",
+                      "depth": 5,
+                      "data_type": "Integer",
+                      "mandatory": true,
+                      "max_length": 16,
+                      "remark": "Total Number",
+                      "children": []
+                    },
+                    {
+                      "name": "issuedCapital",
+                      "depth": 5,
+                      "data_type": "Integer",
+                      "mandatory": true,
+                      "max_length": 16,
+                      "remark": "Total Amount",
+                      "children": []
+                    },
+                    {
+                      "name": "paidUpCapital",
+                      "depth": 5,
+                      "data_type": "Integer",
+                      "mandatory": true,
+                      "max_length": 16,
+                      "remark": "Total Amount Paid up or Regarded as Paid up",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "indSecList",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Company Secretary (Natural Person) List",
+              "children": [
+                {
+                  "name": "indSec",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Company Secretary (Natural Person)",
+                  "children": [
+                    {
+                      "name": "indvChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngSname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in English (Surname)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngOname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 110,
+                      "remark": "Name in English (Other Names)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPrevChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Previous Names (Chinese)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPrevEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Previous Names (English)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvAlsChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Alias (Chinese)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvAlsEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Alias (English)",
+                      "children": []
+                    },
+                    {
+                      "name": "stdAddress",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": true,
+                      "max_length": null,
+                      "remark": "Hong Kong Correspondence Address",
+                      "children": [
+                        {
+                          "name": "addrLangInd",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 60,
+                          "remark": "Address Language: E - English, C - Chinese",
+                          "children": []
+                        },
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District. Refer to District sheet for District code",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Region. Must be HKG",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "indvEmailAddr",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Email Address",
+                      "children": []
+                    },
+                    {
+                      "name": "indvHkidNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 8,
+                      "remark": "Hong Kong Identity Card Number (Partial ID)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPptIssCtry",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 4,
+                      "remark": "Passport Issuing Country / Region. Refer to Country sheet for Country code",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPptNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 25,
+                      "remark": "Passport Number (Partial ID)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvTcspNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 20,
+                      "remark": "Trust or Company Service Provider Licence No.",
+                      "children": []
+                    },
+                    {
+                      "name": "exempted",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Not required to obtain a licence: Y - Yes, N - No (Must be Y if tcspNo is empty, must be N if tcspNo is filled)",
+                      "children": []
+                    },
+                    {
+                      "name": "reason",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 350,
+                      "remark": "Not required to obtain a licence Reason (Required if exempted is Y)",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "corpSecList",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Company Secretary (Body Corporate) List",
+              "children": [
+                {
+                  "name": "corpSec",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Company Secretary (Body Corporate)",
+                  "children": [
+                    {
+                      "name": "corpChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "corpEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Name in English",
+                      "children": []
+                    },
+                    {
+                      "name": "stdAddress",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": true,
+                      "max_length": null,
+                      "remark": "Hong Kong Address",
+                      "children": [
+                        {
+                          "name": "addrLangInd",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 60,
+                          "remark": "Address Language: E - English, C - Chinese",
+                          "children": []
+                        },
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District. Refer to District sheet for District code",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Region. Must be HKG",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "corpEmailAddr",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Email Address",
+                      "children": []
+                    },
+                    {
+                      "name": "corpBrNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 20,
+                      "remark": "Business Registration Number",
+                      "children": []
+                    },
+                    {
+                      "name": "corpTcspNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 20,
+                      "remark": "Trust or Company Service Provider Licence No.",
+                      "children": []
+                    },
+                    {
+                      "name": "exempted",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Not required to obtain a licence: Y - Yes, N - No (Must be Y if tcspNo is empty, must be N if tcspNo is filled)",
+                      "children": []
+                    },
+                    {
+                      "name": "reason",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 350,
+                      "remark": "Not required to obtain a licence Reason (Required if exempted is Y)",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "indDirList",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Director (Natural Person) List",
+              "children": [
+                {
+                  "name": "indDir",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Director (Natural Person)",
+                  "children": [
+                    {
+                      "name": "dirInd",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Director: Y - Yes, N - No",
+                      "children": []
+                    },
+                    {
+                      "name": "altDirInd",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Alternate Director: Y - Yes, N - No",
+                      "children": []
+                    },
+                    {
+                      "name": "altTo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 72,
+                      "remark": "Alternate to (Only used if altDirInd is Y)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngSname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in English (Surname)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngOname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 110,
+                      "remark": "Name in English (Other Names)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPrevChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Previous Names (Chinese)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPrevEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Previous Names (English)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvAlsChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Alias (Chinese)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvAlsEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Alias (English)",
+                      "children": []
+                    },
+                    {
+                      "name": "stdAddress",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": true,
+                      "max_length": null,
+                      "remark": "Correspondence Address",
+                      "children": [
+                        {
+                          "name": "addrLangInd",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 60,
+                          "remark": "Address Language: E - English, C - Chinese",
+                          "children": []
+                        },
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Country / Region. Refer to Country sheet for Country code",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "indvEmailAddr",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Email Address",
+                      "children": []
+                    },
+                    {
+                      "name": "indvHkidNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 8,
+                      "remark": "Hong Kong Identity Card Number (Partial ID)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPptIssCtry",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 4,
+                      "remark": "Passport Issuing Country / Region. Refer to Country sheet for Country code",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPptNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 25,
+                      "remark": "Passport Number (Partial ID)",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "corpDirList",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Director (Body Corporate) List",
+              "children": [
+                {
+                  "name": "corpDir",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Director (Body Corporate)",
+                  "children": [
+                    {
+                      "name": "dirInd",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Director: Y - Yes, N - No",
+                      "children": []
+                    },
+                    {
+                      "name": "altDirInd",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Alternate Director: Y - Yes, N - No",
+                      "children": []
+                    },
+                    {
+                      "name": "altTo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 72,
+                      "remark": "Alternate to (Only used if altDirInd is Y)",
+                      "children": []
+                    },
+                    {
+                      "name": "corpChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "corpEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Name in English",
+                      "children": []
+                    },
+                    {
+                      "name": "stdAddress",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": true,
+                      "max_length": null,
+                      "remark": "Address",
+                      "children": [
+                        {
+                          "name": "addrLangInd",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 60,
+                          "remark": "Address Language: E - English, C - Chinese",
+                          "children": []
+                        },
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Country / Region. Refer to Country sheet for Country code",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "corpEmailAddr",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Email Address",
+                      "children": []
+                    },
+                    {
+                      "name": "corpBrNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 20,
+                      "remark": "Business Registration Number",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "resDirList",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Reserve Director List (Private Companies only)",
+              "children": [
+                {
+                  "name": "resDir",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Reserve Director",
+                  "children": [
+                    {
+                      "name": "indvChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngSname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Name in English (Surname)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngOname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 110,
+                      "remark": "Name in English (Other Names)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPrevChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Previous Names (Chinese)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPrevEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Previous Names (English)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvAlsChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Alias (Chinese)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvAlsEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Alias (English)",
+                      "children": []
+                    },
+                    {
+                      "name": "stdAddress",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": true,
+                      "max_length": null,
+                      "remark": "Correspondence Address",
+                      "children": [
+                        {
+                          "name": "addrLangInd",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 60,
+                          "remark": "Address Language: E - English, C - Chinese",
+                          "children": []
+                        },
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Country / Region. Refer to Country sheet for Country code",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "indvEmailAddr",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Email Address",
+                      "children": []
+                    },
+                    {
+                      "name": "indvHkidNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 8,
+                      "remark": "Hong Kong Identity Card Number (Partial ID)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPptIssCtry",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 4,
+                      "remark": "Passport Issuing Country / Region. Refer to Country sheet for Country code",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPptNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 25,
+                      "remark": "Passport Number (Partial ID)",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "shareholderListedInSch1",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 1,
+              "remark": "Particulars of members of a non-listed company are listed in Schedule 1: Y - Yes, N - No (Not used for Listed Companies)",
+              "children": []
+            },
+            {
+              "name": "shareholderListedInSch2",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 1,
+              "remark": "Particulars of members of a listed company are listed in Schedule 2: Y - Yes, N - No (Only used for Listed Companies)",
+              "children": []
+            },
+            {
+              "name": "shareholderListedInCdrom",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 1,
+              "remark": "Particulars of members of the company are listed in the list attached to this form: Y - Yes, N - No (Must be Y if shareholderListedInSch1 or shareholderListedInSch2 is N)",
+              "children": []
+            },
+            {
+              "name": "attachSpeRez",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "An Excel file containing details of Allottee(s). In BASE64 format (Required if shareholderListedInCdrom is Y)",
+              "children": []
+            },
+            {
+              "name": "companyRecord",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 456,
+              "remark": "Company Records",
+              "children": []
+            },
+            {
+              "name": "address",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 696,
+              "remark": "Address",
+              "children": []
+            },
+            {
+              "name": "associatedPersonId",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 16,
+              "remark": "Individual User ID if sign by Body Corporate",
+              "children": []
+            },
+            {
+              "name": "associatedPersonName",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 150,
+              "remark": "Individual Name if sign by Body Corporate",
+              "children": []
+            },
+            {
+              "name": "associatedCapacityDesc",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 500,
+              "remark": "Individual Capacity Desciption if sign by Body Corporate. Refer to Capacity sheet for description",
+              "children": []
+            },
+            {
+              "name": "selectAssoBrNo",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 20,
+              "remark": "BR Number if sign by Body Corporate",
+              "children": []
+            },
+            {
+              "name": "selectPersonId",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 16,
+              "remark": "Signatory User ID (Empty if sign by Body Corporate)",
+              "children": []
+            },
+            {
+              "name": "selectPersonName",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 150,
+              "remark": "Signatory Name",
+              "children": []
+            },
+            {
+              "name": "selectCapacityDesc",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 500,
+              "remark": "Signatory capacity description.  Refer to Capacity sheet for description",
+              "children": []
+            },
+            {
+              "name": "signatoryDate",
+              "depth": 3,
+              "data_type": "Date",
+              "mandatory": true,
+              "max_length": 10,
+              "remark": "Signatory Sign Date",
+              "children": []
+            },
+            {
+              "name": "schedule1",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Schedule 1 (Not used for Listed Companies)",
+              "children": [
+                {
+                  "name": "shares",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Shares",
+                  "children": [
+                    {
+                      "name": "share",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": false,
+                      "max_length": null,
+                      "remark": "Repeating element (interposed: absent from the worksheet, present in CR's example instances).",
+                      "children": [
+                        {
+                          "name": "clsOfShares",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 100,
+                          "remark": "Class of Shares (The total number of issued shares for each Class must match with the total number of issued shares for that class in the Share Capital section)",
+                          "children": []
+                        },
+                        {
+                          "name": "shareHolderGrps",
+                          "depth": 6,
+                          "data_type": "",
+                          "mandatory": false,
+                          "max_length": null,
+                          "remark": "",
+                          "children": [
+                            {
+                              "name": "shareHolderGrp",
+                              "depth": 6,
+                              "data_type": "",
+                              "mandatory": false,
+                              "max_length": null,
+                              "remark": "",
+                              "children": [
+                                {
+                                  "name": "sharesAlloted",
+                                  "depth": 7,
+                                  "data_type": "Integer",
+                                  "mandatory": true,
+                                  "max_length": 16,
+                                  "remark": "No. of Shares Allotted",
+                                  "children": []
+                                },
+                                {
+                                  "name": "shType",
+                                  "depth": 7,
+                                  "data_type": "String",
+                                  "mandatory": true,
+                                  "max_length": 1,
+                                  "remark": "Shareholder Type: 1 - Individual Shareholder, 2 - Joint Shareholder",
+                                  "children": []
+                                },
+                                {
+                                  "name": "allotteeRec",
+                                  "depth": 7,
+                                  "data_type": "",
+                                  "mandatory": false,
+                                  "max_length": null,
+                                  "remark": "Details of Allottee(s) List",
+                                  "children": [
+                                    {
+                                      "name": "allottee",
+                                      "depth": 8,
+                                      "data_type": "",
+                                      "mandatory": false,
+                                      "max_length": null,
+                                      "remark": "Details of Allottee(s)",
+                                      "children": [
+                                        {
+                                          "name": "allotteeType",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": true,
+                                          "max_length": 1,
+                                          "remark": "I - Individual, C - Body Corporate",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "indvChiName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 50,
+                                          "remark": "Name in Chinese (Individual)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "indvSurname",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 50,
+                                          "remark": "Name in English - Surname (Individual)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "indvOtherName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 110,
+                                          "remark": "Name in English - Other Names (Individual)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "corpChiName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 50,
+                                          "remark": "Name in Chinese (Body Corporate)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "corpEngName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 150,
+                                          "remark": "Name in English (Body Corporate)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "allotteeAddr",
+                                          "depth": 9,
+                                          "data_type": "",
+                                          "mandatory": true,
+                                          "max_length": null,
+                                          "remark": "Address",
+                                          "children": [
+                                            {
+                                              "name": "addrLangInd",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": true,
+                                              "max_length": 60,
+                                              "remark": "Address Language: E - English, C - Chinese",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "flatFlrBlk",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "Flat / Floor / Block etc.",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "bldg",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "Building",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "stEstLotVlg",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "Street / Estate / Lot / Village etc.",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "dstCtyStatePostal",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "ctryRegion",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": true,
+                                              "max_length": 4,
+                                              "remark": "Country / Region. Refer to Country sheet for Country code",
+                                              "children": []
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "name": "remarks",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 100,
+                                          "remark": "Remarks",
+                                          "children": []
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "schedule2",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Schedule 2 (Only used for Listed Companies)",
+              "children": [
+                {
+                  "name": "shares",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Shares",
+                  "children": [
+                    {
+                      "name": "share",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": false,
+                      "max_length": null,
+                      "remark": "Repeating element (interposed: absent from the worksheet, present in CR's example instances).",
+                      "children": [
+                        {
+                          "name": "clsOfShares",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 100,
+                          "remark": "Class of Shares",
+                          "children": []
+                        },
+                        {
+                          "name": "shareHolderGrps",
+                          "depth": 6,
+                          "data_type": "",
+                          "mandatory": false,
+                          "max_length": null,
+                          "remark": "",
+                          "children": [
+                            {
+                              "name": "shareHolderGrp",
+                              "depth": 6,
+                              "data_type": "",
+                              "mandatory": false,
+                              "max_length": null,
+                              "remark": "",
+                              "children": [
+                                {
+                                  "name": "sharesAlloted",
+                                  "depth": 7,
+                                  "data_type": "Integer",
+                                  "mandatory": true,
+                                  "max_length": 16,
+                                  "remark": "No. of Shares Allotted",
+                                  "children": []
+                                },
+                                {
+                                  "name": "perOfShares",
+                                  "depth": 7,
+                                  "data_type": "Integer",
+                                  "mandatory": true,
+                                  "max_length": 3,
+                                  "remark": "Percent of Shares",
+                                  "children": []
+                                },
+                                {
+                                  "name": "shType",
+                                  "depth": 7,
+                                  "data_type": "String",
+                                  "mandatory": true,
+                                  "max_length": 1,
+                                  "remark": "Shareholder Type: 1 - Individual Shareholder, 2 - Joint Shareholder",
+                                  "children": []
+                                },
+                                {
+                                  "name": "allotteeRec",
+                                  "depth": 7,
+                                  "data_type": "",
+                                  "mandatory": false,
+                                  "max_length": null,
+                                  "remark": "Details of Allottee(s) List",
+                                  "children": [
+                                    {
+                                      "name": "allottee",
+                                      "depth": 8,
+                                      "data_type": "",
+                                      "mandatory": false,
+                                      "max_length": null,
+                                      "remark": "Details of Allottee(s)",
+                                      "children": [
+                                        {
+                                          "name": "allotteeType",
+                                          "depth": 9,
+                                          "data_type": "",
+                                          "mandatory": false,
+                                          "max_length": null,
+                                          "remark": "I - Individual, C - Body Corporate",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "indvChiName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 50,
+                                          "remark": "Name in Chinese (Individual)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "indvSurname",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 50,
+                                          "remark": "Name in English - Surname (Individual)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "indvOtherName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 110,
+                                          "remark": "Name in English - Other Names (Individual)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "corpChiName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 50,
+                                          "remark": "Name in Chinese (Body Corporate)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "corpEngName",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 150,
+                                          "remark": "Name in English (Body Corporate)",
+                                          "children": []
+                                        },
+                                        {
+                                          "name": "allotteeAddr",
+                                          "depth": 9,
+                                          "data_type": "",
+                                          "mandatory": false,
+                                          "max_length": null,
+                                          "remark": "Address",
+                                          "children": [
+                                            {
+                                              "name": "addrLangInd",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": true,
+                                              "max_length": 60,
+                                              "remark": "Address Language: E - English, C - Chinese",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "flatFlrBlk",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "Flat / Floor / Block etc.",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "bldg",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "Building",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "stEstLotVlg",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "Street / Estate / Lot / Village etc.",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "dstCtyStatePostal",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": false,
+                                              "max_length": 60,
+                                              "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                                              "children": []
+                                            },
+                                            {
+                                              "name": "ctryRegion",
+                                              "depth": 10,
+                                              "data_type": "String",
+                                              "mandatory": true,
+                                              "max_length": 4,
+                                              "remark": "Country / Region. Refer to Country sheet for Country code",
+                                              "children": []
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "name": "remarks",
+                                          "depth": 9,
+                                          "data_type": "String",
+                                          "mandatory": false,
+                                          "max_length": 100,
+                                          "remark": "Remarks",
+                                          "children": []
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "EFormSignatures",
+      "depth": 1,
+      "data_type": "",
+      "mandatory": false,
+      "max_length": null,
+      "remark": "",
+      "children": [
+        {
+          "name": "Signature",
+          "depth": 2,
+          "data_type": "String",
+          "mandatory": false,
+          "max_length": 4000,
+          "remark": "CR XML Signature. To be filled in by system after Web-Form validation (6.6)",
+          "children": []
+        },
+        {
+          "name": "PinSign",
+          "depth": 2,
+          "data_type": "",
+          "mandatory": false,
+          "max_length": null,
+          "remark": "Overall Signature. Required when calling Web-Form Submission (6.2) and Web-Form Pin Signing (6.7)",
+          "children": [
+            {
+              "name": "UserCredentialHash",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 500,
+              "remark": "User ID and password",
+              "children": []
+            },
+            {
+              "name": "UserSignature",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 200,
+              "remark": "PIN signature",
+              "children": []
+            },
+            {
+              "name": "EncryptionKey",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 500,
+              "remark": "Encryption key used in UserCredentialHash And UserSignature",
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "depositAccountNo",
+      "depth": 1,
+      "data_type": "String",
+      "mandatory": false,
+      "max_length": 12,
+      "remark": "Deposit account number used for payment. This value is only needed in Submit Web-From API",
+      "children": []
+    }
+  ]
+}

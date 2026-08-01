@@ -15,6 +15,7 @@ dependencies = [
     "psycopg2-binary==2.9.10",
     "pyodbc>=5.3.0",
     "python-multipart>=0.0.32",
+    "cryptography>=50.0.0",
 ]
 
 [dependency-groups]
@@ -23,6 +24,8 @@ dev = [
     "pytest-asyncio==0.24.0",
     "pytest-cov",
     "httpx>=0.26,<0.28",
+    "xlrd>=2.0.2",
+    "openpyxl>=3.1.5",
 ]
 
 [tool.pytest.ini_options]

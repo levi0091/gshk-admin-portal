@@ -42,6 +42,29 @@ GF_DOC_UPLOADED = "GF_DOC_UPLOADED"
 GF_DOC_VERSION = "GF_DOC_VERSION"
 GF_DOC_DELETED = "GF_DOC_DELETED"
 
+# ---- TPSI codes (CR e-Filing transport) ------------------------------------
+#   Their own family rather than the GF_ prefix: TPSI is a distinct source
+#   system, and that should read at a glance in the audit UI.
+TPSI_AUTH = "TPSI_AUTH"
+TPSI_FILING_CREATED = "TPSI_FILING_CREATED"
+TPSI_VALIDATE = "TPSI_VALIDATE"
+TPSI_SIGN = "TPSI_SIGN"
+TPSI_EDRIVE = "TPSI_EDRIVE"
+TPSI_PREVIEWED = "TPSI_PREVIEWED"
+# Submit-lifecycle events reuse the TPSI_SUBMISSION_* codes migration 012
+# already seeded — that family is CLAUDE.md-mandated (PBI-11 audit event
+# table) and wired into the frontend label maps (AuditTrailTab.jsx,
+# AuditLogPage.jsx). Exposed here under the same names, not a TPSI_SUBMIT_*
+# near-duplicate, so later tasks import one canonical constant.
+TPSI_SUBMISSION_ATTEMPTED = "TPSI_SUBMISSION_ATTEMPTED"
+TPSI_SUBMISSION_SUCCESS = "TPSI_SUBMISSION_SUCCESS"
+TPSI_SUBMISSION_FAILED = "TPSI_SUBMISSION_FAILED"
+TPSI_BALANCE_CHECK = "TPSI_BALANCE_CHECK"
+TPSI_STATUS = "TPSI_STATUS"
+TPSI_CRED_SET = "TPSI_CRED_SET"
+TPSI_CRED_ROTATE = "TPSI_CRED_ROTATE"
+TPSI_PW_CHANGE = "TPSI_PW_CHANGE"
+
 # Company field -> the Viewpoint folder that owns it.
 _COMPANY_FIELD_CODES = {
     # Master file (names)
