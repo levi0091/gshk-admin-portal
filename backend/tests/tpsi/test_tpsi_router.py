@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from main import app
 
 SUPER = {"id": "u1", "display_name": "Levi", "role_name": "super_admin", "role_id": "role-sa"}
+REGULAR = {"id": "u2", "display_name": "Staff", "role_name": "staff", "role_id": "role-x"}
 H = {"Authorization": "Bearer tok"}
 
 
@@ -182,4 +183,143 @@ def test_bad_case_status_criteria_is_a_clean_400_not_a_500(client):
          patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
          patch("routers.tpsi.reads.case_status", side_effect=ValueError("bad criteria")):
         response = client.get("/tpsi/doc-status", headers=H)
+    assert response.status_code == 400
+
+
+# ---- filings: POST /tpsi/filings --------------------------------------------
+
+def test_create_filing_opens_a_draft_and_audits(client):
+    row = {"id": "f1", "entity_id": "e1", "form_code": "Nar1", "stage": "draft"}
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    with _super(), \
+         patch("routers.tpsi.filings.create_filing", return_value=row), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings", headers=H, json={
+            "entity_id": "e1", "form_code": "Nar1", "form_xml": "<formCode>NAR1</formCode>",
+        })
+    assert response.status_code == 200
+    assert response.json() == row
+    assert logged["action_type"] == "TPSI_FILING_CREATED"
+    assert logged["metadata"]["form_code"] == "Nar1"
+
+
+def test_create_filing_requires_write_permission(client):
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        # role_permissions query returns no rows -> insufficient
+        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+        response = client.post("/tpsi/filings", headers=H, json={
+            "entity_id": "e1", "form_code": "Nar1", "form_xml": "<x/>",
+        })
+    assert response.status_code == 403
+
+
+def test_create_filing_unknown_form_code_is_a_clean_400(client):
+    with _super(), \
+         patch("routers.tpsi.filings.create_filing", side_effect=KeyError("Zzz9")):
+        response = client.post("/tpsi/filings", headers=H, json={
+            "entity_id": "e1", "form_code": "Zzz9", "form_xml": "<x/>",
+        })
+    assert response.status_code == 400
+
+
+def test_create_filing_other_failures_are_handled_not_a_500(client):
+    """A Postgrest FK violation on a bad entity_id (or any other non-KeyError
+    failure) is routed through _handle like every other TPSI endpoint,
+    instead of surfacing as an unhandled 500."""
+    with _super(), \
+         patch("routers.tpsi.filings.create_filing", side_effect=RuntimeError("db exploded")):
+        response = client.post("/tpsi/filings", headers=H, json={
+            "entity_id": "bad", "form_code": "Nar1", "form_xml": "<x/>",
+        })
+    assert response.status_code == 502
+
+
+# ---- filings: POST /tpsi/filings/{id}/validate ------------------------------
+
+def test_validate_filing_advances_the_stage_and_audits(client):
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate", return_value={"stage": "validated"}), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code == 200
+    assert response.json() == {"filing_id": "f1", "stage": "validated"}
+    assert logged["action_type"] == "TPSI_VALIDATE"
+
+
+def test_validate_filing_is_reachable_with_read_permission_only(client):
+    """spec §6: validate has no CR-side effect and no charge, so it is
+    deliberately gated tpsi:read, not tpsi:write — a read-only role must
+    still reach it. Exercises the real require_permission codepath (role
+    with exactly one permission row), not the super_admin bypass."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb, \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate", return_value={"stage": "validated"}), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+            {"permission": "read"}
+        ]
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code == 200
+
+
+def test_validate_filing_cr_fault_is_handled_not_a_500(client):
+    from services.tpsi.errors import TpsiValidationError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate",
+               side_effect=TpsiValidationError([("ERR_MSG_REQUIRED", "brNo is required")])):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code == 502
+
+
+# ---- filings: POST /tpsi/filings/{id}/edrive --------------------------------
+
+def test_edrive_filing_marks_the_filing_and_audits(client):
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.upload_edrive",
+               return_value={"filing_id": "f1", "result": "Form submitted to E drive successfully."}), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/edrive", headers=H)
+    assert response.status_code == 200
+    assert "successfully" in response.json()["result"]
+    assert logged["action_type"] == "TPSI_EDRIVE"
+
+
+def test_edrive_filing_requires_write_not_just_read(client):
+    """e-Drive changes something at CR (spec §6), so a read-only role must be
+    refused even though it can reach validate."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+            {"permission": "read"}
+        ]
+        response = client.post("/tpsi/filings/f1/edrive", headers=H)
+    assert response.status_code == 403
+
+
+def test_edrive_filing_wrong_stage_is_a_clean_400(client):
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.upload_edrive",
+               side_effect=ValueError("filing must be validated before it can go to e-Drive")):
+        response = client.post("/tpsi/filings/f1/edrive", headers=H)
     assert response.status_code == 400

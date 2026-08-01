@@ -71,10 +71,23 @@ def validate(client, filing_id: str) -> dict:
     On success CR returns the form with its own XML signature over it. That
     payload is carried forward VERBATIM — request and response share one
     namespace convention, so no rewriting is needed or wanted.
+
+    Stage guard: refuses signed/submitted/edrive. This is the money invariant
+    — the double-charge guard is the partial unique index
+    `uq_tpsi_filings_submitted ... WHERE stage = 'submitted'`. Walking a
+    submitted row's stage back to 'validated' would drop it from that index's
+    coverage and let it be submitted again, so it must be impossible to reach
+    from here, not just unlikely given call order. Re-validating a draft or an
+    already-validated filing is legitimate (a user fixing field errors and
+    retrying) and stays allowed.
     """
     from services.tpsi.soap import build_submission
 
     filing = get_filing(filing_id)
+    if filing["stage"] in (STAGE_SIGNED, STAGE_SUBMITTED, STAGE_EDRIVE):
+        raise ValueError(
+            f"filing is already {filing['stage']} and cannot be re-validated"
+        )
     submission = build_submission(filing["request_xml"])
 
     try:

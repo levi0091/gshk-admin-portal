@@ -240,6 +240,8 @@ async def create_filing(
         )
     except KeyError:
         raise HTTPException(400, f"unknown form code {body.form_code}")
+    except Exception as exc:
+        raise _handle(exc)
 
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],

@@ -91,6 +91,66 @@ def test_validate_failure_records_the_errors_and_marks_failed():
     assert "brNo is required" in str(saved["cr_error"])
 
 
+def test_validate_refuses_a_submitted_filing():
+    """The money invariant: the double-charge guard is the partial unique
+    index on stage='submitted'. Walking a submitted row back to 'validated'
+    would drop it from that index's coverage and let it be resubmitted."""
+    client = MagicMock()
+    with patch.object(filings, "get_filing", return_value=_row(stage=filings.STAGE_SUBMITTED)), \
+         patch.object(filings, "_update") as updated:
+        with pytest.raises(ValueError, match="submitted"):
+            filings.validate(client, "f1")
+    updated.assert_not_called()
+    client.post_form.assert_not_called()
+
+
+def test_validate_refuses_a_signed_filing():
+    client = MagicMock()
+    with patch.object(filings, "get_filing", return_value=_row(stage=filings.STAGE_SIGNED)), \
+         patch.object(filings, "_update") as updated:
+        with pytest.raises(ValueError, match="signed"):
+            filings.validate(client, "f1")
+    updated.assert_not_called()
+    client.post_form.assert_not_called()
+
+
+def test_validate_refuses_an_edrive_filing():
+    client = MagicMock()
+    with patch.object(filings, "get_filing", return_value=_row(stage=filings.STAGE_EDRIVE)), \
+         patch.object(filings, "_update") as updated:
+        with pytest.raises(ValueError, match="edrive"):
+            filings.validate(client, "f1")
+    updated.assert_not_called()
+    client.post_form.assert_not_called()
+
+
+def test_validate_allows_redoing_a_draft_filing():
+    """The existing default-stage fixture case, made explicit: a fresh draft
+    must still be validatable."""
+    client = MagicMock()
+    client.post_form.return_value = VALIDATE_OK
+    saved = {}
+    with patch.object(filings, "get_filing", return_value=_row(stage=filings.STAGE_DRAFT)), \
+         patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)):
+        filings.validate(client, "f1")
+    assert saved["stage"] == filings.STAGE_VALIDATED
+
+
+def test_validate_allows_redoing_an_already_validated_filing():
+    """A user fixing field errors after a first validate and retrying is
+    legitimate — only signed/submitted/edrive are refused."""
+    client = MagicMock()
+    client.post_form.return_value = VALIDATE_OK
+    saved = {}
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml="<cr:submission>old</cr:submission>")), \
+         patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)):
+        filings.validate(client, "f1")
+    assert saved["stage"] == filings.STAGE_VALIDATED
+    assert "SIGVALUE123" in saved["validated_xml"]
+
+
 def test_edrive_requires_a_validated_filing():
     """e-Drive takes the validated payload; a draft has no CR signature yet."""
     client = MagicMock()
