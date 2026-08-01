@@ -334,3 +334,86 @@ async def edrive_filing(
         metadata={"result": result["result"]},
     )
     return result
+
+
+class SubmitIn(BaseModel):
+    deposit_account: str
+    confirm: bool = False
+
+
+@router.get("/filings/{filing_id}/preview")
+async def preview_filing(
+    filing_id: str,
+    deposit_account: str,
+    user=Depends(require_permission("tpsi", "read")),
+):
+    """Fee + live balance, nothing sent to CR. Audited separately from the
+    confirm so the trail shows the preview and the decision to spend as two
+    distinct events."""
+    try:
+        client = client_for(user)
+        result = filings.preview(client, filing_id, deposit_account)
+    except Exception as exc:
+        raise _handle(exc)
+
+    await audit_auth(user, client)
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_PREVIEWED, event_code=ev.TPSI_PREVIEWED,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        metadata={"fee": result["fee"], "sufficient": result["sufficient"]},
+    )
+    return result
+
+
+@router.post("/filings/{filing_id}/submit")
+async def submit_filing(
+    filing_id: str, body: SubmitIn, user=Depends(require_permission("tpsi", "submit"))
+):
+    """CHARGEABLE AND IRREVERSIBLE.
+
+    Gated on `tpsi:submit`, deliberately distinct from `tpsi:write`: a role may
+    be allowed to prepare, validate and sign a NAR1 without being allowed to
+    spend from the deposit account.
+    """
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_SUBMISSION_ATTEMPTED,
+        event_code=ev.TPSI_SUBMISSION_ATTEMPTED,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        metadata={"deposit_account": body.deposit_account, "confirm": body.confirm},
+    )
+    try:
+        result = filings.submit(
+            client_for(user), filing_id, body.confirm, body.deposit_account
+        )
+    except filings.SubmitGateError as exc:
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            metadata={"reason": str(exc), "gate": True},
+        )
+        raise HTTPException(409, str(exc))
+    except Exception as exc:
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            metadata={"reason": str(exc)},
+        )
+        raise _handle(exc)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_SUBMISSION_SUCCESS,
+        event_code=ev.TPSI_SUBMISSION_SUCCESS,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        metadata={
+            "caseNo": result["receipt"].get("caseNo"),
+            "totalAmount": result["receipt"].get("totalAmount"),
+        },
+    )
+    return result

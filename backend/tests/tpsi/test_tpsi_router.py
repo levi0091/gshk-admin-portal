@@ -439,3 +439,116 @@ def test_sign_filing_cr_fault_is_handled_not_a_500(client):
             "signatory_user_id": "DIRECTOR2", "eservice_password": "pw",
         })
     assert response.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Preview + submit (Block 6) — the chargeable, irreversible endpoint
+# ---------------------------------------------------------------------------
+
+_PREVIEW = {
+    "filing_id": "f1", "form_code": "Nar1", "stage": "signed",
+    "fee": "105.00", "balance": "999999", "sufficient": True, "ready": True,
+}
+_RESULT = {"filing_id": "f1", "receipt": {"caseNo": "180256934", "totalAmount": "105.0"}}
+
+
+def test_preview_returns_fee_and_balance_and_audits(client):
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    tpsi_client = MagicMock()
+    tpsi_client.last_auth = None
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=tpsi_client), \
+         patch("routers.tpsi.filings.preview", return_value=_PREVIEW), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.get(
+            "/tpsi/filings/f1/preview?deposit_account=ACC", headers=H
+        )
+    assert response.status_code == 200
+    assert response.json()["fee"] == "105.00"
+    assert logged["action_type"] == "TPSI_PREVIEWED"
+
+
+def test_submit_happy_path_returns_receipt_and_audits_success(client):
+    events = []
+
+    async def fake_log(**kwargs):
+        events.append(kwargs["action_type"])
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.submit", return_value=_RESULT), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"deposit_account": "ACC", "confirm": True})
+    assert response.status_code == 200
+    assert response.json()["receipt"]["caseNo"] == "180256934"
+    assert events == ["TPSI_SUBMISSION_ATTEMPTED", "TPSI_SUBMISSION_SUCCESS"]
+
+
+def test_submit_audits_the_attempt_before_calling_cr(client):
+    """The attempt must be on record even if the process dies mid-submit —
+    otherwise a charge could land with nothing in the trail explaining it."""
+    order = []
+
+    async def fake_log(**kwargs):
+        order.append(("log", kwargs["action_type"]))
+
+    def fake_submit(*a, **k):
+        order.append(("submit", None))
+        return _RESULT
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.submit", side_effect=fake_submit), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        client.post("/tpsi/filings/f1/submit", headers=H,
+                    json={"deposit_account": "ACC", "confirm": True})
+    assert order[0] == ("log", "TPSI_SUBMISSION_ATTEMPTED")
+    assert order[1] == ("submit", None)
+
+
+def test_submit_gate_refusal_is_409_not_500(client):
+    from services.tpsi.filings import SubmitGateError
+
+    events = []
+
+    async def fake_log(**kwargs):
+        events.append(kwargs["action_type"])
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.submit",
+               side_effect=SubmitGateError("explicit confirmation is required")), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"deposit_account": "ACC", "confirm": False})
+    assert response.status_code == 409
+    assert "TPSI_SUBMISSION_FAILED" in events
+
+
+def test_submit_requires_the_submit_permission_not_merely_write(client):
+    """A role that may prepare and sign a NAR1 must not thereby be able to
+    spend from the deposit account."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        # role holds tpsi:write but not tpsi:submit
+        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"deposit_account": "ACC", "confirm": True})
+    assert response.status_code == 403
+
+
+def test_preview_requires_authentication(client):
+    assert client.get(
+        "/tpsi/filings/f1/preview?deposit_account=ACC"
+    ).status_code in (401, 403)
+
+
+def test_submit_requires_authentication(client):
+    assert client.post(
+        "/tpsi/filings/f1/submit", json={"deposit_account": "ACC", "confirm": True}
+    ).status_code in (401, 403)

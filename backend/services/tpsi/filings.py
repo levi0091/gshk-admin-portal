@@ -5,6 +5,7 @@ consumes the previous step's CR-signed payload. Holding that chain server-side
 is what makes the submit gate real — a client cannot assert "already validated"
 and skip straight to the chargeable call.
 """
+import sys
 from datetime import datetime, timezone
 
 from db.supabase import get_supabase
@@ -196,3 +197,157 @@ def upload_edrive(client, filing_id: str) -> dict:
 
     _update(filing_id, {"stage": STAGE_EDRIVE})
     return {"filing_id": filing_id, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Submit — CHARGEABLE AND IRREVERSIBLE
+# ---------------------------------------------------------------------------
+
+
+class SubmitGateError(Exception):
+    """A guard on the chargeable, irreversible submit refused."""
+
+
+_RECEIPT_FIELDS = (
+    "caseNo", "brNo", "accNo", "chiCoyName", "engCoyName",
+    "docCodesWithBarcode", "pymtNo", "pymtRefNo", "pymtMtd",
+    "transactionDate", "transactionTime", "totalAmount", "refNo",
+)
+_RECEIPT_LINE_FIELDS = ("rcptNo", "revCode", "docShtFrm", "revDesc", "amtChrg")
+
+
+def parse_receipt(xml_bytes: bytes) -> dict:
+    """CR's submitForm receipt — the only proof the filing landed."""
+    from services.tpsi.soap import find_all
+
+    element = parse_response(xml_bytes, "submitFormResponse")
+    receipt = {f: text_of(element, f) for f in _RECEIPT_FIELDS}
+    receipt["paymentRcptList"] = [
+        {f: text_of(line, f) for f in _RECEIPT_LINE_FIELDS}
+        for line in find_all(element, "paymentRcptList")
+    ]
+    return receipt
+
+
+def _check_gate(filing: dict, confirm: bool, balance, fee) -> None:
+    """The four conditions, in CR's own order. Server-side, always.
+
+    Every one is checked against state this service holds, never against
+    something the caller asserted — a client must not be able to claim it
+    already validated and jump straight to the charge.
+    """
+    if filing["stage"] != STAGE_SIGNED:
+        raise SubmitGateError(
+            f"filing is '{filing['stage']}' — it must be signed "
+            "(validate then sign, in that order) before it can be submitted"
+        )
+    if not filing.get("signed_xml"):
+        raise SubmitGateError("no signed payload stored for this filing")
+    if balance < fee:
+        raise SubmitGateError(
+            f"deposit balance {balance} is below the {fee} fee for "
+            f"{filing['form_code']}"
+        )
+    if confirm is not True:
+        raise SubmitGateError("explicit confirmation is required to submit")
+
+
+def preview(client, filing_id: str, deposit_account: str) -> dict:
+    """Fee and live balance, with nothing sent to CR.
+
+    Audited separately from the confirm, per CLAUDE.md — the preview and the
+    decision to spend are two distinct events in the trail.
+    """
+    from services.tpsi import reads
+    from services.tpsi.config import fee_for
+
+    filing = get_filing(filing_id)
+    fee = fee_for(filing["form_code"])
+    balance = reads.check_balance(client, deposit_account)
+    return {
+        "filing_id": filing_id,
+        "form_code": filing["form_code"],
+        "stage": filing["stage"],
+        "fee": str(fee),
+        "balance": str(balance),
+        "sufficient": balance >= fee,
+        "ready": filing["stage"] == STAGE_SIGNED and bool(filing.get("signed_xml")),
+    }
+
+
+def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
+    """submitForm{Code} — CHARGEABLE AND IRREVERSIBLE.
+
+    The fee leaves the deposit account and there is no un-submit. The stage
+    guard also refuses a filing already at 'submitted' or parked in 'edrive'
+    (CR: a form sent to e-Drive is "inconvertible to TPSI format"), so neither
+    can be charged a second time or filed twice.
+    """
+    from services.tpsi import reads
+    from services.tpsi.config import fee_for
+    from services.tpsi.soap import append_deposit_account
+
+    filing = get_filing(filing_id)
+    fee = fee_for(filing["form_code"])
+    balance = reads.check_balance(client, deposit_account)  # LIVE, never cached
+    _check_gate(filing, confirm, balance, fee)
+
+    signed = filing["signed_xml"]
+    body = (
+        signed
+        if "depositAccountNo" in signed
+        else append_deposit_account(signed, deposit_account)
+    )
+
+    try:
+        raw = client.post_form("submitForm", filing["form_code"], body)
+        receipt = parse_receipt(raw)
+    except TpsiError as exc:
+        _update(
+            filing_id,
+            {
+                "stage": STAGE_FAILED,
+                "cr_error": {"faults": getattr(exc, "faults", []), "message": str(exc)},
+            },
+        )
+        raise
+
+    _update(
+        filing_id,
+        {
+            "stage": STAGE_SUBMITTED,
+            "receipt": receipt,
+            "fee_amount": str(fee),
+            "balance_at_submit": str(balance),
+            "submitted_at": _now(),
+            "cr_error": None,
+        },
+    )
+    _write_back_receipt(filing, receipt)
+    return {"filing_id": filing_id, "receipt": receipt}
+
+
+def _write_back_receipt(filing: dict, receipt: dict) -> None:
+    """Mirror the receipt onto the existing form_filings row.
+
+    The case UI already reads form_filings, so the receipt lands where it is
+    already looked for — no new columns on nar1_cases. Never raises: the filing
+    has been submitted and charged by this point, and a bookkeeping failure must
+    not turn a successful, irreversible submission into an error response.
+    """
+    if not filing.get("form_filing_id"):
+        return
+    try:
+        get_supabase().table("form_filings").update(
+            {
+                "filed_with_cr": True,
+                "filed_date": _now()[:10],
+                "field_details": {"receipt": receipt},
+            }
+        ).eq("id", filing["form_filing_id"]).execute()
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        print(
+            f"[tpsi.filings] WARN: receipt write-back failed for filing "
+            f"{filing.get('id')}: {exc}",
+            file=sys.stderr,
+        )
