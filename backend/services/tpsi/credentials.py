@@ -18,6 +18,15 @@ from services.tpsi.secrets import decrypt, encrypt
 
 _TABLE = "tpsi_presenter_credentials"
 
+# Sentinel distinguishing "caller didn't mention this field" from "caller
+# passed None." set_credential/rotate_credential default eservice_user_id
+# and eservice_password to this. See _payload for why the distinction
+# matters: PostgREST only touches columns present in the upsert payload, so
+# omitting a key entirely preserves the stored value (an untouched-column
+# rotation), while an explicit None must still reach the payload as NULL (a
+# deliberate clear).
+_UNSET = object()
+
 
 @dataclass(frozen=True)
 class PresenterCredential:
@@ -44,6 +53,21 @@ def _upsert(payload: dict) -> dict:
     )
 
 
+def _to_metadata(row: dict) -> dict:
+    """The one, shared definition of what's safe to return: no secrets, not
+    plaintext, not ciphertext. Used by the read path (get_metadata) AND both
+    write paths (set_credential/rotate_credential, off the row _upsert
+    already returned) so this allow-list can't drift apart between them."""
+    return {
+        "presentor_account_id": row["presentor_account_id"],
+        "eservice_user_id": row.get("eservice_user_id"),
+        "has_eservice_password": row.get("eservice_password_enc") is not None,
+        "tpsi_password_expires_at": row.get("tpsi_password_expires_at"),
+        "is_test": row["is_test"],
+        "last_rotated_at": row.get("last_rotated_at"),
+    }
+
+
 def get_metadata(user_id: str) -> dict | None:
     """Everything about the credential EXCEPT the secrets.
 
@@ -53,14 +77,7 @@ def get_metadata(user_id: str) -> dict | None:
     row = _read(user_id)
     if not row:
         return None
-    return {
-        "presentor_account_id": row["presentor_account_id"],
-        "eservice_user_id": row.get("eservice_user_id"),
-        "has_eservice_password": row.get("eservice_password_enc") is not None,
-        "tpsi_password_expires_at": row.get("tpsi_password_expires_at"),
-        "is_test": row["is_test"],
-        "last_rotated_at": row.get("last_rotated_at"),
-    }
+    return _to_metadata(row)
 
 
 def load_for_use(user_id: str) -> PresenterCredential:
@@ -91,20 +108,30 @@ def _payload(
     user_id: str,
     presentor_account_id: str,
     tpsi_password: str,
-    eservice_user_id: str | None,
-    eservice_password: str | None,
+    eservice_user_id,
+    eservice_password,
     rotated: bool,
 ) -> dict:
     payload = {
         "user_id": user_id,
         "presentor_account_id": presentor_account_id,
         "tpsi_password_enc": encrypt(tpsi_password),
-        "eservice_user_id": eservice_user_id,
-        "eservice_password_enc": encrypt(eservice_password)
-        if eservice_password
-        else None,
         "is_test": get_config().env == "test",
     }
+    # _UNSET ("not mentioned") -> omit the key so PostgREST leaves the
+    # stored value untouched — the same mechanism that already lets
+    # tpsi_password_expires_at survive a rotation. None ("explicitly
+    # cleared") -> include the key as NULL. A real value -> store it
+    # (encrypted, for the password). Collapsing "not mentioned" into "None"
+    # here is exactly the bug this shape prevents: CR forces a TPSI
+    # password change every 180 days, so rotating tpsi_password alone is
+    # the routine case, and it must not wipe a stored signing password.
+    if eservice_user_id is not _UNSET:
+        payload["eservice_user_id"] = eservice_user_id
+    if eservice_password is not _UNSET:
+        payload["eservice_password_enc"] = (
+            encrypt(eservice_password) if eservice_password else None
+        )
     if rotated:
         payload["last_rotated_at"] = datetime.now(timezone.utc).isoformat()
     return payload
@@ -115,16 +142,16 @@ def set_credential(
     user_id: str,
     presentor_account_id: str,
     tpsi_password: str,
-    eservice_user_id: str | None = None,
-    eservice_password: str | None = None,
+    eservice_user_id: str | None = _UNSET,
+    eservice_password: str | None = _UNSET,
 ) -> dict:
-    _upsert(
+    row = _upsert(
         _payload(
             user_id, presentor_account_id, tpsi_password,
             eservice_user_id, eservice_password, rotated=False,
         )
     )
-    return get_metadata(user_id)
+    return _to_metadata(row)
 
 
 def rotate_credential(
@@ -132,16 +159,16 @@ def rotate_credential(
     user_id: str,
     presentor_account_id: str,
     tpsi_password: str,
-    eservice_user_id: str | None = None,
-    eservice_password: str | None = None,
+    eservice_user_id: str | None = _UNSET,
+    eservice_password: str | None = _UNSET,
 ) -> dict:
-    _upsert(
+    row = _upsert(
         _payload(
             user_id, presentor_account_id, tpsi_password,
             eservice_user_id, eservice_password, rotated=True,
         )
     )
-    return get_metadata(user_id)
+    return _to_metadata(row)
 
 
 def record_password_expiry(user_id: str, expires_at: str | None) -> None:

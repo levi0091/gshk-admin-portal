@@ -91,12 +91,10 @@ def test_set_credential_stores_ciphertext_not_plaintext():
         captured.update(payload)
         return payload
 
-    # `_read` is also patched here: set_credential's return value flows through
-    # get_metadata -> _read, and an unmocked _read would hit the real Supabase
-    # client (db/supabase.py loads live creds from .env) — tests must not
-    # touch the network. Only `_upsert`'s captured payload is under test.
-    with patch.object(creds, "_upsert", side_effect=fake_upsert), \
-         patch.object(creds, "_read", return_value=None):
+    # No `_read` patch needed: set_credential now builds its return value
+    # from the row `_upsert` already returned (_to_metadata), not a second
+    # SELECT — so the only Supabase-facing call to mock is `_upsert` itself.
+    with patch.object(creds, "_upsert", side_effect=fake_upsert):
         creds.set_credential(
             user_id="user-1", presentor_account_id="ACCT",
             tpsi_password="pw", eservice_user_id="EID", eservice_password="epw",
@@ -109,10 +107,79 @@ def test_set_credential_stores_ciphertext_not_plaintext():
 def test_set_credential_without_eservice_password_stores_null():
     """Storing the signing password is optional — a director signs live."""
     captured = {}
-    with patch.object(creds, "_upsert", side_effect=lambda p: captured.update(p)), \
-         patch.object(creds, "_read", return_value=None):
+
+    def fake_upsert(payload):
+        captured.update(payload)
+        return payload
+
+    with patch.object(creds, "_upsert", side_effect=fake_upsert):
         creds.set_credential(
             user_id="user-1", presentor_account_id="ACCT",
             tpsi_password="pw", eservice_user_id=None, eservice_password=None,
         )
     assert captured["eservice_password_enc"] is None
+    assert captured["eservice_user_id"] is None
+
+
+def test_set_credential_omitting_eservice_args_also_stores_null():
+    """A fresh set (first-time — nothing stored yet) with the eservice
+    arguments left at their default omits those keys from the payload
+    entirely. On INSERT that's equivalent to NULL (the columns have no other
+    default), so a brand-new credential with no signing password supplied
+    still ends up with has_eservice_password=False — matching the explicit-
+    None case above, just reached by not mentioning the fields at all."""
+    captured = {}
+
+    def fake_upsert(payload):
+        captured.update(payload)
+        return payload
+
+    with patch.object(creds, "_upsert", side_effect=fake_upsert):
+        creds.set_credential(
+            user_id="user-1", presentor_account_id="ACCT", tpsi_password="pw",
+        )
+    assert "eservice_password_enc" not in captured
+    assert "eservice_user_id" not in captured
+
+
+def test_rotate_omitting_eservice_args_preserves_stored_signing_password():
+    """The bug this guards against: CR forces a TPSI password change every
+    180 days, so `rotate_credential(user_id=..., presentor_account_id=...,
+    tpsi_password=new_pw)` — omitting the signing password — is the routine
+    case, not an edge case. It must NOT wipe a previously stored
+    eservice_password_enc. Omitting the keys from the payload (rather than
+    sending them as None) is what makes PostgREST leave the stored value
+    untouched, the same mechanism tpsi_password_expires_at already relies on
+    to survive a rotation."""
+    captured = {}
+
+    def fake_upsert(payload):
+        captured.update(payload)
+        return payload
+
+    with patch.object(creds, "_upsert", side_effect=fake_upsert):
+        creds.rotate_credential(
+            user_id="user-1", presentor_account_id="ACCT", tpsi_password="new-pw",
+        )
+    assert "eservice_password_enc" not in captured
+    assert "eservice_user_id" not in captured
+    assert "tpsi_password_enc" in captured
+    assert "last_rotated_at" in captured
+
+
+def test_rotate_with_explicit_none_clears_the_signing_password():
+    """Distinct from the omission case above: passing None explicitly is a
+    deliberate clear, and must still reach the payload as NULL."""
+    captured = {}
+
+    def fake_upsert(payload):
+        captured.update(payload)
+        return payload
+
+    with patch.object(creds, "_upsert", side_effect=fake_upsert):
+        creds.rotate_credential(
+            user_id="user-1", presentor_account_id="ACCT", tpsi_password="new-pw",
+            eservice_user_id=None, eservice_password=None,
+        )
+    assert captured["eservice_password_enc"] is None
+    assert captured["eservice_user_id"] is None
