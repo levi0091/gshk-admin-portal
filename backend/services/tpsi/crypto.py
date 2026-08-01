@@ -10,7 +10,12 @@
 Randomness is INJECTED, never generated inside the signing functions. Two
 reasons: the output is otherwise untestable (every run differs), and callers can
 freeze a regression vector. Production callers pass nothing and get fresh
-randomness.
+randomness. Each injection point (random32, the AES-GCM key, the AES-GCM
+nonce) is independent — none is ever derived from whether another was
+supplied. See user_signature's docstring for why: an AES-GCM key and nonce
+must never repeat together, and deriving one from the other's presence is
+how that constraint quietly breaks the first time a caller injects a key
+for a reason unrelated to nonce determinism (the NNC1 per-director loop).
 
 There is deliberately no byte-for-byte test against CR's published sample: it
 predates v1.0.14 (no AESGCMEncryptionKey tag) and gives no plaintext password,
@@ -75,18 +80,35 @@ def decrypt_credential_hash(credential_hash_b64: str, rand: str) -> str:
 
 
 def user_signature(
-    eform_xml: str, credential_hash_b64: str, gcm_key: bytes | None = None
+    eform_xml: str,
+    credential_hash_b64: str,
+    gcm_key: bytes | None = None,
+    nonce: bytes | None = None,
 ) -> tuple[str, str]:
     """BASE64( AES-GCM( SHA256( EForm + UserCredentialHash ) ) ).
 
     Returns (UserSignature, AESGCMEncryptionKey) — both base64. The nonce is
     prepended to the ciphertext so CR can decrypt with the key alone.
+
+    `gcm_key` and `nonce` are two INDEPENDENT injection points — neither is
+    ever derived from the other. Deriving the nonce from "was a key
+    injected?" was tried and reverted: it made an injected key imply a fixed
+    (all-zero) nonce, which is safe only because today's one caller
+    (filings.sign) never injects a key. The NNC1 consent flow will call this
+    once per director in a loop; a future caller that reused an injected
+    `gcm_key` across that loop would then silently reuse the nonce too — the
+    textbook AES-GCM failure (the same key+nonce pair encrypting two
+    messages leaks the authentication key and lets an attacker forge
+    messages, not just a confidentiality loss). So there is no such
+    derivation: production passes neither and gets a fresh, unique key AND
+    nonce on every call; a test that wants a frozen vector must inject both
+    explicitly, which makes the reuse a visible, deliberate choice at the
+    call site instead of an implicit side effect of "a key happened to be
+    supplied".
     """
     key = gcm_key or AESGCM.generate_key(bit_length=256)
     digest = sha256_hex(eform_xml + credential_hash_b64).encode()
-    # Deterministic nonce ONLY when the key is injected (tests); production
-    # gets a fresh key per signature, so a fixed nonce is never reused.
-    nonce = b"\x00" * _GCM_NONCE_LEN if gcm_key else os.urandom(_GCM_NONCE_LEN)
+    nonce = nonce or os.urandom(_GCM_NONCE_LEN)
     ciphertext = AESGCM(key).encrypt(nonce, digest, None)
     return (
         base64.b64encode(nonce + ciphertext).decode(),
@@ -109,15 +131,20 @@ def build_pin_sign(
     sign_id: str = "1",
     rand: str | None = None,
     gcm_key: bytes | None = None,
+    nonce: bytes | None = None,
 ) -> str:
     """One <PinSign> block.
 
     Overall signature (NAR1): uri="#eForm", signing the whole EForm.
     Consent signature (NNC1, later): uri="#S1", signing that director tag.
+
+    `nonce` exists only so a test can freeze the AES-GCM output alongside an
+    injected `gcm_key` (see user_signature) — production callers, including
+    the future NNC1 per-director loop, must never pass it.
     """
     rand = rand or random32()
     credential_hash = user_credential_hash(user_id, eservice_password, rand)
-    signature, gcm_key_b64 = user_signature(eform_xml, credential_hash, gcm_key)
+    signature, gcm_key_b64 = user_signature(eform_xml, credential_hash, gcm_key, nonce)
     encrypted_rand = encryption_key(rand, cr_public_key_pem)
 
     del gcm_key_b64  # see the AESGCMEncryptionKey note below

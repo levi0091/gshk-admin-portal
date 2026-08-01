@@ -10,6 +10,11 @@ from services.tpsi import crypto
 EFORM = '<EForm id="eForm"><formModel id="formData"><formCode>NAR1</formCode></formModel></EForm>'
 RAND = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"     # 32 chars, injected for determinism
 GCM_KEY = b"\x01" * 32
+# The AES-GCM nonce is a SEPARATE injection point from GCM_KEY (see
+# crypto.user_signature's docstring) — a frozen regression vector must
+# inject both explicitly, never rely on GCM_KEY alone implying a fixed
+# nonce.
+NONCE = bytes(range(1, 13))
 
 
 @pytest.fixture(scope="module")
@@ -115,10 +120,16 @@ def test_pin_sign_child_order_matches_crs_example(pem):
 
 def test_pin_sign_is_deterministic_when_randomness_is_injected(pem):
     """Frozen regression vector: our own, not CR's. Catches accidental changes
-    to the chain."""
+    to the chain.
+
+    GCM_KEY and NONCE are injected together deliberately — the AES-GCM key
+    and nonce are independent injection points (see user_signature's
+    docstring), so determinism requires freezing both explicitly rather than
+    relying on the key alone to imply a fixed nonce.
+    """
     _, public_pem = pem
-    a = crypto.build_pin_sign(EFORM, "U", "p", public_pem, rand=RAND, gcm_key=GCM_KEY)
-    b = crypto.build_pin_sign(EFORM, "U", "p", public_pem, rand=RAND, gcm_key=GCM_KEY)
+    a = crypto.build_pin_sign(EFORM, "U", "p", public_pem, rand=RAND, gcm_key=GCM_KEY, nonce=NONCE)
+    b = crypto.build_pin_sign(EFORM, "U", "p", public_pem, rand=RAND, gcm_key=GCM_KEY, nonce=NONCE)
     # EncryptionKey uses PKCS1v15 padding, which is randomised — compare the
     # deterministic parts only. Tags are always cr:-prefixed (build_pin_sign
     # hardcodes the prefix), so the pattern must match on that, not the bare
@@ -127,6 +138,31 @@ def test_pin_sign_is_deterministic_when_randomness_is_injected(pem):
         return re.search(rf"<cr:{tag}>(.*?)</cr:{tag}>", xml).group(1)
     assert part(a, "UserCredentialHash") == part(b, "UserCredentialHash")
     assert part(a, "UserSignature") == part(b, "UserSignature")
+
+
+def test_user_signature_nonce_is_never_derived_from_whether_the_key_was_injected():
+    """Regression guard for the AES-GCM key/nonce coupling that used to
+    exist: injecting gcm_key alone (with no explicit nonce=) must NEVER
+    imply a fixed nonce. Two calls with the same injected key but no nonce=
+    must produce different nonces — otherwise the future NNC1 per-director
+    loop, which will call this once per director, could silently reuse a
+    key+nonce pair, which is the textbook AES-GCM forgery failure."""
+    ch = crypto.user_credential_hash("U", "p", RAND)
+    sig_a, _ = crypto.user_signature(EFORM, ch, GCM_KEY)
+    sig_b, _ = crypto.user_signature(EFORM, ch, GCM_KEY)
+    nonce_a = base64.b64decode(sig_a)[:12]
+    nonce_b = base64.b64decode(sig_b)[:12]
+    assert nonce_a != nonce_b
+
+
+def test_user_signature_is_deterministic_when_key_and_nonce_are_both_injected():
+    """The other half of the guard above: explicit injection of BOTH still
+    works, which is what the frozen build_pin_sign vector above relies on."""
+    ch = crypto.user_credential_hash("U", "p", RAND)
+    a, key_a = crypto.user_signature(EFORM, ch, GCM_KEY, nonce=NONCE)
+    b, key_b = crypto.user_signature(EFORM, ch, GCM_KEY, nonce=NONCE)
+    assert a == b
+    assert key_a == key_b
 
 
 def test_pin_sign_leaks_no_plaintext(pem):

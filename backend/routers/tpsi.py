@@ -282,20 +282,24 @@ class SignIn(BaseModel):
 async def sign_filing(
     filing_id: str, body: SignIn, user=Depends(require_permission("tpsi", "write"))
 ):
-    if body.signatory_user_id and body.eservice_password:
-        signatory, password = body.signatory_user_id, body.eservice_password
-    else:
-        credential = credentials.load_for_use(user["id"])
-        if not credential.eservice_password:
-            raise HTTPException(
-                400,
-                "no stored e-Service password; supply signatory_user_id and "
-                "eservice_password for this signature",
-            )
-        signatory = credential.eservice_user_id or credential.account_id
-        password = credential.eservice_password
-
+    # credentials.load_for_use lives INSIDE the try now, not before it: it
+    # raises a bare LookupError when nothing is stored, and that must map to
+    # a clean 400 via _handle like every other TPSI endpoint (see /balance),
+    # not surface as an unhandled 500.
     try:
+        if body.signatory_user_id and body.eservice_password:
+            signatory, password = body.signatory_user_id, body.eservice_password
+        else:
+            credential = credentials.load_for_use(user["id"])
+            if not credential.eservice_password:
+                raise HTTPException(
+                    400,
+                    "no stored e-Service password; supply signatory_user_id and "
+                    "eservice_password for this signature",
+                )
+            signatory = credential.eservice_user_id or credential.account_id
+            password = credential.eservice_password
+
         result = filings.sign(client_for(user), filing_id, signatory, password)
     except ValueError as exc:
         raise HTTPException(400, str(exc))

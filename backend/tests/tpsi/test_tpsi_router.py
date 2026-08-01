@@ -323,3 +323,119 @@ def test_edrive_filing_wrong_stage_is_a_clean_400(client):
                side_effect=ValueError("filing must be validated before it can go to e-Drive")):
         response = client.post("/tpsi/filings/f1/edrive", headers=H)
     assert response.status_code == 400
+
+
+# ---- filings: POST /tpsi/filings/{id}/sign ----------------------------------
+
+def test_sign_filing_with_stored_credential_and_audits(client):
+    """No body (or an empty one) falls back to the logged-in user's own
+    stored e-Service password (spec D4). Also proves the signing password
+    never reaches the response body or the audit metadata."""
+    from services.tpsi.credentials import PresenterCredential
+
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    cred = PresenterCredential(
+        account_id="ACCT", tpsi_password="tpw",
+        eservice_user_id="DIRECTOR1", eservice_password="es3cret",
+    )
+    with _super(), \
+         patch("routers.tpsi.credentials.load_for_use", return_value=cred), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.sign",
+               return_value={"filing_id": "f1", "result": "Pin Signature(s) Verified Successfully."}) as spy, \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "Pin Signature(s) Verified Successfully."
+    assert spy.call_args[0][1:] == ("f1", "DIRECTOR1", "es3cret")
+    assert logged["action_type"] == "TPSI_SIGN"
+    assert logged["metadata"] == {
+        "signatory": "DIRECTOR1",
+        "result": "Pin Signature(s) Verified Successfully.",
+    }
+    assert "es3cret" not in response.text
+    assert "es3cret" not in str(logged)
+
+
+def test_sign_filing_with_live_supplied_director_credentials(client):
+    """A named director's own User ID + e-Service password, supplied live in
+    the request body, bypasses the stored credential entirely and is never
+    persisted (spec D4)."""
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    with _super(), \
+         patch("routers.tpsi.credentials.load_for_use") as load_spy, \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.sign",
+               return_value={"filing_id": "f1", "result": "Pin Signature(s) Verified Successfully."}) as spy, \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={
+            "signatory_user_id": "DIRECTOR2",
+            "eservice_password": "liveSecret",
+        })
+
+    assert response.status_code == 200
+    assert spy.call_args[0][1:] == ("f1", "DIRECTOR2", "liveSecret")
+    load_spy.assert_not_called()   # the stored credential is never consulted
+    assert logged["metadata"]["signatory"] == "DIRECTOR2"
+    assert "liveSecret" not in response.text
+    assert "liveSecret" not in str(logged)
+
+
+def test_sign_filing_requires_write_permission(client):
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+            {"permission": "read"}
+        ]
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+    assert response.status_code == 403
+
+
+def test_sign_filing_missing_credential_is_a_clean_400_not_a_500(client):
+    """credentials.load_for_use raises a bare LookupError when nothing is
+    stored. This must map to a clean 400 via _handle, same as /balance
+    already does, not surface as an unhandled 500."""
+    with _super(), \
+         patch("routers.tpsi.credentials.load_for_use", side_effect=LookupError("none")):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+    assert response.status_code == 400
+
+
+def test_sign_filing_no_stored_eservice_password_is_a_clean_400(client):
+    """A credential row exists (a TPSI auth password is stored) but no
+    e-Service (signing) password was ever set — distinct from the
+    no-credential-at-all case above."""
+    from services.tpsi.credentials import PresenterCredential
+
+    cred = PresenterCredential(
+        account_id="ACCT", tpsi_password="tpw",
+        eservice_user_id=None, eservice_password=None,
+    )
+    with _super(), \
+         patch("routers.tpsi.credentials.load_for_use", return_value=cred):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+    assert response.status_code == 400
+
+
+def test_sign_filing_cr_fault_is_handled_not_a_500(client):
+    from services.tpsi.errors import TpsiSignatureError
+
+    with _super(), \
+         patch("routers.tpsi.credentials.load_for_use",
+               side_effect=AssertionError("should not be called")), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.sign",
+               side_effect=TpsiSignatureError([("ERR_MSG_SIGNATORY_NOT_AUTH", "not authorised")])):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={
+            "signatory_user_id": "DIRECTOR2", "eservice_password": "pw",
+        })
+    assert response.status_code == 502
