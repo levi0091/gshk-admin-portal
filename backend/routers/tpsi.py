@@ -271,6 +271,47 @@ async def validate_filing(
     return {"filing_id": filing_id, "stage": row["stage"]}
 
 
+class SignIn(BaseModel):
+    """Either sign as the logged-in user (stored e-Service password), or name a
+    director who supplies their own credentials live — never stored (spec D4)."""
+    signatory_user_id: str | None = None
+    eservice_password: str | None = None
+
+
+@router.post("/filings/{filing_id}/sign")
+async def sign_filing(
+    filing_id: str, body: SignIn, user=Depends(require_permission("tpsi", "write"))
+):
+    if body.signatory_user_id and body.eservice_password:
+        signatory, password = body.signatory_user_id, body.eservice_password
+    else:
+        credential = credentials.load_for_use(user["id"])
+        if not credential.eservice_password:
+            raise HTTPException(
+                400,
+                "no stored e-Service password; supply signatory_user_id and "
+                "eservice_password for this signature",
+            )
+        signatory = credential.eservice_user_id or credential.account_id
+        password = credential.eservice_password
+
+    try:
+        result = filings.sign(client_for(user), filing_id, signatory, password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise _handle(exc)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_SIGN, event_code=ev.TPSI_SIGN,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        # signatory id only — never the password (audit_service also scrubs it)
+        metadata={"signatory": signatory, "result": result["result"]},
+    )
+    return result
+
+
 @router.post("/filings/{filing_id}/edrive")
 async def edrive_filing(
     filing_id: str, user=Depends(require_permission("tpsi", "write"))

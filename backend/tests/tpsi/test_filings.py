@@ -190,3 +190,70 @@ def test_unknown_form_code_is_rejected_before_any_call():
             filings.create_filing(
                 entity_id="e1", form_code="Zzz9", form_xml="<x/>", user_id="u1"
             )
+
+
+# ---- sign ---------------------------------------------------------------
+
+SIGN_OK = b"""<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+ <soap:Body><cr:verifyPinSigningResponse
+   xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/">
+   <cr:result>Pin Signature(s) Verified Successfully.</cr:result>
+ </cr:verifyPinSigningResponse></soap:Body></soap:Envelope>"""
+
+VALIDATED_XML = (
+    '<cr:submission><cr:EForm id="eForm"><cr:formModel id="formData">'
+    "<cr:formCode>NAR1</cr:formCode></cr:formModel></cr:EForm>"
+    '<cr:EFormSignatures><cr:Signature id="CR"/></cr:EFormSignatures>'
+    "</cr:submission>"
+)
+
+
+def test_sign_requires_a_validated_filing():
+    with patch.object(filings, "get_filing", return_value=_row(stage=filings.STAGE_DRAFT)):
+        with pytest.raises(ValueError, match="validated"):
+            filings.sign(MagicMock(), "f1", "U", "pw")
+
+
+def test_sign_places_pinsign_inside_eformsignatures_below_cr_signature():
+    client = MagicMock()
+    client.post_form.return_value = SIGN_OK
+    saved = {}
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml=VALIDATED_XML)), \
+         patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)):
+        filings.sign(client, "f1", "USERID", "pw")
+
+    signed = saved["signed_xml"]
+    assert signed.index('id="CR"') < signed.index("PinSign")
+    assert signed.index("PinSign") < signed.index("</cr:EFormSignatures>")
+    assert saved["stage"] == filings.STAGE_SIGNED
+
+
+def test_sign_signs_the_eform_element_only_not_the_signatures():
+    """The overall signature's scope is EForm (URI='#eForm')."""
+    captured = {}
+    client = MagicMock()
+    client.post_form.return_value = SIGN_OK
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml=VALIDATED_XML)), \
+         patch.object(filings, "_update"), \
+         patch("services.tpsi.crypto.build_pin_sign",
+               side_effect=lambda eform, *a, **k: captured.setdefault("eform", eform) or "<cr:PinSign/>"):
+        filings.sign(client, "f1", "USERID", "pw")
+    assert captured["eform"].startswith("<cr:EForm")
+    assert captured["eform"].endswith("</cr:EForm>")
+    assert "EFormSignatures" not in captured["eform"]
+
+
+def test_sign_never_stores_the_password():
+    client = MagicMock()
+    client.post_form.return_value = SIGN_OK
+    saved = {}
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml=VALIDATED_XML)), \
+         patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)):
+        filings.sign(client, "f1", "USERID", "sup3rs3cret")
+    assert "sup3rs3cret" not in str(saved)

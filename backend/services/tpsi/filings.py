@@ -115,6 +115,69 @@ def validate(client, filing_id: str) -> dict:
     return get_filing(filing_id)
 
 
+def _extract_eform(submission_xml: str) -> str:
+    """The overall signature signs the <EForm> element, not the whole document.
+
+    Sliced as text, prefix discovered from the document: the digest is over
+    these exact bytes, so it must not be re-serialised.
+    """
+    import re as _re
+
+    open_match = _re.search(r"<(\w+:)?EForm[\s>]", submission_xml)
+    if not open_match:
+        raise TpsiError("no <EForm> in the validated payload")
+    prefix = open_match.group(1) or ""
+    close = f"</{prefix}EForm>"
+    end = submission_xml.find(close)
+    if end == -1:
+        raise TpsiError("unterminated <EForm> in the validated payload")
+    return submission_xml[open_match.start() : end + len(close)]
+
+
+def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str) -> dict:
+    """verifyPinSigning{Code}. No charge.
+
+    NAR1 carries ONE overall signature by a single authorised individual — a
+    director OR the company secretary. No consent signatures (spec D2).
+    """
+    from services.tpsi.config import get_config
+    from services.tpsi.crypto import build_pin_sign
+    from services.tpsi.soap import append_to_signatures
+
+    filing = get_filing(filing_id)
+    if filing["stage"] != STAGE_VALIDATED:
+        raise ValueError("filing must be validated before it can be signed")
+
+    validated = filing["validated_xml"]
+    pin_sign = build_pin_sign(
+        _extract_eform(validated),
+        signatory_user_id,
+        eservice_password,
+        get_config().cr_public_key_pem,
+    )
+    # CR: the overall signature goes inside EFormSignatures, BELOW its own.
+    signed = append_to_signatures(validated, pin_sign)
+
+    try:
+        raw = client.post_form("verifyPinSigning", filing["form_code"], signed)
+        element = parse_response(raw, "verifyPinSigningResponse")
+        result = text_of(element, "result") or ""
+    except TpsiError as exc:
+        _update(
+            filing_id,
+            {"stage": STAGE_FAILED,
+             "cr_error": {"faults": getattr(exc, "faults", []), "message": str(exc)}},
+        )
+        raise
+
+    _update(
+        filing_id,
+        {"stage": STAGE_SIGNED, "signed_xml": signed,
+         "signed_at": _now(), "cr_error": None},
+    )
+    return {"filing_id": filing_id, "result": result}
+
+
 def upload_edrive(client, filing_id: str) -> dict:
     """uploadToEdriveForm{Code}. No charge.
 
