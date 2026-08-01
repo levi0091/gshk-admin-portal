@@ -175,6 +175,7 @@ async def submit_company(user=Depends(require_permission("companies", "write")))
 | Persons | `persons` | `read`, `write` |
 | Documents | `documents` | `read`, `write`, `delete` |
 | NNC1 Data | `nnc1_data` *(future)* | `read`, `write` |
+| TPSI | `tpsi` | `read`, `write`, `submit` |
 | Audit Trail | `audit_trail` | `read` **only** — no write or admin level exists |
 
 > The old `nar1_data` module was removed (migration 015) — the portal manages companies through their full lifecycle, and a distinct "NAR1 data" surface was never built. `/auth/me` is gated on authentication only (`require_user`), not a business module, so a role can hold any subset of modules and still log in.

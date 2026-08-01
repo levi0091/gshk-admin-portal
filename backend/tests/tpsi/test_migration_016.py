@@ -76,8 +76,31 @@ def test_audit_event_types_seeded():
     with _conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT code FROM audit_event_types WHERE code LIKE 'TPSI%%'")
         codes = {r[0] for r in cur.fetchall()}
-    assert "TPSI_SUBMIT_SUCCESS" in codes
+    # TPSI_SUBMIT_SUCCESS was never seeded: the submit-lifecycle events reuse
+    # the TPSI_SUBMISSION_* codes migration 012 already seeded, to avoid a
+    # near-duplicate family (see AUDIT_CODES comment in 016_pbi42_tpsi.py).
+    assert "TPSI_AUTH" in codes
     assert "TPSI_CRED_SET" in codes
+    assert "TPSI_SUBMISSION_SUCCESS" in codes  # from migration 012, not 016
+
+
+def test_tpsi_codes_have_correct_origin_and_category():
+    """origin defaults to 'viewpoint' (migration 012's table DDL). Every
+    TPSI_* row must explicitly override that to 'g_flowdesk'/'tpsi', or CR's
+    own native events get mislabeled as imported Viewpoint events in the
+    audit UI. This is the assertion that would have caught the Finding-1
+    defect (016 originally inserted only (code, name), silently taking the
+    'viewpoint' default)."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT code, origin, category FROM audit_event_types "
+            "WHERE code LIKE 'TPSI%%'"
+        )
+        rows = cur.fetchall()
+    assert rows, "expected TPSI audit event types to be seeded"
+    for code, origin, category in rows:
+        assert origin == "g_flowdesk", f"{code} has origin={origin!r}"
+        assert category == "tpsi", f"{code} has category={category!r}"
 
 
 def test_double_submit_is_blocked_by_partial_unique_index():

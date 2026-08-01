@@ -19,6 +19,11 @@ down_revision = "015"
 branch_labels = None
 depends_on = None
 
+# TPSI_SUBMIT_ATTEMPTED / _SUCCESS / _FAILED are deliberately NOT here: they
+# collide with TPSI_SUBMISSION_ATTEMPTED / _SUCCESS / _FAILED, which migration
+# 012 already seeded (CLAUDE.md-mandated, wired into the frontend label maps
+# in AuditTrailTab.jsx and AuditLogPage.jsx). Reuse those existing codes for
+# the submit-lifecycle events rather than adding a near-duplicate family.
 AUDIT_CODES = [
     ("TPSI_AUTH", "CR Session Opened"),
     ("TPSI_FILING_CREATED", "CR Filing Prepared"),
@@ -26,9 +31,6 @@ AUDIT_CODES = [
     ("TPSI_SIGN", "CR Form Signed"),
     ("TPSI_EDRIVE", "CR Form Sent to e-Drive"),
     ("TPSI_PREVIEWED", "CR Submission Previewed"),
-    ("TPSI_SUBMIT_ATTEMPTED", "CR Submission Attempted"),
-    ("TPSI_SUBMIT_SUCCESS", "CR Submission Succeeded"),
-    ("TPSI_SUBMIT_FAILED", "CR Submission Failed"),
     ("TPSI_BALANCE_CHECK", "CR Deposit Balance Checked"),
     ("TPSI_STATUS", "CR Case Status Enquired"),
     ("TPSI_CRED_SET", "CR Credential Set"),
@@ -130,10 +132,14 @@ def upgrade() -> None:
         ON CONFLICT (role_id, module, permission) DO NOTHING
     """)
 
-    values = ", ".join(f"('{c}', '{n}')" for c, n in AUDIT_CODES)
+    # category/origin explicit, matching the precedent set by migration 012's
+    # own _NATIVE seed (category='tpsi', origin='g_flowdesk') — the column
+    # default is origin='viewpoint', which would mislabel every one of these
+    # as an imported Viewpoint event if left implicit.
+    values = ", ".join(f"('{c}', '{n}', 'tpsi', 'g_flowdesk')" for c, n in AUDIT_CODES)
     op.execute(
-        f"INSERT INTO public.audit_event_types (code, name) VALUES {values} "
-        "ON CONFLICT (code) DO NOTHING"
+        f"INSERT INTO public.audit_event_types (code, name, category, origin) "
+        f"VALUES {values} ON CONFLICT (code) DO NOTHING"
     )
 
 

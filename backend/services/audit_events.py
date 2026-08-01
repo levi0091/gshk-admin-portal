@@ -51,9 +51,14 @@ TPSI_VALIDATE = "TPSI_VALIDATE"
 TPSI_SIGN = "TPSI_SIGN"
 TPSI_EDRIVE = "TPSI_EDRIVE"
 TPSI_PREVIEWED = "TPSI_PREVIEWED"
-TPSI_SUBMIT_ATTEMPTED = "TPSI_SUBMIT_ATTEMPTED"
-TPSI_SUBMIT_SUCCESS = "TPSI_SUBMIT_SUCCESS"
-TPSI_SUBMIT_FAILED = "TPSI_SUBMIT_FAILED"
+# Submit-lifecycle events reuse the TPSI_SUBMISSION_* codes migration 012
+# already seeded — that family is CLAUDE.md-mandated (PBI-11 audit event
+# table) and wired into the frontend label maps (AuditTrailTab.jsx,
+# AuditLogPage.jsx). Exposed here under the same names, not a TPSI_SUBMIT_*
+# near-duplicate, so later tasks import one canonical constant.
+TPSI_SUBMISSION_ATTEMPTED = "TPSI_SUBMISSION_ATTEMPTED"
+TPSI_SUBMISSION_SUCCESS = "TPSI_SUBMISSION_SUCCESS"
+TPSI_SUBMISSION_FAILED = "TPSI_SUBMISSION_FAILED"
 TPSI_BALANCE_CHECK = "TPSI_BALANCE_CHECK"
 TPSI_STATUS = "TPSI_STATUS"
 TPSI_CRED_SET = "TPSI_CRED_SET"
