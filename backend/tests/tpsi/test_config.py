@@ -1,7 +1,8 @@
-import os
 from decimal import Decimal
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from services.tpsi import config as cfg
 
@@ -13,9 +14,28 @@ def _clear_cache():
     cfg.get_config.cache_clear()
 
 
-def test_loads_from_env(monkeypatch, tmp_path):
+@pytest.fixture
+def make_pem():
+    """Factory fixture: each call generates a fresh, real RSA-2048 public key
+    PEM. Config load now validates PEM shape (a truncated/garbage key must
+    fail fast, not mid-signing), so tests need parseable keys, not stub
+    blobs. A factory (not a single value) lets tests that need two distinct
+    keys — e.g. to prove one source takes precedence over another — get keys
+    that are genuinely different rather than string-distinguishable stubs."""
+
+    def _make() -> str:
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        return private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+
+    return _make
+
+
+def test_loads_from_env(monkeypatch, tmp_path, make_pem):
     key = tmp_path / "k.pem"
-    key.write_text("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
+    key.write_text(make_pem())
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
@@ -37,10 +57,10 @@ def test_missing_var_raises_without_printing_value(monkeypatch):
     assert "TPSI_BASE_URL" in str(exc.value)
 
 
-def test_prod_env_forces_tls_verify(monkeypatch, tmp_path):
+def test_prod_env_forces_tls_verify(monkeypatch, tmp_path, make_pem):
     """TLS verification must not be disableable in prod, whatever the env says."""
     key = tmp_path / "k.pem"
-    key.write_text("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
+    key.write_text(make_pem())
     monkeypatch.setenv("TPSI_ENV", "prod")
     monkeypatch.setenv("TPSI_BASE_URL", "https://www.e-services.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
@@ -49,29 +69,45 @@ def test_prod_env_forces_tls_verify(monkeypatch, tmp_path):
     assert cfg.get_config().tls_verify is True
 
 
-def test_inline_key_takes_precedence_over_path(monkeypatch, tmp_path):
+def test_inline_key_takes_precedence_over_path(monkeypatch, tmp_path, make_pem):
     """TPSI_CR_PUBLIC_KEY (spec §9 env var) wins over the local-dev file path
     when both are set."""
+    path_pem = make_pem()
+    inline_pem = make_pem()
     key = tmp_path / "k.pem"
-    key.write_text("-----BEGIN PUBLIC KEY-----\nFROM_PATH\n-----END PUBLIC KEY-----\n")
+    key.write_text(path_pem)
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
     monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
     monkeypatch.setenv("TPSI_CR_PUBLIC_KEY_PATH", str(key))
-    monkeypatch.setenv(
-        "TPSI_CR_PUBLIC_KEY",
-        "-----BEGIN PUBLIC KEY-----\nFROM_INLINE\n-----END PUBLIC KEY-----\n",
-    )
+    monkeypatch.setenv("TPSI_CR_PUBLIC_KEY", inline_pem)
 
     c = cfg.get_config()
-    assert "FROM_INLINE" in c.cr_public_key_pem
-    assert "FROM_PATH" not in c.cr_public_key_pem
+    assert c.cr_public_key_pem == inline_pem
+    assert c.cr_public_key_pem != path_pem
 
 
-def test_inline_key_normalises_literal_newline_escapes(monkeypatch):
+def test_inline_key_normalises_literal_newline_escapes(monkeypatch, make_pem):
     """Railway's env UI mangles multi-line values into literal backslash-n
     escapes rather than real newlines — this must not break PEM parsing."""
+    real_pem = make_pem()
+    mangled = real_pem.replace("\n", "\\n")
+    monkeypatch.setenv("TPSI_ENV", "test")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
+    monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
+    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.delenv("TPSI_CR_PUBLIC_KEY_PATH", raising=False)
+    monkeypatch.setenv("TPSI_CR_PUBLIC_KEY", mangled)
+
+    c = cfg.get_config()
+    assert c.cr_public_key_pem == real_pem
+    assert c.cr_public_key_pem.startswith("-----BEGIN PUBLIC KEY-----\n")
+    assert "\\n" not in c.cr_public_key_pem
+
+
+def test_malformed_inline_key_raises(monkeypatch):
+    """A truncated/garbage key must fail at config load, not mid-signing."""
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
@@ -79,12 +115,12 @@ def test_inline_key_normalises_literal_newline_escapes(monkeypatch):
     monkeypatch.delenv("TPSI_CR_PUBLIC_KEY_PATH", raising=False)
     monkeypatch.setenv(
         "TPSI_CR_PUBLIC_KEY",
-        "-----BEGIN PUBLIC KEY-----\\nAAAA\\n-----END PUBLIC KEY-----\\n",
+        "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n",
     )
 
-    c = cfg.get_config()
-    assert c.cr_public_key_pem.startswith("-----BEGIN PUBLIC KEY-----\n")
-    assert "\\n" not in c.cr_public_key_pem
+    with pytest.raises(RuntimeError) as exc:
+        cfg.get_config()
+    assert "TPSI_CR_PUBLIC_KEY" in str(exc.value)
 
 
 def test_missing_both_key_vars_raises_mentioning_both_names(monkeypatch):

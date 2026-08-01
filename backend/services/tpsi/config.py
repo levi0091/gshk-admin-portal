@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
 # Form code -> (chargeable, fee in HKD).
 #
 # Code config, not env: a statutory fee change belongs in code review, not in a
@@ -57,6 +59,22 @@ def _require(name: str) -> str:
     return value
 
 
+def _validate_pem(pem: str, source_name: str) -> None:
+    # A truncated or garbage key must fail here, at config load, not much
+    # later inside signing — the worst place to discover it, since that path
+    # runs mid-filing against a chargeable API. Never include the key content
+    # or the underlying parser message in the error: a parse failure message
+    # can echo back fragments of the bad input.
+    try:
+        load_pem_public_key(pem.encode())
+    except Exception:
+        # `from None` — suppress the original exception chain; the parser's
+        # message can echo fragments of the bad input and must not surface.
+        raise RuntimeError(
+            f"{source_name} does not contain a valid PEM public key"
+        ) from None
+
+
 def _resolve_cr_public_key() -> str:
     # Spec §9: the CR public key is an environment variable like BASE_URL and
     # TLS_VERIFY, so TEST -> PROD stays a config swap with zero code change.
@@ -67,12 +85,25 @@ def _resolve_cr_public_key() -> str:
         # Railway's env UI mangles multi-line values into literal "\n"
         # escapes rather than real newlines — normalise both forms so a
         # pasted-in key doesn't silently fail PEM parsing on deploy.
-        return inline.replace("\\n", "\n")
+        pem = inline.replace("\\n", "\n")
+        _validate_pem(pem, "TPSI_CR_PUBLIC_KEY")
+        return pem
 
     path = os.environ.get("TPSI_CR_PUBLIC_KEY_PATH")
     if path:
-        with open(path, encoding="utf8") as fh:
-            return fh.read()
+        try:
+            with open(path, encoding="utf8") as fh:
+                pem = fh.read()
+        except OSError:
+            # A path isn't a credential, but the underlying OSError message
+            # embeds it — name only the variable, not the path or the OS
+            # error text. `from None` suppresses the chained OSError too.
+            raise RuntimeError(
+                "TPSI_CR_PUBLIC_KEY_PATH is set but the file it points to "
+                "could not be read"
+            ) from None
+        _validate_pem(pem, "TPSI_CR_PUBLIC_KEY_PATH")
+        return pem
 
     # Name only — never key content; this message reaches logs.
     raise RuntimeError(
