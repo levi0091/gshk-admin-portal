@@ -1,8 +1,7 @@
 from decimal import Decimal
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.fernet import Fernet
 
 from services.tpsi import config as cfg
 
@@ -14,32 +13,13 @@ def _clear_cache():
     cfg.get_config.cache_clear()
 
 
-@pytest.fixture
-def make_pem():
-    """Factory fixture: each call generates a fresh, real RSA-2048 public key
-    PEM. Config load now validates PEM shape (a truncated/garbage key must
-    fail fast, not mid-signing), so tests need parseable keys, not stub
-    blobs. A factory (not a single value) lets tests that need two distinct
-    keys — e.g. to prove one source takes precedence over another — get keys
-    that are genuinely different rather than string-distinguishable stubs."""
-
-    def _make() -> str:
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        return private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode()
-
-    return _make
-
-
 def test_loads_from_env(monkeypatch, tmp_path, make_pem):
     key = tmp_path / "k.pem"
     key.write_text(make_pem())
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
-    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.setenv("TPSI_CRED_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("TPSI_CR_PUBLIC_KEY_PATH", str(key))
 
     c = cfg.get_config()
@@ -64,7 +44,7 @@ def test_prod_env_forces_tls_verify(monkeypatch, tmp_path, make_pem):
     monkeypatch.setenv("TPSI_ENV", "prod")
     monkeypatch.setenv("TPSI_BASE_URL", "https://www.e-services.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
-    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.setenv("TPSI_CRED_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("TPSI_CR_PUBLIC_KEY_PATH", str(key))
     assert cfg.get_config().tls_verify is True
 
@@ -79,7 +59,7 @@ def test_inline_key_takes_precedence_over_path(monkeypatch, tmp_path, make_pem):
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
-    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.setenv("TPSI_CRED_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("TPSI_CR_PUBLIC_KEY_PATH", str(key))
     monkeypatch.setenv("TPSI_CR_PUBLIC_KEY", inline_pem)
 
@@ -96,7 +76,7 @@ def test_inline_key_normalises_literal_newline_escapes(monkeypatch, make_pem):
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
-    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.setenv("TPSI_CRED_KEY", Fernet.generate_key().decode())
     monkeypatch.delenv("TPSI_CR_PUBLIC_KEY_PATH", raising=False)
     monkeypatch.setenv("TPSI_CR_PUBLIC_KEY", mangled)
 
@@ -111,7 +91,7 @@ def test_malformed_inline_key_raises(monkeypatch):
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
-    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.setenv("TPSI_CRED_KEY", Fernet.generate_key().decode())
     monkeypatch.delenv("TPSI_CR_PUBLIC_KEY_PATH", raising=False)
     monkeypatch.setenv(
         "TPSI_CR_PUBLIC_KEY",
@@ -123,11 +103,27 @@ def test_malformed_inline_key_raises(monkeypatch):
     assert "TPSI_CR_PUBLIC_KEY" in str(exc.value)
 
 
+def test_malformed_cred_key_raises(monkeypatch, tmp_path, make_pem):
+    """A garbage TPSI_CRED_KEY must fail at config load, not on the first
+    encrypt/decrypt call deep inside a credential save or token write."""
+    key = tmp_path / "k.pem"
+    key.write_text(make_pem())
+    monkeypatch.setenv("TPSI_ENV", "test")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
+    monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
+    monkeypatch.setenv("TPSI_CRED_KEY", "not-a-valid-fernet-key")
+    monkeypatch.setenv("TPSI_CR_PUBLIC_KEY_PATH", str(key))
+
+    with pytest.raises(RuntimeError) as exc:
+        cfg.get_config()
+    assert "TPSI_CRED_KEY" in str(exc.value)
+
+
 def test_missing_both_key_vars_raises_mentioning_both_names(monkeypatch):
     monkeypatch.setenv("TPSI_ENV", "test")
     monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
-    monkeypatch.setenv("TPSI_CRED_KEY", "x" * 44)
+    monkeypatch.setenv("TPSI_CRED_KEY", Fernet.generate_key().decode())
     monkeypatch.delenv("TPSI_CR_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("TPSI_CR_PUBLIC_KEY_PATH", raising=False)
 

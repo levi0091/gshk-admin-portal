@@ -1,26 +1,10 @@
 import pytest
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from services.tpsi import config as cfg
 from services.tpsi import secrets as sec
 
-
-@pytest.fixture
-def make_pem():
-    """Factory fixture: each call generates a fresh, real RSA-2048 public key
-    PEM. Config load validates PEM shape (a truncated/garbage key must fail
-    fast, not mid-signing), so tests need a parseable key, not a stub blob."""
-
-    def _make() -> str:
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        return private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode()
-
-    return _make
+# make_pem is a shared fixture from tests/tpsi/conftest.py.
 
 
 @pytest.fixture(autouse=True)

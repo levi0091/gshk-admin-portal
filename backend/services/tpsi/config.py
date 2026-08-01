@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 # Form code -> (chargeable, fee in HKD).
@@ -77,6 +78,21 @@ def _validate_pem(pem: str, source_name: str) -> None:
         raise RuntimeError(
             f"{source_name} does not contain a valid PEM public key"
         ) from None
+
+
+def _validate_cred_key(key: bytes) -> None:
+    # Same shape as _validate_pem: a malformed or truncated Fernet key must
+    # fail here, at config load, not deep inside the first encrypt/decrypt
+    # call — which happens mid-request, during a credential save or a token
+    # write, the worst place to discover it. Never include the key value or
+    # the underlying exception message in the error: a malformed key is
+    # still a secret.
+    try:
+        Fernet(key)
+    except Exception:
+        # `from None` — suppress the original exception chain; its message
+        # can echo fragments of the bad key and must not surface.
+        raise RuntimeError("TPSI_CRED_KEY is not a valid Fernet key") from None
 
 
 def _resolve_cr_public_key() -> str:
@@ -144,12 +160,15 @@ def get_config() -> TpsiConfig:
 
     pem = _resolve_cr_public_key()
 
+    cred_key = _require("TPSI_CRED_KEY").encode()
+    _validate_cred_key(cred_key)
+
     return TpsiConfig(
         env=env,
         base_url=_require("TPSI_BASE_URL").rstrip("/"),
         tls_verify=verify,
         cr_public_key_pem=pem,
-        cred_key=_require("TPSI_CRED_KEY").encode(),
+        cred_key=cred_key,
     )
 
 
