@@ -32,6 +32,23 @@ class CredentialIn(BaseModel):
     tpsi_password: str
     eservice_user_id: str | None = None
     eservice_password: str | None = None
+    deposit_account_no: str | None = None
+
+
+def _opt(body: CredentialIn, name: str):
+    """Tell "client omitted this field" apart from "client sent null".
+
+    Pydantic fills an omitted optional with None, and credentials._payload reads
+    None as an explicit "clear this column". Passing it straight through means
+    the ROUTINE case — CR forces a TPSI password change every 180 days, so a
+    password-only rotation is the common one — silently wipes the stored
+    e-Service signing password and the deposit account number.
+
+    model_fields_set contains only what was actually in the request body, so it
+    is what carries the distinction across the HTTP boundary to the _UNSET
+    sentinel the service layer already implements.
+    """
+    return getattr(body, name) if name in body.model_fields_set else credentials.UNSET
 
 
 class PasswordChangeIn(BaseModel):
@@ -102,8 +119,9 @@ async def set_credentials(
         user_id=user["id"],
         presentor_account_id=body.presentor_account_id,
         tpsi_password=body.tpsi_password,
-        eservice_user_id=body.eservice_user_id,
-        eservice_password=body.eservice_password,
+        eservice_user_id=_opt(body, "eservice_user_id"),
+        eservice_password=_opt(body, "eservice_password"),
+        deposit_account_no=_opt(body, "deposit_account_no"),
     )
     await log_event(
         user_id=user["id"],
@@ -125,8 +143,9 @@ async def rotate_credentials(
         user_id=user["id"],
         presentor_account_id=body.presentor_account_id,
         tpsi_password=body.tpsi_password,
-        eservice_user_id=body.eservice_user_id,
-        eservice_password=body.eservice_password,
+        eservice_user_id=_opt(body, "eservice_user_id"),
+        eservice_password=_opt(body, "eservice_password"),
+        deposit_account_no=_opt(body, "deposit_account_no"),
     )
     await log_event(
         user_id=user["id"],
@@ -252,6 +271,46 @@ async def create_filing(
     return row
 
 
+def form_status(row: dict) -> dict:
+    """The FORM status — where the document is in CR's process.
+
+    Deliberately NOT merged with the case's workflow status, which answers a
+    different question (where the case is in GSHK's process) and lives on
+    nar1_cases. The UI reports the two side by side; collapsing them into one
+    badge loses information in both directions.
+    """
+    stage = row["stage"]
+    return {
+        "code": stage,
+        "label": filings.FORM_STATUS_LABELS.get(stage, stage),
+        "failed": stage in filings.FAILURE_STAGES,
+        "terminal": stage in filings.TERMINAL_STAGES,
+        # Present only on a failure, and it is the whole fault list: CR returns
+        # every problem at once so one pass can fix them all.
+        "faults": (row.get("cr_error") or {}).get("faults") or [],
+    }
+
+
+@router.get("/filings/{filing_id}")
+async def get_filing(filing_id: str, user=Depends(require_permission("tpsi", "read"))):
+    """Form status for one filing. Read-only, no CR call, no charge."""
+    try:
+        row = filings.get_filing(filing_id)
+    except Exception as exc:
+        raise _handle(exc)
+    return {
+        "filing_id": filing_id,
+        "form_code": row["form_code"],
+        "entity_id": row["entity_id"],
+        "nar1_case_id": row.get("nar1_case_id"),
+        "form_status": form_status(row),
+        "validated_at": row.get("validated_at"),
+        "signed_at": row.get("signed_at"),
+        "submitted_at": row.get("submitted_at"),
+        "receipt": row.get("receipt"),
+    }
+
+
 @router.post("/filings/{filing_id}/validate")
 async def validate_filing(
     filing_id: str, user=Depends(require_permission("tpsi", "read"))
@@ -268,7 +327,7 @@ async def validate_filing(
         entity_type="tpsi_filing", entity_id=filing_id,
         metadata={"stage": row["stage"]},
     )
-    return {"filing_id": filing_id, "stage": row["stage"]}
+    return {"filing_id": filing_id, "stage": row["stage"], "form_status": form_status(row)}
 
 
 class SignIn(BaseModel):

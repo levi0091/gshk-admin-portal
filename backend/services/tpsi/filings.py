@@ -15,12 +15,62 @@ from services.tpsi.soap import extract_submission, parse_response, text_of
 
 _TABLE = "tpsi_filings"
 
+# The FORM status vocabulary (migration 018). Distinct from the WORKFLOW status,
+# which lives on nar1_cases and answers a different question: this says where the
+# document is in CR's process, not where the case is in GSHK's.
+#
+# Failure is split per step on purpose. "validation_failed" means fix the data
+# and retry for free; "submission_failed" means CR rejected a chargeable call.
+# Collapsing both into one `failed`, as the original vocabulary did, loses the
+# only distinction that changes what the user should do next.
 STAGE_DRAFT = "draft"
 STAGE_VALIDATED = "validated"
+STAGE_VALIDATION_FAILED = "validation_failed"
 STAGE_SIGNED = "signed"
+STAGE_SIGNING_FAILED = "signing_failed"
 STAGE_SUBMITTED = "submitted"
+STAGE_SUBMISSION_FAILED = "submission_failed"
+STAGE_REGISTERED = "registered"
+STAGE_SUPERSEDED = "superseded"
 STAGE_EDRIVE = "edrive"
-STAGE_FAILED = "failed"
+
+#: The nine the UI reports, in lifecycle order. `edrive` is a valid stored value
+#: (upload_edrive() still works) but is not offered in the UI, so it is not here.
+FORM_STATUSES = (
+    STAGE_DRAFT,
+    STAGE_VALIDATED,
+    STAGE_VALIDATION_FAILED,
+    STAGE_SIGNED,
+    STAGE_SIGNING_FAILED,
+    STAGE_SUBMITTED,
+    STAGE_SUBMISSION_FAILED,
+    STAGE_REGISTERED,
+    STAGE_SUPERSEDED,
+)
+
+#: Human labels for the form status. The UI shows these beside — never merged
+#: with — the workflow status.
+FORM_STATUS_LABELS = {
+    STAGE_DRAFT: "Not yet sent to CR",
+    STAGE_VALIDATED: "Validated by CR",
+    STAGE_VALIDATION_FAILED: "Rejected at validation",
+    STAGE_SIGNED: "Signed",
+    STAGE_SIGNING_FAILED: "Rejected at signing",
+    STAGE_SUBMITTED: "Filed with CR",
+    STAGE_SUBMISSION_FAILED: "Rejected at submission",
+    STAGE_REGISTERED: "Registered by CR",
+    STAGE_SUPERSEDED: "Superseded by a later attempt",
+    STAGE_EDRIVE: "Sent to CR e-Drive",
+}
+
+#: Stages a filing can never move on from.
+TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE, STAGE_SUPERSEDED)
+
+#: A failure at any step. Kept as a tuple so callers test membership rather than
+#: string-matching a suffix.
+FAILURE_STAGES = (
+    STAGE_VALIDATION_FAILED, STAGE_SIGNING_FAILED, STAGE_SUBMISSION_FAILED,
+)
 
 
 def _now() -> str:
@@ -85,7 +135,7 @@ def validate(client, filing_id: str) -> dict:
     from services.tpsi.soap import build_submission
 
     filing = get_filing(filing_id)
-    if filing["stage"] in (STAGE_SIGNED, STAGE_SUBMITTED, STAGE_EDRIVE):
+    if filing["stage"] in (STAGE_SIGNED,) + TERMINAL_STAGES:
         raise ValueError(
             f"filing is already {filing['stage']} and cannot be re-validated"
         )
@@ -98,7 +148,7 @@ def validate(client, filing_id: str) -> dict:
         _update(
             filing_id,
             {
-                "stage": STAGE_FAILED,
+                "stage": STAGE_VALIDATION_FAILED,
                 "cr_error": {"faults": getattr(exc, "faults", []), "message": str(exc)},
             },
         )
@@ -166,7 +216,7 @@ def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str)
     except TpsiError as exc:
         _update(
             filing_id,
-            {"stage": STAGE_FAILED,
+            {"stage": STAGE_SIGNING_FAILED,
              "cr_error": {"faults": getattr(exc, "faults", []), "message": str(exc)}},
         )
         raise
@@ -306,7 +356,7 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
         _update(
             filing_id,
             {
-                "stage": STAGE_FAILED,
+                "stage": STAGE_SUBMISSION_FAILED,
                 "cr_error": {"faults": getattr(exc, "faults", []), "message": str(exc)},
             },
         )

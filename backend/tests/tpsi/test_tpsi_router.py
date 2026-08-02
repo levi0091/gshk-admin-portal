@@ -253,7 +253,18 @@ def test_validate_filing_advances_the_stage_and_audits(client):
          patch("routers.tpsi.log_event", side_effect=fake_log):
         response = client.post("/tpsi/filings/f1/validate", headers=H)
     assert response.status_code == 200
-    assert response.json() == {"filing_id": "f1", "stage": "validated"}
+    body = response.json()
+    assert body["filing_id"] == "f1"
+    assert body["stage"] == "validated"
+    # The FORM status travels with the response so the UI can report it beside
+    # the workflow status without a second round trip (Levi 2026-08-02).
+    assert body["form_status"] == {
+        "code": "validated",
+        "label": "Validated by CR",
+        "failed": False,
+        "terminal": False,
+        "faults": [],
+    }
     assert logged["action_type"] == "TPSI_VALIDATE"
 
 

@@ -27,6 +27,11 @@ _TABLE = "tpsi_presenter_credentials"
 # deliberate clear).
 _UNSET = object()
 
+#: Public alias. The router needs this sentinel to say "the client did not
+#: mention this field" — see routers/tpsi.py::_opt. Without it the distinction
+#: dies at the HTTP boundary and every optional field gets cleared on rotation.
+UNSET = _UNSET
+
 
 @dataclass(frozen=True)
 class PresenterCredential:
@@ -53,16 +58,55 @@ def _upsert(payload: dict) -> dict:
     )
 
 
+#: Characters of a stored password echoed back to its owner. Four is the most
+#: that may ever be revealed; the rest is masked.
+_HINT_REVEAL = 4
+
+
+def _hint(enc: str | None) -> str | None:
+    """A recognisable echo of a stored password: masked except the last four.
+
+    This is a DELIBERATE relaxation of the rule that no endpoint returns a
+    password (Levi, v8 mock-up feedback and reaffirmed 2026-08-02). The reason
+    it is worth the trade: without it nobody can tell WHICH password is stored,
+    so a rotation is done blind and a user who is unsure re-types a password
+    they may be getting wrong — against an API that locks accounts on repeated
+    auth failures.
+
+    What keeps it defensible:
+      * scoped to the owner — get_metadata() is keyed on the caller's own
+        user_id, so this never exposes one user's secret to another;
+      * never more than the last four characters, whatever the length;
+      * a password of four characters or fewer reveals NOTHING, because
+        "the last four" would be the entire secret.
+
+    It does disclose the password's length. That is inherent to showing a
+    like-for-like mask and is accepted.
+    """
+    if not enc:
+        return None
+    plain = decrypt(enc)
+    if len(plain) <= _HINT_REVEAL:
+        return "•" * len(plain)
+    return "•" * (len(plain) - _HINT_REVEAL) + plain[-_HINT_REVEAL:]
+
+
 def _to_metadata(row: dict) -> dict:
-    """The one, shared definition of what's safe to return: no secrets, not
-    plaintext, not ciphertext. Used by the read path (get_metadata) AND both
-    write paths (set_credential/rotate_credential, off the row _upsert
-    already returned) so this allow-list can't drift apart between them."""
+    """The one, shared definition of what's safe to return. Used by the read
+    path (get_metadata) AND both write paths (set_credential/rotate_credential,
+    off the row _upsert already returned) so this allow-list can't drift apart
+    between them.
+
+    Carries a masked last-four HINT for each stored password (see _hint) — never
+    the password, never the ciphertext."""
     return {
         "presentor_account_id": row["presentor_account_id"],
         "eservice_user_id": row.get("eservice_user_id"),
         "has_eservice_password": row.get("eservice_password_enc") is not None,
+        "tpsi_password_hint": _hint(row.get("tpsi_password_enc")),
+        "eservice_password_hint": _hint(row.get("eservice_password_enc")),
         "tpsi_password_expires_at": row.get("tpsi_password_expires_at"),
+        "deposit_account_no": row.get("deposit_account_no"),
         "is_test": row["is_test"],
         "last_rotated_at": row.get("last_rotated_at"),
     }
@@ -110,6 +154,7 @@ def _payload(
     tpsi_password: str,
     eservice_user_id,
     eservice_password,
+    deposit_account_no,
     rotated: bool,
 ) -> dict:
     payload = {
@@ -132,6 +177,10 @@ def _payload(
         payload["eservice_password_enc"] = (
             encrypt(eservice_password) if eservice_password else None
         )
+    # Same _UNSET discipline: the deposit account must survive a password-only
+    # rotation untouched (D-3).
+    if deposit_account_no is not _UNSET:
+        payload["deposit_account_no"] = deposit_account_no
     if rotated:
         payload["last_rotated_at"] = datetime.now(timezone.utc).isoformat()
     return payload
@@ -144,11 +193,13 @@ def set_credential(
     tpsi_password: str,
     eservice_user_id: str | None = _UNSET,
     eservice_password: str | None = _UNSET,
+    deposit_account_no: str | None = _UNSET,
 ) -> dict:
     row = _upsert(
         _payload(
             user_id, presentor_account_id, tpsi_password,
-            eservice_user_id, eservice_password, rotated=False,
+            eservice_user_id, eservice_password, deposit_account_no,
+            rotated=False,
         )
     )
     return _to_metadata(row)
@@ -161,11 +212,13 @@ def rotate_credential(
     tpsi_password: str,
     eservice_user_id: str | None = _UNSET,
     eservice_password: str | None = _UNSET,
+    deposit_account_no: str | None = _UNSET,
 ) -> dict:
     row = _upsert(
         _payload(
             user_id, presentor_account_id, tpsi_password,
-            eservice_user_id, eservice_password, rotated=True,
+            eservice_user_id, eservice_password, deposit_account_no,
+            rotated=True,
         )
     )
     return _to_metadata(row)

@@ -215,7 +215,9 @@ def test_failed_submit_records_the_error_and_does_not_mark_submitted():
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
         with pytest.raises(TpsiValidationError):
             filings.submit(client, "f1", confirm=True, deposit_account="ACC")
-    assert saved["stage"] == filings.STAGE_FAILED
+    # A CHARGEABLE call was rejected — distinct from a free validation
+    # failure, and the stored status must distinguish them.
+    assert saved["stage"] == filings.STAGE_SUBMISSION_FAILED
 
 
 def test_receipt_writeback_failure_does_not_fail_the_submission():

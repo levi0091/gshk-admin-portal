@@ -183,3 +183,66 @@ def test_rotate_with_explicit_none_clears_the_signing_password():
         )
     assert captured["eservice_password_enc"] is None
     assert captured["eservice_user_id"] is None
+
+
+# ── Last-four password hint (Levi 2026-08-02) ───────────────────────────────
+
+
+def test_hint_masks_all_but_the_last_four(monkeypatch):
+    monkeypatch.setattr(creds, "decrypt", lambda _e: "Abcd1234567")
+    assert creds._hint("enc") == "•••••••4567"
+
+
+def test_hint_reveals_nothing_for_a_very_short_password(monkeypatch):
+    # "the last four" of a 4-char password is the whole secret.
+    monkeypatch.setattr(creds, "decrypt", lambda _e: "abcd")
+    assert creds._hint("enc") == "••••"
+    monkeypatch.setattr(creds, "decrypt", lambda _e: "ab")
+    assert creds._hint("enc") == "••"
+
+
+def test_hint_is_none_when_nothing_is_stored():
+    assert creds._hint(None) is None
+
+
+def test_metadata_never_returns_a_password_or_ciphertext(monkeypatch):
+    monkeypatch.setattr(creds, "decrypt", lambda _e: "Abcd1234567")
+    meta = creds._to_metadata({
+        "presentor_account_id": "T1",
+        "tpsi_password_enc": "CIPHERTEXT-TPSI",
+        "eservice_password_enc": "CIPHERTEXT-ESVC",
+        "eservice_user_id": "E1",
+        "deposit_account_no": "N001",
+        "is_test": True,
+    })
+    blob = repr(meta)
+    assert "CIPHERTEXT" not in blob          # no ciphertext escapes
+    assert "Abcd1234567" not in blob         # no plaintext escapes
+    assert meta["tpsi_password_hint"] == "•••••••4567"
+    assert meta["deposit_account_no"] == "N001"
+
+
+# ── The routine rotation must not wipe untouched fields ─────────────────────
+
+
+def test_password_only_rotation_preserves_signing_password_and_deposit_account():
+    """CR forces a TPSI password change every 180 days, so this IS the common
+    path. Omitted fields must be absent from the payload entirely — present-and-
+    None means "clear it" to PostgREST."""
+    payload = creds._payload(
+        "u1", "T1", "newpw",
+        creds.UNSET, creds.UNSET, creds.UNSET,
+        rotated=True,
+    )
+    assert "eservice_password_enc" not in payload
+    assert "eservice_user_id" not in payload
+    assert "deposit_account_no" not in payload
+    assert payload["last_rotated_at"]
+
+
+def test_explicit_null_still_clears():
+    payload = creds._payload(
+        "u1", "T1", "pw", None, None, None, rotated=False,
+    )
+    assert payload["eservice_password_enc"] is None
+    assert payload["deposit_account_no"] is None

@@ -87,7 +87,9 @@ def test_validate_failure_records_the_errors_and_marks_failed():
          patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)):
         with pytest.raises(errors.TpsiValidationError):
             filings.validate(client, "f1")
-    assert saved["stage"] == filings.STAGE_FAILED
+    # Step-specific, not a generic "failed": a validation failure is free
+    # and retryable, and the status has to say so (migration 018).
+    assert saved["stage"] == filings.STAGE_VALIDATION_FAILED
     assert "brNo is required" in str(saved["cr_error"])
 
 
@@ -257,3 +259,63 @@ def test_sign_never_stores_the_password():
          patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)):
         filings.sign(client, "f1", "USERID", "sup3rs3cret")
     assert "sup3rs3cret" not in str(saved)
+
+
+# ── Form status vocabulary (migration 018) ──────────────────────────────────
+# The point of splitting `failed` is that a caller can tell a FREE, retryable
+# validation failure from a rejected CHARGEABLE submission without opening
+# cr_error. These lock that in.
+
+
+def test_sign_failure_records_signing_failed_not_a_generic_failure(monkeypatch):
+    from services.tpsi import errors
+
+    saved = {}
+    filing = {
+        "id": "f1", "form_code": "Nar1", "stage": filings.STAGE_VALIDATED,
+        # EFormSignatures must be present: the overall signature is spliced in
+        # just before its closing tag, so sign() fails earlier without it.
+        "validated_xml": (
+            "<cr:submission><cr:EForm>x</cr:EForm>"
+            "<cr:EFormSignatures></cr:EFormSignatures></cr:submission>"
+        ),
+    }
+    monkeypatch.setattr(filings, "get_filing", lambda _id: filing)
+    monkeypatch.setattr(filings, "_update", lambda _id, payload: saved.update(payload))
+    monkeypatch.setattr(
+        "services.tpsi.crypto.build_pin_sign", lambda *a, **k: "<cr:PinSign/>"
+    )
+    monkeypatch.setattr(
+        "services.tpsi.config.get_config",
+        lambda: type("C", (), {"cr_public_key_pem": "pem"})(),
+    )
+
+    client = MagicMock()
+    client.post_form.side_effect = errors.TpsiValidationError([("ERR_SIG", "bad pin")])
+
+    with pytest.raises(errors.TpsiValidationError):
+        filings.sign(client, "f1", "CHANTM01", "pw")
+
+    assert saved["stage"] == filings.STAGE_SIGNING_FAILED
+    assert saved["stage"] != filings.STAGE_VALIDATION_FAILED
+
+
+def test_form_statuses_are_the_nine_the_ui_reports():
+    # edrive is a valid stored value but is not offered in the UI, so it must
+    # not appear in the reported vocabulary.
+    assert len(filings.FORM_STATUSES) == 9
+    assert filings.STAGE_EDRIVE not in filings.FORM_STATUSES
+    # Every reported status needs a label, or the UI renders a raw enum.
+    for status in filings.FORM_STATUSES:
+        assert filings.FORM_STATUS_LABELS.get(status)
+
+
+def test_a_submitted_filing_cannot_be_walked_back_by_revalidating(monkeypatch):
+    # The double-charge guard is a partial unique index on stage='submitted';
+    # re-validating would drop the row out of its coverage.
+    for terminal in filings.TERMINAL_STAGES:
+        monkeypatch.setattr(
+            filings, "get_filing", lambda _id, s=terminal: {"id": "f1", "stage": s}
+        )
+        with pytest.raises(ValueError):
+            filings.validate(MagicMock(), "f1")
