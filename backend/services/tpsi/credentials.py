@@ -160,9 +160,14 @@ def _payload(
     payload = {
         "user_id": user_id,
         "presentor_account_id": presentor_account_id,
-        "tpsi_password_enc": encrypt(tpsi_password),
         "is_test": get_config().env == "test",
     }
+    # Same _UNSET discipline as the optional fields below. Without it there is
+    # no way to change the deposit account or the e-Service ID without also
+    # re-supplying the TPSI password -- which the user would have to retype from
+    # memory against an API that locks accounts on repeated auth failures.
+    if tpsi_password is not _UNSET:
+        payload["tpsi_password_enc"] = encrypt(tpsi_password)
     # _UNSET ("not mentioned") -> omit the key so PostgREST leaves the
     # stored value untouched — the same mechanism that already lets
     # tpsi_password_expires_at survive a rotation. None ("explicitly
@@ -209,7 +214,7 @@ def rotate_credential(
     *,
     user_id: str,
     presentor_account_id: str,
-    tpsi_password: str,
+    tpsi_password: str | None = _UNSET,
     eservice_user_id: str | None = _UNSET,
     eservice_password: str | None = _UNSET,
     deposit_account_no: str | None = _UNSET,
