@@ -16,7 +16,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   _resetLookups()
   // the Country of Incorporation select reads /lookups
-  api.get.mockResolvedValue({ country: [{ code: 'HK', label: 'Hong Kong' }] })
+  api.get.mockResolvedValue({
+    country: [{ code: 'GB', label: 'United Kingdom' }, { code: 'HK', label: 'Hong Kong' }],
+  })
   api.post.mockResolvedValue({ id: 'new-1', company_name: 'NewCo' })
 })
 
@@ -24,6 +26,8 @@ async function fillRequired(user) {
   await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
   await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
   await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
+  await user.type(screen.getByLabelText(/Registered Address/), '1 Harbour View St')
+  await user.type(screen.getByLabelText(/Company Phone/), '3500 1234')
 }
 
 describe('AddCompanyModal', () => {
@@ -59,8 +63,6 @@ describe('AddCompanyModal', () => {
     const user = userEvent.setup()
     renderModal()
     await fillRequired(user)
-    await user.type(screen.getByLabelText('Registered Address'), '1 Harbour View St')
-    await user.type(screen.getByLabelText('Company Phone'), '+852 3500 1234')
     await user.click(screen.getByRole('button', { name: 'Create Company' }))
 
     await waitFor(() => {
@@ -68,6 +70,7 @@ describe('AddCompanyModal', () => {
         company_name: 'NewCo',
         status: 'pre_incorporation',
         company_type: 'Private company limited by shares',
+        incorporation_place: 'HK',
         registered_address: '1 Harbour View St',
         company_phone: '+852 3500 1234',
       })
@@ -90,6 +93,156 @@ describe('AddCompanyModal', () => {
     renderModal()
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onClose).toHaveBeenCalled()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+})
+
+describe('AddCompanyModal — discard guard (UAT F-1)', () => {
+  it('closes straight away when nothing has been entered', async () => {
+    const user = userEvent.setup()
+    const { container } = renderModal()
+    await user.click(container.querySelector('.overlay'))
+    expect(onClose).toHaveBeenCalled()
+    expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
+  })
+
+  it('does not treat the auto-filled Hong Kong default as an edit', async () => {
+    const user = userEvent.setup()
+    const { container } = renderModal()
+    await waitFor(() => expect(screen.getByLabelText(/Country of Incorporation/)).toHaveValue('HK'))
+    await user.click(container.querySelector('.overlay'))
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('asks before discarding a filled form dismissed by backdrop click', async () => {
+    const user = userEvent.setup()
+    const { container } = renderModal()
+    await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
+    await user.click(container.querySelector('.overlay'))
+    expect(await screen.findByText('Discard changes?')).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('keeps the entered data when the operator chooses Keep editing', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByLabelText(/Company Name/)).toHaveValue('NewCo')
+  })
+
+  it('closes when the operator confirms Discard', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await user.click(await screen.findByRole('button', { name: 'Discard' }))
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('treats a changed country of incorporation as an edit worth guarding', async () => {
+    const user = userEvent.setup()
+    const { container } = renderModal()
+    await waitFor(() => expect(screen.getByLabelText(/Country of Incorporation/)).toHaveValue('HK'))
+    await user.selectOptions(screen.getByLabelText(/Country of Incorporation/), 'GB')
+    await user.click(container.querySelector('.overlay'))
+    expect(await screen.findByText('Discard changes?')).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+describe('AddCompanyModal — Hong Kong default (UAT F-2)', () => {
+  it('preselects Hong Kong once the country vocabulary loads', async () => {
+    renderModal()
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Country of Incorporation/)).toHaveValue('HK')
+    })
+  })
+
+  it('leaves the field blank when Hong Kong is absent from the vocabulary', async () => {
+    api.get.mockResolvedValue({ country: [{ code: 'GB', label: 'United Kingdom' }] })
+    renderModal()
+    await waitFor(() => {
+      expect(within(screen.getByLabelText(/Country of Incorporation/)).getAllByRole('option'))
+        .toHaveLength(2)
+    })
+    expect(screen.getByLabelText(/Country of Incorporation/)).toHaveValue('')
+  })
+})
+
+describe('AddCompanyModal — dialling code (UAT F-3)', () => {
+  it('defaults the dialling code to +852', () => {
+    renderModal()
+    expect(screen.getByLabelText('Dialling code')).toHaveValue('+852')
+  })
+
+  it('composes the dialling code and number into one phone string', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await fillRequired(user)
+    await user.selectOptions(screen.getByLabelText('Dialling code'), '+65')
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/companies',
+        expect.objectContaining({ company_phone: '+65 3500 1234' }),
+      )
+    })
+  })
+
+  it('never posts the dialling code as its own field', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await fillRequired(user)
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    expect(Object.keys(api.post.mock.calls[0][1])).not.toContain('phone_code')
+    expect(Object.keys(api.post.mock.calls[0][1])).not.toContain('phone_number')
+  })
+})
+
+describe('AddCompanyModal — required legend (UAT F-4)', () => {
+  it('explains what the asterisk means', () => {
+    renderModal()
+    expect(screen.getByText(/Fields marked with an asterisk are required/)).toBeInTheDocument()
+  })
+})
+
+describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
+  it('blocks submit when the registered address is empty', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
+    await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
+    await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
+    await user.type(screen.getByLabelText(/Company Phone/), '3500 1234')
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+    expect(await screen.findByText('Registered address is required')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('blocks submit when only a dialling code was chosen and no number typed', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
+    await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
+    await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
+    await user.type(screen.getByLabelText(/Registered Address/), '1 Harbour View St')
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+    expect(await screen.findByText('Company phone is required')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('blocks submit when the country of incorporation is empty', async () => {
+    const user = userEvent.setup()
+    api.get.mockResolvedValue({ country: [{ code: 'GB', label: 'United Kingdom' }] })
+    renderModal()
+    await fillRequired(user)
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+    expect(await screen.findByText('Country of incorporation is required')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()
   })
 })

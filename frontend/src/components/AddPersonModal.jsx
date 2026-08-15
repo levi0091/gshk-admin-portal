@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import FormField from './FormField.jsx'
+import DiscardConfirm from './DiscardConfirm.jsx'
 import { useLookups } from '../lib/lookups.js'
+import useDiscardGuard from '../lib/useDiscardGuard.js'
 import { api } from '../lib/api.js'
 
 const FIELDS = [
@@ -23,6 +25,11 @@ export default function AddPersonModal({ onClose, onCreated }) {
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [apiError, setApiError] = useState('')
+
+  // Nothing here is pre-filled, so any value at all means the operator typed
+  // something worth protecting (UAT F-1).
+  const isDirty = Object.values(form).some(v => v !== '' && v != null)
+  const guard = useDiscardGuard(isDirty, onClose)
 
   function validate() {
     const next = {}
@@ -51,11 +58,11 @@ export default function AddPersonModal({ onClose, onCreated }) {
   }
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) guard.requestClose() }}>
       <div className="modal" role="dialog" aria-label="New Person">
         <div className="modal-hdr">
           <div className="modal-title">New Person</div>
-          <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
+          <button className="modal-close" onClick={guard.requestClose} aria-label="Close">×</button>
         </div>
 
         <div className="modal-body">
@@ -79,14 +86,20 @@ export default function AddPersonModal({ onClose, onCreated }) {
               </div>
             ))}
           </div>
+
+          <div className="f-legend"><span className="f-req">*</span> Fields marked with an asterisk are required.</div>
         </div>
 
         <div className="modal-footer">
-          <button className="btn btn-outline" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-outline" onClick={guard.requestClose} disabled={saving}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSubmit} disabled={saving}>
             {saving ? 'Creating…' : 'Create Person'}
           </button>
         </div>
+
+        {guard.confirming && (
+          <DiscardConfirm onKeepEditing={guard.keepEditing} onDiscard={guard.discard} />
+        )}
       </div>
     </div>
   )

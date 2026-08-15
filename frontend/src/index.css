@@ -79,6 +79,11 @@ a { text-decoration: none; color: inherit; }
   border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
 }
 .f-hint { font-size: 11px; color: var(--t-muted); }
+.f-legend { margin-top: 16px; font-size: 11px; color: var(--t-muted); }
+/* dialling code + number read as one control (UAT F-3) */
+.f-phone { display: flex; gap: 8px; }
+.f-phone .f-select { flex: 0 0 148px; }
+.f-phone .f-input { flex: 1; min-width: 0; }
 .f-select {
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' stroke='%237C80A3' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
@@ -135,6 +140,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .modal {
   background: #fff; border-radius: var(--r-xl);
   width: 100%; max-width: 520px; margin: 20px; box-shadow: var(--sh-lg);
+  position: relative;
 }
 .modal-hdr {
   display: flex; align-items: center; justify-content: space-between;
@@ -151,6 +157,21 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .modal-footer {
   padding: 14px 24px; border-top: 1px solid var(--border);
   display: flex; justify-content: flex-end; gap: 10px;
+}
+/* discard guard — sits over the form it is protecting, not over the page */
+.modal-confirm {
+  position: absolute; inset: 0; border-radius: var(--r-xl);
+  background: rgba(255,255,255,.82); backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.modal-confirm-card {
+  background: #fff; border: 1px solid var(--border); border-radius: var(--r-lg);
+  box-shadow: var(--sh-lg); padding: 22px 24px; max-width: 340px; text-align: center;
+}
+.modal-confirm-title { font-size: 15px; font-weight: 700; color: var(--t-head); }
+.modal-confirm-text { font-size: 12px; color: var(--t-muted); margin-top: 6px; }
+.modal-confirm-actions {
+  display: flex; justify-content: center; gap: 10px; margin-top: 18px;
 }
 
 /* ── PAGE CHROME ─────────────────────────────────────────── */
