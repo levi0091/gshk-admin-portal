@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import CompanyRegistryPage from './CompanyRegistryPage.jsx'
 
@@ -23,14 +23,17 @@ const PAYLOAD = {
     {
       id: 'e1', company_name: 'Harbour Tech Ltd.', br_number: '2100028',
       cr_number: '2100028', is_client: true, is_corporate_party: false, status: 'live',
+      incorporation_date: '2023-08-12',   // 3 days past anniversary — inside the window
     },
     {
       id: 'e2', company_name: 'Get Started HK Limited', br_number: '63912808',
       cr_number: '2882908', is_client: true, is_corporate_party: true, status: 'live',
+      incorporation_date: '2018-09-18',   // 34 days ahead
     },
     {
       id: 'e3', company_name: 'Asia BC Ltd.', br_number: null,
       cr_number: null, is_client: false, is_corporate_party: true, status: 'live',
+      incorporation_date: null,           // Viewpoint row with no incorporation date
     },
   ],
 }
@@ -123,5 +126,45 @@ describe('CompanyRegistryPage', () => {
     api.get.mockRejectedValue(new Error('boom'))
     renderPage()
     expect(await screen.findByText(/Failed to load company registry: boom/)).toBeInTheDocument()
+  })
+})
+
+describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-08-15T09:00:00'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('adds a Days to anniversary column', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.getByRole('columnheader', { name: /Days to anniversary/ })).toBeInTheDocument()
+  })
+
+  it('counts down to an anniversary that is still ahead', async () => {
+    renderPage()
+    const row = (await screen.findByText('Get Started HK Limited')).closest('tr')
+    expect(within(row).getByText('in 34 days')).toBeInTheDocument()
+  })
+
+  it('highlights a company inside the 42-day filing window', async () => {
+    renderPage()
+    const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
+    const cell = within(row).getByText('3 days ago')
+    expect(cell).toBeInTheDocument()
+    expect(cell).toHaveClass('td-anniv-due')
+  })
+
+  it('does not highlight a company whose anniversary is still ahead', async () => {
+    renderPage()
+    const row = (await screen.findByText('Get Started HK Limited')).closest('tr')
+    expect(within(row).getByText('in 34 days')).not.toHaveClass('td-anniv-due')
+  })
+
+  it('shows an em dash for a company with no incorporation date', async () => {
+    renderPage()
+    const row = (await screen.findByText('Asia BC Ltd.')).closest('tr')
+    expect(within(row).getByLabelText('Days to anniversary')).toHaveTextContent('—')
   })
 })

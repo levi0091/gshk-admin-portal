@@ -4,6 +4,7 @@ import { api } from '../lib/api.js'
 import StatusBadge, { FlagBadges } from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import SortableTh from '../components/SortableTh.jsx'
+import { anniversaryLabel } from '../lib/anniversary.js'
 
 const PAGE_SIZE = 50
 
@@ -133,13 +134,19 @@ export default function CompanyRegistryPage() {
                       {label}
                     </SortableTh>
                   ))}
+                  {/* Not a SortableTh: days-to-anniversary is derived from
+                      incorporation_date, and this table sorts server-side on
+                      real columns only. Sorting it needs backend support. */}
+                  <th scope="col">
+                    <div className="th-inner">Days to anniversary</div>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={5} className="empty-state">Loading…</td></tr>
+                  <tr><td colSpan={6} className="empty-state">Loading…</td></tr>
                 ) : companies.length === 0 ? (
-                  <tr><td colSpan={5} className="empty-state">No companies match this view.</td></tr>
+                  <tr><td colSpan={6} className="empty-state">No companies match this view.</td></tr>
                 ) : companies.map(c => (
                   <tr key={c.id} className="clickable" onClick={() => navigate(`/companies/${c.id}`)}>
                     <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>
@@ -149,6 +156,12 @@ export default function CompanyRegistryPage() {
                       <FlagBadges isClient={c.is_client} isCorporateParty={c.is_corporate_party} />
                     </td>
                     <td data-label="Status"><StatusBadge status={c.status} /></td>
+                    <td data-label="Days to anniversary" aria-label="Days to anniversary">
+                      {(() => {
+                        const { text, due } = anniversaryLabel(c.incorporation_date)
+                        return <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>
+                      })()}
+                    </td>
                   </tr>
                 ))}
               </tbody>
