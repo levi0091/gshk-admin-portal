@@ -35,7 +35,7 @@ The G-FlowDesk Admin Portal — a ZenexFlow-built internal tool for GSHK's data 
 | Frontend testing | Vitest + React Testing Library | Every React component/hook ships with tests |
 | Database | Supabase (PostgreSQL) | Auth via Supabase Auth (email/password) |
 | DB Migrations | Alembic | All schema changes via Alembic migrations — never edit schema manually |
-| Email | Resend | Transactional emails — client verification, notifications |
+| Email | **Resend** | Transactional emails — client verification, notifications. Sends from **`no-reply@getstarted.hk`** via the client's Resend account (`getstarted.hk` is a domain GSHK controls; verify SPF/DKIM in Resend). `RESEND_API_KEY` live. Levi 2026-08-16. |
 | AI | Claude API | Called from Railway backend only — never from frontend |
 
 ### URLs
