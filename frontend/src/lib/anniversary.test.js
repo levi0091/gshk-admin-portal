@@ -1,8 +1,39 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 
-import { daysToAnniversary, daysSinceAnniversary, anniversaryLabel } from './anniversary.js'
+import {
+  daysToAnniversary, daysSinceAnniversary, anniversaryLabel, hongKongToday,
+} from './anniversary.js'
 
 const on = (iso) => new Date(`${iso}T00:00:00`)
+
+afterEach(() => vi.useRealTimers())
+
+describe('hongKongToday', () => {
+  // GSHK works to Hong Kong dates. Deriving "today" from the browser clock puts
+  // the whole column a day out for anyone not sitting in HKT — and, because the
+  // backend view is pinned to Asia/Hong_Kong, would make the rendered day count
+  // disagree with the sort order.
+  it('is already tomorrow when Hong Kong has passed midnight', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-15T17:00:00Z'))   // 01:00 on the 16th, HKT
+    const d = hongKongToday()
+    expect([d.getFullYear(), d.getMonth(), d.getDate()]).toEqual([2026, 7, 16])
+  })
+
+  it('is still today one minute before Hong Kong midnight', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-15T15:59:00Z'))   // 23:59 on the 15th, HKT
+    const d = hongKongToday()
+    expect([d.getFullYear(), d.getMonth(), d.getDate()]).toEqual([2026, 7, 15])
+  })
+
+  it('drives the day count when no date is supplied', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-15T17:00:00Z'))   // HK: 16 Aug
+    // Anniversary 18 Sept is 33 days from 16 Aug, 34 from the 15th.
+    expect(daysToAnniversary('2018-09-18')).toBe(33)
+  })
+})
 
 describe('daysToAnniversary', () => {
   it('counts the days to the next anniversary later this year', () => {

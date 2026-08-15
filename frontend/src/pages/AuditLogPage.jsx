@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
+import { formatDateTime } from '../lib/format.js'
 import SortableTh from '../components/SortableTh.jsx'
 
 const PAGE_SIZE = 100
@@ -34,13 +35,7 @@ const SOURCES = [
   { key: 'viewpoint_import', label: 'Viewpoint (imported)' },
 ]
 
-function formatTs(iso) {
-  return new Date(iso).toLocaleString('en-HK', {
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-    timeZone: 'Asia/Hong_Kong',
-  })
-}
+const formatTs = formatDateTime
 
 /**
  * What actually happened.

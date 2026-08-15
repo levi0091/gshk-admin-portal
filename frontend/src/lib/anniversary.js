@@ -18,12 +18,32 @@
  * relationship only.
  */
 
+import { HK_TZ } from './format.js'
+
 /** The statutory NAR1 filing window, in days after the anniversary. */
 export const FILING_WINDOW_DAYS = 42
 
 const MS_PER_DAY = 86400000
 
-/** Midnight local, so a partial day never rounds a boundary the wrong way. */
+/**
+ * Today's date in Hong Kong, as a plain calendar day.
+ *
+ * The browser clock is not the authority here. A deadline is a Hong Kong date,
+ * so between 00:00 and 08:00 HKT a UTC machine would still call it yesterday
+ * and every count would be one day out. The backend view is pinned to the same
+ * zone, so the number the column prints and the number the server sorts by are
+ * derived from the same "today".
+ */
+export function hongKongToday(now = new Date()) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: HK_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(now).map(({ type, value }) => [type, value])
+  )
+  return new Date(Number(p.year), Number(p.month) - 1, Number(p.day))
+}
+
+/** Midnight, so a partial day never rounds a boundary the wrong way. */
 function midnight(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate())
 }
@@ -48,7 +68,7 @@ function anniversaryIn(year, incorporated) {
 }
 
 /** Whole days until the next anniversary — 0 on the day itself, never negative. */
-export function daysToAnniversary(incorporationDate, today = new Date()) {
+export function daysToAnniversary(incorporationDate, today = hongKongToday()) {
   const incorporated = parse(incorporationDate)
   if (!incorporated) return null
   const from = midnight(today)
@@ -58,7 +78,7 @@ export function daysToAnniversary(incorporationDate, today = new Date()) {
 }
 
 /** Whole days since the most recent anniversary — 0 on the day itself. */
-export function daysSinceAnniversary(incorporationDate, today = new Date()) {
+export function daysSinceAnniversary(incorporationDate, today = hongKongToday()) {
   const incorporated = parse(incorporationDate)
   if (!incorporated) return null
   const from = midnight(today)
@@ -77,7 +97,7 @@ const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'}`
  * shut and the live fact is the *next* anniversary, so the cell counts down
  * again rather than accumulating a "1,000 days overdue" that no one can act on.
  */
-export function anniversaryLabel(incorporationDate, today = new Date()) {
+export function anniversaryLabel(incorporationDate, today = hongKongToday()) {
   const since = daysSinceAnniversary(incorporationDate, today)
   if (since === null) return { text: '—', due: false }
   if (since === 0) return { text: 'today', due: true }
