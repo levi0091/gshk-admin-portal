@@ -274,3 +274,69 @@ describe('CompanyRegistryPage — anniversary sort & filter (R3)', () => {
     expect(screen.getByText(/negative/i)).toBeInTheDocument()
   })
 })
+
+// Same race as the dashboard (UAT W-8). Not reported here, but this page has
+// MORE ways to fire overlapping requests than the dashboard does — four flag
+// tabs, six sortable columns, a search box and the anniversary comparison and
+// day-count inputs. Fixing one and not the other would just move the bug.
+describe('CompanyRegistryPage — overlapping requests (UAT W-8)', () => {
+  function deferred() {
+    let resolve, reject
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  async function toggleTo(tabName) {
+    const user = userEvent.setup()
+    const first = deferred()
+    const second = deferred()
+    api.get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    renderPage()
+    await user.click(screen.getByRole('tab', { name: tabName }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+    return { first, second }
+  }
+
+  it('does not report a failure from a request the user has already moved past', async () => {
+    const { first, second } = await toggleTo(/Corporate Parties/)
+
+    first.reject(new Error('boom'))
+    second.resolve(PAYLOAD)
+
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.queryByText(/Failed to load company registry/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a slow response that arrives after a newer one', async () => {
+    const { first, second } = await toggleTo(/Corporate Parties/)
+
+    second.resolve({
+      ...PAYLOAD,
+      companies: [{ ...PAYLOAD.companies[0], id: 'e9', company_name: 'Newer Co' }],
+    })
+    await screen.findByText('Newer Co')
+
+    first.resolve(PAYLOAD)
+    await waitFor(() => expect(screen.getByText('Newer Co')).toBeInTheDocument())
+    expect(screen.queryByText('Harbour Tech Ltd.')).not.toBeInTheDocument()
+  })
+
+  it('aborts the superseded request rather than leaving it in flight', async () => {
+    await toggleTo(/Corporate Parties/)
+
+    const signal = api.get.mock.calls[0][1]?.signal
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
+    expect(api.get.mock.calls[1][1].signal.aborted).toBe(false)
+  })
+
+  it('aborts the in-flight request when the page unmounts', async () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    const { unmount } = renderPage()
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    const { signal } = api.get.mock.calls[0][1]
+    expect(signal.aborted).toBe(false)
+    unmount()
+    expect(signal.aborted).toBe(true)
+  })
+})

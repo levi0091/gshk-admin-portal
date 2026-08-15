@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../lib/api.js'
+import useAbortableGet from '../lib/useAbortableGet.js'
 import { formatDateTime } from '../lib/format.js'
 import SortableTh from '../components/SortableTh.jsx'
 
@@ -104,9 +104,6 @@ function Change({ e }) {
 
 export default function AuditLogPage() {
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [source, setSource] = useState(null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
@@ -125,19 +122,13 @@ export default function AuditLogPage() {
     return () => clearTimeout(t)
   }, [search])
 
-  useEffect(() => {
-    setLoading(true)
-    setError('')
-    const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
-    if (source) params.set('source', source)
-    if (query) params.set('search', query)
-    if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
+  if (source) params.set('source', source)
+  if (query) params.set('search', query)
+  if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
-    api.get(`/audit/?${params}`)
-      .then(setData)
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [source, query, page, sort, dir])
+  // Cancels the previous request on every toggle — UAT W-8. See the hook.
+  const { data, loading, error } = useAbortableGet(`/audit/?${params}`)
 
   const entries = data?.entries || []
   const total = data?.total || 0

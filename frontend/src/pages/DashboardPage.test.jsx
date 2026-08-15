@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -144,5 +144,91 @@ describe('DashboardPage', () => {
     await waitFor(() => {
       expect(api.get.mock.calls.some(c => c[0].includes('page=2'))).toBe(true)
     })
+  })
+})
+
+// UAT W-8: "If we toggle too fast on the dashboard there's a failure message."
+//
+// Every filter/tab/sort/page change fires a fresh GET. Nothing cancelled the
+// previous one or checked whether it was still wanted, so a slow earlier
+// response could land after a newer one and win — and a slow earlier FAILURE
+// could paint the error banner over a view that had already loaded fine.
+// That is the failure message Levi saw.
+describe('DashboardPage — overlapping requests (UAT W-8)', () => {
+  function deferred() {
+    let resolve, reject
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  // Click a tab, having queued a controllable promise for each of the two
+  // requests that produces: the initial load, then the tab change.
+  async function toggleTo(tabName) {
+    const user = userEvent.setup()
+    const first = deferred()
+    const second = deferred()
+    api.get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    renderPage()
+    await user.click(screen.getByRole('tab', { name: tabName }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+    return { first, second }
+  }
+
+  it('does not report a failure from a request the user has already moved past', async () => {
+    const { first, second } = await toggleTo(/Pending AML/)
+
+    first.reject(new Error('boom'))     // superseded request fails, late
+    second.resolve(PAYLOAD)             // the one the user is waiting for
+
+    await screen.findByText('Acme Ltd')
+    expect(screen.queryByText(/Failed to load dashboard/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a slow response that arrives after a newer one', async () => {
+    const { first, second } = await toggleTo(/Pending AML/)
+
+    second.resolve({
+      ...PAYLOAD,
+      companies: [{ ...PAYLOAD.companies[0], id: 'e9', company_name: 'Newer Co' }],
+    })
+    await screen.findByText('Newer Co')
+
+    first.resolve(PAYLOAD)              // stale data lands last
+    await waitFor(() => {
+      expect(screen.getByText('Newer Co')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Acme Ltd')).not.toBeInTheDocument()
+  })
+
+  it('keeps showing Loading… when only the superseded request has resolved', async () => {
+    const { first } = await toggleTo(/Pending AML/)
+
+    first.resolve(PAYLOAD)              // stale; the current request is still out
+    // Drain the microtask queue so the stale .then/.finally definitely runs.
+    // waitFor would pass on its first tick, before those callbacks fire, and
+    // assert nothing.
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+  })
+
+  it('aborts the superseded request rather than leaving it in flight', async () => {
+    const { } = await toggleTo(/Pending AML/)
+
+    const signal = api.get.mock.calls[0][1]?.signal
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
+    // The current request must NOT be aborted.
+    expect(api.get.mock.calls[1][1].signal.aborted).toBe(false)
+  })
+
+  it('aborts the in-flight request when the page unmounts', async () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    const { unmount } = renderPage()
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    const signal = api.get.mock.calls[0][1].signal
+    expect(signal.aborted).toBe(false)
+    unmount()
+    expect(signal.aborted).toBe(true)
   })
 })

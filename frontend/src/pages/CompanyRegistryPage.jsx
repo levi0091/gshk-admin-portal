@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../lib/api.js'
+import useAbortableGet from '../lib/useAbortableGet.js'
 import StatusBadge, { FlagBadges } from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import SortableTh from '../components/SortableTh.jsx'
@@ -19,9 +19,6 @@ const TABS = [
 
 export default function CompanyRegistryPage() {
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [flag, setFlag] = useState(null)
@@ -46,26 +43,20 @@ export default function CompanyRegistryPage() {
     return () => clearTimeout(t)
   }, [search])
 
-  useEffect(() => {
-    setLoading(true)
-    setError('')
-    const params = new URLSearchParams({
-      page: String(page), page_size: String(PAGE_SIZE),
-    })
-    if (query) params.set('search', query)
-    if (flag) params.set('flag', flag)
-    if (sort) { params.set('sort', sort); params.set('dir', dir) }
-    // Both or neither — the API rejects half a comparison, and rightly so.
-    if (annivOp && annivDays !== '' && !Number.isNaN(Number(annivDays))) {
-      params.set('anniv_op', annivOp)
-      params.set('anniv_days', String(Number(annivDays)))
-    }
+  const params = new URLSearchParams({
+    page: String(page), page_size: String(PAGE_SIZE),
+  })
+  if (query) params.set('search', query)
+  if (flag) params.set('flag', flag)
+  if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  // Both or neither — the API rejects half a comparison, and rightly so.
+  if (annivOp && annivDays !== '' && !Number.isNaN(Number(annivDays))) {
+    params.set('anniv_op', annivOp)
+    params.set('anniv_days', String(Number(annivDays)))
+  }
 
-    api.get(`/companies?${params}`)
-      .then(setData)
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [query, flag, page, sort, dir, annivOp, annivDays])
+  // Cancels the previous request on every toggle — UAT W-8. See the hook.
+  const { data, loading, error } = useAbortableGet(`/companies?${params}`)
 
   const companies = data?.companies || []
   const flagCounts = data?.flag_counts || {}

@@ -37,7 +37,9 @@ async function apiUpload(path, formData) {
 }
 
 export const api = {
-  get: (path) => apiFetch(path),
+  // `options` carries the AbortSignal from useAbortableGet; apiFetch already
+  // spreads it into fetch(), so nothing else needs to change.
+  get: (path, options) => apiFetch(path, options),
   post: (path, body) => apiFetch(path, { method: 'POST', body: JSON.stringify(body) }),
   patch: (path, body) => apiFetch(path, { method: 'PATCH', body: JSON.stringify(body) }),
   del: (path) => apiFetch(path, { method: 'DELETE' }),

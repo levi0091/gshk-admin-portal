@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../lib/api.js'
+import useAbortableGet from '../lib/useAbortableGet.js'
 import { formatDate } from '../lib/format.js'
 import RoleTags, { initials } from '../components/RoleTags.jsx'
 import AddPersonModal from '../components/AddPersonModal.jsx'
@@ -18,9 +18,6 @@ const TABS = [
 
 export default function PersonsRegistryPage() {
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [role, setRole] = useState(null)
@@ -40,19 +37,13 @@ export default function PersonsRegistryPage() {
     return () => clearTimeout(t)
   }, [search])
 
-  useEffect(() => {
-    setLoading(true)
-    setError('')
-    const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) })
-    if (query) params.set('search', query)
-    if (role) params.set('role', role)
-    if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) })
+  if (query) params.set('search', query)
+  if (role) params.set('role', role)
+  if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
-    api.get(`/persons?${params}`)
-      .then(setData)
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [query, role, page, sort, dir])
+  // Cancels the previous request on every toggle — UAT W-8. See the hook.
+  const { data, loading, error } = useAbortableGet(`/persons?${params}`)
 
   const persons = data?.persons || []
   const counts = data?.role_counts || {}

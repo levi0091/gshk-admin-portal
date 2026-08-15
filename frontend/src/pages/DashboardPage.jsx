@@ -1,7 +1,7 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
+import useAbortableGet from '../lib/useAbortableGet.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import SortableTh from '../components/SortableTh.jsx'
@@ -22,9 +22,6 @@ const TABS = [
 
 export default function DashboardPage() {
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState(null)
@@ -45,21 +42,15 @@ export default function DashboardPage() {
     return () => clearTimeout(t)
   }, [search])
 
-  useEffect(() => {
-    setLoading(true)
-    setError('')
-    const params = new URLSearchParams({
-      scope: 'dashboard', page: String(page), page_size: String(PAGE_SIZE),
-    })
-    if (query) params.set('search', query)
-    if (status) params.set('status', status)
-    if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  const params = new URLSearchParams({
+    scope: 'dashboard', page: String(page), page_size: String(PAGE_SIZE),
+  })
+  if (query) params.set('search', query)
+  if (status) params.set('status', status)
+  if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
-    api.get(`/companies?${params}`)
-      .then(setData)
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [query, status, page, sort, dir])
+  // Cancels the previous request on every toggle — UAT W-8. See the hook.
+  const { data, loading, error } = useAbortableGet(`/companies?${params}`)
 
   const companies = data?.companies || []
   const counts = data?.status_counts || {}
