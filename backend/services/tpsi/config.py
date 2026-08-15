@@ -146,11 +146,78 @@ def _resolve_cr_public_key() -> str:
     )
 
 
-@lru_cache(maxsize=1)
-def get_config() -> TpsiConfig:
-    env = _require("TPSI_ENV")
+# CR's two hosts. Used only to catch a crossed configuration — see _check_env.
+_TEST_HOST = "apitest.cr.gov.hk"
+_PROD_HOST = "e-services.cr.gov.hk"
+
+# Which TPSI environment each deployment gets when TPSI_ENV is not set. One
+# variable per Railway service (APP_ENV) rather than two that can disagree.
+_APP_ENV_DEFAULT_TPSI = {"dev": "test", "prod": "prod"}
+
+
+def _resolve_env() -> str:
+    """The TPSI environment, derived from the deployment unless overridden.
+
+    Levi 2026-08-16: the DEV service should talk to TPSI test and PROD to TPSI
+    prod, without anyone having to remember a second variable. So APP_ENV picks
+    it. TPSI_ENV still wins when set explicitly — GSHK will want PROD running
+    against TPSI test during the pilot, before they are ready to spend real
+    money — but that has to be a deliberate act, never a default.
+    """
+    explicit = os.environ.get("TPSI_ENV")
+    app_env = os.environ.get("APP_ENV", "").strip().lower()
+
+    if explicit:
+        env = explicit.strip().lower()
+    elif app_env in _APP_ENV_DEFAULT_TPSI:
+        env = _APP_ENV_DEFAULT_TPSI[app_env]
+    else:
+        raise RuntimeError(
+            "APP_ENV must be 'dev' or 'prod' (or set TPSI_ENV explicitly) "
+            "for TPSI integration"
+        )
+
     if env not in ("test", "prod"):
         raise RuntimeError("TPSI_ENV must be 'test' or 'prod'")
+
+    # A dev deployment must never be able to file for real. This is the one
+    # combination with no legitimate use: submitFormNar1 is chargeable and
+    # irreversible, so a stray prod credential on the dev service would spend
+    # GSHK's deposit against live CR.
+    if app_env == "dev" and env == "prod":
+        raise RuntimeError(
+            "APP_ENV=dev cannot run TPSI_ENV=prod — a dev deployment must not "
+            "file against live CR"
+        )
+    return env
+
+
+def _check_env_matches_host(env: str, base_url: str) -> None:
+    """Refuse a crossed environment/host pair.
+
+    The dangerous direction is TPSI_ENV=test pointing at the PRODUCTION host:
+    the app relaxes TLS, labels itself TEST in the UI, and files real,
+    chargeable returns anyway. The reverse wastes a filing window rather than
+    money, but is just as much a misconfiguration. An unrecognised host (a
+    future CR endpoint, a local stub) is left alone — this catches the mistake
+    that actually happens, which is copying one service's variables into the
+    other.
+    """
+    host = base_url.lower()
+    if env == "test" and _PROD_HOST in host:
+        raise RuntimeError(
+            "TPSI_ENV=test but TPSI_BASE_URL points at the CR PRODUCTION host — "
+            "refusing to file real returns from a test configuration"
+        )
+    if env == "prod" and _TEST_HOST in host:
+        raise RuntimeError(
+            "TPSI_ENV=prod but TPSI_BASE_URL points at the CR TEST host"
+        )
+
+
+@lru_cache(maxsize=1)
+def get_config() -> TpsiConfig:
+    env = _resolve_env()
 
     verify = os.environ.get("TPSI_TLS_VERIFY", "true").lower() != "false"
     if env == "prod":
@@ -163,9 +230,12 @@ def get_config() -> TpsiConfig:
     cred_key = _require("TPSI_CRED_KEY").encode()
     _validate_cred_key(cred_key)
 
+    base_url = _require("TPSI_BASE_URL").rstrip("/")
+    _check_env_matches_host(env, base_url)
+
     return TpsiConfig(
         env=env,
-        base_url=_require("TPSI_BASE_URL").rstrip("/"),
+        base_url=base_url,
         tls_verify=verify,
         cr_public_key_pem=pem,
         cred_key=cred_key,

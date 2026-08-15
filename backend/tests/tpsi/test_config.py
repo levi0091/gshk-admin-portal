@@ -41,6 +41,8 @@ def test_prod_env_forces_tls_verify(monkeypatch, tmp_path, make_pem):
     """TLS verification must not be disableable in prod, whatever the env says."""
     key = tmp_path / "k.pem"
     key.write_text(make_pem())
+    # APP_ENV too: a dev deployment is not allowed to run TPSI prod at all.
+    monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("TPSI_ENV", "prod")
     monkeypatch.setenv("TPSI_BASE_URL", "https://www.e-services.cr.gov.hk/ICRIS3EF")
     monkeypatch.setenv("TPSI_TLS_VERIFY", "false")
@@ -152,3 +154,67 @@ def test_chargeable_without_recorded_fee_raises():
 def test_unknown_form_raises():
     with pytest.raises(KeyError):
         cfg.fee_for("Zzz9")
+
+
+# ---- APP_ENV drives TPSI_ENV; crossed configurations are refused -------------
+
+def test_dev_deployment_defaults_to_the_tpsi_test_environment(monkeypatch):
+    monkeypatch.delenv("TPSI_ENV", raising=False)
+    monkeypatch.setenv("APP_ENV", "dev")
+    assert cfg.get_config().env == "test"
+
+
+def test_prod_deployment_defaults_to_the_tpsi_prod_environment(monkeypatch):
+    monkeypatch.delenv("TPSI_ENV", raising=False)
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://www.e-services.cr.gov.hk/ICRIS3EF")
+    assert cfg.get_config().env == "prod"
+
+
+def test_prod_deployment_may_be_pinned_to_tpsi_test_during_the_pilot(monkeypatch):
+    """Explicit beats derived — GSHK runs PROD against TPSI test before go-live."""
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("TPSI_ENV", "test")
+    assert cfg.get_config().env == "test"
+
+
+def test_dev_deployment_cannot_be_pointed_at_tpsi_prod(monkeypatch):
+    """The one combination with no legitimate use — it spends real money."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("TPSI_ENV", "prod")
+    with pytest.raises(RuntimeError) as exc:
+        cfg.get_config()
+    assert "must not file against live CR" in str(exc.value)
+
+
+def test_no_app_env_and_no_tpsi_env_fails_closed(monkeypatch):
+    monkeypatch.delenv("TPSI_ENV", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    with pytest.raises(RuntimeError) as exc:
+        cfg.get_config()
+    assert "APP_ENV" in str(exc.value)
+
+
+def test_test_env_pointing_at_the_production_host_is_refused(monkeypatch):
+    """The dangerous crossing: relaxed TLS, TEST badges, real chargeable filings."""
+    monkeypatch.setenv("TPSI_ENV", "test")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://www.e-services.cr.gov.hk/ICRIS3EF")
+    with pytest.raises(RuntimeError) as exc:
+        cfg.get_config()
+    assert "PRODUCTION host" in str(exc.value)
+
+
+def test_prod_env_pointing_at_the_test_host_is_refused(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("TPSI_ENV", "prod")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://apitest.cr.gov.hk/ICRIS3EF")
+    with pytest.raises(RuntimeError) as exc:
+        cfg.get_config()
+    assert "CR TEST host" in str(exc.value)
+
+
+def test_an_unrecognised_host_is_not_second_guessed(monkeypatch):
+    """A local stub or a future CR endpoint must still be usable."""
+    monkeypatch.setenv("TPSI_ENV", "test")
+    monkeypatch.setenv("TPSI_BASE_URL", "http://localhost:8081/ICRIS3EF")
+    assert cfg.get_config().base_url == "http://localhost:8081/ICRIS3EF"

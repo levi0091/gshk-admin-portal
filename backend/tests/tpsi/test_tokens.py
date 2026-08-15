@@ -121,7 +121,14 @@ def test_with_lock_raises_in_prod_without_database_url(monkeypatch):
     losing DATABASE_URL must fail loudly, not silently reopen the
     concurrent-login race."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    # Simulate prod fully, not just the one variable: config now refuses a
+    # crossed env/host pair, and _with_lock reads `is_prod` through a
+    # try/except that treats a raising get_config() as "not prod". A
+    # half-simulated prod would therefore take the warned fallback and this
+    # test would assert nothing.
+    monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("TPSI_ENV", "prod")
+    monkeypatch.setenv("TPSI_BASE_URL", "https://www.e-services.cr.gov.hk/ICRIS3EF")
     cfg.get_config.cache_clear()
 
     with pytest.raises(RuntimeError, match="advisory lock"):

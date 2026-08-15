@@ -5,7 +5,7 @@ from cryptography.fernet import Fernet
 
 from services.tpsi import config as cfg
 from services.tpsi import credentials as creds
-from services.tpsi.secrets import encrypt
+from services.tpsi.secrets import decrypt, encrypt
 
 
 @pytest.fixture(autouse=True)
@@ -99,8 +99,15 @@ def test_set_credential_stores_ciphertext_not_plaintext():
             user_id="user-1", presentor_account_id="ACCT",
             tpsi_password="pw", eservice_user_id="EID", eservice_password="epw",
         )
-    assert "pw" not in str(captured.get("tpsi_password_enc"))
-    assert "epw" not in str(captured.get("eservice_password_enc"))
+    # Assert what the name promises — the stored value is ciphertext that
+    # decrypts back to the password — not that a 2-character substring is
+    # absent. Fernet output is ~100 base64 chars, so "pw" turns up in it by
+    # chance in 2.25% of runs (measured over 2,000 keys); that assertion was
+    # reddening CI at random while proving nothing about encryption.
+    assert captured["tpsi_password_enc"] != "pw"
+    assert decrypt(captured["tpsi_password_enc"]) == "pw"
+    assert captured["eservice_password_enc"] != "epw"
+    assert decrypt(captured["eservice_password_enc"]) == "epw"
     assert captured["is_test"] is True
 
 

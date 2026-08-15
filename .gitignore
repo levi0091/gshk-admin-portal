@@ -1,6 +1,9 @@
 # Secrets — NEVER commit
 .env
 .env.*
+# ...except the template, which holds only placeholders and is what
+# alembic/env.py tells you to copy. Keep it that way: no real value here.
+!.env.example
 gshk/secrets/
 *.pem
 *.key
