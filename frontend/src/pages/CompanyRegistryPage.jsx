@@ -4,7 +4,7 @@ import { api } from '../lib/api.js'
 import StatusBadge, { FlagBadges } from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import SortableTh from '../components/SortableTh.jsx'
-import { anniversaryLabel } from '../lib/anniversary.js'
+import { labelForDays, signedDaysToAnniversary } from '../lib/anniversary.js'
 
 const PAGE_SIZE = 50
 
@@ -29,6 +29,11 @@ export default function CompanyRegistryPage() {
   const [showAdd, setShowAdd] = useState(false)
   const [sort, setSort] = useState(null)
   const [dir, setDir] = useState('asc')
+  // Opens on the actionable set (PRD W-3). A default, not a lock — Clear shows
+  // everything. Signed, so "<= 60" also keeps companies already inside the
+  // 42-day filing window, which are the urgent ones.
+  const [annivOp, setAnnivOp] = useState('lte')
+  const [annivDays, setAnnivDays] = useState('60')
 
   function onSort(col, nextDir) {
     setSort(col)
@@ -50,12 +55,17 @@ export default function CompanyRegistryPage() {
     if (query) params.set('search', query)
     if (flag) params.set('flag', flag)
     if (sort) { params.set('sort', sort); params.set('dir', dir) }
+    // Both or neither — the API rejects half a comparison, and rightly so.
+    if (annivOp && annivDays !== '' && !Number.isNaN(Number(annivDays))) {
+      params.set('anniv_op', annivOp)
+      params.set('anniv_days', String(Number(annivDays)))
+    }
 
     api.get(`/companies?${params}`)
       .then(setData)
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [query, flag, page, sort, dir])
+  }, [query, flag, page, sort, dir, annivOp, annivDays])
 
   const companies = data?.companies || []
   const flagCounts = data?.flag_counts || {}
@@ -98,6 +108,32 @@ export default function CompanyRegistryPage() {
         />
       </div>
 
+      <div className="anniv-bar">
+        <span className="anniv-lbl">Days to anniversary</span>
+        <select aria-label="Comparison" value={annivOp}
+                onChange={e => { setAnnivOp(e.target.value); setPage(1) }}>
+          <option value="lte">≤</option>
+          <option value="gte">≥</option>
+          <option value="eq">=</option>
+        </select>
+        <input type="number" aria-label="Day count" value={annivDays}
+               onChange={e => { setAnnivDays(e.target.value); setPage(1) }} />
+        <span className="anniv-unit">days</span>
+        {annivOp === 'lte' && annivDays === '60' && (
+          <span className="anniv-default">Default</span>
+        )}
+        <button className="btn btn-outline btn-sm"
+                onClick={() => { setAnnivDays(''); setAnnivOp('lte'); setPage(1) }}>
+          Clear
+        </button>
+        <div className="anniv-hint">
+          A passed anniversary counts <b>negative</b> while the return is still inside the
+          42-day statutory filing window, so <b>≤ 60</b> keeps the companies already overdue
+          for action — the ones a plain “days remaining” filter would drop. This is a
+          starting view, not a lock: <b>Clear</b> shows every company.
+        </div>
+      </div>
+
       <div className="filter-tabs" role="tablist">
         {TABS.map(tab => (
           <button
@@ -134,12 +170,13 @@ export default function CompanyRegistryPage() {
                       {label}
                     </SortableTh>
                   ))}
-                  {/* Not a SortableTh: days-to-anniversary is derived from
-                      incorporation_date, and this table sorts server-side on
-                      real columns only. Sorting it needs backend support. */}
-                  <th scope="col">
-                    <div className="th-inner">Days to anniversary</div>
-                  </th>
+                  {/* Sortable since migration 019: the company_registry view
+                      exposes days_to_anniversary, so the server orders all
+                      5,930 rows. Sorting the visible 50 would have looked
+                      right and been wrong. */}
+                  <SortableTh col="days_to_anniversary" sort={sort} dir={dir} onSort={onSort}>
+                    Days to anniversary
+                  </SortableTh>
                 </tr>
               </thead>
               <tbody>
@@ -158,7 +195,13 @@ export default function CompanyRegistryPage() {
                     <td data-label="Status"><StatusBadge status={c.status} /></td>
                     <td data-label="Days to anniversary" aria-label="Days to anniversary">
                       {(() => {
-                        const { text, due } = anniversaryLabel(c.incorporation_date)
+                        // Prefer the server's number so the text and the sort
+                        // order are the same fact. Fall back to computing it
+                        // only if the payload predates the view.
+                        const days = 'days_to_anniversary' in c
+                          ? c.days_to_anniversary
+                          : signedDaysToAnniversary(c.incorporation_date)
+                        const { text, due } = labelForDays(days)
                         return <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>
                       })()}
                     </td>

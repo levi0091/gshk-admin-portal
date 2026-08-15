@@ -149,7 +149,7 @@ def test_sort_orders_by_the_requested_column():
         def or_(self, *a, **k): return self
         def in_(self, *a, **k): return self
         def limit(self, *a, **k): return self
-        def order(self, col, desc=False):
+        def order(self, col, desc=False, **kw):
             captured["order"] = (col, desc)
             return self
         def range(self, *a, **k): return self
@@ -496,3 +496,142 @@ def test_unlink_audits_party_unlinked():
         resp = client.delete("/companies/e1/officers/lnk-1", headers=H)
         assert resp.status_code == 200
         assert audit.await_args.kwargs["action_type"] == "PARTY_UNLINKED"
+
+
+# ---- R3 · days-to-anniversary (migration 019 view) --------------------------
+
+class _RecordingQuery:
+    """Records every filter/order call so a test can assert what reached PostgREST.
+
+    Separate from _FakeQuery on purpose: that one models the pending/terminal
+    branch split, this one only cares which predicates were applied and to which
+    queries (the count queries and the page query must agree, or the pager
+    quotes a total for a set the user is not looking at).
+    """
+
+    def __init__(self, log, rows, count):
+        self.log, self._rows, self._count = log, rows, count
+
+    def _rec(self, name, *args):
+        self.log.append((name, *args))
+        return self
+
+    def eq(self, c, v):
+        return self._rec("eq", c, v)
+
+    def lte(self, c, v):
+        return self._rec("lte", c, v)
+
+    def gte(self, c, v):
+        return self._rec("gte", c, v)
+
+    def in_(self, c, v):
+        return self._rec("in_", c)
+
+    @property
+    def not_(self):
+        outer = self
+
+        class _Not:
+            def in_(self, c, v):
+                return outer._rec("not_in", c)
+
+            def is_(self, c, v):
+                return outer._rec("not_is", c, v)
+        return _Not()
+
+    def or_(self, *a, **k):
+        return self
+
+    def order(self, col, **kw):
+        return self._rec("order", col, kw.get("desc"), kw.get("nullsfirst"))
+
+    def range(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self._rows, count=self._count)
+
+
+def _wire_recording(sb, rows=(), row_count=0):
+    """`count` on select() is PostgREST's "exact" flag, NOT a number — feeding it
+    through as the row count made the tile sums add ints to strings."""
+    log = []
+    sb.table.return_value.select.side_effect = (
+        lambda cols, count=None: _RecordingQuery(log, list(rows), row_count)
+    )
+    return log
+
+
+def _get(url):
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb:
+        log = _wire_recording(msb.return_value)
+        return client.get(url, headers=H), log, msb.return_value
+
+
+def test_list_reads_the_company_registry_view_not_entities():
+    """days_to_anniversary is computed by the view; entities has no such column."""
+    resp, _log, sb = _get("/companies")
+    assert resp.status_code == 200
+    assert "company_registry" in {c.args[0] for c in sb.table.call_args_list}
+    assert "entities" not in {c.args[0] for c in sb.table.call_args_list}
+
+
+def test_days_to_anniversary_is_sortable():
+    resp, log, _ = _get("/companies?sort=days_to_anniversary&dir=asc")
+    assert resp.status_code == 200
+    assert ("order", "days_to_anniversary", False, False) in log
+
+
+def test_descending_anniversary_sort_keeps_undated_companies_last():
+    """Postgres puts NULLs FIRST on DESC; the 473 undated rows must not lead."""
+    _resp, log, _ = _get("/companies?sort=days_to_anniversary&dir=desc")
+    orders = [e for e in log if e[0] == "order"]
+    assert orders and orders[0] == ("order", "days_to_anniversary", True, False)
+
+
+def test_anniversary_filter_reaches_the_count_queries_too():
+    """Filtering only the page query would make the pager quote the wrong total."""
+    resp, log, _ = _get("/companies?anniv_op=lte&anniv_days=60")
+    assert resp.status_code == 200
+    applied = [e for e in log if e[0] == "lte"]
+    # one page query + the 7 concurrent exact-count queries
+    assert len(applied) >= 8
+    assert all(e == ("lte", "days_to_anniversary", 60) for e in applied)
+
+
+def test_anniversary_filter_excludes_companies_with_no_incorporation_date():
+    _resp, log, _ = _get("/companies?anniv_op=gte&anniv_days=0")
+    assert ("not_is", "days_to_anniversary", "null") in log
+
+
+def test_negative_day_count_is_accepted():
+    """Signed: -12 means 12 days past the anniversary, still inside the window."""
+    resp, log, _ = _get("/companies?anniv_op=gte&anniv_days=-42")
+    assert resp.status_code == 200
+    assert ("gte", "days_to_anniversary", -42) in log
+
+
+def test_unfiltered_list_applies_no_anniversary_predicate():
+    _resp, log, _ = _get("/companies")
+    assert not [e for e in log if e[0] in ("lte", "gte", "not_is")]
+
+
+def test_unknown_comparison_is_rejected():
+    resp, _log, _ = _get("/companies?anniv_op=like&anniv_days=60")
+    assert resp.status_code == 422
+    assert "like" in resp.json()["detail"]
+
+
+def test_comparison_without_a_day_count_is_rejected():
+    resp, _log, _ = _get("/companies?anniv_op=lte")
+    assert resp.status_code == 422
+
+
+def test_day_count_without_a_comparison_is_rejected():
+    resp, _log, _ = _get("/companies?anniv_days=60")
+    assert resp.status_code == 422
