@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api.js'
+import { formatDateTime } from '../lib/format.js'
 
 const ACTION_LABELS = {
   CASE_STATUS_CHANGED: 'Case status changed',
@@ -15,13 +16,7 @@ const ACTION_LABELS = {
   USER_DEACTIVATED: 'User deactivated',
 }
 
-function formatTs(iso) {
-  return new Date(iso).toLocaleString('en-HK', {
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-    timeZone: 'Asia/Hong_Kong',
-  })
-}
+const formatTs = formatDateTime
 
 function FieldDiff({ before, after }) {
   if (!before || !after) return null

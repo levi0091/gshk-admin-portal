@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import CompanyRegistryPage from './CompanyRegistryPage.jsx'
 
@@ -23,14 +23,17 @@ const PAYLOAD = {
     {
       id: 'e1', company_name: 'Harbour Tech Ltd.', br_number: '2100028',
       cr_number: '2100028', is_client: true, is_corporate_party: false, status: 'live',
+      incorporation_date: '2023-08-12',   // 3 days past anniversary — inside the window
     },
     {
       id: 'e2', company_name: 'Get Started HK Limited', br_number: '63912808',
       cr_number: '2882908', is_client: true, is_corporate_party: true, status: 'live',
+      incorporation_date: '2018-09-18',   // 34 days ahead
     },
     {
       id: 'e3', company_name: 'Asia BC Ltd.', br_number: null,
       cr_number: null, is_client: false, is_corporate_party: true, status: 'live',
+      incorporation_date: null,           // Viewpoint row with no incorporation date
     },
   ],
 }
@@ -123,5 +126,151 @@ describe('CompanyRegistryPage', () => {
     api.get.mockRejectedValue(new Error('boom'))
     renderPage()
     expect(await screen.findByText(/Failed to load company registry: boom/)).toBeInTheDocument()
+  })
+})
+
+describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-08-15T09:00:00'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('adds a Days to anniversary column', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.getByRole('columnheader', { name: /Days to anniversary/ })).toBeInTheDocument()
+  })
+
+  it('counts down to an anniversary that is still ahead', async () => {
+    renderPage()
+    const row = (await screen.findByText('Get Started HK Limited')).closest('tr')
+    expect(within(row).getByText('in 34 days')).toBeInTheDocument()
+  })
+
+  it('highlights a company inside the 42-day filing window', async () => {
+    renderPage()
+    const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
+    const cell = within(row).getByText('3 days ago')
+    expect(cell).toBeInTheDocument()
+    expect(cell).toHaveClass('td-anniv-due')
+  })
+
+  it('does not highlight a company whose anniversary is still ahead', async () => {
+    renderPage()
+    const row = (await screen.findByText('Get Started HK Limited')).closest('tr')
+    expect(within(row).getByText('in 34 days')).not.toHaveClass('td-anniv-due')
+  })
+
+  it('shows an em dash for a company with no incorporation date', async () => {
+    renderPage()
+    const row = (await screen.findByText('Asia BC Ltd.')).closest('tr')
+    expect(within(row).getByLabelText('Days to anniversary')).toHaveTextContent('—')
+  })
+
+  // The server now computes the same signed number (migration 019). Rendering
+  // the server's value is what keeps the text and the sort order in agreement.
+  it('prefers the day count the server computed', async () => {
+    api.get.mockResolvedValue({
+      ...PAYLOAD,
+      companies: [{ ...PAYLOAD.companies[0], incorporation_date: '2023-08-12',
+                    days_to_anniversary: -3 }],
+    })
+    renderPage()
+    const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
+    expect(within(row).getByText('3 days ago')).toBeInTheDocument()
+  })
+
+  it('falls back to computing locally when the server omits it', async () => {
+    renderPage()   // PAYLOAD carries no days_to_anniversary
+    const row = (await screen.findByText('Get Started HK Limited')).closest('tr')
+    expect(within(row).getByText('in 34 days')).toBeInTheDocument()
+  })
+
+  it('renders an em dash when the server says null', async () => {
+    api.get.mockResolvedValue({
+      ...PAYLOAD,
+      companies: [{ ...PAYLOAD.companies[0], days_to_anniversary: null }],
+    })
+    renderPage()
+    const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
+    expect(within(row).getByLabelText('Days to anniversary')).toHaveTextContent('—')
+  })
+})
+
+describe('CompanyRegistryPage — anniversary sort & filter (R3)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-08-15T09:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('opens on the actionable set — 60 days or fewer', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(api.get.mock.calls[0][0]).toContain('anniv_op=lte')
+      expect(api.get.mock.calls[0][0]).toContain('anniv_days=60')
+    })
+  })
+
+  it('asks the server to sort, never the visible page', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    // SortableTh renders a clickable <th>, not a <button>.
+    await user.click(screen.getByRole('columnheader', { name: /Days to anniversary/ }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(c => c[0].includes('sort=days_to_anniversary'))).toBe(true)
+    })
+  })
+
+  it('marks the column as sorted for assistive tech', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    const th = screen.getByRole('columnheader', { name: /Days to anniversary/ })
+    expect(th).toHaveAttribute('aria-sort', 'none')
+    await user.click(th)
+    await waitFor(() => expect(
+      screen.getByRole('columnheader', { name: /Days to anniversary/ })
+    ).toHaveAttribute('aria-sort', 'ascending'))
+  })
+
+  it('sends the chosen comparison and day count', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.selectOptions(screen.getByLabelText('Comparison'), 'gte')
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(c => c[0].includes('anniv_op=gte'))).toBe(true)
+    })
+  })
+
+  it('clearing the filter drops both parameters', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => {
+      const last = api.get.mock.calls[api.get.mock.calls.length - 1][0]
+      expect(last).not.toContain('anniv_op')
+      expect(last).not.toContain('anniv_days')
+    })
+  })
+
+  it('never sends one half of the pair', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.clear(screen.getByLabelText('Day count'))
+    await waitFor(() => {
+      const last = api.get.mock.calls[api.get.mock.calls.length - 1][0]
+      expect(last.includes('anniv_op')).toBe(last.includes('anniv_days'))
+    })
+  })
+
+  it('explains that a passed anniversary counts negative', async () => {
+    renderPage()
+    expect(screen.getByText(/negative/i)).toBeInTheDocument()
   })
 })
