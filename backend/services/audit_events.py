@@ -66,6 +66,18 @@ TPSI_CRED_ROTATE = "TPSI_CRED_ROTATE"
 TPSI_PW_CHANGE = "TPSI_PW_CHANGE"
 TPSI_CRED_CONFIG = "TPSI_CRED_CONFIG"
 
+# ---- NAR1 case-workflow codes (BE-4) ---------------------------------------
+#   Named, not invented: CASE_STATUS_CHANGED, CASE_FIELD_UPDATED and
+#   AML_STATUS_CHANGED are the action_type values CLAUDE.md's PBI-11 audit
+#   table already mandates. AML_STATUS_CHANGED is seeded in audit_event_types
+#   by migration 012; CASE_STATUS_CHANGED and CASE_FIELD_UPDATED are not yet
+#   in that registry (a pre-existing gap this task does not close) -- absent
+#   an entry, audit_service.action_label() just returns no label, since
+#   event_code carries no FK to audit_event_types.
+CASE_STATUS_CHANGED = "CASE_STATUS_CHANGED"
+CASE_FIELD_UPDATED = "CASE_FIELD_UPDATED"
+AML_STATUS_CHANGED = "AML_STATUS_CHANGED"
+
 # Company field -> the Viewpoint folder that owns it.
 _COMPANY_FIELD_CODES = {
     # Master file (names)

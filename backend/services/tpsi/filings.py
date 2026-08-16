@@ -73,6 +73,26 @@ FAILURE_STAGES = (
 )
 
 
+def form_status(row: dict) -> dict:
+    """The FORM status — where the document is in CR's process.
+
+    Deliberately NOT merged with the case's workflow status, which answers a
+    different question (where the case is in GSHK's process) and lives on
+    nar1_cases. The UI reports the two side by side; collapsing them into one
+    badge loses information in both directions.
+    """
+    stage = row["stage"]
+    return {
+        "code": stage,
+        "label": FORM_STATUS_LABELS.get(stage, stage),
+        "failed": stage in FAILURE_STAGES,
+        "terminal": stage in TERMINAL_STAGES,
+        # Present only on a failure, and it is the whole fault list: CR returns
+        # every problem at once so one pass can fix them all.
+        "faults": (row.get("cr_error") or {}).get("faults") or [],
+    }
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

@@ -16,6 +16,11 @@ from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
+# Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
+# and services/nar1_cases.py needed it too — a service importing a router is
+# an inverted dependency. Imported here so `routers.tpsi.form_status` still
+# resolves for existing call sites in this router and existing tests.
+from services.tpsi.filings import form_status
 from services.tpsi.client import TpsiClient
 from services.tpsi.errors import (
     TpsiAuthError,
@@ -394,26 +399,6 @@ async def create_filing(
         metadata={"form_code": body.form_code, "entity_id": body.entity_id},
     )
     return row
-
-
-def form_status(row: dict) -> dict:
-    """The FORM status — where the document is in CR's process.
-
-    Deliberately NOT merged with the case's workflow status, which answers a
-    different question (where the case is in GSHK's process) and lives on
-    nar1_cases. The UI reports the two side by side; collapsing them into one
-    badge loses information in both directions.
-    """
-    stage = row["stage"]
-    return {
-        "code": stage,
-        "label": filings.FORM_STATUS_LABELS.get(stage, stage),
-        "failed": stage in filings.FAILURE_STAGES,
-        "terminal": stage in filings.TERMINAL_STAGES,
-        # Present only on a failure, and it is the whole fault list: CR returns
-        # every problem at once so one pass can fix them all.
-        "faults": (row.get("cr_error") or {}).get("faults") or [],
-    }
 
 
 @router.get("/filings/{filing_id}")
