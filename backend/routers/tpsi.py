@@ -252,12 +252,46 @@ async def put_shared_credential(
 
 @router.post("/credentials/password")
 async def change_password(
-    body: PasswordChangeIn, user=Depends(require_permission("tpsi", "write"))
+    body: PasswordChangeIn, user=Depends(require_super_admin())
 ):
+    """Rotates the SHARED GSHK presenter's CR login password (BE-5).
+
+    Super Admin only (OQ-C) — the same rationale as PUT /tpsi/shared-
+    credential: `client_for` authenticates every call as the shared
+    presenter now, so this changes the ONE password every filing in the
+    system depends on, not a caller's own.
+
+    Persists the new password back to tpsi_shared_presenter on success. This
+    step is NOT allowed to fail silently the way log_event/record_password_
+    expiry do: if CR accepts the new password but the write-back fails, CR
+    and our store disagree, and every subsequent client_for() call
+    authenticates with a stale password against an API that locks accounts
+    on repeated failure.
+    """
     try:
-        result = client_for(user).change_password(body.new_password)
+        shared = shared_credentials.load_for_use()
+        result = client_for(user, shared).change_password(body.new_password)
     except Exception as exc:
         raise _handle(exc)
+
+    try:
+        # deposit_account_no deliberately omitted (defaults to _UNSET) so the
+        # stored value survives the rotation — CR forces this every 180 days,
+        # so a password-only rotation is the routine case, not the exception.
+        shared_credentials.set_shared(
+            presentor_account_id=shared.account_id,
+            tpsi_password=body.new_password,
+            updated_by=user["id"],
+            rotated=True,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            500,
+            "CR accepted the new password but it could not be saved. The "
+            "stored credential is now stale and every subsequent request "
+            "will fail authentication until this is corrected. Set the new "
+            "password immediately via PUT /tpsi/shared-credential.",
+        ) from exc
 
     await log_event(
         user_id=user["id"],
@@ -265,7 +299,7 @@ async def change_password(
         action_type=ev.TPSI_PW_CHANGE,
         event_code=ev.TPSI_PW_CHANGE,
         entity_type="tpsi_credential",
-        entity_id=user["id"],
+        entity_id="shared",
         metadata={"result": result},
     )
     return {"result": result}

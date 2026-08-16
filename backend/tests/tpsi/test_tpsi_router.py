@@ -604,6 +604,68 @@ def test_super_admin_can_write_the_shared_credential_and_it_is_audited(client):
     assert "s3cret" not in str(logged)
 
 
+def test_change_password_is_super_admin_only(client):
+    """Rewiring client_for onto the shared presenter means this endpoint now
+    rotates the ONE GSHK filing password, not the caller's own — same OQ-C
+    rationale as PUT /tpsi/shared-credential, so tpsi:write is not enough."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR):
+        response = client.post("/tpsi/credentials/password", headers=H, json={
+            "new_password": "newpw",
+        })
+    assert response.status_code == 403
+
+
+def test_change_password_persists_the_rotation_without_touching_deposit_account(client):
+    """A successful CR password change must be written back to
+    tpsi_shared_presenter (rotated=True), or the next client_for() call
+    authenticates with a password CR no longer accepts. deposit_account_no is
+    deliberately omitted from the call — _UNSET, not None — so the stored
+    value survives a routine password-only rotation."""
+    shared = MagicMock(account_id="ACCT", tpsi_password="oldpw", deposit_account_no="N001")
+    tpsi_client = MagicMock()
+    tpsi_client.change_password.return_value = "Password changed successfully."
+    with _super(), \
+         patch("routers.tpsi.shared_credentials.load_for_use", return_value=shared), \
+         patch("routers.tpsi.client_for", return_value=tpsi_client), \
+         patch("routers.tpsi.shared_credentials.set_shared") as set_spy, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.post("/tpsi/credentials/password", headers=H, json={
+            "new_password": "newpw",
+        })
+    assert response.status_code == 200
+    assert set_spy.call_args.kwargs["presentor_account_id"] == "ACCT"
+    assert set_spy.call_args.kwargs["tpsi_password"] == "newpw"
+    assert set_spy.call_args.kwargs["rotated"] is True
+    assert "deposit_account_no" not in set_spy.call_args.kwargs
+    assert "newpw" not in response.text
+
+
+def test_change_password_persistence_failure_is_a_loud_500_naming_the_recovery(client):
+    """If CR accepts the new password but the write-back fails, this is NOT a
+    log-to-stderr-and-carry-on case like log_event/record_password_expiry:
+    CR and the store would silently disagree, and every subsequent
+    client_for() call would authenticate with a stale password against an
+    API that locks accounts on repeated failure. The admin must be told,
+    loudly, to fix it via PUT /tpsi/shared-credential — without the password
+    itself ever appearing in that message."""
+    shared = MagicMock(account_id="ACCT", tpsi_password="oldpw", deposit_account_no=None)
+    tpsi_client = MagicMock()
+    tpsi_client.change_password.return_value = "Password changed successfully."
+    with _super(), \
+         patch("routers.tpsi.shared_credentials.load_for_use", return_value=shared), \
+         patch("routers.tpsi.client_for", return_value=tpsi_client), \
+         patch("routers.tpsi.shared_credentials.set_shared",
+               side_effect=RuntimeError("supabase unavailable")):
+        response = client.post("/tpsi/credentials/password", headers=H, json={
+            "new_password": "s3cretNew",
+        })
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert "PUT /tpsi/shared-credential" in detail
+    assert "s3cretNew" not in detail
+    assert "s3cretNew" not in response.text
+
+
 def test_client_for_uses_the_shared_presenter_not_the_callers_own(client):
     """The CR session opens under the shared GSHK account whoever is logged in."""
     from routers import tpsi as tpsi_router
