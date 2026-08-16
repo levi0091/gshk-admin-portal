@@ -69,6 +69,25 @@ def upgrade() -> None:
           next_val  integer NOT NULL DEFAULT 1
         );
     """)
+    # RLS on, NO policy -- deliberately, and unlike the authenticated-open
+    # policy 016/020 pair with RLS on their tables. Nothing but next_case_no()
+    # below should ever touch this row set; the backend reaches it as
+    # service_role, which bypasses RLS entirely, so a real policy would only
+    # ever be exercised by something that shouldn't be querying this table at
+    # all. RLS-on-with-no-policy is Postgres's default-deny for every other
+    # role, which is exactly the posture wanted -- Supabase's default grants
+    # hand anon/authenticated SELECT/INSERT/UPDATE/DELETE on every new public
+    # table, and without this line PostgREST would expose a direct
+    # `UPDATE case_no_counters SET next_val = 1`, colliding every subsequent
+    # allocation against uq_nar1_cases_case_no.
+    #
+    # Stated explicitly rather than left to Supabase's `ensure_rls` event
+    # trigger (which auto-enables RLS on new DEV/PROD tables): that trigger
+    # does not exist in the vanilla Postgres the CI `migrations` job runs
+    # against, and a security property that holds only by accident of the
+    # platform is not expressed in the schema history CLAUDE.md makes the
+    # source of truth.
+    op.execute("ALTER TABLE public.case_no_counters ENABLE ROW LEVEL SECURITY;")
     op.execute("""
         CREATE OR REPLACE FUNCTION public.next_case_no(p_prefix text)
         RETURNS text

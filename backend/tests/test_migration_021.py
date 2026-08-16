@@ -97,6 +97,26 @@ def test_signing_method_rejects_a_value_that_is_neither_channel():
     assert "'manual'" in defs
 
 
+def test_the_counter_table_is_default_denied_to_the_public_roles():
+    """RLS on, no policy: Supabase's default privileges hand anon and
+    authenticated write grants on every new public table, and PostgREST would
+    otherwise expose a direct `UPDATE case_no_counters SET next_val = 1`. A reset
+    counter collides with uq_nar1_cases_case_no on every subsequent allocation --
+    a denial of service on case creation. The backend is service_role, which
+    bypasses RLS, so nothing legitimate is affected."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT relrowsecurity FROM pg_class "
+            "WHERE oid = 'public.case_no_counters'::regclass"
+        )
+        assert cur.fetchone()[0] is True
+        cur.execute(
+            "SELECT count(*) FROM pg_policy "
+            "WHERE polrelid = 'public.case_no_counters'::regclass"
+        )
+        assert cur.fetchone()[0] == 0
+
+
 @requires_super_admin
 def test_super_admin_has_the_nar1_module():
     """OQ-B: case-workflow endpoints get their own module, not companies:*."""
