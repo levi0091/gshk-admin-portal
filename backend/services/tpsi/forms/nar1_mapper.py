@@ -107,11 +107,16 @@ def _decimal(value, problems: list[str], where: str) -> Decimal:
         return Decimal(0)
 
 
-def _whole_number(value, problems: list[str], where: str) -> int:
+def _as_whole_number(amount: Decimal, value, problems: list[str],
+                     where: str) -> int:
     """Every share/capital field in the worksheet is an Integer, but the columns
     behind them are numeric(20,4). int() would silently truncate a value CR
-    cannot represent, so a fraction is a problem rather than a rounding."""
-    amount = _decimal(value, problems, where)
+    cannot represent, so a fraction is a problem rather than a rounding.
+
+    Takes an ALREADY-PARSED Decimal so a caller that also needs the value as a
+    Decimal parses it once — parsing twice reports one unparseable number as two
+    identical problems.
+    """
     if amount != amount.to_integral_value():
         problems.append(
             f"{where}: {value!r} is not a whole number and the CR field is an "
@@ -119,6 +124,11 @@ def _whole_number(value, problems: list[str], where: str) -> int:
         )
         return 0
     return int(amount)
+
+
+def _whole_number(value, problems: list[str], where: str) -> int:
+    return _as_whole_number(_decimal(value, problems, where), value, problems,
+                            where)
 
 
 def _hk_today() -> date:
@@ -232,9 +242,16 @@ def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
             "filed with no identity number at all; record a HKID or passport"
         )
         return {}
-    out = {"indvPptNo": passport["id_number"]}
+    # .get(), like every other column read in this helper: a null id_number is
+    # a KeyError -> an unhandled 500, not a fault the caller can act on.
+    # indvPptNo is mandatory:false, so an absent number is omitted downstream by
+    # the same filter that drops it for a person with no document at all.
+    number = str(passport.get("id_number") or "")
+    out = {"indvPptNo": number}
     code = _COUNTRY_CODES.get((passport.get("issuing_country") or "").strip().lower())
-    if code:
+    # Only alongside a number: indvPptIssCtry on its own declares the issuer of
+    # a passport the return does not name.
+    if code and number:
         out["indvPptIssCtry"] = code
     return out
 
@@ -326,10 +343,15 @@ def _signatory_block(graph: dict, signatory: dict | None,
     person_id = str(resolved.get("person_id") or "").strip()
     if person_id:
         block["selectPersonId"] = person_id
-    elif resolved.get("is_corporate") is False:
+    elif resolved.get("is_corporate") is not True:
         # Worksheet remark: "Signatory User ID (Empty if sign by Body
         # Corporate)". Empty is CORRECT for a corporate secretary and MISSING
         # for a natural person, so only the latter is a problem.
+        # `is not True`, not `is False`: an explicit signatory= override need
+        # not carry `is_corporate` at all, and an absent key must NOT read as
+        # "body corporate" -- that would let the caller drop a mandatory
+        # statutory field by omission, which nar1.validate() would wave through.
+        # An unstated kind is a natural person and must supply an id.
         problems.append(
             f"signatory {block['selectPersonName']}: signs as a natural person "
             "but has no identity document on record, and selectPersonId is "
@@ -359,18 +381,25 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
 
 def _corporate(name: str, addr: dict | None, problems: list[str],
                *, br_no: str | None = None, tcsp_no: str | None = None,
-               name_zh: str | None = None) -> dict:
+               name_zh: str | None = None, default_country: str = "") -> dict:
     """A corporate officer/secretary block.
 
     `addr` is the corporate party's OWN registered office. It is never the
     filing entity's — that would put a wrong address on a statutory return,
     and CR's schema gate would accept it. A missing one is a problem, and a
     problem is a MappingError.
+
+    `default_country` is passed by exactly one caller: the GSHK secretary,
+    which files the filing company's registered office (see _officer_lists).
+    It is literally the same dict roAddr is built from, so it must resolve a
+    blank country the same way — otherwise the roAddr default is unreachable
+    in production, because every GSHK-managed company has a GSHK secretary.
     """
     block = {
         "corpChiName": name_zh or "",
         "corpEngName": name,
-        "stdAddress": _address(addr, problems, f"corporate party {name}"),
+        "stdAddress": _address(addr, problems, f"corporate party {name}",
+                               default_country=default_country),
     }
     if br_no:
         block["corpBrNo"] = br_no
@@ -425,9 +454,20 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
         # address by construction (GSHK provides the registered office), so `ro`
         # is defensible there and nowhere else: any other body corporate falls
         # through to _address(None) and becomes a problem rather than a guess.
-        corp_addr = sec.get("corporate_address") or (ro if sec.get("is_gshk") else None)
+        # ASSUMPTION, load-bearing: this holds only while GSHK provides the
+        # registered office. A client keeping its own would be misfiled here,
+        # and the real fix is a corporate_entity_id on company_secretaries —
+        # logged as a follow-up migration, deliberately not written here.
+        corp_addr = sec.get("corporate_address")
+        ro_default = ""
+        if corp_addr is None and sec.get("is_gshk"):
+            corp_addr = ro
+            # Same dict as roAddr, so it must resolve a blank country the same
+            # way — see _corporate().
+            ro_default = "HKG"
         corp_sec.append(
-            _corporate(name, corp_addr, problems, tcsp_no=sec.get("tcsp_number"))
+            _corporate(name, corp_addr, problems, tcsp_no=sec.get("tcsp_number"),
+                       default_country=ro_default)
         )
 
     # Roles the NAR1 schema has a place for. `authorised_rep` (a valid
@@ -560,8 +600,6 @@ def _schedule_1(graph: dict, problems: list[str]) -> dict:
     for share_class in graph["share_classes"]:
         holdings = by_class.get(share_class["id"], [])
         consumed.add(share_class["id"])
-        if not holdings:
-            continue
         blocks: dict = {}
         for holding in holdings:
             blocks.setdefault(_joint_key(holding), []).append(holding)
@@ -584,14 +622,17 @@ def _schedule_1(graph: dict, problems: list[str]) -> dict:
                     f"different sizes {sorted(sizes)} — a joint block has one "
                     "size, so sharesAlloted is ambiguous"
                 )
+            # Parsed ONCE and used for both the class total and sharesAlloted:
+            # parsing it twice reported one unparseable value as two identical
+            # problems, i.e. the same field to fix twice.
+            held = members[0].get("shares_held")
+            size = _decimal(held, problems, f"share class {cls_name}")
             # A jointly held block counts ONCE towards the class total: two
             # rows holding 2000 jointly is 2000 allotted, not 4000.
-            allotted += _decimal(members[0].get("shares_held"), problems,
-                                 f"share class {cls_name}")
+            allotted += size
             groups.append({
-                "sharesAlloted": _whole_number(members[0].get("shares_held"),
-                                               problems,
-                                               f"share class {cls_name}"),
+                "sharesAlloted": _as_whole_number(size, held, problems,
+                                                  f"share class {cls_name}"),
                 # Derived from the BUILT ALLOTTEE LIST, never from the holding
                 # row -- shType is the shareholder TYPE (sole vs joint), not a
                 # payment state, and it is a function of the allottee count and
@@ -602,15 +643,22 @@ def _schedule_1(graph: dict, problems: list[str]) -> dict:
         # Schedule 1 IS the register of members, so what it accounts for has to
         # equal what the class says it issued. 1000 issued against 900 allotted
         # is a hundred shares belonging to nobody, and CR accepts it.
+        #
+        # EVERY loaded class is reconciled, held or not. Gating this on `groups`
+        # exempted the extreme case -- a class whose only holding is former, or
+        # which has no holding at all -- and that one files an empty Schedule 1
+        # while shareCapitals still declares the full issued count.
         issued = _decimal(share_class.get("total_issued"), problems,
                           f"share class {cls_name}")
-        if groups and allotted != issued:
+        if allotted != issued:
             problems.append(
                 f"share class {cls_name}: Schedule 1 accounts for {allotted} "
                 f"shares but the class records {issued} issued — the register "
                 "of members must account for every issued share"
             )
 
+        if not holdings:
+            continue
         shares.append({
             "clsOfShares": share_class["class_name"],
             "shareHolderGrps": groups,
@@ -635,9 +683,13 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None) -> dict
     `year`  is yearAnnualReturn — the return's own year, not today's.
     `signatory`, when given, overrides the derived signer:
         {"name": str, "capacity": str,
-         "person_id": str | None, "date": date | str | None}
-        `date` defaults to today in Asia/Hong_Kong; `person_id` is left empty
-        for a body corporate, per the worksheet.
+         "person_id": str | None, "date": date | str | None,
+         "is_corporate": bool}          # optional, defaults to False
+        `date` defaults to today in Asia/Hong_Kong. `person_id` may be left
+        empty ONLY for a body corporate, per the worksheet — and only when
+        `is_corporate: True` says so. Omitting the key means a natural person,
+        so a missing `person_id` is a MappingError rather than a field that
+        quietly vanishes from the statutory declaration.
     """
     problems: list[str] = []
     entity = graph["entity"]
