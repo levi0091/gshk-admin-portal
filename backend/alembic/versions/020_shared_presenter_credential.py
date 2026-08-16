@@ -81,8 +81,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Remove the shared presenter config audit event
-    op.execute("DELETE FROM public.audit_event_types WHERE code = 'TPSI_CRED_CONFIG'")
+    codes = ", ".join(f"'{c}'" for c, _ in AUDIT_CODES)
+    op.execute(f"DELETE FROM public.audit_event_types WHERE code IN ({codes})")
     # Restoring NOT NULL would fail against any signing-only row written while
     # 020 was applied, so clear those first -- they are meaningless once the
     # shared presenter is gone.
