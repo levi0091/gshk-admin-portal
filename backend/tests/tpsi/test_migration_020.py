@@ -45,10 +45,17 @@ def test_it_carries_the_presenter_identity(column):
 
 def test_a_second_shared_credential_cannot_be_inserted():
     """The singleton property, exercised rather than asserted about: one GSHK
-    filing identity, enforced by the schema rather than by hope."""
+    filing identity, enforced by the schema rather than by hope.
+
+    Independent of any pre-existing row: once a real shared presenter row
+    exists on DEV, the first INSERT below would itself raise UniqueViolation
+    and the test would error permanently. The DELETE runs inside this same
+    transaction, which is rolled back in `finally` — nothing is actually
+    removed from DEV."""
     conn = _conn()
     try:
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM tpsi_shared_presenter")
             cur.execute(
                 "INSERT INTO tpsi_shared_presenter "
                 "(presentor_account_id, tpsi_password_enc) VALUES ('A', 'enc')"

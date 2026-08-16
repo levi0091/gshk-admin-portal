@@ -95,7 +95,9 @@ def test_endpoints_require_authentication(client):
 
 def test_fresh_login_is_audited_and_password_expiry_persisted(client):
     """TPSI_AUTH marks when a CR session opened. The 180-day expiry must be
-    captured here — it is the only place CR tells us."""
+    captured here — it is the only place CR tells us. Persisted against the
+    SHARED presenter record (BE-5): the CR login is shared now, so its expiry
+    belongs to the shared credential, not to whichever user triggered it."""
     from services.tpsi.tokens import AuthResult
 
     tpsi_client = MagicMock()
@@ -109,13 +111,13 @@ def test_fresh_login_is_audited_and_password_expiry_persisted(client):
     with _super(), \
          patch("routers.tpsi.client_for", return_value=tpsi_client), \
          patch("routers.tpsi.reads.check_balance", return_value=Decimal("1")), \
-         patch("routers.tpsi.credentials.record_password_expiry",
-               side_effect=lambda u, e: expiry.update({u: e})), \
+         patch("routers.tpsi.shared_credentials.record_password_expiry",
+               side_effect=lambda e: expiry.update({"expires_at": e})), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
         client.get("/tpsi/balance?account_no=N1", headers=H)
 
     assert "TPSI_AUTH" in events
-    assert expiry["u1"] == "2026-12-31 23:59:59"
+    assert expiry["expires_at"] == "2026-12-31 23:59:59"
 
 
 def test_cached_token_does_not_emit_a_login_event(client):
@@ -139,8 +141,10 @@ def test_cached_token_does_not_emit_a_login_event(client):
 
 
 def test_missing_credential_is_a_clean_400_not_a_500(client):
+    """client_for now loads the SHARED presenter (BE-5); load_for_use raising
+    a bare LookupError (nothing configured yet) still maps to a clean 400."""
     with _super(), \
-         patch("routers.tpsi.credentials.load_for_use", side_effect=LookupError("none")):
+         patch("routers.tpsi.shared_credentials.load_for_use", side_effect=LookupError("none")):
         response = client.get("/tpsi/balance?account_no=X", headers=H)
     assert response.status_code == 400
 
@@ -164,7 +168,7 @@ def test_password_expiry_persistence_failure_does_not_fail_the_request(client):
     with _super(), \
          patch("routers.tpsi.client_for", return_value=tpsi_client), \
          patch("routers.tpsi.reads.check_balance", return_value=Decimal("1")), \
-         patch("routers.tpsi.credentials.record_password_expiry",
+         patch("routers.tpsi.shared_credentials.record_password_expiry",
                side_effect=RuntimeError("supabase unavailable")), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
         response = client.get("/tpsi/balance?account_no=N1", headers=H)
@@ -340,21 +344,19 @@ def test_edrive_filing_wrong_stage_is_a_clean_400(client):
 
 def test_sign_filing_with_stored_credential_and_audits(client):
     """No body (or an empty one) falls back to the logged-in user's own
-    stored e-Service password (spec D4). Also proves the signing password
-    never reaches the response body or the audit metadata."""
-    from services.tpsi.credentials import PresenterCredential
-
+    stored e-Service password (spec D4). Since BE-5 that lookup is
+    credentials.load_eservice, not load_for_use — the CR login is the shared
+    presenter now; this table holds only the personal signing credential.
+    Also proves the signing password never reaches the response body or the
+    audit metadata."""
     logged = {}
 
     async def fake_log(**kwargs):
         logged.update(kwargs)
 
-    cred = PresenterCredential(
-        account_id="ACCT", tpsi_password="tpw",
-        eservice_user_id="DIRECTOR1", eservice_password="es3cret",
-    )
     with _super(), \
-         patch("routers.tpsi.credentials.load_for_use", return_value=cred), \
+         patch("routers.tpsi.credentials.load_eservice",
+               return_value=("DIRECTOR1", "es3cret")), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
          patch("routers.tpsi.filings.sign",
                return_value={"filing_id": "f1", "result": "Pin Signature(s) Verified Successfully."}) as spy, \
@@ -383,7 +385,7 @@ def test_sign_filing_with_live_supplied_director_credentials(client):
         logged.update(kwargs)
 
     with _super(), \
-         patch("routers.tpsi.credentials.load_for_use") as load_spy, \
+         patch("routers.tpsi.credentials.load_eservice") as load_spy, \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
          patch("routers.tpsi.filings.sign",
                return_value={"filing_id": "f1", "result": "Pin Signature(s) Verified Successfully."}) as spy, \
@@ -412,27 +414,23 @@ def test_sign_filing_requires_write_permission(client):
 
 
 def test_sign_filing_missing_credential_is_a_clean_400_not_a_500(client):
-    """credentials.load_for_use raises a bare LookupError when nothing is
-    stored. This must map to a clean 400 via _handle, same as /balance
-    already does, not surface as an unhandled 500."""
+    """credentials.load_eservice returns None (not an error) when nothing is
+    stored — see services/tpsi/credentials.py. sign_filing must still map
+    that to a clean 400, not surface an unhandled 500."""
     with _super(), \
-         patch("routers.tpsi.credentials.load_for_use", side_effect=LookupError("none")):
+         patch("routers.tpsi.credentials.load_eservice", return_value=None):
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
     assert response.status_code == 400
 
 
 def test_sign_filing_no_stored_eservice_password_is_a_clean_400(client):
-    """A credential row exists (a TPSI auth password is stored) but no
-    e-Service (signing) password was ever set — distinct from the
-    no-credential-at-all case above."""
-    from services.tpsi.credentials import PresenterCredential
-
-    cred = PresenterCredential(
-        account_id="ACCT", tpsi_password="tpw",
-        eservice_user_id=None, eservice_password=None,
-    )
+    """A credential row exists but no e-Service (signing) password was ever
+    set. load_eservice already collapses this into the same None as the
+    no-row-at-all case above (it checks for the encrypted column itself), so
+    the router-level outcome is identical — documented here as its own case
+    for clarity."""
     with _super(), \
-         patch("routers.tpsi.credentials.load_for_use", return_value=cred):
+         patch("routers.tpsi.credentials.load_eservice", return_value=None):
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
     assert response.status_code == 400
 
@@ -441,7 +439,7 @@ def test_sign_filing_cr_fault_is_handled_not_a_500(client):
     from services.tpsi.errors import TpsiSignatureError
 
     with _super(), \
-         patch("routers.tpsi.credentials.load_for_use",
+         patch("routers.tpsi.credentials.load_eservice",
                side_effect=AssertionError("should not be called")), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
          patch("routers.tpsi.filings.sign",
@@ -563,3 +561,97 @@ def test_submit_requires_authentication(client):
     assert client.post(
         "/tpsi/filings/f1/submit", json={"deposit_account": "ACC", "confirm": True}
     ).status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Shared presenter credential + CR auth rewiring (BE-5 / Task 3)
+# ---------------------------------------------------------------------------
+
+def test_shared_credential_read_is_super_admin_only(client):
+    """An ordinary tpsi:write holder must not see the GSHK filing identity."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR):
+        response = client.get("/tpsi/shared-credential", headers=H)
+    assert response.status_code == 403
+
+
+def test_shared_credential_write_is_super_admin_only(client):
+    """The heart of BE-5: tpsi:write is NOT enough to change who GSHK files as."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR):
+        response = client.put("/tpsi/shared-credential", headers=H, json={
+            "presentor_account_id": "EVIL", "tpsi_password": "x",
+        })
+    assert response.status_code == 403
+
+
+def test_super_admin_can_write_the_shared_credential_and_it_is_audited(client):
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    with _super(), \
+         patch("routers.tpsi.shared_credentials.set_shared",
+               return_value={"presentor_account_id": "ACCT"}), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.put("/tpsi/shared-credential", headers=H, json={
+            "presentor_account_id": "ACCT",
+            "tpsi_password": "s3cret",
+            "deposit_account_no": "N001",
+        })
+    assert response.status_code == 200
+    assert "s3cret" not in response.text
+    assert logged["action_type"] == "TPSI_CRED_CONFIG"
+    assert "s3cret" not in str(logged)
+
+
+def test_client_for_uses_the_shared_presenter_not_the_callers_own(client):
+    """The CR session opens under the shared GSHK account whoever is logged in."""
+    from routers import tpsi as tpsi_router
+
+    shared = MagicMock(account_id="SHARED-ACCT", tpsi_password="pw")
+    with patch("routers.tpsi.shared_credentials.load_for_use", return_value=shared), \
+         patch("routers.tpsi.TpsiClient") as ctor:
+        tpsi_router.client_for(REGULAR)
+    assert ctor.call_args.args[0] == "SHARED-ACCT"
+
+
+def test_sign_still_uses_the_callers_own_eservice_credential(client):
+    """W-7: authentication is shared, the SIGNATURE stays personal."""
+    with _super(), \
+         patch("routers.tpsi.credentials.load_eservice",
+               return_value=("EUSER-42", "sign-pw")) as spy, \
+         patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
+         patch("routers.tpsi.filings.sign",
+               return_value={"filing_id": "f1", "result": "OK"}), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+    assert response.status_code == 200
+    assert spy.call_args.args[0] == SUPER["id"]
+
+
+def test_submit_falls_back_to_the_shared_deposit_account(client):
+    """The frontend no longer knows the deposit account — the server does."""
+    shared = MagicMock(account_id="A", tpsi_password="p",
+                       deposit_account_no="N00061980009")
+    with _super(), \
+         patch("routers.tpsi.shared_credentials.load_for_use", return_value=shared), \
+         patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
+         patch("routers.tpsi.filings.submit",
+               return_value={"filing_id": "f1", "receipt": {"caseNo": "1"}}) as spy, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"confirm": True})
+    assert response.status_code == 200
+    assert spy.call_args.args[3] == "N00061980009"
+
+
+def test_submit_is_refused_when_no_deposit_account_can_be_resolved(client):
+    """Better a clean 400 than a CR call that spends from an unknown account."""
+    shared = MagicMock(account_id="A", tpsi_password="p", deposit_account_no=None)
+    with _super(), \
+         patch("routers.tpsi.shared_credentials.load_for_use", return_value=shared), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"confirm": True})
+    assert response.status_code == 400
+    assert "deposit account" in response.json()["detail"].lower()

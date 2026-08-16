@@ -12,10 +12,10 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from middleware.auth import require_permission
+from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
 from services.audit_service import log_event
-from services.tpsi import credentials, filings, reads
+from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.client import TpsiClient
 from services.tpsi.errors import (
     TpsiAuthError,
@@ -55,10 +55,54 @@ class PasswordChangeIn(BaseModel):
     new_password: str
 
 
-def client_for(user: dict) -> TpsiClient:
-    """Build a client bound to the logged-in user's own CR account (spec D5)."""
-    credential = credentials.load_for_use(user["id"])
+def client_for(
+    user: dict, credential: "shared_credentials.SharedPresenter | None" = None
+) -> TpsiClient:
+    """Build a client bound to the SHARED GSHK presenter account (BE-5, W-6).
+
+    Was per-user (PBI-44 AC5/AC8). Everything GSHK files, it files under one CR
+    identity, so a staff change never means a new CR account and a filing is
+    never attributed to whoever happened to click the button. The `user`
+    argument stays in the signature: the caller is still who the AUDIT records,
+    and who must supply the e-Service signature.
+
+    `credential`: when a caller (submit_filing/preview_filing, via
+    `_deposit_account`) already loaded the shared record to resolve the
+    deposit account, it is passed straight through here instead of being
+    decrypted and round-tripped from Supabase a second time in the same
+    request.
+    """
+    credential = credential or shared_credentials.load_for_use()
     return TpsiClient(credential.account_id, credential.tpsi_password)
+
+
+def _deposit_account(
+    explicit: str | None,
+    shared: "shared_credentials.SharedPresenter | None" = None,
+) -> str:
+    """The deposit account a charge is drawn from.
+
+    An explicit value still wins — a second GSHK deposit account would be named
+    per call — but the frontend no longer knows or sends one, so the shared
+    presenter record is the source. Refuses rather than defaulting to empty: a
+    submit is chargeable and irreversible, and an unknown account is not a
+    condition to discover at CR.
+
+    `shared`: when the caller already loaded the shared presenter record (to
+    also pass into `client_for`), it is reused here rather than loaded again —
+    see the callers in preview_filing/submit_filing.
+    """
+    if explicit:
+        return explicit
+    shared = shared or shared_credentials.load_for_use()
+    account = shared.deposit_account_no
+    if not account:
+        raise HTTPException(
+            400,
+            "no deposit account is configured on the shared presenter "
+            "credential — a Super Admin must set one before submitting",
+        )
+    return account
 
 
 async def audit_auth(user: dict, client: TpsiClient) -> None:
@@ -69,6 +113,10 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
     persists `password_expires_in` — the 180-day expiry has to surface before it
     blocks a filing, not when someone is mid-submission.
 
+    Persisted against the SHARED presenter record (BE-5): the CR login is now
+    shared, so its 180-day expiry is a property of the shared credential, not
+    of whichever user happened to trigger the session.
+
     The CR call that got us here already succeeded — record_password_expiry is
     bookkeeping on top of that success, not part of it. Same never-raise
     discipline as `log_event`: a Supabase hiccup here must not turn a
@@ -77,7 +125,7 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
     if client.last_auth is None:
         return
     try:
-        credentials.record_password_expiry(user["id"], client.last_auth.password_expires_in)
+        shared_credentials.record_password_expiry(client.last_auth.password_expires_in)
     except Exception as exc:
         print(f"[routers.tpsi] ERROR: failed to persist password_expires_in: {exc}", file=sys.stderr)
     await log_event(
@@ -155,6 +203,49 @@ async def rotate_credentials(
         entity_type="tpsi_credential",
         entity_id=user["id"],
         metadata={"presentor_account_id": body.presentor_account_id},
+    )
+    return meta
+
+
+class SharedCredentialIn(BaseModel):
+    presentor_account_id: str
+    tpsi_password: str
+    deposit_account_no: str | None = None
+    rotated: bool = False
+
+
+@router.get("/shared-credential")
+async def get_shared_credential(user=Depends(require_super_admin())):
+    """Metadata only — this path cannot return a secret.
+
+    Super Admin only (OQ-C): this record IS the GSHK filing identity, and the
+    deposit account it names is real money. `tpsi:write` lets a user file; it
+    does not let them change who GSHK files as.
+    """
+    return shared_credentials.get_metadata() or {}
+
+
+@router.put("/shared-credential")
+async def put_shared_credential(
+    body: SharedCredentialIn, user=Depends(require_super_admin())
+):
+    try:
+        meta = shared_credentials.set_shared(
+            presentor_account_id=body.presentor_account_id,
+            tpsi_password=body.tpsi_password,
+            deposit_account_no=_opt(body, "deposit_account_no"),
+            updated_by=user["id"],
+            rotated=body.rotated,
+        )
+    except Exception as exc:
+        raise _handle(exc)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_CRED_CONFIG, event_code=ev.TPSI_CRED_CONFIG,
+        entity_type="tpsi_credential", entity_id="shared",
+        metadata={"presentor_account_id": body.presentor_account_id,
+                  "rotated": body.rotated},
     )
     return meta
 
@@ -341,23 +432,21 @@ class SignIn(BaseModel):
 async def sign_filing(
     filing_id: str, body: SignIn, user=Depends(require_permission("tpsi", "write"))
 ):
-    # credentials.load_for_use lives INSIDE the try now, not before it: it
-    # raises a bare LookupError when nothing is stored, and that must map to
-    # a clean 400 via _handle like every other TPSI endpoint (see /balance),
-    # not surface as an unhandled 500.
+    # credentials.load_eservice lives INSIDE the try now, not before it: a
+    # None it returns must map to a clean 400 via _handle like every other
+    # TPSI endpoint (see /balance), not surface as an unhandled 500.
     try:
         if body.signatory_user_id and body.eservice_password:
             signatory, password = body.signatory_user_id, body.eservice_password
         else:
-            credential = credentials.load_for_use(user["id"])
-            if not credential.eservice_password:
+            pair = credentials.load_eservice(user["id"])
+            if pair is None:
                 raise HTTPException(
                     400,
                     "no stored e-Service password; supply signatory_user_id and "
                     "eservice_password for this signature",
                 )
-            signatory = credential.eservice_user_id or credential.account_id
-            password = credential.eservice_password
+            signatory, password = pair
 
         result = filings.sign(client_for(user), filing_id, signatory, password)
     except ValueError as exc:
@@ -396,22 +485,27 @@ async def edrive_filing(
 
 
 class SubmitIn(BaseModel):
-    deposit_account: str
+    deposit_account: str | None = None
     confirm: bool = False
 
 
 @router.get("/filings/{filing_id}/preview")
 async def preview_filing(
     filing_id: str,
-    deposit_account: str,
+    deposit_account: str | None = None,
     user=Depends(require_permission("tpsi", "read")),
 ):
     """Fee + live balance, nothing sent to CR. Audited separately from the
     confirm so the trail shows the preview and the decision to spend as two
     distinct events."""
     try:
-        client = client_for(user)
-        result = filings.preview(client, filing_id, deposit_account)
+        # Loaded once (when no explicit account was given) and handed to both
+        # _deposit_account and client_for — one Supabase round trip and one
+        # decrypt per request, not two. See _deposit_account.
+        shared = None if deposit_account else shared_credentials.load_for_use()
+        client = client_for(user, shared)
+        account = _deposit_account(deposit_account, shared)
+        result = filings.preview(client, filing_id, account)
     except Exception as exc:
         raise _handle(exc)
 
@@ -435,16 +529,31 @@ async def submit_filing(
     be allowed to prepare, validate and sign a NAR1 without being allowed to
     spend from the deposit account.
     """
+    # Resolved BEFORE the attempt is logged and before any CR call: a submit
+    # with an unresolvable deposit account is a clean 400, not something
+    # discovered mid-CR-call after money could have moved. Loaded once (when
+    # no explicit account was given) and handed to both _deposit_account and
+    # client_for — see _deposit_account. Wrapped like every other TPSI
+    # failure mode in this file: an unconfigured or env-mismatched shared
+    # credential (LookupError/RuntimeError from load_for_use) must reach the
+    # caller as a clean 400/502 via _handle, not an unhandled 500 — _deposit_
+    # account's own HTTPException(400) passes through _handle unchanged.
+    try:
+        shared = None if body.deposit_account else shared_credentials.load_for_use()
+        account = _deposit_account(body.deposit_account, shared)
+    except Exception as exc:
+        raise _handle(exc)
+
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.TPSI_SUBMISSION_ATTEMPTED,
         event_code=ev.TPSI_SUBMISSION_ATTEMPTED,
         entity_type="tpsi_filing", entity_id=filing_id,
-        metadata={"deposit_account": body.deposit_account, "confirm": body.confirm},
+        metadata={"deposit_account": account, "confirm": body.confirm},
     )
     try:
         result = filings.submit(
-            client_for(user), filing_id, body.confirm, body.deposit_account
+            client_for(user, shared), filing_id, body.confirm, account
         )
     except filings.SubmitGateError as exc:
         await log_event(
