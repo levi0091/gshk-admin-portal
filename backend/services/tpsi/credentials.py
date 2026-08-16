@@ -139,6 +139,19 @@ def load_for_use(user_id: str) -> PresenterCredential:
             f"{get_config().env}; refusing to use it"
         )
 
+    if not row.get("tpsi_password_enc"):
+        # Since migration 020 (BE-5), tpsi_password_enc is nullable: a row may
+        # now hold only a signing credential (W-7), with no CR login of its
+        # own. Calling decrypt(None) below would raise an opaque AttributeError
+        # deep inside Fernet instead of naming what actually happened — this
+        # user's row is signing-only, and services.tpsi.shared_credentials is
+        # what authenticates filings now.
+        raise LookupError(
+            "this TPSI credential is signing-only — it has no stored CR login "
+            "password. The shared presenter (services.tpsi.shared_credentials) "
+            "authenticates filings; this row only holds a signing credential"
+        )
+
     eservice_enc = row.get("eservice_password_enc")
     return PresenterCredential(
         account_id=row["presentor_account_id"],
@@ -232,3 +245,27 @@ def record_password_expiry(user_id: str, expires_at: str | None) -> None:
     get_supabase().table(_TABLE).update(
         {"tpsi_password_expires_at": expires_at}
     ).eq("user_id", user_id).execute()
+
+
+def load_eservice(user_id: str) -> tuple[str, str] | None:
+    """This user's own e-SERVICE signing credential, or None.
+
+    Since BE-5 the CR LOGIN is the shared presenter record, and this table holds
+    only the personal signing credential (W-7). Returning None is a normal
+    outcome, not an error: a director who supplies a password live at signing
+    has no stored row, and the caller falls back to the live-entered pair.
+
+    Falls back to presentor_account_id when eservice_user_id is unset because
+    that was the pre-BE-5 shape — a user whose CR account id doubled as their
+    e-Service id must keep signing without re-entering anything.
+    """
+    row = _read(user_id)
+    if not row:
+        return None
+    enc = row.get("eservice_password_enc")
+    if not enc:
+        return None
+    signatory = row.get("eservice_user_id") or row.get("presentor_account_id")
+    if not signatory:
+        return None
+    return signatory, decrypt(enc)

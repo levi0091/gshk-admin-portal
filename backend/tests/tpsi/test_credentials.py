@@ -253,3 +253,51 @@ def test_explicit_null_still_clears():
     )
     assert payload["eservice_password_enc"] is None
     assert payload["deposit_account_no"] is None
+
+
+# ── load_eservice — per-user signing credential accessor (BE-5, W-7) ────────
+
+
+def test_load_eservice_returns_none_when_no_row_exists():
+    """A user with no stored signing credential is a normal state now, not an
+    error: the shared presenter authenticates, and this user simply signs with
+    a password entered live."""
+    from services.tpsi import credentials
+
+    with patch.object(credentials, "_read", return_value=None):
+        assert credentials.load_eservice("u1") is None
+
+
+def test_load_eservice_returns_none_when_the_row_has_no_signing_password():
+    from services.tpsi import credentials
+
+    row = {"eservice_user_id": "EUSER", "eservice_password_enc": None}
+    with patch.object(credentials, "_read", return_value=row):
+        assert credentials.load_eservice("u1") is None
+
+
+def test_load_eservice_returns_the_pair_and_falls_back_to_the_user_id():
+    from services.tpsi import credentials
+
+    row = {"eservice_user_id": None, "eservice_password_enc": "enc",
+           "presentor_account_id": "ACCT"}
+    with patch.object(credentials, "_read", return_value=row), \
+         patch.object(credentials, "decrypt", return_value="pw"):
+        assert credentials.load_eservice("u1") == ("ACCT", "pw")
+
+
+def test_load_for_use_raises_a_clear_error_for_a_signing_only_credential():
+    """Task 1 dropped NOT NULL from tpsi_password_enc, so a signing-only row
+    (one with a stored eservice credential but no CR login password) is now a
+    legitimate row shape. Without an explicit guard, load_for_use would call
+    decrypt(None) and raise an opaque TypeError deep inside Fernet — instead it
+    must raise a LookupError that names what actually happened: this user only
+    holds a signing credential, and the shared presenter is what authenticates."""
+    row = {
+        "presentor_account_id": None, "tpsi_password_enc": None,
+        "eservice_password_enc": encrypt("epw"), "eservice_user_id": "EID",
+        "tpsi_password_expires_at": None, "is_test": True, "last_rotated_at": None,
+    }
+    with patch.object(creds, "_read", return_value=row):
+        with pytest.raises(LookupError, match="signing"):
+            creds.load_for_use("user-1")
