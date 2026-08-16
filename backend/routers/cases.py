@@ -98,13 +98,17 @@ async def patch_case(
                        str(before.get("accounts_ready")), str(body.accounts_ready)))
 
     if body.signing_method is not None:
+        # Validation runs whether or not the value is a no-op: an invalid
+        # value must still 400, never be silently swallowed by the "unchanged"
+        # check below.
         if body.signing_method not in ("esign", "manual"):
             raise HTTPException(400, "signing_method must be 'esign' or 'manual'")
-        patch["signing_method"] = body.signing_method
-        events.append((ev.CASE_FIELD_UPDATED, "signing_method",
-                       before.get("signing_method"), body.signing_method))
+        if body.signing_method != before.get("signing_method"):
+            patch["signing_method"] = body.signing_method
+            events.append((ev.CASE_FIELD_UPDATED, "signing_method",
+                           before.get("signing_method"), body.signing_method))
 
-    if body.assigned_to is not None:
+    if body.assigned_to is not None and body.assigned_to != before.get("assigned_to"):
         patch["assigned_to"] = body.assigned_to
         events.append((ev.CASE_FIELD_UPDATED, "assigned_to",
                        before.get("assigned_to"), body.assigned_to))

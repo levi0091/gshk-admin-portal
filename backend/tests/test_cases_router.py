@@ -134,6 +134,38 @@ def test_patch_ignores_fields_it_does_not_own(client):
     assert "client_approved" not in spy.call_args.args[1]
 
 
+def test_patch_with_unchanged_values_writes_and_audits_nothing(client):
+    """An audit entry whose old and new value are identical is a false record
+    in a statutory workflow trail -- re-asserting the stored value must be a
+    no-op, the same discipline aml_cleared/accounts_ready already apply."""
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value={"id": "c1", "signing_method": "esign", "assigned_to": "u9"}), \
+         patch("routers.cases.nar1_cases.update_case") as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event", new=AsyncMock()) as log_spy:
+        response = client.patch("/cases/c1", headers=H,
+                                json={"signing_method": "esign", "assigned_to": "u9"})
+    assert response.status_code == 200
+    spy.assert_not_called()
+    log_spy.assert_not_called()
+
+
+def test_patch_rejects_an_invalid_signing_method_even_if_it_would_be_a_no_op(client):
+    """The validity check must run before the unchanged-value guard -- an
+    invalid value is never "skipped" just because it happens to equal
+    whatever bad value is already stored."""
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value={"id": "c1", "signing_method": "bogus"}), \
+         patch("routers.cases.nar1_cases.update_case") as spy, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"signing_method": "bogus"})
+    assert response.status_code == 400
+    spy.assert_not_called()
+
+
 def test_case_endpoints_require_authentication(client):
     """No patch installed -> the real dependency runs and rejects the dummy token."""
     assert client.get("/cases/c1", headers=H).status_code in (401, 403)
@@ -159,8 +191,42 @@ def test_case_endpoints_are_gated_on_the_nar1_module(client):
 
 
 def test_the_audit_tab_route_still_resolves(client):
-    """/cases/{id}/audit predates this router. Registration order must not
-    shadow it with /cases/{case_id}."""
-    with _super(), patch("routers.cases_audit.get_supabase"):
+    """/cases/{id}/audit predates this router and must still work now that
+    cases.router shares the /cases prefix: cases_audit.router is still
+    mounted and its own handler is the one that actually runs (verified via
+    its get_supabase mock, not just a 200).
+
+    This does NOT verify registration order by itself -- FastAPI's default
+    (non-`:path`) {case_id} converter is end-anchored and structurally cannot
+    match the three-segment /cases/c1/audit, so this route resolves correctly
+    regardless of which router was registered first. See
+    test_cases_router_is_registered_before_cases_audit_router for the actual
+    ordering guard.
+    """
+    with _super(), patch("routers.cases_audit.get_supabase") as msb:
+        sb = msb.return_value
+        chain = sb.table.return_value.select.return_value.eq.return_value.order.return_value
+        chain.execute.return_value.data = [{"action_type": "CASE_STATUS_CHANGED"}]
         response = client.get("/cases/c1/audit", headers=H)
     assert response.status_code == 200
+    assert response.json() == [{"action_type": "CASE_STATUS_CHANGED"}]
+
+
+def test_cases_router_is_registered_before_cases_audit_router(client):
+    """The real ordering guard for the /cases prefix.
+
+    Not exercised by the request-level test above, since the current path
+    patterns cannot collide either way (see its docstring) -- this asserts
+    directly on app.routes so a future change that WOULD make the order
+    matter (a broadened GET at /cases/{case_id}, or a {case_id:path}
+    converter) is caught here rather than shipping silently."""
+    case_index = next(
+        i for i, r in enumerate(app.routes)
+        if getattr(r, "path", None) == "/cases/{case_id}"
+        and "GET" in getattr(r, "methods", set())
+    )
+    audit_index = next(
+        i for i, r in enumerate(app.routes)
+        if getattr(r, "path", None) == "/cases/{case_id}/audit"
+    )
+    assert case_index < audit_index

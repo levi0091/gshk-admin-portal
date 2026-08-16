@@ -69,11 +69,16 @@ TPSI_CRED_CONFIG = "TPSI_CRED_CONFIG"
 # ---- NAR1 case-workflow codes (BE-4) ---------------------------------------
 #   Named, not invented: CASE_STATUS_CHANGED, CASE_FIELD_UPDATED and
 #   AML_STATUS_CHANGED are the action_type values CLAUDE.md's PBI-11 audit
-#   table already mandates. AML_STATUS_CHANGED is seeded in audit_event_types
-#   by migration 012; CASE_STATUS_CHANGED and CASE_FIELD_UPDATED are not yet
-#   in that registry (a pre-existing gap this task does not close) -- absent
-#   an entry, audit_service.action_label() just returns no label, since
-#   event_code carries no FK to audit_event_types.
+#   table already mandates, and all three are seeded in audit_event_types --
+#   confirmed live against DEV (2026-08-16) via a direct REST query, which
+#   also returned the other three PBI-11 codes (DOCUMENT_GENERATED,
+#   EMAIL_SENT, CLIENT_APPROVAL_RECEIVED). NOTE: this repo's checked-in copy
+#   of alembic/versions/012_pbi39_audit_event_types.py does NOT contain
+#   CASE_STATUS_CHANGED or CASE_FIELD_UPDATED in its _NATIVE list, and no
+#   other migration file inserts them either -- DEV has rows no migration in
+#   this checkout accounts for. Flagged to Levi as a migration-history/DEV
+#   drift question; not a blocker for this task, since the values only need
+#   to match what is live.
 CASE_STATUS_CHANGED = "CASE_STATUS_CHANGED"
 CASE_FIELD_UPDATED = "CASE_FIELD_UPDATED"
 AML_STATUS_CHANGED = "AML_STATUS_CHANGED"
