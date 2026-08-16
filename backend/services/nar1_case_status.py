@@ -17,6 +17,7 @@ from services.tpsi.filings import (
     STAGE_EDRIVE,
     STAGE_REGISTERED,
     STAGE_SIGNED,
+    STAGE_SIGNING_FAILED,
     STAGE_SUBMISSION_FAILED,
     STAGE_SUBMITTED,
     STAGE_VALIDATED,
@@ -68,7 +69,7 @@ def _code(case: dict, filing: dict | None) -> str:
     # Nothing validated -> the data is still being worked on. validation_failed
     # lands here too: it is free to fix and retry, and that IS data verification.
     if stage != STAGE_VALIDATED and stage not in (
-        STAGE_SIGNED, STAGE_SUBMISSION_FAILED, "signing_failed"
+        STAGE_SIGNED, STAGE_SUBMISSION_FAILED, STAGE_SIGNING_FAILED
     ):
         return DATA_VERIFICATION
 

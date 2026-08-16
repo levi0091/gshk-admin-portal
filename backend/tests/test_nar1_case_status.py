@@ -104,6 +104,14 @@ def test_overdue_is_an_overlay_not_a_stage():
     assert result["overdue"] is True
 
 
+def test_the_last_day_of_the_filing_window_is_not_yet_overdue():
+    """42 days after the anniversary is the LAST day inside the statutory
+    window, not the first day outside it. Off by one here is a compliance
+    error, not a rounding preference."""
+    assert st.derive(case(days_to_anniversary=-42), None)["overdue"] is False
+    assert st.derive(case(days_to_anniversary=-43), None)["overdue"] is True
+
+
 def test_a_completed_case_is_never_flagged_overdue():
     """It was filed. Whether it was filed late is a different question and not
     this badge's to answer."""
