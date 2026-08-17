@@ -7,6 +7,7 @@ not on our own ledger.
     submit -> chargeable and irreversible
 """
 import sys
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +17,7 @@ from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
+from services.tpsi.forms import nar1, nar1_mapper, nar1_source
 # Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
 # and services/nar1_cases.py needed it too — a service importing a router is
 # an inverted dependency. Imported here so `routers.tpsi.form_status` still
@@ -364,6 +366,113 @@ async def doc_status(
         metadata={"results": len(rows)},
     )
     return rows
+
+
+class PrepareIn(BaseModel):
+    entity_id: str
+    nar1_case_id: str
+    #: The return's own year. Defaults to the current HK year -- a return
+    #: prepared in January for last year's anniversary passes it explicitly.
+    year: int | None = None
+    form_filing_id: str | None = None
+    #: Deliberately a raw dict, not a Pydantic sub-model. `map_entity` reads the
+    #: ABSENCE of a key as meaning something: no `is_corporate` means a natural
+    #: person, and a natural person without `person_id` is a MappingError rather
+    #: than a statutory field that quietly vanishes. A sub-model would fill
+    #: every omitted key with None and erase that distinction -- the same trap
+    #: `_opt` exists for on the credential endpoints.
+    #: Shape: {"name", "capacity", "person_id", "date", "is_corporate"}.
+    signatory: dict | None = None
+
+
+def _loader_failed(entity_id: str, exc: Exception) -> HTTPException:
+    """A transport failure inside nar1_source, named as such.
+
+    The loader has an observed, un-eliminated failure mode against Supabase's
+    edge (`httpx.RemoteProtocolError: Server disconnected`, a Cloudflare 400).
+    db/supabase.py now removes the one cause that was ours -- the unsynchronised
+    lazy sub-client init this loader's five-way concurrent read hit cold -- but
+    a network between here and Supabase can still drop a connection, and that
+    must arrive as an upstream failure the caller can retry deliberately, not as
+    an unhandled 500 that reads like a bug in the mapper.
+
+    Deliberately NOT retried here. The failure is a concurrent read; re-issuing
+    the same concurrent read does not make it likelier to succeed, and a retry
+    of a partially-completed fan-out doubles real work for no gain.
+    """
+    return HTTPException(
+        502,
+        f"could not load entity {entity_id} from the profile store "
+        f"(nar1_source.load_entity_graph): {type(exc).__name__}: {exc}",
+    )
+
+
+@router.post("/filings/prepare", status_code=201)
+async def prepare_filing(
+    body: PrepareIn, user=Depends(require_permission("tpsi", "write"))
+):
+    """Build the NAR1 XML server-side and open a filing (BE-1).
+
+    The frontend posts identifiers, never XML. That is not ergonomics: if the
+    client could supply form_xml it could file a document no one in G-FlowDesk
+    ever reviewed, and the audit trail would show only that we sent it.
+
+    Declared above the other /filings routes so the literal path is matched
+    before any /filings/{filing_id} pattern.
+    """
+    # Hong Kong's year, not UTC's: for the first eight hours of every HK working
+    # day UTC is still on yesterday's date, and on 1 January that is the wrong
+    # year on the statutory form.
+    year = body.year or (datetime.now(timezone.utc) + timedelta(hours=8)).year
+
+    try:
+        graph = await nar1_source.load_entity_graph(body.entity_id)
+    except LookupError as exc:
+        # "no entity <id>" -- the caller's identifier is wrong, not the loader.
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise _loader_failed(body.entity_id, exc)
+
+    try:
+        # signatory passed straight through: this router invents NO capacity
+        # default. selectCapacityDesc for a body-corporate secretary is an
+        # undecided business question, and map_entity refuses rather than
+        # guessing a value CR's schema would accept and the filing would
+        # misstate. Pre-empting that here would put the guess back.
+        data = nar1_mapper.map_entity(graph, year=year, signatory=body.signatory)
+        form_xml = nar1.build_nar1_xml(data)
+    except nar1_mapper.MappingError as exc:
+        # The whole list, in a structured field the UI can render as CR's own
+        # fault list does. No filing row is opened: a draft for an entity that
+        # cannot be filed is one nobody can ever advance.
+        raise HTTPException(400, {"message": "entity cannot be filed as a NAR1",
+                                  "problems": exc.problems})
+    except Exception as exc:
+        raise _handle(exc)
+
+    try:
+        row = filings.create_filing(
+            entity_id=body.entity_id,
+            form_code="Nar1",
+            form_xml=form_xml,
+            user_id=user["id"],
+            nar1_case_id=body.nar1_case_id,
+            form_filing_id=body.form_filing_id,
+        )
+    except Exception as exc:
+        raise _handle(exc)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_FILING_CREATED, event_code=ev.TPSI_FILING_CREATED,
+        entity_type="tpsi_filing", entity_id=row["id"],
+        case_id=body.nar1_case_id,
+        # Identifiers only. The XML is the whole statutory return and is
+        # already stored on the filing row; the signatory dict is not repeated
+        # here either, since map_entity's output is what was actually filed.
+        metadata={"form_code": "Nar1", "entity_id": body.entity_id, "year": year},
+    )
+    return row
 
 
 class FilingIn(BaseModel):

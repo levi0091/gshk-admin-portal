@@ -243,6 +243,258 @@ def test_create_filing_other_failures_are_handled_not_a_500(client):
     assert response.status_code == 502
 
 
+# ---- filings: POST /tpsi/filings/prepare (BE-1) -----------------------------
+
+def _prepare_patches(**overrides):
+    """The four collaborators /filings/prepare drives, all mocked at the
+    boundary. No test in this file may reach Supabase or CR."""
+    defaults = {
+        "load": AsyncMock(return_value={"entity": {"id": "e1"}}),
+        "map": MagicMock(return_value={"brNo": "1"}),
+        "build": MagicMock(return_value="<cr:brNo>1</cr:brNo>"),
+        "create": MagicMock(return_value={"id": "f1", "stage": "draft"}),
+        "log": AsyncMock(),
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _with_prepare(p):
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(_super())
+    stack.enter_context(
+        patch("routers.tpsi.nar1_source.load_entity_graph", new=p["load"]))
+    stack.enter_context(patch("routers.tpsi.nar1_mapper.map_entity", new=p["map"]))
+    stack.enter_context(patch("routers.tpsi.nar1.build_nar1_xml", new=p["build"]))
+    stack.enter_context(patch("routers.tpsi.filings.create_filing", new=p["create"]))
+    stack.enter_context(patch("routers.tpsi.log_event", new=p["log"]))
+    return stack
+
+
+def test_prepare_builds_the_xml_server_side(client):
+    """The frontend posts identifiers, never XML. If it could post XML it could
+    file a document nobody in G-FlowDesk ever saw."""
+    p = _prepare_patches()
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["create"].call_args.kwargs["form_xml"] == "<cr:brNo>1</cr:brNo>"
+    assert p["create"].call_args.kwargs["nar1_case_id"] == "c1"
+    assert p["create"].call_args.kwargs["form_code"] == "Nar1"
+
+
+def test_prepare_ignores_any_client_supplied_form_xml(client):
+    """Belt and braces on the rule above: an extra `form_xml` in the body is not
+    a field this endpoint has, and must not become the filed document."""
+    p = _prepare_patches()
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H, json={
+            "entity_id": "e1", "nar1_case_id": "c1",
+            "form_xml": "<cr:brNo>SMUGGLED</cr:brNo>",
+        })
+    assert response.status_code == 201
+    assert p["create"].call_args.kwargs["form_xml"] == "<cr:brNo>1</cr:brNo>"
+    assert "SMUGGLED" not in response.text
+
+
+def test_prepare_returns_every_mapping_problem_at_once(client):
+    """CR returns a full fault list; so must we, or the user fixes one field per
+    round trip against an API open six hours a day."""
+    from services.tpsi.forms.nar1_mapper import MappingError
+
+    p = _prepare_patches(
+        map=MagicMock(side_effect=MappingError(["no BR number", "no address"])))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 400
+    assert response.json()["detail"]["problems"] == ["no BR number", "no address"]
+    # Nothing was opened: a filing row for an entity that cannot be filed is a
+    # draft nobody can ever advance.
+    p["create"].assert_not_called()
+
+
+def test_prepare_unknown_entity_is_a_clean_400(client):
+    p = _prepare_patches(load=AsyncMock(side_effect=LookupError("no entity e9")))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e9", "nar1_case_id": "c1"})
+    assert response.status_code == 400
+    assert "e9" in response.text
+
+
+def test_prepare_defaults_the_return_year_to_the_current_hk_year(client):
+    p = _prepare_patches(map=MagicMock(return_value={}))
+    with _with_prepare(p):
+        client.post("/tpsi/filings/prepare", headers=H,
+                    json={"entity_id": "e1", "nar1_case_id": "c1"})
+    from datetime import datetime, timedelta, timezone
+    hk_year = (datetime.now(timezone.utc) + timedelta(hours=8)).year
+    assert p["map"].call_args.kwargs["year"] == hk_year
+
+
+def test_prepare_honours_an_explicit_return_year(client):
+    """A return prepared in January for last year's anniversary."""
+    p = _prepare_patches()
+    with _with_prepare(p):
+        client.post("/tpsi/filings/prepare", headers=H,
+                    json={"entity_id": "e1", "nar1_case_id": "c1", "year": 2024})
+    assert p["map"].call_args.kwargs["year"] == 2024
+
+
+def test_prepare_passes_the_signatory_through_verbatim(client):
+    """map_entity distinguishes an ABSENT key from a null one -- `is_corporate`
+    absent means natural person, and a natural person must supply an id. So the
+    signatory reaches the mapper as the caller sent it, with no Pydantic
+    None-filling in between (the same trap `_opt` exists for on credentials)."""
+    p = _prepare_patches()
+    sig = {"name": "GSHK Secretaries Ltd",
+           "capacity": "Authorized Person of the Company Secretary (Body Corporate)",
+           "is_corporate": True}
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H, json={
+            "entity_id": "e1", "nar1_case_id": "c1", "signatory": sig})
+    assert response.status_code == 201
+    assert p["map"].call_args.kwargs["signatory"] == sig
+
+
+def test_prepare_invents_no_signatory_when_none_is_given(client):
+    """No capacity default anywhere in this endpoint. selectCapacityDesc for a
+    body-corporate secretary is an undecided business question; the mapper
+    refuses rather than guessing, and the router must not pre-empt it."""
+    p = _prepare_patches()
+    with _with_prepare(p):
+        client.post("/tpsi/filings/prepare", headers=H,
+                    json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert p["map"].call_args.kwargs["signatory"] is None
+
+
+def test_prepare_audits_the_filing_it_opened(client):
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    p = _prepare_patches(log=AsyncMock(side_effect=fake_log))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert logged["action_type"] == "TPSI_FILING_CREATED"
+    assert logged["entity_id"] == "f1"
+    assert logged["case_id"] == "c1"
+    assert logged["metadata"]["form_code"] == "Nar1"
+    # The built XML is not audit metadata: it is the whole statutory return and
+    # it is already stored on the filing row.
+    assert "cr:brNo" not in str(logged)
+
+
+def test_prepare_survives_an_audit_failure(client):
+    """CLAUDE.md: a log_event failure must never block the primary operation.
+    The filing row already exists; failing the response would lose its id.
+
+    The failure is injected INSIDE audit_service, at its Supabase boundary --
+    patching `routers.tpsi.log_event` itself would replace the very try/except
+    that provides the guarantee and prove nothing.
+    """
+    p = _prepare_patches()
+    del p["log"]  # the real log_event, with its real swallow, must run
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        stack.enter_context(_super())
+        stack.enter_context(
+            patch("routers.tpsi.nar1_source.load_entity_graph", new=p["load"]))
+        stack.enter_context(patch("routers.tpsi.nar1_mapper.map_entity", new=p["map"]))
+        stack.enter_context(patch("routers.tpsi.nar1.build_nar1_xml", new=p["build"]))
+        stack.enter_context(
+            patch("routers.tpsi.filings.create_filing", new=p["create"]))
+        stack.enter_context(patch("services.audit_service.get_supabase",
+                                  side_effect=RuntimeError("audit down")))
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert response.json()["id"] == "f1"
+
+
+def test_prepare_loader_transport_failure_is_a_502_naming_the_loader(client):
+    """nar1_source has an observed transport failure mode (RemoteProtocolError /
+    a Cloudflare 400 from Supabase's edge). It must reach the caller as a
+    502 that names the loader, not as an unhandled 500."""
+    import httpx
+
+    p = _prepare_patches(
+        load=AsyncMock(side_effect=httpx.RemoteProtocolError("Server disconnected")))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 502
+    assert "load_entity_graph" in response.json()["detail"]
+    # No blind retry: re-issuing the same concurrent read would not help and
+    # could double real work.
+    assert p["load"].await_count == 1
+
+
+def test_prepare_filing_insert_failure_is_handled_not_a_500(client):
+    p = _prepare_patches(create=MagicMock(side_effect=RuntimeError("db exploded")))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 502
+
+
+def test_prepare_local_schema_failure_is_a_400(client):
+    """nar1.build_nar1_xml raises ValueError when the mapped data fails the
+    committed CR schema (max_length and friends)."""
+    p = _prepare_patches(
+        build=MagicMock(side_effect=ValueError("NAR1 validation failed: brNo too long")))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 400
+    assert "brNo too long" in response.text
+
+
+def test_prepare_drives_the_real_mapper_not_just_a_mock(client):
+    """Every other prepare test mocks map_entity, so none of them would notice
+    the router calling it with the wrong keyword. This one runs the real
+    mapper over a real (deficient) graph and checks the router surfaces its
+    real problem list."""
+    # Every key load_entity_graph returns, so this exercises the mapper and not
+    # a KeyError on a graph shape that cannot occur.
+    graph = {"entity": {}, "registered_address": None, "officers": [],
+             "secretaries": [], "share_classes": [], "shareholdings": [],
+             "persons": {}, "addresses": {}, "identity_documents": {}}
+    p = _prepare_patches(load=AsyncMock(return_value=graph))
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        stack.enter_context(_super())
+        stack.enter_context(
+            patch("routers.tpsi.nar1_source.load_entity_graph", new=p["load"]))
+        stack.enter_context(
+            patch("routers.tpsi.filings.create_filing", new=p["create"]))
+        stack.enter_context(patch("routers.tpsi.log_event", new=p["log"]))
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 400
+    problems = response.json()["detail"]["problems"]
+    assert any("BR number" in prob for prob in problems)
+    p["create"].assert_not_called()
+
+
+def test_prepare_requires_tpsi_write_not_merely_read(client):
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 403
+
+
 # ---- filings: POST /tpsi/filings/{id}/validate ------------------------------
 
 def test_validate_filing_advances_the_stage_and_audits(client):
