@@ -23,6 +23,19 @@ block -- selectCapacityDesc / selectPersonId / selectPersonName / signatoryDate
 but never `mandatory`, so an unsigned return would pass every local gate and
 fail no earlier than CR's server, after the fee is taken.
 
+CONTROLLED VOCABULARIES live in cr_vocabularies.py, transcribed from the same
+worksheet and re-verified against it by test:
+  * ctryRegion  -- CR's 250 Country & Region codes. NOT ISO alpha-3: Guernsey,
+    Jersey and the Isle of Man are GBR1/GBR2/GBR3, which is why the field is
+    max_length 4 and why no ISO library may be substituted.
+  * selectCapacityDesc -- TWO vocabularies, Individual (5 NAR1 values) and Body
+    Corporate (15). They do not overlap, and CR's field is String(500), so a
+    value from the wrong list is one CR ACCEPTS.
+
+Three ctryRegion nodes -- roAddr, indSec/stdAddress, corpSec/stdAddress -- carry
+the schema remark "Region. Must be HKG" and emit HKG unconditionally. Every
+other ctryRegion says "Refer to Country sheet" and is mapped from the record.
+
 KNOWN LIMITATION -- joint shareholders. CR files joint holders as ONE
 <shareHolderGrp> with shType=2 and N <allottee> children (see the Preference
 class in the example). G-FlowDesk's `shareholdings` table (migration 003) has
@@ -36,6 +49,13 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
+from services.tpsi.forms.cr_vocabularies import (
+    CAPACITY_BODY_CORPORATE,
+    CAPACITY_INDIVIDUAL,
+    HKG,
+    resolve_country,
+)
+
 #: HKT is a fixed UTC+8 offset with no DST (since 1979), so a fixed-offset
 #: tzinfo is exact and, unlike zoneinfo, needs no tz database -- Windows ships
 #: none and `tzdata` is not a dependency of this project. The DB server runs
@@ -47,26 +67,21 @@ _HKT = timezone(timedelta(hours=8))
 _CR_DATE_FORMAT = "%d/%m/%Y"
 _CR_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 
-#: selectCapacityDesc for the default signatory. Per Q-030 GSHK signs on the
-#: client's behalf, and it does so in its capacity as company secretary.
+#: selectCapacityDesc for a natural person signing as the company secretary.
+#: This is a "Capacity (Individual)" value and it is valid for an INDIVIDUAL
+#: signatory only -- CR keeps a separate 15-value Body Corporate vocabulary, and
+#: no Individual value appears in it. See cr_vocabularies.py.
 _CAPACITY_COMPANY_SECRETARY = "Company Secretary"
 
-#: country/region -> CR's ctryRegion code (max 4 chars). Deliberately a fixed
-#: table, not a library: an unknown country must FAIL, because the alternative
-#: is a plausible-looking guess that CR rejects after the fee is taken.
-_COUNTRY_CODES = {
-    "hong kong": "HKG", "hongkong": "HKG", "hk": "HKG", "hkg": "HKG",
-    "china": "CHN", "prc": "CHN", "macau": "MAC", "macao": "MAC",
-    "taiwan": "TWN", "singapore": "SGP", "malaysia": "MYS", "japan": "JPN",
-    "south korea": "KOR", "korea": "KOR", "india": "IND", "australia": "AUS",
-    "new zealand": "NZL", "canada": "CAN", "united states": "USA",
-    "united states of america": "USA", "usa": "USA", "us": "USA",
-    "united kingdom": "GBR", "uk": "GBR", "britain": "GBR",
-    "british virgin islands": "VGB", "bvi": "VGB", "cayman islands": "CYM",
-    "samoa": "WSM", "seychelles": "SYC", "germany": "DEU", "france": "FRA",
-    "netherlands": "NLD", "switzerland": "CHE", "thailand": "THA",
-    "vietnam": "VNM", "indonesia": "IDN", "philippines": "PHL",
-}
+#: ctryRegion comes from CR's own "Country & Region" sheet — all 250 codes, with
+#: the alpha-2 form G-FlowDesk stores — see cr_vocabularies.py. Deliberately a
+#: committed table and not an ISO library: CR's GBR1/GBR2/GBR3 (Guernsey/Jersey/
+#: Isle of Man) are CR's own invention, a library emits GGY/JEY/IMN, and CR
+#: rejects those after the fee is taken. An unresolvable country still FAILS.
+#:
+#: The 38-name table this replaced keyed on English names only, while DEV stores
+#: ISO alpha-2 in 100% of its address rows: 6,953 of 8,027 real addresses (87%)
+#: could not be filed at all.
 
 #: allotteeType, per CR's example.
 _ALLOTTEE_INDIVIDUAL = "I"
@@ -154,39 +169,71 @@ def _format_date(value, problems: list[str], where: str) -> str:
         return ""
 
 
-def _country_code(country: str | None, problems: list[str], where: str,
-                  default: str = "") -> str:
+def _unknown_country(country, where: str) -> str:
+    return (
+        f"{where}: no CR region code is known for country {country!r} — "
+        "CR's Country & Region sheet (worksheet v1.0.14) carries no code, "
+        "alpha-2 or English name matching it; correct the address rather "
+        "than guessing a code CR would take the fee for and then reject"
+    )
+
+
+def _country_code(country: str | None, problems: list[str], where: str) -> str:
+    """ctryRegion for the nodes whose remark is "Refer to Country sheet".
+
+    Directors, reserve directors and allottees. A blank is a blank here: reading
+    it as Hong Kong would file a UK-resident director as resident in Hong Kong,
+    silently, and CR would accept it.
+    """
     if not country:
-        # `default` is "HKG" at exactly ONE call site: roAddr, the registered
-        # office of a Hong Kong company. Everywhere else -- directors'
-        # residential addresses, shareholders' addresses, corporate parties --
-        # a blank is a blank, and defaulting it would file a UK-resident
-        # director as resident in Hong Kong. Silently, and CR would accept it.
-        if default:
-            return default
         problems.append(
             f"{where}: no country on the address, and a blank country may only "
-            "be assumed to be Hong Kong for the registered office"
+            "be read as Hong Kong on the three nodes whose schema remark is "
+            "'Region. Must be HKG'"
         )
         return ""
-    code = _COUNTRY_CODES.get(country.strip().lower())
+    code = resolve_country(country)
     if code is None:
-        problems.append(
-            f"{where}: no CR region code is known for country {country!r} — "
-            "add it to nar1_mapper._COUNTRY_CODES rather than guessing"
-        )
+        problems.append(_unknown_country(country, where))
         return ""
     return code
 
 
+def _hkg_region(country: str | None, problems: list[str], where: str) -> str:
+    """ctryRegion for the three nodes whose remark is "Region. Must be HKG".
+
+    roAddr, indSec/stdAddress and corpSec/stdAddress — checked node by node
+    against nar1_schema.json; every other ctryRegion in the form says "Refer to
+    Country sheet" instead.
+
+    HKG unconditionally, because CR accepts exactly one value here and deriving
+    it from the row can only ever produce a rejection. A country that is on
+    record and is NOT Hong Kong is still reported: overwriting it in silence
+    files a return saying the registered office is in Hong Kong when the
+    company's own records say otherwise, and CR's schema gate accepts that.
+    """
+    if country:
+        code = resolve_country(country)
+        if code is None:
+            problems.append(_unknown_country(country, where))
+        elif code != HKG:
+            problems.append(
+                f"{where}: the address on record is in {country!r} ({code}), "
+                f"but CR's schema requires ctryRegion {HKG} on this node "
+                "(remark 'Region. Must be HKG') — a Hong Kong company's "
+                "registered office and its company secretary's address must "
+                "both be in Hong Kong"
+            )
+    return HKG
+
+
 def _address(addr: dict | None, problems: list[str], where: str,
-             *, default_country: str = "") -> dict:
+             *, hkg_only: bool = False) -> dict:
     """CR's five address lines. G-FlowDesk stores seven fields; the district
     line absorbs city, region and postcode because CR has one box for all
     three and separating them there loses the postcode entirely.
 
-    `default_country` is passed only by the roAddr call site — see
-    _country_code().
+    `hkg_only` marks the three "Region. Must be HKG" nodes — see _hkg_region().
     """
     if not addr:
         problems.append(f"{where}: no address on record")
@@ -195,6 +242,7 @@ def _address(addr: dict | None, problems: list[str], where: str,
         part for part in (addr.get("city"), addr.get("state_region"),
                           addr.get("postal_code")) if part
     )
+    region = _hkg_region if hkg_only else _country_code
     return {
         # E = the address is written in English. G-FlowDesk holds *_zh variants
         # but the NAR1 is filed in one language and `language` is already E.
@@ -203,8 +251,7 @@ def _address(addr: dict | None, problems: list[str], where: str,
         "bldg": addr.get("line2") or "",
         "stEstLotVlg": addr.get("line3") or "",
         "dstCtyStatePostal": district,
-        "ctryRegion": _country_code(addr.get("country"), problems, where,
-                                    default_country),
+        "ctryRegion": region(addr.get("country"), problems, where),
     }
 
 
@@ -248,7 +295,11 @@ def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
     # the same filter that drops it for a person with no document at all.
     number = str(passport.get("id_number") or "")
     out = {"indvPptNo": number}
-    code = _COUNTRY_CODES.get((passport.get("issuing_country") or "").strip().lower())
+    # indvPptIssCtry is mandatory:false, so an issuing country CR has no code
+    # for is omitted rather than raised. It goes through the same resolver as
+    # every other country: DEV's person_identity_documents.issuing_country is
+    # alpha-2 too, so the old name-only table dropped most of them silently.
+    code = resolve_country(passport.get("issuing_country"))
     # Only alongside a number: indvPptIssCtry on its own declares the issuer of
     # a passport the return does not name.
     if code and number:
@@ -306,12 +357,49 @@ def _derive_signatory(graph: dict) -> dict | None:
         if name:
             return {
                 "name": name,
-                "capacity": _CAPACITY_COMPANY_SECRETARY,
+                # NOT "Company Secretary": that is an Individual-vocabulary
+                # value and this signatory is a body corporate. Which of CR's
+                # 15 Body Corporate values applies depends on who at GSHK signs
+                # on its behalf, which nobody has decided -- so the mapper
+                # refuses rather than guesses. See _signatory_block().
+                "capacity": None,
                 "person_id": None,
                 "date": None,
                 "is_corporate": True,
             }
     return None
+
+
+def _check_capacity(name: str, capacity: str, is_corporate: bool,
+                    problems: list[str]) -> None:
+    """selectCapacityDesc is a controlled vocabulary, and there are TWO of them.
+
+    Worksheet remark: "Signatory capacity description. Refer to Capacity sheet
+    for description". CR ships "Capacity (Individual)" (5 NAR1 values) and
+    "Capacity (Body Coporate)" (15), and they do not overlap: an Individual
+    value on a body-corporate signatory is a wrong value CR's schema gate
+    ACCEPTS, because the field is just String(500).
+    """
+    valid = CAPACITY_BODY_CORPORATE if is_corporate else CAPACITY_INDIVIDUAL
+    if capacity in valid:
+        return
+    if not capacity and is_corporate:
+        problems.append(
+            f"signatory {name}: signs as a body corporate, and a body corporate "
+            "signs through a natural person — CR's Capacity (Body Corporate) "
+            "vocabulary says which one, e.g. 'Director of the Company Secretary "
+            "(Body Corporate)'. GSHK's own default is not decided, so pass "
+            "signatory={'capacity': ...} explicitly rather than let the mapper "
+            "invent a capacity CR would accept and the filing would misstate"
+        )
+        return
+    kind = "Body Corporate" if is_corporate else "Individual"
+    problems.append(
+        f"signatory {name}: selectCapacityDesc {capacity!r} is not in CR's "
+        f"Capacity ({kind}) vocabulary for a signatory of that kind — CR takes "
+        f"any string here and rejects it server-side, after the fee. Valid: "
+        + "; ".join(sorted(valid))
+    )
 
 
 def _signatory_block(graph: dict, signatory: dict | None,
@@ -332,10 +420,19 @@ def _signatory_block(graph: dict, signatory: dict | None,
         )
         return {}
 
+    is_corporate = resolved.get("is_corporate") is True
+    name = str(resolved["name"]).strip()
+    capacity = str(resolved.get("capacity") or "").strip()
+    if not capacity and not is_corporate:
+        # A natural person signing for a GSHK-managed company signs as its
+        # company secretary (Q-030). There is no equivalent default for a body
+        # corporate -- see below.
+        capacity = _CAPACITY_COMPANY_SECRETARY
+    _check_capacity(name, capacity, is_corporate, problems)
+
     block = {
-        "selectCapacityDesc": (resolved.get("capacity")
-                               or _CAPACITY_COMPANY_SECRETARY),
-        "selectPersonName": str(resolved["name"]).strip(),
+        "selectCapacityDesc": capacity,
+        "selectPersonName": name,
         "signatoryDate": _format_date(
             resolved.get("date") or _hk_today(), problems, "signatoryDate"
         ),
@@ -361,14 +458,17 @@ def _signatory_block(graph: dict, signatory: dict | None,
 
 
 def _individual(person: dict, addresses: dict, identity_documents: dict,
-                problems: list[str]) -> dict:
+                problems: list[str], *, hkg_only: bool = False) -> dict:
+    """`hkg_only` is set for an individual COMPANY SECRETARY and nobody else:
+    indSec/stdAddress carries "Region. Must be HKG", indDir/resDir do not."""
     where = f"person {person.get('full_name') or person.get('id')}"
     block = {
         "indvChiName": person.get("full_name_zh") or "",
         "indvEngSname": person.get("surname") or "",
         "indvEngOname": person.get("given_names") or "",
         "stdAddress": _address(
-            addresses.get(person.get("residential_address_id")), problems, where
+            addresses.get(person.get("residential_address_id")), problems, where,
+            hkg_only=hkg_only,
         ),
     }
     if person.get("former_name"):
@@ -381,7 +481,7 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
 
 def _corporate(name: str, addr: dict | None, problems: list[str],
                *, br_no: str | None = None, tcsp_no: str | None = None,
-               name_zh: str | None = None, default_country: str = "") -> dict:
+               name_zh: str | None = None, hkg_only: bool = False) -> dict:
     """A corporate officer/secretary block.
 
     `addr` is the corporate party's OWN registered office. It is never the
@@ -389,17 +489,14 @@ def _corporate(name: str, addr: dict | None, problems: list[str],
     and CR's schema gate would accept it. A missing one is a problem, and a
     problem is a MappingError.
 
-    `default_country` is passed by exactly one caller: the GSHK secretary,
-    which files the filing company's registered office (see _officer_lists).
-    It is literally the same dict roAddr is built from, so it must resolve a
-    blank country the same way — otherwise the roAddr default is unreachable
-    in production, because every GSHK-managed company has a GSHK secretary.
+    `hkg_only` is set for a corporate COMPANY SECRETARY and nobody else:
+    corpSec/stdAddress carries "Region. Must be HKG", corpDir does not.
     """
     block = {
         "corpChiName": name_zh or "",
         "corpEngName": name,
         "stdAddress": _address(addr, problems, f"corporate party {name}",
-                               default_country=default_country),
+                               hkg_only=hkg_only),
     }
     if br_no:
         block["corpBrNo"] = br_no
@@ -442,7 +539,8 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
         person = persons.get(sec.get("person_id")) if sec.get("person_id") else None
         if person:
             if _first_secretary(_sec_key(person_id=person["id"])):
-                ind_sec.append(_individual(person, addresses, ids, problems))
+                ind_sec.append(_individual(person, addresses, ids, problems,
+                                           hkg_only=True))
             continue
         name = sec.get("secretary_name") or ""
         if not _first_secretary(_sec_key(name=name)):
@@ -459,15 +557,11 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
         # and the real fix is a corporate_entity_id on company_secretaries —
         # logged as a follow-up migration, deliberately not written here.
         corp_addr = sec.get("corporate_address")
-        ro_default = ""
         if corp_addr is None and sec.get("is_gshk"):
             corp_addr = ro
-            # Same dict as roAddr, so it must resolve a blank country the same
-            # way — see _corporate().
-            ro_default = "HKG"
         corp_sec.append(
             _corporate(name, corp_addr, problems, tcsp_no=sec.get("tcsp_number"),
-                       default_country=ro_default)
+                       hkg_only=True)
         )
 
     # Roles the NAR1 schema has a place for. `authorised_rep` (a valid
@@ -499,6 +593,7 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
                 problems,
                 br_no=officer.get("corporate_br_no"),
                 name_zh=officer.get("corporate_name_zh"),
+                hkg_only=role == "company_secretary",
             )
             if role == "director":
                 # dirInd Y marks a director as opposed to an alternate; CR's
@@ -515,7 +610,8 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
         if role == "company_secretary" and not _first_secretary(
                 _sec_key(person_id=person["id"])):
             continue
-        block = _individual(person, addresses, ids, problems)
+        block = _individual(person, addresses, ids, problems,
+                            hkg_only=role == "company_secretary")
         if role == "director":
             ind_dir.append({"dirInd": "Y", **block})
         elif role == "reserve_director":
@@ -690,6 +786,11 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None) -> dict
         `is_corporate: True` says so. Omitting the key means a natural person,
         so a missing `person_id` is a MappingError rather than a field that
         quietly vanishes from the statutory declaration.
+        `capacity` must come from CR's vocabulary for that kind of signatory
+        (cr_vocabularies.CAPACITY_INDIVIDUAL / CAPACITY_BODY_CORPORATE); it
+        defaults to "Company Secretary" for a natural person and has NO default
+        for a body corporate, which is why a GSHK-signed return currently
+        requires this argument.
     """
     problems: list[str] = []
     entity = graph["entity"]
@@ -703,9 +804,9 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None) -> dict
         "language": "E",
         "brNo": entity.get("br_number") or "",
         "yearAnnualReturn": year,
-        # The ONLY call site that may assume Hong Kong for a blank country.
+        # "Region. Must be HKG" — see _hkg_region().
         "roAddr": _address(graph.get("registered_address"), problems,
-                           "registered office", default_country="HKG"),
+                           "registered office", hkg_only=True),
     }
     if entity.get("company_name"):
         data["compNameE"] = entity["company_name"]

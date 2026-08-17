@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from services.tpsi.forms import nar1, nar1_mapper
+from services.tpsi.forms import cr_vocabularies, nar1, nar1_mapper
 
 #: HKT is a fixed UTC+8 offset with no DST. Computed here, not imported from the
 #: module under test, so the test pins the offset rather than echoing it.
@@ -21,6 +21,31 @@ SAMPLE = (
     / "docs" / "Web Form Example" / "validateForm"
     / "validate_NAR1(Private Company, Schedule 1).xml"
 )
+
+#: CR's own vocabularies, for the tests that check the committed copy of them.
+WORKSHEET = (
+    Path(__file__).resolve().parents[3]
+    / "docs" / "Web Form Example"
+    / "Worksheet in TPSI API Interface v1.0.14.xlsx"
+)
+
+#: The base fixture's secretary is GSHK — a body corporate — and the mapper
+#: refuses to invent a Body Corporate capacity for it, because which of CR's 15
+#: values GSHK signs under is a business question nobody has answered yet. Tests
+#: that are not about the signatory state one explicitly and move on.
+BODY_CORPORATE_SIGNATORY = {
+    "name": "Get Started HK Limited",
+    "capacity": "Director of the Company Secretary (Body Corporate)",
+    "person_id": None,
+    "date": None,
+    "is_corporate": True,
+}
+
+
+def mapped(g, *, year=2026, **kw):
+    """map_entity() with the signatory stated, for tests about anything else."""
+    kw.setdefault("signatory", BODY_CORPORATE_SIGNATORY)
+    return nar1_mapper.map_entity(g, year=year, **kw)
 
 
 def graph(**over):
@@ -85,7 +110,7 @@ CORP_ADDR = {
 # ---- scalars ---------------------------------------------------------------
 
 def test_maps_the_core_scalars():
-    data = nar1_mapper.map_entity(graph(), year=2026)
+    data = mapped(graph())
     assert data["brNo"] == "00000001"
     assert data["yearAnnualReturn"] == 2026
     assert data["language"] == "E"
@@ -95,7 +120,7 @@ def test_omits_only_the_two_non_private_company_fields():
     """The ONLY fields where CR's shipped example beats the worksheet. Both
     worksheet remarks end "(Non Private Company)" and this is a private
     company, so the two sources never actually disagreed."""
-    data = nar1_mapper.map_entity(graph(), year=2026)
+    data = mapped(graph())
     for absent in ("dateReturnFrom", "dateReturnTo"):
         assert absent not in data
 
@@ -106,10 +131,20 @@ def test_the_signatory_block_is_emitted():
     """CR's own example carries all four (lines 236-239) and the worksheet marks
     them mandatory -- the two sources agree. nar1.validate() never checks
     `mandatory`, so an unsigned return passes every local gate and fails no
-    earlier than CR's server, after the fee is taken."""
-    data = nar1_mapper.map_entity(graph(), year=2026)
+    earlier than CR's server, after the fee is taken.
+
+    An individual secretary signing as "Company Secretary" is the path CR's own
+    example shows, and it is derived with no help from the caller."""
+    g = graph(
+        secretaries=[{"person_id": "p1", "is_gshk": False, "is_current": True}],
+        persons={"p1": person()},
+        addresses={"a1": ADDR, "a2": ADDR},
+        identity_documents={"p1": [{"id_type": "hkid", "id_number": "A123456(7)",
+                                    "is_primary": True}]},
+    )
+    data = nar1_mapper.map_entity(g, year=2026)      # derived, not passed in
     assert data["selectCapacityDesc"] == "Company Secretary"
-    assert data["selectPersonName"] == "Get Started HK Limited"
+    assert data["selectPersonName"] == "CHAN TAI MAN"
     # Today in Hong Kong, not naive date.today(): the DB server runs UTC, which
     # is the wrong calendar day for eight hours out of every twenty-four.
     assert data["signatoryDate"] == datetime.now(HKT).strftime("%d/%m/%Y")
@@ -117,7 +152,7 @@ def test_the_signatory_block_is_emitted():
 
 def test_a_body_corporate_signatory_leaves_selectpersonid_empty():
     """Worksheet remark: "Signatory User ID (Empty if sign by Body Corporate)"."""
-    assert "selectPersonId" not in nar1_mapper.map_entity(graph(), year=2026)
+    assert "selectPersonId" not in mapped(graph())
 
 
 def test_an_individual_secretary_signs_with_their_identity_number():
@@ -128,13 +163,18 @@ def test_an_individual_secretary_signs_with_their_identity_number():
         identity_documents={"p1": [{"id_type": "hkid", "id_number": "A123456(7)",
                                     "is_primary": True}]},
     )
-    data = nar1_mapper.map_entity(g, year=2026)
+    data = nar1_mapper.map_entity(g, year=2026)      # derived, not passed in
     assert data["selectPersonName"] == "CHAN TAI MAN"
     assert data["selectPersonId"] == "A1234567"
 
 
 def test_the_gshk_secretary_signs_in_preference_to_any_other():
-    """Q-030 -- GSHK signs on the client's behalf."""
+    """Q-030 -- GSHK signs on the client's behalf.
+
+    GSHK is a body corporate, so the derived signer now stops for a capacity
+    (see test_a_derived_body_corporate_secretary_...). That the mapper stops
+    naming GSHK rather than the individual secretary is what proves the
+    preference order still holds."""
     g = graph(
         secretaries=[
             {"person_id": "p1", "is_gshk": False, "is_current": True},
@@ -144,8 +184,11 @@ def test_the_gshk_secretary_signs_in_preference_to_any_other():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    assert nar1_mapper.map_entity(g, year=2026)["selectPersonName"] == \
-        "Get Started HK Limited"
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        nar1_mapper.map_entity(g, year=2026)        # derived, not passed in
+    problem = next(p for p in exc.value.problems if p.startswith("signatory "))
+    assert "Get Started HK Limited" in problem
+    assert "CHAN TAI MAN" not in problem
 
 
 def test_an_explicit_signatory_overrides_the_derived_one():
@@ -180,10 +223,102 @@ def test_an_explicit_body_corporate_signatory_needs_no_selectpersonid():
     Saying so explicitly is the only way to omit the id without a problem."""
     data = nar1_mapper.map_entity(
         graph(), year=2026,
-        signatory={"name": "HOLDCO LIMITED", "capacity": "Company Secretary",
+        signatory={"name": "HOLDCO LIMITED",
+                   "capacity": "Director of the Company Secretary "
+                               "(Body Corporate)",
                    "person_id": None, "date": None, "is_corporate": True},
     )
     assert data["selectPersonName"] == "HOLDCO LIMITED"
+    assert "selectPersonId" not in data
+
+
+def test_the_committed_capacity_vocabularies_are_crs_worksheet():
+    """selectCapacityDesc's remark is "Refer to Capacity sheet for description",
+    and there are TWO sheets. Prove the committed copies are transcriptions —
+    minus each sheet's trailing "for ND4" section, which is another form."""
+    openpyxl = pytest.importorskip("openpyxl")
+    if not WORKSHEET.exists():
+        pytest.skip(f"CR worksheet not present at {WORKSHEET}")
+    wb = openpyxl.load_workbook(WORKSHEET, read_only=True, data_only=True)
+
+    def nar1_rows(sheet):
+        values = [str(r[0]).strip() for r in wb[sheet].iter_rows(values_only=True)
+                  if r and r[0]]
+        values = values[1:]                      # header
+        if "for ND4" in values:                  # ND4-only tail
+            values = values[:values.index("for ND4")]
+        return set(values)
+
+    assert cr_vocabularies.CAPACITY_INDIVIDUAL == nar1_rows("Capacity (Individual)")
+    assert cr_vocabularies.CAPACITY_BODY_CORPORATE == nar1_rows(
+        "Capacity (Body Coporate)")           # CR's own misspelling of the sheet
+    assert len(cr_vocabularies.CAPACITY_INDIVIDUAL) == 5
+    assert len(cr_vocabularies.CAPACITY_BODY_CORPORATE) == 15
+
+
+def test_a_body_corporate_may_not_sign_with_an_individual_capacity():
+    """"Company Secretary" is in the Individual sheet ONLY. A body corporate
+    does not sign — a natural person signs on its behalf, which is what every
+    Body Corporate value spells out and why selectPersonId reads "Empty if sign
+    by Body Corporate". CR's schema gate takes any string up to 500 chars, so
+    this is a wrong value CR ACCEPTS."""
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        nar1_mapper.map_entity(
+            graph(), year=2026,
+            signatory={"name": "Get Started HK Limited",
+                       "capacity": "Company Secretary", "person_id": None,
+                       "date": None, "is_corporate": True},
+        )
+    assert any("Company Secretary" in p and "Body Corporate" in p
+               for p in exc.value.problems)
+
+
+def test_an_individual_may_not_sign_with_a_body_corporate_capacity():
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        nar1_mapper.map_entity(
+            graph(), year=2026,
+            signatory={"name": "CHAN TAI MAN",
+                       "capacity": "Director of the Company Secretary "
+                                   "(Body Corporate)",
+                       "person_id": "A1234567", "date": None},
+        )
+    assert any("Director" in p for p in exc.value.problems)
+
+
+def test_a_capacity_that_is_in_neither_sheet_is_a_mapping_error():
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        nar1_mapper.map_entity(
+            graph(), year=2026,
+            signatory={"name": "CHAN TAI MAN", "capacity": "Chief Executive",
+                       "person_id": "A1234567", "date": None},
+        )
+    problem = next(p for p in exc.value.problems if "Chief Executive" in p)
+    # Name the valid values -- CR's API is open six hours a day and a fault the
+    # user cannot act on costs a round trip.
+    assert "Authorized Representative" in problem
+
+
+def test_a_derived_body_corporate_secretary_refuses_to_invent_a_capacity():
+    """The mapper used to emit "Company Secretary" — an Individual value — for
+    GSHK, a body corporate. Which of CR's 15 Body Corporate values GSHK signs
+    under depends on who at GSHK signs; that is a business question, and the
+    mapper's job is to make the invalid value impossible, not to pick."""
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        nar1_mapper.map_entity(graph(), year=2026)
+    problem = next(p for p in exc.value.problems if "Get Started HK" in p)
+    assert "signatory=" in problem and "Body Corporate" in problem
+
+
+def test_a_body_corporate_signing_with_a_body_corporate_capacity_is_accepted():
+    data = nar1_mapper.map_entity(
+        graph(), year=2026,
+        signatory={"name": "Get Started HK Limited",
+                   "capacity": "Company Secretary of the Company Secretary "
+                               "(Body Corporate)",
+                   "person_id": None, "date": None, "is_corporate": True},
+    )
+    assert data["selectCapacityDesc"] == ("Company Secretary of the Company "
+                                          "Secretary (Body Corporate)")
     assert "selectPersonId" not in data
 
 
@@ -196,7 +331,7 @@ def test_a_return_with_nobody_to_sign_it_is_a_mapping_error():
 
 
 def test_a_private_company_declares_schedule_1_only():
-    data = nar1_mapper.map_entity(graph(), year=2026)
+    data = mapped(graph())
     assert data["shareholderListedInSch1"] == "Y"
     assert data["shareholderListedInSch2"] == "N"
     assert data["shareholderListedInCdrom"] == "N"
@@ -205,7 +340,7 @@ def test_a_private_company_declares_schedule_1_only():
 # ---- addresses -------------------------------------------------------------
 
 def test_maps_a_registered_address_onto_crs_five_address_lines():
-    data = nar1_mapper.map_entity(graph(), year=2026)
+    data = mapped(graph())
     assert data["roAddr"] == {
         "addrLangInd": "E",
         "flatFlrBlk": "Flat A",
@@ -220,24 +355,76 @@ def test_country_becomes_a_three_letter_region_code():
     """ctryRegion is max 4 characters. "Hong Kong" would be truncated silently
     by CR or rejected; HKG is what CR's own example sends."""
     g = graph(registered_address={**ADDR, "country": "Hong Kong"})
-    assert nar1_mapper.map_entity(g, year=2026)["roAddr"]["ctryRegion"] == "HKG"
+    assert mapped(g)["roAddr"]["ctryRegion"] == "HKG"
 
 
-def test_a_blank_country_defaults_to_hong_kong_only_on_the_registered_office():
-    """roAddr is a HK company's registered office, so a blank there is HK. The
-    same helper also builds residential addresses, and there a blank is not.
+def test_a_blank_country_is_hkg_on_the_must_be_hkg_nodes():
+    """Three nodes carry the schema remark "Region. Must be HKG": roAddr,
+    indSec/stdAddress and corpSec/stdAddress. A blank there is Hong Kong, and
+    nowhere else is.
 
     The graph here is the shape nar1_source actually produces: a
     `company_secretaries` row with NO `corporate_address` (the loader never sets
     that key for secretaries — there is no corporate_entity_id on that table),
-    so the GSHK secretary reuses the very same registered-office dict. Being the
-    same address, it has to behave the same way, or every GSHK-managed company
-    with a blank-country registered office raises on the secretary block and the
-    roAddr default is unreachable in production."""
+    so the GSHK secretary reuses the very same registered-office dict."""
     g = graph(registered_address={**ADDR, "country": None})
-    data = nar1_mapper.map_entity(g, year=2026)
+    data = mapped(g)
     assert data["roAddr"]["ctryRegion"] == "HKG"
     assert data["corpSecList"][0]["stdAddress"]["ctryRegion"] == "HKG"
+
+
+def test_the_registered_office_is_hkg_even_when_the_row_says_hong_kong():
+    """Emitted unconditionally, not derived — the schema allows one value."""
+    assert mapped(graph())["roAddr"]["ctryRegion"] == "HKG"
+
+
+def test_a_registered_office_recorded_outside_hong_kong_is_a_problem():
+    """nar1_schema.json, roAddr/ctryRegion: "Region. Must be HKG". A HK company
+    whose registered office is recorded in Vietnam is a data error worth saying
+    out loud — silently overwriting it with HKG files an address nobody holds,
+    and CR accepts that."""
+    g = graph(registered_address={**ADDR, "country": "VN"})
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("HKG" in p and "registered office" in p
+               for p in exc.value.problems)
+
+
+def test_an_individual_secretarys_address_must_be_hkg():
+    """indSecList/indSec/stdAddress/ctryRegion: "Region. Must be HKG" — the same
+    remark as roAddr, and different from every director node."""
+    g = graph(
+        officers=[{"person_id": "p1", "party_type": "individual",
+                   "role": "company_secretary", "is_current": True}],
+        secretaries=[],
+        persons={"p1": person()},
+        addresses={"a1": ADDR, "a2": {**ADDR, "country": "GB"}},
+    )
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("HKG" in p and "CHAN TAI MAN" in p for p in exc.value.problems)
+
+
+def test_a_corporate_secretarys_address_must_be_hkg():
+    """corpSecList/corpSec/stdAddress/ctryRegion: "Region. Must be HKG"."""
+    g = graph(
+        officers=[{"corporate_name": "OFFSHORE SEC LIMITED",
+                   "party_type": "corporate", "role": "company_secretary",
+                   "is_current": True,
+                   "corporate_address": {**CORP_ADDR, "country": "SG"}}],
+        secretaries=[],
+        addresses={"a1": ADDR},
+    )
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("HKG" in p and "OFFSHORE SEC LIMITED" in p
+               for p in exc.value.problems)
+
+
+def test_a_directors_address_is_not_forced_to_hkg():
+    """The guard that the HKG rule does not leak onto the nodes whose remark is
+    "Refer to Country sheet" — most NAR1 directors do live abroad."""
+    assert director_region("VN") == "VNM"
 
 
 def test_a_blank_country_on_a_residential_address_is_a_problem_not_hong_kong():
@@ -250,16 +437,144 @@ def test_a_blank_country_on_a_residential_address_is_a_problem_not_hong_kong():
         addresses={"a1": ADDR, "a2": {**ADDR, "country": None}},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("country" in p and "CHAN TAI MAN" in p for p in exc.value.problems)
 
 
 def test_an_unmapped_country_is_a_mapping_error_not_a_guess():
     """Inventing a code produces a document CR rejects AFTER the fee is taken."""
-    g = graph(registered_address={**ADDR, "country": "Freedonia"})
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(resident_in("Freedonia"))
     assert any("Freedonia" in p for p in exc.value.problems)
+
+
+# ---- CR's Country & Region vocabulary ---------------------------------------
+#
+# The old table keyed on 38 English names. DEV stores ISO alpha-2 and does so in
+# 100% of its 8,027 address rows, so 87% of real addresses could not be filed at
+# all. Every test below uses a shape DEV actually holds, not "Hong Kong".
+
+def resident_in(country):
+    """A graph whose one director lives in `country`.
+
+    A director's stdAddress is the free-country node — CR's remark there is
+    "Refer to Country sheet for Country code". roAddr and both secretary
+    addresses are the "Must be HKG" nodes and cannot carry another country.
+    """
+    return graph(
+        officers=[{"person_id": "p1", "party_type": "individual",
+                   "role": "director", "is_current": True}],
+        persons={"p1": person()},
+        addresses={"a1": ADDR, "a2": {**ADDR, "country": country}},
+    )
+
+
+def director_region(country):
+    return mapped(resident_in(country))["indDirList"][0]["stdAddress"]["ctryRegion"]
+
+
+def test_the_committed_country_table_is_crs_worksheet_row_for_row():
+    """The data file is a transcription of CR's sheet, so prove it IS one.
+
+    openpyxl is already a dev dependency; this never runs in production and
+    never adds one. If the workbook is not checked out, skip rather than pass.
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+    if not WORKSHEET.exists():
+        pytest.skip(f"CR worksheet not present at {WORKSHEET}")
+    ws = openpyxl.load_workbook(WORKSHEET, read_only=True,
+                                data_only=True)["Country & Region"]
+    rows = [r for r in ws.iter_rows(values_only=True) if r and r[0]]
+    theirs = {str(r[0]).strip(): str(r[1]).strip() for r in rows[1:]}
+
+    assert len(theirs) == 250
+    assert cr_vocabularies.CR_COUNTRY_CODES == theirs
+
+
+def test_every_alpha_2_target_is_a_code_cr_actually_carries():
+    """A typo in the alpha-2 table would ship a code CR rejects — after the fee.
+
+    Nothing may resolve to a code outside CR's 250, and no two countries may
+    claim the same one.
+    """
+    targets = cr_vocabularies.ALPHA2_TO_CR_CODE
+    assert set(targets) and set(targets.values()) <= set(
+        cr_vocabularies.CR_COUNTRY_CODES)
+    assert len(set(targets.values())) == len(targets)
+    for alias_target in cr_vocabularies._ALIASES.values():
+        assert alias_target in cr_vocabularies.CR_COUNTRY_CODES
+
+
+def test_the_crown_dependencies_use_crs_codes_not_isos():
+    """CR invented GBR1/GBR2/GBR3 — which is why ctryRegion is max_length 4.
+    pycountry and friends emit GGY/JEY/IMN and CR rejects all three."""
+    assert director_region("GG") == "GBR1"
+    assert director_region("JE") == "GBR2"
+    assert director_region("IM") == "GBR3"
+    assert cr_vocabularies.NON_ISO_COUNTRY_CODES == {"GBR1", "GBR2", "GBR3"}
+
+
+@pytest.mark.parametrize("stored,code", [
+    ("VN", "VNM"),   # 661 DEV rows
+    ("AE", "ARE"),   # 532
+    ("NL", "NLD"),   # 448
+    ("GB", "GBR"),   # 412
+    ("TH", "THA"),   # 379
+    ("PH", "PHL"),   # 334
+    ("IN", "IND"),   # 242
+    ("CN", "CHN"),   # 235
+    ("IT", "ITA"),   # 231
+    ("AU", "AUS"),   # 221
+    ("DE", "DEU"),   # 212
+    ("HK", "HKG"),   # 819
+    ("CH", "CHE"),   # Switzerland, NOT China — the classic alpha-2 trap
+])
+def test_an_iso_alpha_2_country_resolves(stored, code):
+    """Every alpha-2 DEV stores in volume, pinned to the code CR expects.
+
+    _build() already refuses a duplicated alpha-2, so a single mistyped cell
+    cannot load; and every real ISO alpha-2 is claimed by some row, so a typo
+    can only land on a string no address record contains. The one hole those
+    two facts leave is a SWAP of two rows' alpha-2 columns, which is internally
+    consistent and would file Sweden as Spain. These cases close that hole for
+    the rows that actually carry production volume.
+    """
+    assert director_region(stored) == code
+
+
+@pytest.mark.parametrize("stored", ["HKG", "VNM", "GBR1", "hkg"])
+def test_a_value_that_is_already_a_cr_code_passes_through(stored):
+    assert director_region(stored) == stored.upper()
+
+
+@pytest.mark.parametrize("stored", ["VIET NAM", "Vietnam", "viet nam",
+                                    " Viet  Nam "])
+def test_crs_own_english_description_resolves_however_it_is_spaced(stored):
+    """CR writes "VIET NAM"; G-FlowDesk writes "Vietnam". Both sides normalise."""
+    assert director_region(stored) == "VNM"
+
+
+@pytest.mark.parametrize("stored,code", [
+    ("Hong Kong", "HKG"), ("hongkong", "HKG"), ("uk", "GBR"),
+    ("britain", "GBR"), ("usa", "USA"), ("us", "USA"), ("bvi", "VGB"),
+    ("prc", "CHN"), ("macau", "MAC"), ("macao", "MAC"),
+    ("south korea", "KOR"), ("korea", "KOR"),
+    ("united states of america", "USA"), ("new zealand", "NZL"),
+])
+def test_the_hand_written_aliases_still_resolve(stored, code):
+    """Older rows may still carry these, so replacing the table must not start
+    refusing values that used to map."""
+    assert director_region(stored) == code
+
+
+@pytest.mark.parametrize("stored", ["Freedonia", "GB-ENG", "TW-CH", "XX"])
+def test_a_country_cr_has_no_code_for_is_still_a_problem(stored):
+    """Fail-loud is the whole point: GB-ENG and TW-CH are real DEV values and
+    neither is a country code. Guessing GBR/TWN would file a value CR accepts
+    off data nobody validated."""
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(resident_in(stored))
+    assert any(stored in p for p in exc.value.problems)
 
 
 # ---- officers --------------------------------------------------------------
@@ -271,7 +586,7 @@ def test_an_individual_director_lands_in_inddirlist():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    data = nar1_mapper.map_entity(g, year=2026)
+    data = mapped(g)
     assert len(data["indDirList"]) == 1
     d = data["indDirList"][0]
     assert d["indvEngSname"] == "CHAN"
@@ -287,7 +602,7 @@ def test_a_corporate_director_lands_in_corpdirlist():
                    "corporate_address": CORP_ADDR}],
         addresses={"a1": ADDR},
     )
-    data = nar1_mapper.map_entity(g, year=2026)
+    data = mapped(g)
     assert data["corpDirList"][0]["corpEngName"] == "HOLDCO LIMITED"
     assert "indDirList" not in data
 
@@ -302,7 +617,7 @@ def test_a_corporate_officer_files_its_own_address_not_the_filers():
                    "corporate_address": CORP_ADDR}],
         addresses={"a1": ADDR},
     )
-    addr = nar1_mapper.map_entity(g, year=2026)["corpDirList"][0]["stdAddress"]
+    addr = mapped(g)["corpDirList"][0]["stdAddress"]
     assert addr["bldg"] == "Corp Tower"
     assert addr["dstCtyStatePostal"] == "WAN CHAI"
 
@@ -319,7 +634,7 @@ def test_a_corporate_officers_br_number_and_chinese_name_are_filed():
                    "corporate_name_zh": "控股有限公司"}],
         addresses={"a1": ADDR},
     )
-    corp = nar1_mapper.map_entity(g, year=2026)["corpDirList"][0]
+    corp = mapped(g)["corpDirList"][0]
     assert corp["corpBrNo"] == "00000002"
     assert corp["corpChiName"] == "控股有限公司"
 
@@ -331,7 +646,7 @@ def test_a_corporate_officer_with_no_address_is_a_mapping_error():
         addresses={"a1": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("HOLDCO LIMITED" in p for p in exc.value.problems)
 
 
@@ -342,7 +657,7 @@ def test_a_reserve_director_lands_in_resdirlist():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    data = nar1_mapper.map_entity(g, year=2026)
+    data = mapped(g)
     assert len(data["resDirList"]) == 1
     assert "indDirList" not in data
 
@@ -356,7 +671,7 @@ def test_a_resigned_officer_is_excluded():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    assert "indDirList" not in nar1_mapper.map_entity(g, year=2026)
+    assert "indDirList" not in mapped(g)
 
 
 def test_the_gshk_secretary_is_a_corporate_secretary_with_its_tcsp_number():
@@ -365,7 +680,7 @@ def test_the_gshk_secretary_is_a_corporate_secretary_with_its_tcsp_number():
                       "tcsp_number": "TC000807", "is_current": True}],
         addresses={"a1": ADDR},
     )
-    sec = nar1_mapper.map_entity(g, year=2026)["corpSecList"][0]
+    sec = mapped(g)["corpSecList"][0]
     assert sec["corpEngName"] == "Get Started HK Limited"
     assert sec["corpTcspNo"] == "TC000807"
 
@@ -377,7 +692,7 @@ def test_a_gshk_corporate_secretary_falls_back_to_the_registered_office():
     secretary the filing company's registered office IS GSHK's own address, by
     construction — GSHK provides it. That is the ONE place the filer's address
     may stand in for a corporate party's, and it must not widen."""
-    sec = nar1_mapper.map_entity(graph(), year=2026)["corpSecList"][0]
+    sec = mapped(graph())["corpSecList"][0]
     assert sec["corpEngName"] == "Get Started HK Limited"
     assert sec["stdAddress"]["bldg"] == "Test Tower"       # the filer's RO
 
@@ -390,7 +705,7 @@ def test_a_non_gshk_corporate_secretary_with_no_address_is_a_mapping_error():
                             "is_gshk": False, "is_current": True}],
               addresses={"a1": ADDR})
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("OTHER SEC LIMITED" in p and "no address" in p
                for p in exc.value.problems)
 
@@ -405,12 +720,10 @@ def test_a_secretary_recorded_in_both_tables_is_emitted_once():
         secretaries=[{"person_id": "p1", "is_gshk": False, "is_current": True}],
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
-        # This secretary is also the signatory, and a natural person who signs
-        # must carry an identity number (selectPersonId).
         identity_documents={"p1": [{"id_type": "hkid", "id_number": "A123456(7)",
                                     "is_primary": True}]},
     )
-    assert len(nar1_mapper.map_entity(g, year=2026)["indSecList"]) == 1
+    assert len(mapped(g)["indSecList"]) == 1
 
 
 def test_a_corporate_secretary_in_both_tables_is_emitted_once_with_its_tcsp():
@@ -424,7 +737,7 @@ def test_a_corporate_secretary_in_both_tables_is_emitted_once_with_its_tcsp():
                       "tcsp_number": "TC000807", "is_current": True}],
         addresses={"a1": ADDR},
     )
-    secs = nar1_mapper.map_entity(g, year=2026)["corpSecList"]
+    secs = mapped(g)["corpSecList"]
     assert len(secs) == 1
     assert secs[0]["corpTcspNo"] == "TC000807"
 
@@ -440,7 +753,7 @@ def test_hkid_is_sent_without_its_bracketed_check_digit():
         identity_documents={"p1": [{"id_type": "hkid", "id_number": "A123456(7)",
                                     "is_primary": True}]},
     )
-    assert nar1_mapper.map_entity(g, year=2026)["indDirList"][0]["indvHkidNo"] == "A1234567"
+    assert mapped(g)["indDirList"][0]["indvHkidNo"] == "A1234567"
 
 
 def test_a_china_id_is_a_problem_not_a_director_filed_without_any_id():
@@ -458,7 +771,7 @@ def test_a_china_id_is_a_problem_not_a_director_filed_without_any_id():
                                     "is_primary": True}]},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("china_id" in p and "CHAN TAI MAN" in p for p in exc.value.problems)
 
 
@@ -475,7 +788,7 @@ def test_a_china_id_alongside_a_passport_files_the_passport_quietly():
              "issuing_country": "China"},
         ]},
     )
-    assert nar1_mapper.map_entity(g, year=2026)["indDirList"][0]["indvPptNo"] == "E12345678"
+    assert mapped(g)["indDirList"][0]["indvPptNo"] == "E12345678"
 
 
 def test_a_passport_row_with_no_number_does_not_crash_the_mapper():
@@ -492,7 +805,7 @@ def test_a_passport_row_with_no_number_does_not_crash_the_mapper():
         identity_documents={"p1": [{"id_type": "passport",
                                     "issuing_country": "Singapore"}]},
     )
-    d = nar1_mapper.map_entity(g, year=2026)["indDirList"][0]
+    d = mapped(g)["indDirList"][0]
     assert "indvPptNo" not in d
     # And not the issuing country on its own — that declares the issuer of a
     # passport the return never names.
@@ -511,7 +824,7 @@ def test_an_over_length_hkid_is_caught_in_the_mapper():
                                     "is_primary": True}]},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("HKID" in p for p in exc.value.problems)
 
 
@@ -525,7 +838,7 @@ def test_a_passport_holder_gets_a_number_and_an_issuing_country():
                                     "issuing_country": "Singapore",
                                     "is_primary": True}]},
     )
-    d = nar1_mapper.map_entity(g, year=2026)["indDirList"][0]
+    d = mapped(g)["indDirList"][0]
     assert d["indvPptNo"] == "X1234567"
     assert d["indvPptIssCtry"] == "SGP"
     assert "indvHkidNo" not in d
@@ -548,7 +861,7 @@ def test_each_share_class_becomes_one_sharecapital_entry():
         {"share_class_id": "sc2", "person_id": "p1", "party_type": "individual",
          "shares_held": 2000, "is_current": True},
     ], persons={"p1": person()}, addresses={"a1": ADDR, "a2": ADDR})
-    caps = nar1_mapper.map_entity(g, year=2026)["shareCapitals"]
+    caps = mapped(g)["shareCapitals"]
     assert len(caps) == 2
     assert caps[0] == {
         "clsOfShares": "Ordinary", "currency": "HKD",
@@ -571,7 +884,7 @@ def test_schedule_1_groups_shareholders_under_their_share_class():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    share = nar1_mapper.map_entity(g, year=2026)["schedule1"]["shares"][0]
+    share = mapped(g)["schedule1"]["shares"][0]
     assert share["clsOfShares"] == "Ordinary"
     grps = share["shareHolderGrps"]
     assert [g_["sharesAlloted"] for g_ in grps] == [100, 900]
@@ -591,7 +904,7 @@ def test_shtype_is_1_for_a_sole_individual_shareholder():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    grp = nar1_mapper.map_entity(g, year=2026)["schedule1"]["shares"][0]["shareHolderGrps"][0]
+    grp = mapped(g)["schedule1"]["shares"][0]["shareHolderGrps"][0]
     assert grp["shType"] == "1"
 
 
@@ -608,7 +921,7 @@ def test_shtype_is_1_for_a_sole_corporate_shareholder():
                         "is_current": True, "corporate_address": ADDR}],
         addresses={"a1": ADDR},
     )
-    grp = nar1_mapper.map_entity(g, year=2026)["schedule1"]["shares"][0]["shareHolderGrps"][0]
+    grp = mapped(g)["schedule1"]["shares"][0]["shareHolderGrps"][0]
     assert grp["shType"] == "1"
     assert grp["allotteeRec"][0]["allotteeType"] == "C"
 
@@ -622,7 +935,7 @@ def test_a_corporate_shareholder_files_its_own_address_not_the_filers():
                         "is_current": True, "corporate_address": CORP_ADDR}],
         addresses={"a1": ADDR},
     )
-    grp = nar1_mapper.map_entity(g, year=2026)["schedule1"]["shares"][0]["shareHolderGrps"][0]
+    grp = mapped(g)["schedule1"]["shares"][0]["shareHolderGrps"][0]
     assert grp["allotteeRec"][0]["allotteeAddr"]["bldg"] == "Corp Tower"
 
 
@@ -636,7 +949,7 @@ def test_a_corporate_shareholder_with_no_address_is_a_mapping_error():
         addresses={"a1": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("HOLDCO LIMITED" in p for p in exc.value.problems)
 
 
@@ -653,7 +966,7 @@ def test_shtype_ignores_amount_paid_entirely():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    grp = nar1_mapper.map_entity(g, year=2026)["schedule1"]["shares"][0]["shareHolderGrps"][0]
+    grp = mapped(g)["schedule1"]["shares"][0]["shareHolderGrps"][0]
     assert grp["shType"] == "1"
 
 
@@ -674,7 +987,7 @@ def test_a_holding_whose_share_class_was_not_loaded_is_a_mapping_error():
         addresses={"a1": ADDR, "a2": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("sc9" in p for p in exc.value.problems)
 
 
@@ -690,7 +1003,7 @@ def test_shares_allotted_short_of_shares_issued_is_a_mapping_error():
         addresses={"a1": ADDR, "a2": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("900" in p and "1000" in p for p in exc.value.problems)
 
 
@@ -709,7 +1022,7 @@ def test_a_joint_block_counts_once_against_shares_issued():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    assert nar1_mapper.map_entity(g, year=2026)["schedule1"]["shares"][0][
+    assert mapped(g)["schedule1"]["shares"][0][
         "shareHolderGrps"][0]["sharesAlloted"] == 2000
 
 
@@ -722,7 +1035,7 @@ def test_a_fractional_share_count_is_a_mapping_error_not_a_truncation():
         addresses={"a1": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("1000.5000" in p for p in exc.value.problems)
 
 
@@ -741,7 +1054,7 @@ def test_an_unparseable_holding_size_is_reported_once_not_twice():
         addresses={"a1": ADDR, "a2": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert len([p for p in exc.value.problems if "is not a number" in p]) == 1
 
 
@@ -757,7 +1070,7 @@ def test_a_share_class_with_no_current_holder_at_all_is_still_reconciled():
         addresses={"a1": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("accounts for 0" in p and "1000 issued" in p
                for p in exc.value.problems)
 
@@ -777,7 +1090,7 @@ def test_a_former_shareholding_is_excluded():
         addresses={"a1": ADDR, "a2": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("accounts for 0" in p and "1000 issued" in p
                for p in exc.value.problems)
 
@@ -810,7 +1123,7 @@ def test_the_mapped_dict_builds_without_a_validation_error():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    data = nar1_mapper.map_entity(g, year=2026)
+    data = mapped(g)
     assert nar1.validate(data) == []
     xml = nar1.build_nar1_xml(data)
     assert "<cr:brNo>00000001</cr:brNo>" in xml
@@ -857,7 +1170,7 @@ def test_round_trip_cardinality_matches_crs_own_example():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    ours = _cardinality(nar1.build_nar1_xml(nar1_mapper.map_entity(g, year=2020)))
+    ours = _cardinality(nar1.build_nar1_xml(mapped(g, year=2020)))
     theirs = _cardinality(SAMPLE.read_text(encoding="utf8"))
 
     # `allottee` is in this loop. It was computed and NOT asserted before, and
@@ -886,7 +1199,7 @@ def test_joint_holders_are_one_group_of_shtype_2_with_one_allottee_each():
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
     )
-    grps = nar1_mapper.map_entity(g, year=2026)["schedule1"]["shares"][0]["shareHolderGrps"]
+    grps = mapped(g)["schedule1"]["shares"][0]["shareHolderGrps"]
     assert len(grps) == 1
     assert grps[0]["shType"] == "2"
     assert grps[0]["sharesAlloted"] == 2000
@@ -910,7 +1223,7 @@ def test_joint_holders_disagreeing_on_the_block_size_is_a_mapping_error():
         addresses={"a1": ADDR, "a2": ADDR},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
-        nar1_mapper.map_entity(g, year=2026)
+        mapped(g)
     assert any("joint" in p for p in exc.value.problems)
 
 
