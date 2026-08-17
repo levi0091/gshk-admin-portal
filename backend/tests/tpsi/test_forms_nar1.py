@@ -15,9 +15,23 @@ BASE = {
     "yearAnnualReturn": "2020",
 }
 
+#: CR's shipped examples, committed under tests/fixtures — see that directory's
+#: README. They used to be globbed out of the .gitignore'd docs/ folder, so in
+#: CI both parametrized round-trip tests below collected zero cases and reported
+#: green without ever running.
 _EXAMPLE_DIR = (
-    pathlib.Path(__file__).resolve().parents[3] / "docs" / "Web Form Example" / "validateForm"
+    pathlib.Path(__file__).resolve().parents[1]
+    / "fixtures" / "cr-examples" / "validateForm"
 )
+_NAR1_EXAMPLES = sorted(_EXAMPLE_DIR.glob("validate_NAR1*.xml"))
+
+#: Hard failure, never a skip: a fixture that has gone missing must break the
+#: build, because an empty parametrize is exactly the failure mode this guards.
+if len(_NAR1_EXAMPLES) != 2:
+    raise RuntimeError(
+        f"CR NAR1 examples missing from {_EXAMPLE_DIR}: expected 2, found "
+        f"{[p.name for p in _NAR1_EXAMPLES]}"
+    )
 
 
 def test_scalars_are_cr_prefixed():
@@ -193,9 +207,7 @@ def _to_dict(el):
     return out
 
 
-@pytest.mark.parametrize(
-    "path", sorted(_EXAMPLE_DIR.glob("validate_NAR1*.xml")), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("path", _NAR1_EXAMPLES, ids=lambda p: p.name)
 def test_round_trips_crs_own_nar1_instance(path):
     """The decisive test: parse CR's real NAR1 into the builder's input shape,
     rebuild it, and confirm every element carrying a value comes back.
@@ -234,9 +246,7 @@ def test_round_trips_crs_own_nar1_instance(path):
     assert named_with_values(form_model) == named_with_values(built)
 
 
-@pytest.mark.parametrize(
-    "path", sorted(_EXAMPLE_DIR.glob("validate_NAR1*.xml")), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("path", _NAR1_EXAMPLES, ids=lambda p: p.name)
 def test_repeating_lists_keep_their_cardinality(path):
     """Element *names* matching is not enough — a builder that emitted one
     `indSec` where CR sent three would still pass a name-set comparison."""

@@ -97,7 +97,8 @@ def test_encryption_key_is_rsa_of_rand_and_decrypts_back(pem):
 
 def test_pin_sign_block_matches_crs_shipped_example_exactly(pem):
     """Three cr:-prefixed children, no id attribute, no AESGCMEncryptionKey —
-    the shape in docs/Web Form Example/pinSigning/verifyPinSigning_NAR1.xml."""
+    the shape in
+    tests/fixtures/cr-examples/pinSigning/verifyPinSigning_NAR1.xml."""
     _, public_pem = pem
     xml = crypto.build_pin_sign(
         EFORM, "USERID", "pw", public_pem, rand=RAND, gcm_key=GCM_KEY

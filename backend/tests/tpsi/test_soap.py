@@ -46,7 +46,8 @@ BALANCE_RESPONSE = b"""<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soa
 
 
 def test_request_envelope_is_soap_11_with_no_encoding_style():
-    """Verified against docs/Web Form Example/submission/submit_NAR1.xml."""
+    """Verified against
+    tests/fixtures/cr-examples/submission/submit_NAR1.xml."""
     out = soap.build_envelope("submitForm", "<cr:submission/>").decode()
     assert 'xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"' in out
     assert "encodingStyle" not in out

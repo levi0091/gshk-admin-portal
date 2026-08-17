@@ -7,10 +7,23 @@ import pytest
 
 from services.tpsi.forms import spec
 
-_EXAMPLES = sorted(
-    (pathlib.Path(__file__).resolve().parents[3] / "docs" / "Web Form Example" / "validateForm")
-    .glob("validate_NAR1*.xml")
+#: CR's shipped examples, committed under tests/fixtures — see that directory's
+#: README. They used to be globbed out of the .gitignore'd docs/ folder, so in
+#: CI the glob matched nothing, the parametrize below collected zero cases and
+#: the test silently ceased to exist while the suite still reported green.
+_EXAMPLE_DIR = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "fixtures" / "cr-examples" / "validateForm"
 )
+_EXAMPLES = sorted(_EXAMPLE_DIR.glob("validate_NAR1*.xml"))
+
+#: Hard failure, never a skip: a fixture that has gone missing must break the
+#: build, because an empty parametrize is exactly the failure mode this guards.
+if len(_EXAMPLES) != 2:
+    raise RuntimeError(
+        f"CR NAR1 examples missing from {_EXAMPLE_DIR}: expected 2, found "
+        f"{[p.name for p in _EXAMPLES]}"
+    )
 
 
 def test_root_is_submission_with_eform_beneath():

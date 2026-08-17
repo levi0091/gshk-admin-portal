@@ -16,18 +16,28 @@ from services.tpsi.forms import cr_vocabularies, nar1, nar1_mapper
 #: module under test, so the test pins the offset rather than echoing it.
 HKT = timezone(timedelta(hours=8))
 
+#: CR's shipped examples, committed under tests/fixtures — see that directory's
+#: README. They used to be read out of the .gitignore'd docs/ folder, so on a
+#: clean checkout the round-trip test below raised FileNotFoundError and the two
+#: worksheet transcription tests skipped, i.e. never ran in CI at all.
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cr-examples"
+
 SAMPLE = (
-    Path(__file__).resolve().parents[3]
-    / "docs" / "Web Form Example" / "validateForm"
+    _FIXTURES / "validateForm"
     / "validate_NAR1(Private Company, Schedule 1).xml"
 )
 
 #: CR's own vocabularies, for the tests that check the committed copy of them.
-WORKSHEET = (
-    Path(__file__).resolve().parents[3]
-    / "docs" / "Web Form Example"
-    / "Worksheet in TPSI API Interface v1.0.14.xlsx"
-)
+WORKSHEET = _FIXTURES / "Worksheet in TPSI API Interface v1.0.14.xlsx"
+
+#: Hard failure, never a skip. These fixtures are committed, so absence means a
+#: broken checkout — and a skipped transcription check is what let the country
+#: and capacity tables go unverified on every CI run before this.
+_MISSING = [p for p in (SAMPLE, WORKSHEET) if not p.exists()]
+if _MISSING:
+    raise RuntimeError(
+        "CR fixtures missing: " + ", ".join(str(p) for p in _MISSING)
+    )
 
 #: The base fixture's secretary is GSHK — a body corporate — and the mapper
 #: refuses to invent a Body Corporate capacity for it, because which of CR's 15
@@ -236,9 +246,8 @@ def test_the_committed_capacity_vocabularies_are_crs_worksheet():
     """selectCapacityDesc's remark is "Refer to Capacity sheet for description",
     and there are TWO sheets. Prove the committed copies are transcriptions —
     minus each sheet's trailing "for ND4" section, which is another form."""
-    openpyxl = pytest.importorskip("openpyxl")
-    if not WORKSHEET.exists():
-        pytest.skip(f"CR worksheet not present at {WORKSHEET}")
+    import openpyxl
+
     wb = openpyxl.load_workbook(WORKSHEET, read_only=True, data_only=True)
 
     def nar1_rows(sheet):
@@ -473,15 +482,66 @@ def director_region(country):
     return mapped(resident_in(country))["indDirList"][0]["stdAddress"]["ctryRegion"]
 
 
+#: (CR code, ISO alpha-2) for every row whose two columns do NOT start with the
+#: same letter. Enumerated from the committed table and checked to be exhaustive
+#: by the test below, so a row leaving or joining this set is a failure either
+#: way. Ten rows, and each is a real historical naming divergence:
+_FIRST_LETTER_EXCEPTIONS = {
+    ("ATF", "TF"),   # FRENCH SOUTHERN TERRITORIES / Terres australes françaises
+    ("COM", "KM"),   # COMOROS / Komori
+    ("CYM", "KY"),   # CAYMAN ISLANDS
+    ("GBR2", "JE"),  # JERSEY      — CR's own code. ISO would say JEY
+    ("GBR3", "IM"),  # ISLE OF MAN — CR's own code. ISO would say IMN
+    ("MYT", "YT"),   # MAYOTTE
+    ("PRK", "KP"),   # DEMOCRATIC PEOPLE'S REPUBLIC OF KOREA / Korea, North
+    ("SGS", "GS"),   # SOUTH GEORGIA AND THE SOUTH SANDWICH ISLANDS
+    ("SPM", "PM"),   # SAINT PIERRE AND MIQUELON
+    ("SRB", "RS"),   # SERBIA / Republika Srbija
+}
+# GBR1/GG (GUERNSEY) is deliberately absent — both columns start with G, so it
+# obeys the rule despite being the third of CR's invented codes.
+
+
+def test_the_country_table_still_carries_all_250_rows():
+    """Unconditional row count — no workbook needed, so it holds in every
+    environment.
+
+    _build() refuses duplicate codes, duplicate alpha-2s and colliding
+    descriptions, but it counts nothing. A table truncated by a bad merge or a
+    half-pasted block is internally consistent and passes every other test in
+    this file, then silently starts refusing countries at filing time.
+    """
+    assert len(cr_vocabularies._COUNTRY_ROWS) == 250
+    assert len(cr_vocabularies.CR_COUNTRY_CODES) == 250
+    assert len(cr_vocabularies.ALPHA2_TO_CR_CODE) == 250
+
+
+def test_every_alpha_2_shares_a_first_letter_with_its_cr_code_bar_ten():
+    """A structural rule over the whole table, not a sample of it.
+
+    The 13 enumerated alpha-2 cases above catch an IN/IT-style swap, but only
+    for the rows they name. This catches a swap of ANY two rows' alpha-2 columns
+    whose first letters differ — the internally-consistent corruption _build()
+    cannot see, which would file Sweden as Spain. Unconditional: it needs
+    neither the workbook nor openpyxl.
+    """
+    off = {
+        (code, alpha2)
+        for code, _english, alpha2 in cr_vocabularies._COUNTRY_ROWS
+        if alpha2[0] != code[0]
+    }
+    assert off == _FIRST_LETTER_EXCEPTIONS
+
+
 def test_the_committed_country_table_is_crs_worksheet_row_for_row():
     """The data file is a transcription of CR's sheet, so prove it IS one.
 
-    openpyxl is already a dev dependency; this never runs in production and
-    never adds one. If the workbook is not checked out, skip rather than pass.
+    openpyxl is already a dev dependency and the workbook is committed under
+    tests/fixtures, so this runs unconditionally — including in CI, which is the
+    only place a transcription typo would otherwise reach a chargeable filing.
     """
-    openpyxl = pytest.importorskip("openpyxl")
-    if not WORKSHEET.exists():
-        pytest.skip(f"CR worksheet not present at {WORKSHEET}")
+    import openpyxl
+
     ws = openpyxl.load_workbook(WORKSHEET, read_only=True,
                                 data_only=True)["Country & Region"]
     rows = [r for r in ws.iter_rows(values_only=True) if r and r[0]]
