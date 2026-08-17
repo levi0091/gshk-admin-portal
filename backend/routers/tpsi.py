@@ -531,7 +531,15 @@ async def get_filing(filing_id: str, user=Depends(require_permission("tpsi", "re
     }
 
 
-@router.get("/filings/{filing_id}/pdf")
+@router.get(
+    "/filings/{filing_id}/pdf",
+    # Without these the generated schema advertises application/json for the
+    # one binary route in this router, and every consumer that reads it --
+    # client codegen, the docs page -- is told the wrong thing.
+    response_class=Response,
+    responses={200: {"content": {"application/pdf": {}},
+                     "description": "The rendered NAR1 preview."}},
+)
 async def filing_pdf(
     filing_id: str, user=Depends(require_permission("tpsi", "read"))
 ):
@@ -548,12 +556,28 @@ async def filing_pdf(
 
     409 before validation, not 404: the filing exists, it simply has no
     CR-validated payload yet, and the caller's fix is to validate -- not to look
-    somewhere else.
+    somewhere else. Also 409 for any form code other than NAR1: there is one
+    renderer and it is a NAR1 renderer.
     """
     try:
         row = filings.get_filing(filing_id)
     except Exception as exc:
         raise _handle(exc)
+
+    # Checked BEFORE the validated_xml gate: the form code never changes, so
+    # "validate it first" would send the caller round a loop that still ends
+    # here. POST /filings accepts every code in FORM_FEES, and nar1_pdf renders
+    # NAR1 only -- fed an Nd2a it would not fail, it would emit a document
+    # headed "Form NAR1 - Annual Return" carrying the few tags whose names
+    # coincide and dropping every ND2A particular. A missing code is refused
+    # too: assuming NAR1 is the same mistake, made silently.
+    form_code = (row.get("form_code") or "").strip()
+    if form_code.lower() != "nar1":
+        raise HTTPException(
+            409,
+            f"this filing is a {form_code or '(no form code recorded)'} form; "
+            "only NAR1 has a renderer, so there is no preview to show",
+        )
 
     if not row.get("validated_xml"):
         raise HTTPException(
@@ -566,7 +590,15 @@ async def filing_pdf(
         # validated_xml, never request_xml and never the live profile: the admin
         # double-confirms an irreversible, chargeable submit off this document,
         # so it has to be the one CR is actually holding.
-        pdf = nar1_pdf.render(row["validated_xml"])
+        # validated_at and stage go into the footer. A filing CR rejected at a
+        # LATER validation keeps its earlier validated_xml (filings.validate
+        # only sets stage=validation_failed), so the snapshot can outlive its
+        # own validation and the page must say when it was taken.
+        pdf = nar1_pdf.render(
+            row["validated_xml"],
+            validated_at=row.get("validated_at"),
+            stage=row.get("stage"),
+        )
     except ValueError as exc:
         # A stored payload CR accepted but we cannot parse is a data problem,
         # not an unhandled 500 that reads like a crash in the renderer.

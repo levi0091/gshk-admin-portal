@@ -979,10 +979,46 @@ def test_pdf_is_refused_until_the_filing_is_validated(client):
     is holding. 409 not 404: the filing exists, it just is not validated yet."""
     with _super(), \
          patch("routers.tpsi.filings.get_filing",
-               return_value={"stage": "draft", "validated_xml": None}):
+               return_value={"stage": "draft", "form_code": "Nar1",
+                             "validated_xml": None}):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 409
     assert "validated" in response.json()["detail"].lower()
+
+
+def test_pdf_refuses_a_form_code_it_has_no_renderer_for(client):
+    """POST /tpsi/filings accepts every code in FORM_FEES — Nnc1, Nd2a, Nd4,
+    Nsc1 and the rest. This renderer knows NAR1 and only NAR1.
+
+    Rendering an Nd2a through it does not fail loudly: it produces a document
+    headed "Form NAR1 — Annual Return" carrying the handful of tags whose names
+    happen to coincide (brNo, the addresses) and silently dropping every ND2A
+    particular. The admin then approves that before a chargeable, irreversible
+    submit. A refusal naming the actual code is the only safe answer.
+    """
+    row = {"stage": "validated", "form_code": "Nd2a",
+           "validated_xml": "<x/>", "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 409
+    assert "Nd2a" in response.json()["detail"]
+    spy.assert_not_called()
+
+
+def test_pdf_refuses_a_filing_whose_form_code_is_missing(client):
+    """Absence is not a licence to assume NAR1 — that assumption is exactly the
+    one that mislabels another form as an annual return."""
+    row = {"stage": "validated", "validated_xml": "<x/>", "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 409
+    spy.assert_not_called()
 
 
 def test_pdf_returns_pdf_bytes_and_audits_generation(client):
@@ -991,7 +1027,8 @@ def test_pdf_returns_pdf_bytes_and_audits_generation(client):
     async def fake_log(**kwargs):
         logged.update(kwargs)
 
-    row = {"stage": "validated", "validated_xml": "<x/>", "nar1_case_id": "c1"}
+    row = {"stage": "validated", "form_code": "Nar1", "validated_xml": "<x/>",
+           "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
          patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-1.4 fake"), \
@@ -1010,6 +1047,7 @@ def test_pdf_renders_the_validated_snapshot_not_the_request_xml(client):
     and picking the wrong one is a one-word mistake nothing else would catch."""
     row = {
         "stage": "validated",
+        "form_code": "Nar1",
         "request_xml": "<the-draft-we-built/>",
         "validated_xml": "<what-cr-actually-holds/>",
         "nar1_case_id": "c1",
@@ -1041,8 +1079,8 @@ def test_pdf_drives_the_real_renderer_not_just_a_mock(client):
         / "validateForm" / "validate_NAR1(Private Company, Schedule 1).xml"
     ).read_bytes()
 
-    row = {"stage": "validated", "validated_xml": extract_submission(sample),
-           "nar1_case_id": "c1"}
+    row = {"stage": "validated", "form_code": "Nar1",
+           "validated_xml": extract_submission(sample), "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
          patch("routers.tpsi.log_event", new=AsyncMock()):
@@ -1053,16 +1091,58 @@ def test_pdf_drives_the_real_renderer_not_just_a_mock(client):
     assert len(response.content) > 2000
 
 
+def test_pdf_stamps_the_snapshot_age_onto_the_document(client):
+    """`filings.validate` leaves `validated_xml` in place when CR rejects a
+    re-validation, so a filing at validation_failed still has a renderable —
+    but superseded — snapshot. The row knows both facts; the document has to
+    carry them, or the reviewer has no way to tell a fresh preview from a stale
+    one."""
+    row = {"stage": "validation_failed", "form_code": "Nar1",
+           "validated_xml": "<x/>", "validated_at": "2026-08-16T09:30:00+00:00",
+           "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 200
+    assert spy.call_args.kwargs["validated_at"] == "2026-08-16T09:30:00+00:00"
+    assert spy.call_args.kwargs["stage"] == "validation_failed"
+
+
 def test_pdf_is_a_clean_422_when_the_stored_payload_has_no_form_model(client):
     """A stored payload CR accepted but we cannot parse is a data problem, not
     an unhandled 500 that reads like a crash in the renderer."""
-    row = {"stage": "validated", "validated_xml": "<soap:Envelope/>",
-           "nar1_case_id": "c1"}
+    row = {"stage": "validated", "form_code": "Nar1",
+           "validated_xml": "<soap:Envelope/>", "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 422
+
+
+def test_pdf_without_a_token_is_rejected_before_the_db_is_touched(client):
+    """The 401 half of CLAUDE.md's "401 and 403 on every route".
+
+    Nothing auth-related is mocked — the real HTTPBearer and the real
+    _resolve_user run, as in test_endpoints_require_authentication — and
+    get_filing is asserted un-called, so this also pins that an anonymous
+    request never reaches the database.
+    """
+    with patch("routers.tpsi.filings.get_filing") as spy:
+        response = client.get("/tpsi/filings/f1/pdf")
+    assert response.status_code in (401, 403)
+    spy.assert_not_called()
+
+
+def test_the_pdf_route_advertises_pdf_not_json_in_the_openapi_schema(client):
+    """The route returns application/pdf and the generated schema said
+    application/json, so every consumer reading it — client codegen, the API
+    docs page — was told the wrong thing about the only binary endpoint here."""
+    responses = client.get("/openapi.json").json()[
+        "paths"]["/tpsi/filings/{filing_id}/pdf"]["get"]["responses"]
+    assert list(responses["200"]["content"]) == ["application/pdf"]
 
 
 def test_pdf_requires_tpsi_read(client):
@@ -1090,7 +1170,8 @@ def test_pdf_survives_an_audit_failure(client):
     patching `routers.tpsi.log_event` itself would replace the very try/except
     that provides the guarantee and prove nothing.
     """
-    row = {"stage": "validated", "validated_xml": "<x/>", "nar1_case_id": "c1"}
+    row = {"stage": "validated", "form_code": "Nar1", "validated_xml": "<x/>",
+           "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
          patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-1.4 fake"), \

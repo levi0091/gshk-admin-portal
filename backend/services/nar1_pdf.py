@@ -19,6 +19,7 @@ import html
 import re
 import xml.etree.ElementTree as ET
 from io import BytesIO
+from typing import NamedTuple
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -353,7 +354,11 @@ def _pairs(spec, header=("Field", "Value")) -> list[list[str]]:
 
 def _return_rows(data: dict) -> list[list[str]]:
     return _pairs([
-        ("Form", _get(data, "formCode") or "NAR1", True),
+        # No "NAR1" fallback. CR fills formCode in during validation, so a blank
+        # here means the payload never carried one -- a fact worth showing on a
+        # document whose whole job is spotting what is missing. Defaulting the
+        # field would let any other form code print as an annual return.
+        ("Form", _get(data, "formCode"), True),
         ("Filing language",
          _LANGUAGES.get(_get(data, "language"), _get(data, "language")), True),
         ("Year of annual return", _get(data, "yearAnnualReturn"), True),
@@ -411,30 +416,132 @@ def _signatory_rows(data: dict) -> list[list[str]]:
     ], header=("Item", "Value"))
 
 
-#: (heading, formModel key, is-body-corporate)
+class _Section(NamedTuple):
+    """One officer table, and which particulars nar1_schema.json puts on it.
+
+    The columns follow the SECTION, not the officer's legal form. corpDir and
+    corpSec are both bodies corporate and carry different fields: corpSec has a
+    TCSP licence number, corpDir has none at all. Keying off `corporate` alone
+    gave corporate directors a column that could never hold anything, and gave
+    individual secretaries no licence column when the schema defines one.
+    """
+    heading: str
+    key: str
+    corporate: bool
+    #: carries dirInd / altDirInd / altTo
+    director: bool
+    #: the licence-number field, or None where CR defines none for this section
+    tcsp: str | None
+
+
 _PARTY_SECTIONS = (
-    ("Directors - natural persons", "indDirList", False),
-    ("Directors - body corporate", "corpDirList", True),
-    ("Reserve directors", "resDirList", False),
-    ("Company secretary - natural person", "indSecList", False),
-    ("Company secretary - body corporate", "corpSecList", True),
+    _Section("Directors - natural persons", "indDirList", False, True, None),
+    _Section("Directors - body corporate", "corpDirList", True, True, None),
+    _Section("Reserve directors", "resDirList", False, False, None),
+    _Section("Company secretary - natural person", "indSecList", False, False,
+             "indvTcspNo"),
+    _Section("Company secretary - body corporate", "corpSecList", True, False,
+             "corpTcspNo"),
 )
 
 
-def _party_table(entries: list[dict], corporate: bool, styles: dict) -> Table:
-    if corporate:
-        rows = [["Name", "Address", "BR no.", "TCSP licence"]] + [
-            [_name(e, corporate=True), _addr(e.get("stdAddress")),
-             _get(e, "corpBrNo"), _get(e, "corpTcspNo")]
-            for e in entries
-        ]
-        return _table(rows, [0.28, 0.46, 0.13, 0.13], styles)
+def _director_role(record: dict) -> str:
+    """Substantive director, alternate, or both -- and whose alternate.
 
-    rows = [["Name", "Address", "Identification"]] + [
-        [_name(e, corporate=False), _addr(e.get("stdAddress")), _identification(e)]
-        for e in entries
+    Without this an alternate director prints identically to a substantive one,
+    which misstates who actually holds the office on the register the admin is
+    approving. The `altTo` name is half the particular: "an alternate" without
+    "to whom" is not a statement of anything.
+    """
+    dir_ind = _get(record, "dirInd")
+    alt_ind = _get(record, "altDirInd")
+    alt_to = _get(record, "altTo")
+    roles = []
+    if dir_ind == "Y":
+        roles.append("Director")
+    if alt_ind == "Y":
+        roles.append(
+            f"Alternate director to {alt_to}" if alt_to
+            else "Alternate director (alternate to not stated)"
+        )
+    if roles:
+        return "; ".join(roles)
+    if dir_ind or alt_ind:
+        # Both flags carried, neither a Y. Report them rather than let the
+        # section heading assert a role CR's payload is denying.
+        return (f"Director: {_YES_NO.get(dir_ind, dir_ind or '-')}; "
+                f"Alternate: {_YES_NO.get(alt_ind, alt_ind or '-')}")
+    return "(not stated)"
+
+
+def _other_names(person: dict) -> str:
+    """Former and alias names, English beside Chinese, as `_name` does.
+
+    Absent from every CR fixture, which is why they were being dropped without
+    a single test noticing. A director filed under a former name the reviewer
+    cannot see is a director the reviewer cannot check.
+    """
+    previous = " / ".join(p for p in (
+        _get(person, "indvPrevEngName"), _get(person, "indvPrevChiName")) if p)
+    alias = " / ".join(p for p in (
+        _get(person, "indvAlsEngName"), _get(person, "indvAlsChiName")) if p)
+    return "; ".join(p for p in (
+        f"Formerly {previous}" if previous else "",
+        f"Alias {alias}" if alias else "",
+    ) if p)
+
+
+def _tcsp(record: dict, licence_key: str) -> str:
+    """The licence number, or the exemption being claimed instead of one.
+
+    CR's rule (nar1_schema.json): `exempted` must be Y when the licence number
+    is empty and N when it is given, and `reason` is required when exempted is
+    Y. So a blank cell would hide a claim the company is making about itself --
+    on CR's own example both secretaries claim exemption, and neither the claim
+    nor its reason appeared anywhere on the page.
+    """
+    licence = _get(record, licence_key)
+    exempted = _get(record, "exempted")
+    reason = _get(record, "reason")
+    parts = [licence] if licence else []
+    if exempted == "Y":
+        parts.append(f"Exempt: {reason}" if reason else "Exempt (no reason given)")
+    elif exempted == "N" and not licence:
+        # CR would reject this pairing. Say so rather than render an empty cell.
+        parts.append("Not exempt, no licence no. given")
+    return "; ".join(parts) or "(not stated)"
+
+
+def _party_table(entries: list[dict], section: _Section, styles: dict) -> Table:
+    """Columns assembled per section, widths normalised so they always fit.
+
+    Weights rather than hand-picked fractions: the column set now varies with
+    the section AND with the data, and a fraction list per combination is a
+    table that runs off the page the first time someone adds a column.
+    """
+    columns: list[tuple[str, float, object]] = [
+        ("Name", 26, lambda e: _name(e, corporate=section.corporate)),
     ]
-    return _table(rows, [0.28, 0.50, 0.22], styles)
+    if section.director:
+        columns.append(("Role", 17, _director_role))
+    # Suppressed when no one in this table has one, following `% held`: a column
+    # blank on every row reads as missing data rather than "not applicable".
+    if not section.corporate and any(_other_names(e) for e in entries):
+        columns.append(("Former / alias names", 18, _other_names))
+    columns.append(("Address", 36, lambda e: _addr(e.get("stdAddress"))))
+    if section.corporate:
+        columns.append(("BR no.", 12, lambda e: _get(e, "corpBrNo")))
+    else:
+        columns.append(("Identification", 18, _identification))
+    if section.tcsp:
+        columns.append(
+            ("TCSP licence", 18, lambda e, k=section.tcsp: _tcsp(e, k))
+        )
+
+    total = sum(weight for _, weight, _ in columns)
+    rows = [[header for header, _, _ in columns]]
+    rows.extend([cell(entry) for _, _, cell in columns] for entry in entries)
+    return _table(rows, [weight / total for _, weight, _ in columns], styles)
 
 
 def _identification(person: dict) -> str:
@@ -460,14 +567,24 @@ def _members_flow(data: dict, styles: dict) -> list:
     flow: list = []
     for key, label in (("schedule1", "Schedule 1"), ("schedule2", "Schedule 2")):
         schedule = data.get(key)
-        shares = _as_list(schedule.get("shares")) if isinstance(schedule, dict) else []
+        # isinstance, as _flow already does for share capitals and officers. An
+        # empty <share/> parses to "" and share.get() then raises
+        # AttributeError -- which is not ValueError, so it sails past the
+        # endpoint's 422 handler and becomes the unhandled 500 that handler
+        # exists to prevent.
+        shares = [
+            s for s in (_as_list(schedule.get("shares"))
+                        if isinstance(schedule, dict) else [])
+            if isinstance(s, dict)
+        ]
         if not shares:
             continue
         flow.append(PageBreak())
         flow.append(Paragraph(f"{label} - particulars of members", styles["title"]))
         flow.append(Paragraph(
-            "One row per allottee. Where a block of shares is held jointly, the "
-            "number of shares is shown once against the first holder.",
+            "One row per allottee. Where a block of shares is held jointly "
+            "(CR's shType 2), the number of shares is shown once against the "
+            "first holder.",
             styles["note"],
         ))
         # perOfShares exists on Schedule 2 only. Carrying the column into a
@@ -488,7 +605,25 @@ def _members_flow(data: dict, styles: dict) -> list:
                 + ["Address", "Remarks"]
             ]
             for group in _as_list(share.get("shareHolderGrps")):
-                for index, allottee in enumerate(_as_list(group.get("allotteeRec"))):
+                if not isinstance(group, dict):
+                    continue
+                allottees = [
+                    a for a in _as_list(group.get("allotteeRec"))
+                    if isinstance(a, dict)
+                ]
+                # A group with no readable allottee still carries a share
+                # figure, and dropping the row would take that block of shares
+                # off a document about share capital. _name() names it "(no
+                # name given)".
+                allottees = allottees or [{}]
+                # shType is CR's own Shareholder Type -- 1 individual, 2 joint
+                # (nar1_schema.json). Read it rather than infer the same fact
+                # from list position, which mislabels the second allottee of a
+                # shType 1 group as a joint holder. Position is the fallback
+                # only where CR carries no shType at all.
+                sh_type = _get(group, "shType")
+                joint = sh_type == "2" if sh_type else len(allottees) > 1
+                for index, allottee in enumerate(allottees):
                     corporate = _get(allottee, "allotteeType") == "C"
                     rows.append(
                         [
@@ -498,7 +633,8 @@ def _members_flow(data: dict, styles: dict) -> list:
                             # several people. Repeating the figure against each
                             # of them would multiply the company's issued
                             # capital on the page.
-                            _get(group, "sharesAlloted") if index == 0 else "(joint)",
+                            _get(group, "sharesAlloted") if index == 0
+                            else ("(joint)" if joint else "(sole holding)"),
                         ]
                         + ([_get(group, "perOfShares") if index == 0 else ""]
                            if pct else [])
@@ -550,12 +686,12 @@ def _flow(data: dict) -> list:
             [0.28, 0.12, 0.20, 0.20, 0.20], styles,
         ))
 
-    for heading, key, corporate in _PARTY_SECTIONS:
-        entries = [e for e in _as_list(data.get(key)) if isinstance(e, dict)]
+    for section in _PARTY_SECTIONS:
+        entries = [e for e in _as_list(data.get(section.key)) if isinstance(e, dict)]
         if not entries:
             continue
-        flow.append(Paragraph(heading, styles["h2"]))
-        flow.append(_party_table(entries, corporate, styles))
+        flow.append(Paragraph(section.heading, styles["h2"]))
+        flow.append(_party_table(entries, section, styles))
 
     flow.append(Paragraph("Signatory", styles["h2"]))
     flow.append(_table(_signatory_rows(data), [0.34, 0.66], styles))
@@ -564,23 +700,41 @@ def _flow(data: dict) -> list:
     return flow
 
 
-def _footer(br_no: str):
+def _footer(br_no: str, validated_at: str | None, stage: str | None):
+    """Provenance on every page: which company, WHEN CR validated, and where the
+    filing stands now.
+
+    The when and the stage matter because the snapshot can outlive its own
+    validation. `filings.validate` sets stage=validation_failed on a rejected
+    re-validation but leaves `validated_xml` untouched, so the page above this
+    footer -- headed "this is the document CR is holding" -- may be the previous
+    attempt. Nothing else on the document dates it.
+    """
+    when = validated_at or "(time not recorded)"
+    line = f"Form NAR1 preview - BR {br_no or '(none)'} - CR-validated {when}"
+    if stage:
+        line += f" - filing stage: {stage}"
+
     def draw(canvas, doc):
         canvas.saveState()
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(_MUTED)
-        canvas.drawString(
-            18 * mm, 10 * mm,
-            f"Form NAR1 preview - BR {br_no or '(none)'} - from the CR-validated XML",
-        )
+        canvas.drawString(18 * mm, 10 * mm, line)
         canvas.drawRightString(210 * mm - 18 * mm, 10 * mm, f"Page {doc.page}")
         canvas.restoreState()
 
     return draw
 
 
-def render(xml: str) -> bytes:
+def render(
+    xml: str, *, validated_at: str | None = None, stage: str | None = None
+) -> bytes:
     """Form NAR1 + Schedule 1/2 as PDF bytes.
+
+    `validated_at` and `stage` come off the filing row and are stamped in the
+    footer. Both optional, because the XML alone is a complete document -- but
+    the caller that has them should pass them: without a date, a snapshot CR
+    has since rejected is indistinguishable from a fresh one.
 
     Raises ValueError when the payload carries no <formModel> -- better an error
     than a blank form that looks like a real NAR1.
@@ -595,7 +749,7 @@ def render(xml: str) -> bytes:
         author="G-FlowDesk",
         subject="Annual Return (NAR1) - preview of the CR-validated filing",
     )
-    footer = _footer(_get(data, "brNo"))
+    footer = _footer(_get(data, "brNo"), validated_at, stage)
     document.build(_flow(data), onFirstPage=footer, onLaterPages=footer)
     return buffer.getvalue()
 
