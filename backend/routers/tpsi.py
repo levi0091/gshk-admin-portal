@@ -10,11 +10,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
+from services import nar1_pdf
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source
@@ -528,6 +529,70 @@ async def get_filing(filing_id: str, user=Depends(require_permission("tpsi", "re
         "submitted_at": row.get("submitted_at"),
         "receipt": row.get("receipt"),
     }
+
+
+@router.get("/filings/{filing_id}/pdf")
+async def filing_pdf(
+    filing_id: str, user=Depends(require_permission("tpsi", "read"))
+):
+    """Form NAR1 + Schedule 1/2, from the CR-validated snapshot (BE-2).
+
+    `read`, not `write`: nothing is sent to CR, nothing is charged, and nothing
+    is stored. It is still permission-gated, because a statutory return is data
+    about real people -- residential addresses and partial identity numbers.
+
+    Rendered on demand rather than saved to Storage: `validated_xml` is the
+    single source, so a re-render can never drift from it, and there is no
+    stale artefact to garbage-collect when a filing is re-validated after a
+    field fix.
+
+    409 before validation, not 404: the filing exists, it simply has no
+    CR-validated payload yet, and the caller's fix is to validate -- not to look
+    somewhere else.
+    """
+    try:
+        row = filings.get_filing(filing_id)
+    except Exception as exc:
+        raise _handle(exc)
+
+    if not row.get("validated_xml"):
+        raise HTTPException(
+            409,
+            "this filing has not been validated by CR yet, so there is no "
+            "validated XML to render",
+        )
+
+    try:
+        # validated_xml, never request_xml and never the live profile: the admin
+        # double-confirms an irreversible, chargeable submit off this document,
+        # so it has to be the one CR is actually holding.
+        pdf = nar1_pdf.render(row["validated_xml"])
+    except ValueError as exc:
+        # A stored payload CR accepted but we cannot parse is a data problem,
+        # not an unhandled 500 that reads like a crash in the renderer.
+        raise HTTPException(422, str(exc))
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.DOCUMENT_GENERATED, event_code=ev.DOCUMENT_GENERATED,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        case_id=row.get("nar1_case_id"),
+        # Identifiers and provenance only. The document's whole content is the
+        # statutory return, and it is already stored on the filing row.
+        metadata={"document": "NAR1+Schedule", "source": "validated_xml",
+                  "bytes": len(pdf)},
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="NAR1-{filing_id}.pdf"',
+            # This is a preview of a document that changes whenever the filing
+            # is re-validated. A cached copy is a copy of something CR may no
+            # longer be holding.
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/filings/{filing_id}/validate")

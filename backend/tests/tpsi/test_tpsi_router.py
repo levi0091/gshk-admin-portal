@@ -969,3 +969,133 @@ def test_submit_is_refused_when_no_deposit_account_can_be_resolved(client):
                                json={"confirm": True})
     assert response.status_code == 400
     assert "deposit account" in response.json()["detail"].lower()
+
+
+# ---- filings: GET /tpsi/filings/{id}/pdf (BE-2) -----------------------------
+
+def test_pdf_is_refused_until_the_filing_is_validated(client):
+    """The preview must render the CR-validated snapshot. A draft has none, and
+    rendering anything else would show the admin something other than what CR
+    is holding. 409 not 404: the filing exists, it just is not validated yet."""
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing",
+               return_value={"stage": "draft", "validated_xml": None}):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 409
+    assert "validated" in response.json()["detail"].lower()
+
+
+def test_pdf_returns_pdf_bytes_and_audits_generation(client):
+    logged = {}
+
+    async def fake_log(**kwargs):
+        logged.update(kwargs)
+
+    row = {"stage": "validated", "validated_xml": "<x/>", "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-1.4 fake"), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
+    assert logged["action_type"] == "DOCUMENT_GENERATED"
+    assert logged["case_id"] == "c1"
+
+
+def test_pdf_renders_the_validated_snapshot_not_the_request_xml(client):
+    """The two differ the moment anyone edits the entity after validating, and
+    CR only holds one of them. Pinned because both columns sit on the same row
+    and picking the wrong one is a one-word mistake nothing else would catch."""
+    row = {
+        "stage": "validated",
+        "request_xml": "<the-draft-we-built/>",
+        "validated_xml": "<what-cr-actually-holds/>",
+        "nar1_case_id": "c1",
+    }
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert spy.call_args.args[0] == "<what-cr-actually-holds/>"
+
+
+def test_pdf_drives_the_real_renderer_not_just_a_mock(client):
+    """Every other test here patches nar1_pdf.render, so none of them would
+    notice the router handing the renderer something it cannot parse.
+
+    The stored value is deliberately produced by `soap.extract_submission`, the
+    same function `filings.validate` writes the column with — a verbatim slice
+    whose xmlns:cr declaration was left behind on the enclosing element. Feeding
+    the whole envelope here instead would exercise a shape production never
+    stores.
+    """
+    from pathlib import Path
+
+    from services.tpsi.soap import extract_submission
+
+    sample = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "cr-examples"
+        / "validateForm" / "validate_NAR1(Private Company, Schedule 1).xml"
+    ).read_bytes()
+
+    row = {"stage": "validated", "validated_xml": extract_submission(sample),
+           "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")
+    assert response.content.rstrip().endswith(b"%%EOF")
+    assert len(response.content) > 2000
+
+
+def test_pdf_is_a_clean_422_when_the_stored_payload_has_no_form_model(client):
+    """A stored payload CR accepted but we cannot parse is a data problem, not
+    an unhandled 500 that reads like a crash in the renderer."""
+    row = {"stage": "validated", "validated_xml": "<soap:Envelope/>",
+           "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 422
+
+
+def test_pdf_requires_tpsi_read(client):
+    """A statutory return is data. No permission, no document."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 403
+
+
+def test_pdf_unknown_filing_is_handled_not_a_500(client):
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing",
+               side_effect=LookupError("no TPSI filing f1")):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 400
+
+
+def test_pdf_survives_an_audit_failure(client):
+    """CLAUDE.md: a log_event failure must never block the primary operation.
+    The admin still gets the document they are about to sign off on.
+
+    The failure is injected INSIDE audit_service, at its Supabase boundary --
+    patching `routers.tpsi.log_event` itself would replace the very try/except
+    that provides the guarantee and prove nothing.
+    """
+    row = {"stage": "validated", "validated_xml": "<x/>", "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-1.4 fake"), \
+         patch("services.audit_service.get_supabase",
+               side_effect=RuntimeError("audit down")):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")

@@ -83,6 +83,14 @@ CASE_STATUS_CHANGED = "CASE_STATUS_CHANGED"
 CASE_FIELD_UPDATED = "CASE_FIELD_UPDATED"
 AML_STATUS_CHANGED = "AML_STATUS_CHANGED"
 
+# ---- Document generation (BE-2) --------------------------------------------
+#   CLAUDE.md's PBI-11 table mandates this action_type for "any document (AoA,
+#   FWR, NNC1, CoI, NAR1) generated". Already seeded in audit_event_types by
+#   migration 012 (_NATIVE list, "Document Generated"/document), so exposing it
+#   here needs no new migration -- it only gives callers one canonical constant
+#   instead of a string literal per call site.
+DOCUMENT_GENERATED = "DOCUMENT_GENERATED"
+
 # Company field -> the Viewpoint folder that owns it.
 _COMPANY_FIELD_CODES = {
     # Master file (names)
