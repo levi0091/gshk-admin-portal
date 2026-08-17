@@ -1,0 +1,184 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <cr:validateForm xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/">
+        <cr:submission>
+            <cr:EForm id="eForm">
+                <cr:formModel id="formData">
+                    <cr:formCode></cr:formCode>
+                    <cr:language>E</cr:language>
+                    <cr:brNo>00000001</cr:brNo>
+					<cr:yearAnnualReturn>2022</cr:yearAnnualReturn>
+					<cr:docReferenceNo></cr:docReferenceNo>
+                    <cr:incorpCty>ABW</cr:incorpCty>
+                    <cr:ppbAddrHK>
+                        <cr:addrLangInd>E</cr:addrLangInd>
+                        <cr:flatFlrBlk>Principal Place of Business in Hong Kong Address 1</cr:flatFlrBlk>
+                        <cr:bldg>Principal Place of Business in Hong Kong Address 2</cr:bldg>
+                        <cr:stEstLotVlg>Principal Place of Business in Hong Kong Address 3</cr:stEstLotVlg>
+                        <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                        <cr:ctryRegion>HKG</cr:ctryRegion>
+                    </cr:ppbAddrHK>
+                    <cr:emailAddr>test@cr.gov.hk</cr:emailAddr>
+					<cr:telNo>99999999</cr:telNo>
+					<cr:roAddr>
+                        <cr:addrLangInd>E</cr:addrLangInd>
+                        <cr:flatFlrBlk>Address of the Registered Office 1</cr:flatFlrBlk>
+						<cr:bldg>Address of the Registered Office 2</cr:bldg>
+                        <cr:stEstLotVlg>Address of the Registered Office 3</cr:stEstLotVlg>
+                        <cr:dstCtyStatePostal>Address of the Registered Office 4</cr:dstCtyStatePostal>
+                        <cr:ctryRegion>ABW</cr:ctryRegion>
+					</cr:roAddr>
+					<cr:ppbAddr>
+                        <cr:addrLangInd>E</cr:addrLangInd>
+                        <cr:flatFlrBlk>Address of the Principal Place of Business 1</cr:flatFlrBlk>
+						<cr:bldg>Address of the Principal Place of Business 2</cr:bldg>
+                        <cr:stEstLotVlg>Address of the Principal Place of Business 3</cr:stEstLotVlg>
+                        <cr:dstCtyStatePostal>Address of the Principal Place of Business 4</cr:dstCtyStatePostal>
+                        <cr:ctryRegion>ABW</cr:ctryRegion>
+					</cr:ppbAddr>
+                    <cr:ppoiEmailAddr>test@cr.gov.hk</cr:ppoiEmailAddr>
+                    <cr:mortAndCharg>12345678</cr:mortAndCharg>
+					<cr:attachSpeRez>BASE64 encoded PDF file</cr:attachSpeRez>
+                    <cr:indAuthList>
+                        <cr:indAuth>
+                            <cr:indvChiName>陳大文</cr:indvChiName>
+                            <cr:indvEngSname>CHAN</cr:indvEngSname>
+                            <cr:indvEngOname>TAI MAN</cr:indvEngOname>
+                            <cr:stdAddress>
+                                <cr:addrLangInd>E</cr:addrLangInd>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:stdAddress>      
+                            <cr:indvEmailAddr>test@cr.gov.hk</cr:indvEmailAddr>
+                            <cr:indvHkidNo>A123</cr:indvHkidNo>
+                            <cr:passportNo>H123</cr:passportNo>
+                            <cr:passportCtry>CAN</cr:passportCtry>
+                        </cr:indAuth>
+                    </cr:indAuthList>
+                    <cr:corpAuthList>
+                        <cr:corpAuth>
+                            <cr:natureInd>B</cr:natureInd>
+                            <cr:corpChiName>測試有限公司</cr:corpChiName>
+                            <cr:corpEngName>TEST COMPANY LIMITED</cr:corpEngName>
+                            <cr:stdAddress>
+                                <cr:addrLangInd>E</cr:addrLangInd>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:stdAddress>      
+                            <cr:corpEmailAddr>test@cr.gov.hk</cr:corpEmailAddr>
+                        </cr:corpAuth>
+                    </cr:corpAuthList>
+                    <cr:indSecList>
+                        <cr:indSec>
+                            <cr:indvChiName>陳大文</cr:indvChiName>
+                            <cr:indvEngSname>CHAN</cr:indvEngSname>
+                            <cr:indvEngOname>TAI MAN</cr:indvEngOname>
+                            <cr:indvPrevChiName>陳大文</cr:indvPrevChiName>
+                            <cr:indvPrevEngName>CHAN TAI MAN</cr:indvPrevEngName>
+                            <cr:indvAlsChiName>陳大文</cr:indvAlsChiName>
+                            <cr:indvAlsEngName>CHAN TAI MAN</cr:indvAlsEngName>
+                            <cr:stdAddress>
+                                <cr:addrLangInd>E</cr:addrLangInd>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:stdAddress>
+                            <cr:indvEmailAddr>test@cr.gov.hk</cr:indvEmailAddr>
+                            <cr:indvHkidNo>A123</cr:indvHkidNo>
+                            <cr:passportNo>H123</cr:passportNo>
+                            <cr:passportCtry>CAN</cr:passportCtry>
+                        </cr:indSec>
+                    </cr:indSecList>
+                    <cr:corpSecList>
+                        <cr:corpSec>
+                            <cr:corpChiName>測試有限公司</cr:corpChiName>
+                            <cr:corpEngName>TEST COMPANY LIMITED</cr:corpEngName>
+                            <cr:stdAddress>
+                                <cr:addrLangInd>E</cr:addrLangInd>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:stdAddress>
+                            <cr:corpEmailAddr>test@cr.gov.hk</cr:corpEmailAddr>
+                            <cr:ubino>00000002</cr:ubino>
+                        </cr:corpSec>
+                    </cr:corpSecList>
+                    <cr:indDirList>
+                        <cr:indDir>
+                            <cr:dirInd>Y</cr:dirInd>
+                            <cr:altDirInd></cr:altDirInd>
+                            <cr:altTo></cr:altTo>
+                            <cr:indvChiName>陳大文</cr:indvChiName>
+                            <cr:indvEngSname>CHAN</cr:indvEngSname>
+                            <cr:indvEngOname>TAI MAN</cr:indvEngOname>
+                            <cr:indvPrevChiName>陳大文</cr:indvPrevChiName>
+                            <cr:indvPrevEngName>CHAN TAI MAN</cr:indvPrevEngName>
+                            <cr:indvAlsChiName>陳大文</cr:indvAlsChiName>
+                            <cr:indvAlsEngName>CHAN TAI MAN</cr:indvAlsEngName>
+                            <cr:stdAddress>
+                                <cr:addrLangInd>E</cr:addrLangInd>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:stdAddress>
+                            <cr:indvEmailAddr>test@cr.gov.hk</cr:indvEmailAddr>
+                            <cr:indvHkidNo>A123</cr:indvHkidNo>
+                            <cr:passportNo>H123</cr:passportNo>
+                            <cr:passportCtry>CAN</cr:passportCtry>
+                        </cr:indDir>
+                    </cr:indDirList>
+                    <cr:corpDirList>
+                        <cr:corpDir>
+                            <cr:dirInd>Y</cr:dirInd>
+                            <cr:altDirInd></cr:altDirInd>
+                            <cr:altTo></cr:altTo>
+                            <cr:corpChiName>測試有限公司</cr:corpChiName>
+                            <cr:corpEngName>TEST COMPANY LIMITED</cr:corpEngName>
+                            <cr:stdAddress>
+                                <cr:addrLangInd>E</cr:addrLangInd>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:stdAddress>
+                            <cr:corpEmailAddr>test@cr.gov.hk</cr:corpEmailAddr>
+                            <cr:ubino>00000002</cr:ubino>
+                        </cr:corpDir>
+                    </cr:corpDirList>
+                    <cr:authShareCapitals>
+                        <cr:authShareCapital>
+                            <cr:amount>1000</cr:amount>
+                            <cr:currency>HKD</cr:currency>
+                        </cr:authShareCapital>
+                    </cr:authShareCapitals>
+                    <cr:issShareCapitals>
+                        <cr:issShareCapital>
+                            <cr:amount>2000</cr:amount>
+                            <cr:currency>CAD</cr:currency>
+                        </cr:issShareCapital>
+                    </cr:issShareCapitals>
+                    <cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+                    <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                    <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                    <cr:signatoryDate>01/06/2022</cr:signatoryDate>
+                </cr:formModel>
+            </cr:EForm>
+            <cr:EFormSignatures>
+			</cr:EFormSignatures>
+        </cr:submission>
+    </cr:validateForm>
+  </soap:Body>
+</soap:Envelope>

@@ -1,0 +1,53 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+	<soap:Body>
+		<cr:verifyPinSigning xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/">
+			<cr:submission>
+				<cr:EForm id="eForm">
+					<cr:formModel id="formData">
+						<cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+						<cr:selectPersonId>TEST1234</cr:selectPersonId>
+						<cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+						<cr:signatoryDate>18/05/2022</cr:signatoryDate>
+						<cr:brNo>00000001</cr:brNo>
+						<cr:compNameC>測試有限公司</cr:compNameC>
+						<cr:compNameE>TEST COMPANY LIMITED</cr:compNameE>
+						<cr:formCode>NNC2</cr:formCode>
+						<cr:language>E</cr:language>
+						<cr:intCompC>測試有限公司</cr:intCompC>
+						<cr:intCompE>TEST COMPANY LIMITED</cr:intCompE>
+						<cr:resolutionDateDay>01</cr:resolutionDateDay>
+						<cr:resolutionDateMonth>05</cr:resolutionDateMonth>
+						<cr:resolutionDateYear>2022</cr:resolutionDateYear>
+					</cr:formModel>
+				</cr:EForm>
+				<cr:EFormSignatures>
+					<ds:Signature id="CR">
+						<ds:SignedInfo>
+							<ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+							<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+							<ds:Reference URI="#formData">
+								<ds:Transforms>
+									<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+								</ds:Transforms>
+								<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+								<ds:DigestValue>WybO5GLmV8C0RfijeGddKEseRXsjroEZ+Ol+ARd4YBk=</ds:DigestValue>
+							</ds:Reference>
+						</ds:SignedInfo>
+						<ds:SignatureValue>Q8cKouFvwGwcsmAVDuckozSz5eNn2s7zp5fASvGUt2dRMhgQh0eB25To/TmH2HqTjMuXhqq5FmRevZr9LaqXDHay9f0E7hWZ9uI1US57YQaC6DK60nNza8k+XTupy1dovU3HgUH2s57w2x9OfGssLz8zn1LM+bjse+coOQZePu+VVtY4PJntBsS6N320ZI2KszCm4GOEgm37EiueUgQ2UcnQ4muAI2pUXRDhfucbzgkpiyHoIovYr6CyQ3o+gtg7eYB/Pe53l1LL8l4bhgfEkgTdibRCEMY943dp9M5PBFIAB/rvBR0gRCTCv5HOO2JU4nxpcagq/zRfTsF5R+RZfg==</ds:SignatureValue>
+						<ds:KeyInfo>
+							<ds:X509Data>
+								<ds:X509Certificate>MIIFujCCBKKgAwIBAgIUc0gKK4jvCCe3ApSoTTSeGJ1eCHowDQYJKoZIhvcNAQELBQAwfDELMAkGA1UEBhMCSEsxEjAQBgNVBAgTCUhvbmcgS29uZzESMBAGA1UEBxMJSG9uZyBLb25nMRYwFAYDVQQKEw1Ib25na29uZyBQb3N0MS0wKwYDVQQDEyRIb25na29uZyBQb3N0IFRyaWFsIGUtQ2VydCBDQSAyIC0gMTcwHhcNMjEwNDI4MTAyMDA0WhcNMjIwNDI4MTAyMDA0WjCCAQIxCzAJBgNVBAYTAkhLMTQwMgYDVQQKEytIb25na29uZyBQb3N0IFRyaWFsIGUtQ2VydCAoT3JnYW5pc2F0aW9uYWwpMRMwEQYDVQQLEwowMDAxODQ0NTMyMSMwIQYDVQQLExowMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDBDUjEhMB8GA1UECxMYSG9uZyBLb25nIFNBUiBHb3Zlcm5tZW50MRswGQYDVQQLExJDb21wYW5pZXMgUmVnaXN0cnkxJDAiBgkqhkiG9w0BCQEWFWljcmlzcmV2YW1wQGdtYWlsLmNvbTEdMBsGA1UEAxMUSUNSSVMgUkVWQU1QIFVBVCBPbmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDEBoWyHAhuy+6Hw5ajS8u0qoOOcflezLylUWJA1o8ZMbMWHIAd+DvuYeHi2P34CrVUPP7rnxS/N7melfbePpuuieMOCn7yy/35h5T/eOJUuX4z8+fg2W/d6uFDlEga+lKAEDGCo1yz0UtAz2CGfDJUOCpPjZttZrowoKS+mWOmvrwooAFDDEtBWzqR7/WYlvfmbUnx4aMJneRBmDAn4nnGm1p/t8M6ijE2H5AnbRi87398yUxyJv4QFluCq6ghB9X9Gm27GfCuewPviG2oHs20EPGWSOxoKn4tqsINNkrUX4YQ8f7bMmIX5BrWXkSE9NGKaMPxlxfSfWA67ZnMb70vAgMBAAGjggGqMIIBpjA3BgNVHSAEMDAuMCwGCisGAQQB/R4BAS4wHjAcBggrBgEFBQcCARYQd3d3LmVDZXJ0Lmdvdi5oazBKBgNVHREEQzBBpCgwJjEkMCIGA1UECwwb6aaZ5riv54m55Yil6KGM5pS/5Y2A5pS/5bqcgRVpY3Jpc3JldmFtcEBnbWFpbC5jb20wCQYDVR0TBAIwADAOBgNVHQ8BAf8EBAMCBeAwHQYDVR0lBBYwFAYIKwYBBQUHAwIGCCsGAQUFBwMEMIGcBgNVHSMEgZQwgZGheaR3MHUxCzAJBgNVBAYTAkhLMRIwEAYDVQQIEwlIb25nIEtvbmcxEjAQBgNVBAcTCUhvbmcgS29uZzEWMBQGA1UEChMNSG9uZ2tvbmcgUG9zdDEmMCQGA1UEAxMdSG9uZ2tvbmcgUG9zdCBUcmlhbCBSb290IENBIDKCFDifvqm0pPyahQl2CWRpGWbs+Tr+MEYGA1UdHwQ/MD0wO6A5oDeGNWh0dHA6Ly90cmlhbGNybDEuZUNlcnQuZ292LmhrL2NybC9lQ2VydENBMi0xN0NSTDIuY3JsMA0GCSqGSIb3DQEBCwUAA4IBAQChFhdrTJMt4Z8BQrcgSPWwMh2vSePV78AXW3f7djGzR0AdPj7JyV+07K6laaFF7i1Z8v87GaCSeUEd6vc7p3rDbq2sZ1U4qfRfNTnbcCZ5aN9OZSu0yWvriEgKJVWC7o5UruRKUX/Kqo0QFjY3O9Q1mn+Jt0q4OG66JJRCdzxxFUcYZmeP3bQH/MMJyEAQDqnCnF1XLgECefjjgjqr3hCn+qBxOdNL6Jbut1LYOFpKBohLZX0ysMdiyfo8SHKfKVcGWtEGKlyYbU1olBElhXoan9OKszD+1i75PJwmuaCINQ8ItYhkyprI6Ua/239jgOA3P3A++kRiECWnLvYFV6e3</ds:X509Certificate>
+								<ds:X509SubjectName>CN=ICRIS REVAMP UAT One,1.2.840.113549.1.9.1=#16156963726973726576616d7040676d61696c2e636f6d,OU=Companies Registry,OU=Hong Kong SAR Government,OU=000000000000000000000000CR,OU=0001844532,O=Hongkong Post Trial e-Cert (Organisational),C=HK</ds:X509SubjectName>
+							</ds:X509Data>
+						</ds:KeyInfo>
+					</ds:Signature>
+					<cr:PinSign URI="#eForm">
+						<cr:UserCredentialHash>WmNic21QYW0yZEpnTTFGV1ZlRG1NenpNbEhTMWJwT25BZzB6NGViaUNycUluZERuWTF0eWlZLzM4TGRWY1duTGZid0doSjBORjZkZ1NqNFpuNSt2bEloc1ZZME1tK2YvUVNkenhJLy9JdCtJQlBUOEx5cExyRXk3cXpvcXMrQzVkR0JTdjB2UFdvZmxQK2ltOE5kRUppSVVkckV4NkM0TmxLN2JNV1FSK2NudDc1NDd2R2FMcU9HSnRhUzdYckt4TnBtS2ZmREpTQTgraVl3RU5YakVqSjRQZU5KSHM2ME1DNGRiN0xlZ0UzMD0=</cr:UserCredentialHash>
+						<cr:UserSignature>c3oySE5MM25kby9qNHNsVlQzejQwZVlobmo0YzFNQjBKbk50NmRNL2phL3JKU3B2YW5QWit0MTVuQURuSjlFYlRqeFBRamR4bUpIc2dQL0tYSW1VKzFxNkp5T1AvekFIZzNTMzJ6dkFnd3M9</cr:UserSignature>
+						<cr:EncryptionKey>aPR0Yr7ZvhuWY8j3bZfnRj8fJdDdcoBFoas3FJSDoK78GeSdCg1SO6Tnc7m3d0VIunAbEsma63MwlB6cKuoQsn062NBxt9/z4s5HdTFT6tO2zK2ufVVafb6vZrn0tYfMShJdU6C0ObRsxF9N71jMp7pZuIm5vfjZOw0GruY3naoEsSPXeDG/bpBlOrnFOZplECUWm7UbpXN8Lp0mFYvPMZjiYXsHoh1smdpKeujwuAGd5T+FAz9QcrssV4tN1FeSo+1MJ3sA/sCTzv4rK0coMK+bksmKu+Sj3O3Ssv21PtSh71ItsP41BXmuefn6LmGR/TcK0taf7YsK5+sdhtljKw==</cr:EncryptionKey>
+					</cr:PinSign>
+				</cr:EFormSignatures>
+			</cr:submission>
+		</cr:verifyPinSigning>
+	</soap:Body>
+</soap:Envelope>

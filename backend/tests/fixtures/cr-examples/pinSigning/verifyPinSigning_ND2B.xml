@@ -1,0 +1,88 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+	<soap:Body>
+		<cr:verifyPinSigning xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/">
+			<cr:submission>
+				<cr:EForm id="eForm">
+					<cr:formModel id="formData">
+						<cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+						<cr:selectPersonId>TEST1234</cr:selectPersonId>
+						<cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+						<cr:signatoryDate>22/06/2022</cr:signatoryDate>
+						<cr:brNo>00000001</cr:brNo>
+						<cr:compNameC>測試有限公司</cr:compNameC>
+						<cr:compNameE>TEST COMPANY LIMITED</cr:compNameE>
+						<cr:formCode>ND2B</cr:formCode>
+						<cr:language>E</cr:language>
+						<cr:npBeans>
+							<cr:npBean>
+								<cr:cpty>D</cr:cpty>
+								<cr:indvEngOname>TAI MAN</cr:indvEngOname>
+								<cr:indvEngSname>CHAN</cr:indvEngSname>
+								<cr:indvHkidPartial>A123</cr:indvHkidPartial>
+								<cr:indvNewAddr>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:indvNewAddr>
+								<cr:indvNewAddrEffDt>04/06/2022</cr:indvNewAddrEffDt>
+								<cr:indvNewAlsChiName>陳大文</cr:indvNewAlsChiName>
+								<cr:indvNewAlsEngName>CHAN TAI MAN</cr:indvNewAlsEngName>
+								<cr:indvNewAlsNameEffDt>03/06/2022</cr:indvNewAlsNameEffDt>
+								<cr:indvNewChiName>陳大文</cr:indvNewChiName>
+								<cr:indvNewChiNameEffDt>01/06/2022</cr:indvNewChiNameEffDt>
+								<cr:indvNewEmailAddr>test@cr.gov.hk</cr:indvNewEmailAddr>
+								<cr:indvNewEmailAddrEffDt>06/06/2022</cr:indvNewEmailAddrEffDt>
+								<cr:indvNewEngNameEffDt>02/06/2022</cr:indvNewEngNameEffDt>
+								<cr:indvNewEngOname>TAI MAN</cr:indvNewEngOname>
+								<cr:indvNewEngSname>CHAN</cr:indvNewEngSname>
+								<cr:indvNewHkidChkDgt>2</cr:indvNewHkidChkDgt>
+								<cr:indvNewHkidNo>A123456</cr:indvNewHkidNo>
+								<cr:indvNewHkidNoEffDt>07/06/2022</cr:indvNewHkidNoEffDt>
+								<cr:indvNewPptIssCtry>CAN</cr:indvNewPptIssCtry>
+								<cr:indvNewPptNo>H12345678</cr:indvNewPptNo>
+								<cr:indvNewPptNoEffDt>08/06/2022</cr:indvNewPptNoEffDt>
+								<cr:indvNewResAddr>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:indvNewResAddr>
+								<cr:indvNewResAddrEffDt>05/06/2022</cr:indvNewResAddrEffDt>
+							</cr:npBean>
+						</cr:npBeans>
+					</cr:formModel>
+				</cr:EForm>
+				<cr:EFormSignatures>
+					<ds:Signature id="CR">
+						<ds:SignedInfo>
+							<ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+							<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+							<ds:Reference URI="#formData">
+								<ds:Transforms>
+									<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+								</ds:Transforms>
+								<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+								<ds:DigestValue>22E8YW+ALGp3i7d9i528bvkzwqZLUyzg+C3d+B5z6wU=</ds:DigestValue>
+							</ds:Reference>
+						</ds:SignedInfo>
+						<ds:SignatureValue>TBK0y+R6L0VVrZjhChasz74nHRN8E+zPxT2pK7l0B6iS6evoCFGf0xcOaJqthle6InpST9XWYHCKpSbUsh98ZHCG4XBxDgFpfr5uvCicapPF2neU2jJza578Dk+4fnK0dSy/oAcOx3xzzdPloTscQsZON0it0BZRGLmdNZtwP63lfxCrQ8hHaP8792nxowZEzko+1hBpcJvxVBN68K4VDflFt8qEYP7tdj+rI6QPTf5wqOd86rJhw2hl5wUiQLSXd/tB3oSlZODnMcs8OI7aXTBm83enraLRk85kgCDVI0R7L9R3jFoddQtZfIzopjsxKHk/JbJl17XXXgQ6DqVTdw==</ds:SignatureValue>
+						<ds:KeyInfo>
+							<ds:X509Data>
+								<ds:X509Certificate>MIIFujCCBKKgAwIBAgIUc0gKK4jvCCe3ApSoTTSeGJ1eCHowDQYJKoZIhvcNAQELBQAwfDELMAkGA1UEBhMCSEsxEjAQBgNVBAgTCUhvbmcgS29uZzESMBAGA1UEBxMJSG9uZyBLb25nMRYwFAYDVQQKEw1Ib25na29uZyBQb3N0MS0wKwYDVQQDEyRIb25na29uZyBQb3N0IFRyaWFsIGUtQ2VydCBDQSAyIC0gMTcwHhcNMjEwNDI4MTAyMDA0WhcNMjIwNDI4MTAyMDA0WjCCAQIxCzAJBgNVBAYTAkhLMTQwMgYDVQQKEytIb25na29uZyBQb3N0IFRyaWFsIGUtQ2VydCAoT3JnYW5pc2F0aW9uYWwpMRMwEQYDVQQLEwowMDAxODQ0NTMyMSMwIQYDVQQLExowMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDBDUjEhMB8GA1UECxMYSG9uZyBLb25nIFNBUiBHb3Zlcm5tZW50MRswGQYDVQQLExJDb21wYW5pZXMgUmVnaXN0cnkxJDAiBgkqhkiG9w0BCQEWFWljcmlzcmV2YW1wQGdtYWlsLmNvbTEdMBsGA1UEAxMUSUNSSVMgUkVWQU1QIFVBVCBPbmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDEBoWyHAhuy+6Hw5ajS8u0qoOOcflezLylUWJA1o8ZMbMWHIAd+DvuYeHi2P34CrVUPP7rnxS/N7melfbePpuuieMOCn7yy/35h5T/eOJUuX4z8+fg2W/d6uFDlEga+lKAEDGCo1yz0UtAz2CGfDJUOCpPjZttZrowoKS+mWOmvrwooAFDDEtBWzqR7/WYlvfmbUnx4aMJneRBmDAn4nnGm1p/t8M6ijE2H5AnbRi87398yUxyJv4QFluCq6ghB9X9Gm27GfCuewPviG2oHs20EPGWSOxoKn4tqsINNkrUX4YQ8f7bMmIX5BrWXkSE9NGKaMPxlxfSfWA67ZnMb70vAgMBAAGjggGqMIIBpjA3BgNVHSAEMDAuMCwGCisGAQQB/R4BAS4wHjAcBggrBgEFBQcCARYQd3d3LmVDZXJ0Lmdvdi5oazBKBgNVHREEQzBBpCgwJjEkMCIGA1UECwwb6aaZ5riv54m55Yil6KGM5pS/5Y2A5pS/5bqcgRVpY3Jpc3JldmFtcEBnbWFpbC5jb20wCQYDVR0TBAIwADAOBgNVHQ8BAf8EBAMCBeAwHQYDVR0lBBYwFAYIKwYBBQUHAwIGCCsGAQUFBwMEMIGcBgNVHSMEgZQwgZGheaR3MHUxCzAJBgNVBAYTAkhLMRIwEAYDVQQIEwlIb25nIEtvbmcxEjAQBgNVBAcTCUhvbmcgS29uZzEWMBQGA1UEChMNSG9uZ2tvbmcgUG9zdDEmMCQGA1UEAxMdSG9uZ2tvbmcgUG9zdCBUcmlhbCBSb290IENBIDKCFDifvqm0pPyahQl2CWRpGWbs+Tr+MEYGA1UdHwQ/MD0wO6A5oDeGNWh0dHA6Ly90cmlhbGNybDEuZUNlcnQuZ292LmhrL2NybC9lQ2VydENBMi0xN0NSTDIuY3JsMA0GCSqGSIb3DQEBCwUAA4IBAQChFhdrTJMt4Z8BQrcgSPWwMh2vSePV78AXW3f7djGzR0AdPj7JyV+07K6laaFF7i1Z8v87GaCSeUEd6vc7p3rDbq2sZ1U4qfRfNTnbcCZ5aN9OZSu0yWvriEgKJVWC7o5UruRKUX/Kqo0QFjY3O9Q1mn+Jt0q4OG66JJRCdzxxFUcYZmeP3bQH/MMJyEAQDqnCnF1XLgECefjjgjqr3hCn+qBxOdNL6Jbut1LYOFpKBohLZX0ysMdiyfo8SHKfKVcGWtEGKlyYbU1olBElhXoan9OKszD+1i75PJwmuaCINQ8ItYhkyprI6Ua/239jgOA3P3A++kRiECWnLvYFV6e3</ds:X509Certificate>
+								<ds:X509SubjectName>CN=ICRIS REVAMP UAT One,1.2.840.113549.1.9.1=#16156963726973726576616d7040676d61696c2e636f6d,OU=Companies Registry,OU=Hong Kong SAR Government,OU=000000000000000000000000CR,OU=0001844532,O=Hongkong Post Trial e-Cert (Organisational),C=HK</ds:X509SubjectName>
+							</ds:X509Data>
+						</ds:KeyInfo>
+					</ds:Signature>
+					<cr:PinSign URI="#eForm">
+						<cr:UserCredentialHash>WlhZM3oxTThtZ0IyeS91eGlNYXdnME1hMmsvc3NQeVZnMWhDRzllam1UdjdZOHVVUHhkWE4xMXkyWW5EcTJiak1ZYUk3VXVycDhJb28xZGhCdVRZREZwbWg2aWZUeDhzdm1SWEtRNFduVTZOKzJlbEkvS0VraWRhaUJobUJjMERxeGZVZzlCNklDTkkzSm1WU1FhREtUK0tKS2Z5ZkJUZ2t5SGpTbGdzV2tRdDJQN0o0N01RcVNvbUdWMW5QVjBtVjU4TUtPNGdjSHZhTkZXbVVTZ2JPQmc0dFdVbkZ0blZPL3FwcFFRSTJ5cz0=</cr:UserCredentialHash>
+						<cr:UserSignature>TFRpTWxnN1BPNlNaajI2TkpTemI4STYwTlpRTU1JaExxaWFrSURNVHZFYmRvbERhMG03d2taUzlpK0FlNzRweXU5TVFUUVA0QlZ4Vlo5QWFCbElDSmd5blFQOGp0QnJ6SElnU0NrTG45N009</cr:UserSignature>
+						<cr:EncryptionKey>Cmcw1gdRBOK/m0t/ODpQaxYvSVYMmvFkA7/H/jtLuzE9Uj/tf3ct85DfA/0DSZMkNaGgY4plmA0b2Ame6SQuHg6yRMuFl+IoONkzg8MAUQcpy6/vYW98IhLHkOZ+dVQ3bHpOmJ3SoMpMzPIKtRnf9hcPewtpFXvkLxjUATtZYUKPVvCGEO2xuq5KGk71GybuJLJJJ5+WABfZ1lv91UfjO9BaHzvVlnlAuvSZvrOkMwRAY+i4pER5J3sA3ggy8lpdnDoXDyzdR+fifwK9/dRhX/PAY/12qpdCr2girTkjsmql6b1L5cjCo0vEFzc9A9FeJce40X3unULmUZX/ioh8UQ==</cr:EncryptionKey>
+					</cr:PinSign>
+				</cr:EFormSignatures>
+			</cr:submission>
+		</cr:verifyPinSigning>
+	</soap:Body>
+</soap:Envelope>

@@ -1,0 +1,54 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <cr:validateForm xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <cr:submission>
+            <cr:EForm id="eForm">
+                <cr:formModel id="formData">
+                    <cr:language>E</cr:language>
+                    <cr:brNo>00000001</cr:brNo>
+                    <cr:appOfNpBeans>
+                        <cr:appOfNpBean id="S1">
+                        	<cr:cpty>D</cr:cpty>
+							<cr:altTo></cr:altTo>
+							<cr:indvChiName>陳大文</cr:indvChiName>
+							<cr:indvEngSname>CHAN</cr:indvEngSname>
+							<cr:indvEngOname>TAI MAN</cr:indvEngOname>
+							<cr:indvPrevChiName>陳大文</cr:indvPrevChiName>
+							<cr:indvPrevEngName>CHAN TAI MAN</cr:indvPrevEngName>
+							<cr:indvAlsChiName>陳大文</cr:indvAlsChiName>
+							<cr:indvAlsEngName>CHAN TAI MAN</cr:indvAlsEngName>		
+							<cr:indvCorrAddr>
+                            	<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                            	<cr:bldg>Building</cr:bldg>
+                            	<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                            	<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                            	<cr:ctryRegion>HKG</cr:ctryRegion>
+							</cr:indvCorrAddr>
+							<cr:indvResAddr>
+                            	<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                            	<cr:bldg>Building</cr:bldg>
+                            	<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                            	<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                            	<cr:ctryRegion>HKG</cr:ctryRegion>
+							</cr:indvResAddr>
+							<cr:indvEmailAddr>test@cr.gov.hk</cr:indvEmailAddr>
+							<cr:indvHkidNo>A123456</cr:indvHkidNo>
+							<cr:indvHkidChkDgt>3</cr:indvHkidChkDgt>
+							<cr:indvPptNo>H12345678</cr:indvPptNo>
+							<cr:indvPptIssCtry>CAN</cr:indvPptIssCtry>
+							<cr:indvDtAppt>01/06/2022</cr:indvDtAppt>
+							<cr:dirBeforeApptInd>Y</cr:dirBeforeApptInd>
+							<cr:selectPersonId>TEST1234</cr:selectPersonId>
+							<cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                        </cr:appOfNpBean>
+                    </cr:appOfNpBeans>
+                    <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                    <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                    <cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+                    <cr:signatoryDate>01/06/2022</cr:signatoryDate>
+                </cr:formModel>
+            </cr:EForm>
+        </cr:submission>
+    </cr:validateForm>
+  </soap:Body>
+</soap:Envelope>

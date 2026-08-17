@@ -1,0 +1,27 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <cr:validateForm xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <cr:submission>
+            <cr:EForm id="eForm">
+                <cr:formModel id="formData">
+                    <cr:language>E</cr:language>
+                    <cr:brNo>33294808</cr:brNo>
+                    <cr:indvChiName>陳大文</cr:indvChiName>
+                    <cr:indvEngSname>CHAN</cr:indvEngSname>
+                    <cr:indvEngOname>TAI MAN</cr:indvEngOname>
+                    <cr:indvHkidPartial>D019</cr:indvHkidPartial>
+                    <cr:indvPptNoPartial></cr:indvPptNoPartial>
+                    <cr:indvDtResign>01/06/2022</cr:indvDtResign>
+                    <cr:noticeResign>S</cr:noticeResign>
+                    <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                    <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                    <cr:signatoryDate>18/05/2022</cr:signatoryDate>
+                    <cr:selectCapacityDesc>Resigning Reserve Director</cr:selectCapacityDesc>
+                </cr:formModel>
+            </cr:EForm>
+            <cr:EFormSignatures >
+            </cr:EFormSignatures>
+        </cr:submission>
+    </cr:validateForm>
+  </soap:Body>
+</soap:Envelope>

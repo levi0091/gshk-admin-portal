@@ -1,0 +1,53 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+	<soap:Body>
+		<cr:validateForm xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+			<cr:submission>
+                <cr:EForm id="eForm">
+                    <cr:formModel id="formData">
+                        <cr:language>E</cr:language>
+                        <cr:brNo>00000001</cr:brNo>
+                        <cr:dtAllotFrom>01/05/2022</cr:dtAllotFrom>
+                        <cr:dtAllotTo>30/05/2022</cr:dtAllotTo>
+                        <cr:totalAllotmentInd>2</cr:totalAllotmentInd>
+                        <cr:shareholderListedInCdrom>Y</cr:shareholderListedInCdrom>
+                        <cr:attachSpeRez>base64 encoded PDF file</cr:attachSpeRez>
+                        <cr:cumTotal>
+                            <cr:cum>
+                                <cr:clsOfShares>Ordinary</cr:clsOfShares>
+                                <cr:currency>HKD</cr:currency>
+                                <cr:noOfShareIssuedOnThisCls>1000</cr:noOfShareIssuedOnThisCls>
+                                <cr:issuedCapital>1000</cr:issuedCapital>
+                                <cr:paidUpCapital>1000</cr:paidUpCapital>
+                                <cr:unpaidUpCapital>0</cr:unpaidUpCapital>
+                            </cr:cum>
+                            <cr:cum>
+                                <cr:clsOfShares>Preference</cr:clsOfShares>
+                                <cr:currency>CAD</cr:currency>
+                                <cr:noOfShareIssuedOnThisCls>500</cr:noOfShareIssuedOnThisCls>
+                                <cr:issuedCapital>500</cr:issuedCapital>
+                                <cr:paidUpCapital>500</cr:paidUpCapital>
+                                <cr:unpaidUpCapital>0</cr:unpaidUpCapital>
+                            </cr:cum>
+                        </cr:cumTotal>
+                        <cr:statementCapitals>
+                            <cr:statementCapital>
+                                <cr:classOfShares>Ordinary</cr:classOfShares>
+                                <cr:rightAttach>Particulars of Rights Ordinary</cr:rightAttach>
+                            </cr:statementCapital>
+                            <cr:statementCapital>
+                                <cr:classOfShares>Preference</cr:classOfShares>
+                                <cr:rightAttach>Particulars of Rights Preference</cr:rightAttach>
+                            </cr:statementCapital>
+                        </cr:statementCapitals>
+                        <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                        <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                        <cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+                        <cr:signatoryDate>01/06/2022</cr:signatoryDate>
+                    </cr:formModel>
+                </cr:EForm>
+                <cr:EFormSignatures>
+				</cr:EFormSignatures>
+			</cr:submission>
+		</cr:validateForm>
+	</soap:Body>
+</soap:Envelope>

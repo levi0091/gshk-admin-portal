@@ -1,0 +1,8 @@
+# Vendor material — CR ships these with CRLF endings. The repo's
+# core.autocrlf=true would otherwise store LF and hand CI a byte-different file
+# from the one on a Windows dev machine. `-text` disables all conversion so the
+# fixtures stay byte-identical to what the Companies Registry published.
+* -text
+# ...except this repo's own notes, which are ours to normalise.
+README.md text
+.gitattributes text

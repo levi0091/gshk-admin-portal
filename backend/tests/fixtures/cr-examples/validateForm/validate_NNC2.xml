@@ -1,0 +1,25 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <cr:validateForm xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <cr:submission>
+            <cr:EForm id="eForm">
+                <cr:formModel id="formData">
+                    <cr:language>E</cr:language>
+                    <cr:brNo>00000001</cr:brNo>
+                    <cr:resolutionDateDay>01</cr:resolutionDateDay>				
+                    <cr:resolutionDateMonth>05</cr:resolutionDateMonth>				
+                    <cr:resolutionDateYear>2022</cr:resolutionDateYear>				
+                    <cr:intCompE>TEST COMPANY LIMITED</cr:intCompE>				
+                    <cr:intCompC>測試有限公司</cr:intCompC>				
+                    <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                    <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                    <cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+                    <cr:signatoryDate>18/05/2022</cr:signatoryDate>
+                </cr:formModel>
+            </cr:EForm>
+            <cr:EFormSignatures >
+            </cr:EFormSignatures>
+        </cr:submission>
+    </cr:validateForm>
+  </soap:Body>
+</soap:Envelope>

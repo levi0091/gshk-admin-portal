@@ -1,0 +1,32 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <cr:validateForm xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <cr:submission>
+            <cr:EForm id="eForm">
+                <cr:formModel id="formData">
+                    <cr:language>E</cr:language>
+                    <cr:brNo>00000001</cr:brNo>
+                    <cr:resCesBeans>
+                        <cr:resCesBean>
+                            <cr:cpty>D</cr:cpty>
+                            <cr:altTo></cr:altTo>
+							<cr:indvChiName>陳大文</cr:indvChiName>
+							<cr:indvEngSname>CHAN</cr:indvEngSname>
+							<cr:indvEngOname>TAI MAN</cr:indvEngOname>
+							<cr:indvHkidPartial>A123</cr:indvHkidPartial>
+							<cr:indvPptNoPartial>H123</cr:indvPptNoPartial>
+							<cr:rsnCes>R</cr:rsnCes>
+							<cr:dtResign>01/06/2022</cr:dtResign>
+							<cr:dirAfterCesInd>Y</cr:dirAfterCesInd>
+                        </cr:resCesBean>
+                    </cr:resCesBeans>
+                    <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                    <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                    <cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+                    <cr:signatoryDate>01/06/2022</cr:signatoryDate>
+                </cr:formModel>
+            </cr:EForm>
+        </cr:submission>
+    </cr:validateForm>
+  </soap:Body>
+</soap:Envelope>
