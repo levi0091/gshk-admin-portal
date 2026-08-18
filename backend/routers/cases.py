@@ -6,11 +6,11 @@ different authorities: the second sends mail to clients and spends money.
 """
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from middleware.auth import require_permission
-from services import audit_events as ev, nar1_cases
+from services import audit_events as ev, document_service, nar1_cases
 from services.audit_service import log_event
 
 router = APIRouter()
@@ -133,4 +133,171 @@ async def patch_case(
             entity_type="nar1_case", entity_id=case_id, case_id=case_id,
             old_value=old, new_value=new, metadata={"field": field},
         )
+    return nar1_cases.composite(case_id)
+
+
+# --------------------------------------------------------------------------- #
+#  The manual (wet-signature, off-portal) path — BE-6
+#
+#  NOTHING below calls CR. The filing happens on paper, outside the portal, and
+#  the portal's job is only to hold the evidence and say so. Both routes read
+#  the filing ledger to refuse a case CR already holds, but neither writes to
+#  it: tpsi_filings owns CR-side facts (D-6), and a receipt CR never issued is
+#  not one of them.
+# --------------------------------------------------------------------------- #
+
+
+class ManualSubmitIn(BaseModel):
+    receipt: dict
+
+
+@router.post("/{case_id}/manual-sign", status_code=201)
+async def manual_sign(
+    case_id: str,
+    file: UploadFile = File(...),
+    user=Depends(require_permission("documents", "write")),
+):
+    """Upload the wet-signed NAR1 (BE-6). No CR call.
+
+    `documents:write`, not `tpsi:*`: this is a document going into storage. The
+    privileged act is recording the SUBMISSION, which is the next endpoint.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    if case.get("manual_receipt"):
+        raise HTTPException(
+            409,
+            "this case's off-portal submission is already recorded — the signed "
+            "form behind it is fixed. Upload a corrected scan through the "
+            "company's documents, which versions it.",
+        )
+
+    conflict = nar1_cases.manual_conflict(
+        nar1_cases.blocking_filing(case_id), step="sign"
+    )
+    if conflict:
+        raise HTTPException(409, conflict)
+
+    content = await file.read()
+    if not content:
+        # A zero-byte upload proves nothing and would still satisfy the
+        # manual-submit gate below.
+        raise HTTPException(400, "the uploaded file is empty")
+
+    # `nar1` is the document_type_code migration 003 already seeds
+    # ("NAR1 — Annual Return"). No new document type is needed. Owner is the
+    # ENTITY, not the case: documents are owned by companies, and a re-upload
+    # versions the same row rather than overwriting it.
+    document = await document_service.upload_document(
+        owner_kind="entity",
+        owner_id=case["entity_id"],
+        document_type_code="nar1",
+        file_name=file.filename or "signed-nar1.pdf",
+        content=content,
+        mime_type=file.content_type,
+        title=f"Signed NAR1 — {case.get('case_no') or case_id}",
+        user=user,
+    )
+
+    # Only after the upload succeeded: document_service raises on a storage
+    # failure, and marking the case manually signed off the back of a failed
+    # upload would open the manual-submit gate with no evidence behind it.
+    nar1_cases.update_case(case_id, {
+        "manual_signed_document_id": document["id"],
+        # The upload IS the choice of route; leaving this unset would keep the
+        # case reading as an e-Sign case in every listing.
+        "signing_method": "manual",
+    })
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.NAR1_MANUAL_SIGN_UPLOADED,
+        event_code=ev.NAR1_MANUAL_SIGN_UPLOADED,
+        entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+        new_value=file.filename,
+        metadata={"document_id": document["id"], "filename": file.filename,
+                  "bytes": len(content)},
+    )
+    return {"document_id": document["id"]}
+
+
+@router.post("/{case_id}/manual-submit")
+async def manual_submit(
+    case_id: str,
+    body: ManualSubmitIn,
+    user=Depends(require_permission("tpsi", "submit")),
+):
+    """Record an off-portal submission (BE-6). NO CR CALL, NO CHARGE.
+
+    Gated on `tpsi:submit` even though no money moves through us: this is the
+    act that declares the annual return filed, and it is exactly as consequential
+    in the register as the e-Signed one.
+
+    The guards run before the receipt is even looked at, most specific first, so
+    the answer names the real obstacle rather than the first field that happens
+    to be blank.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    if case.get("manual_receipt"):
+        raise HTTPException(
+            409, "this case already has a recorded off-portal submission"
+        )
+
+    conflict = nar1_cases.manual_conflict(
+        nar1_cases.blocking_filing(case_id), step="submit"
+    )
+    if conflict:
+        raise HTTPException(409, conflict)
+
+    if not case.get("manual_signed_document_id"):
+        raise HTTPException(
+            409,
+            "upload the wet-signed NAR1 before recording the submission — a "
+            "completion with no signed form is a false record",
+        )
+
+    problems = nar1_cases.validate_receipt(body.receipt)
+    if problems:
+        raise HTTPException(400, {"message": "receipt is incomplete",
+                                  "problems": problems})
+
+    # One clock reading for both columns: two calls to _now() would stamp two
+    # different instants on a single event.
+    now = _now()
+    nar1_cases.update_case(case_id, {
+        "manual_receipt": body.receipt,
+        "manual_submitted_at": now,
+        "signing_method": "manual",
+        "submitted_at": now,
+        "submitted_by": user["id"],
+    })
+
+    # The receipt is the only evidence the return was filed, so the trail
+    # carries it whole. Safe in after_state (which audit_service does NOT scrub)
+    # only because validate_receipt has just refused every key outside CR's own
+    # receipt vocabulary.
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.NAR1_MANUAL_RECEIPT_ENTERED,
+        event_code=ev.NAR1_MANUAL_RECEIPT_ENTERED,
+        entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+        after_state={"manual_receipt": body.receipt},
+        metadata={"caseNo": body.receipt.get("caseNo"),
+                  "totalAmount": body.receipt.get("totalAmount")},
+    )
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.NAR1_MANUAL_SUBMISSION_RECORDED,
+        event_code=ev.NAR1_MANUAL_SUBMISSION_RECORDED,
+        entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+        new_value="Completed",
+        metadata={"channel": "off_portal", "cr_called": False,
+                  "submitted_at": now},
+    )
     return nar1_cases.composite(case_id)

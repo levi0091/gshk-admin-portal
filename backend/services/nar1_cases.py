@@ -79,6 +79,125 @@ def current_filing(case_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+# ---------------------------------------------------------------------------
+# The manual (wet-signature, off-portal) path — BE-6
+# ---------------------------------------------------------------------------
+#
+# The receipt fields a manual entry must carry. A SUBSET of tpsi_filings'
+# RECEIPT_FIELDS by construction (test_the_manual_receipt_shape_matches_the_
+# e_signed_one enforces it), because Confirmation renders one template for both
+# paths -- and a manual receipt missing a field an e-Signed one has would render
+# a blank box that looks like missing data rather than a different route.
+#
+# chiCoyName, docCodesWithBarcode and refNo are NOT required: a company with no
+# Chinese name genuinely has none, and neither the barcode string nor refNo is
+# printed on the paper receipt.
+RECEIPT_REQUIRED = (
+    "caseNo", "brNo", "accNo", "engCoyName", "pymtNo", "pymtRefNo",
+    "transactionDate", "transactionTime", "pymtMtd", "totalAmount",
+)
+RECEIPT_LINE_REQUIRED = ("rcptNo", "revCode", "docShtFrm", "amtChrg")
+
+#: Everything a receipt MAY carry -- CR's own vocabulary, nothing else. Anything
+#: outside it is a problem, not a silently-dropped key: manual_receipt is a
+#: statutory record rendered by the same template as CR's, and audit_service
+#: scrubs `metadata` but not `after_state`, so arbitrary caller JSON must never
+#: reach either.
+RECEIPT_ALLOWED = set(tpsi_filings.RECEIPT_FIELDS) | {"paymentRcptList"}
+RECEIPT_LINE_ALLOWED = set(tpsi_filings.RECEIPT_LINE_FIELDS)
+
+#: Stages that mean CR already holds this return. Recording an off-portal
+#: submission on top would put a second statutory filing in the register for one
+#: return, and nothing downstream could say which one CR actually has.
+CR_FILED_STAGES = (
+    tpsi_filings.STAGE_SUBMITTED,
+    tpsi_filings.STAGE_REGISTERED,
+    tpsi_filings.STAGE_EDRIVE,
+)
+
+
+def blocking_filing(case_id: str) -> dict | None:
+    """The filing that decides whether the manual path is still open.
+
+    Deliberately NOT current_filing(). That returns the NEWEST non-superseded
+    attempt, and nothing stops POST /tpsi/filings/prepare opening a second draft
+    against a case that has already been submitted — no restart marks the old
+    row superseded today, so the fresh draft would sort first and hide a filing
+    CR is already holding. The manual gate asks "has this return been filed?",
+    which is a question about ANY attempt, not the latest one.
+
+    Falls back to the current attempt so the 'signed' guard still sees a live
+    e-Sign chain.
+    """
+    filed = (
+        get_supabase().table("tpsi_filings")
+        .select("*")
+        .eq("nar1_case_id", case_id)
+        .in_("stage", list(CR_FILED_STAGES))
+        .limit(1)
+        .execute()
+        .data
+    )
+    return filed[0] if filed else current_filing(case_id)
+
+
+def validate_receipt(receipt: dict) -> list[str]:
+    """Every problem at once — the user is copying off a paper receipt and
+    should not discover the fields one round trip at a time."""
+    problems = [
+        f"{field}: required" for field in RECEIPT_REQUIRED
+        if not str(receipt.get(field) or "").strip()
+    ]
+    problems += [
+        f"{key}: not a receipt field"
+        for key in sorted(set(receipt) - RECEIPT_ALLOWED)
+    ]
+
+    lines = receipt.get("paymentRcptList") or []
+    if not lines:
+        problems.append("paymentRcptList: at least one payment line is required")
+    for index, line in enumerate(lines):
+        line = line or {}
+        problems += [
+            f"paymentRcptList[{index}].{field}: required"
+            for field in RECEIPT_LINE_REQUIRED
+            if not str(line.get(field) or "").strip()
+        ]
+        problems += [
+            f"paymentRcptList[{index}].{key}: not a receipt field"
+            for key in sorted(set(line) - RECEIPT_LINE_ALLOWED)
+        ]
+    return problems
+
+
+def manual_conflict(filing: dict | None, *, step: str) -> str | None:
+    """Why the manual path must not run against this filing, or None.
+
+    `step` is "sign" (uploading the wet-signed form) or "submit" (declaring the
+    return filed off-portal). The two are gated differently on purpose.
+    """
+    stage = (filing or {}).get("stage")
+
+    if stage in CR_FILED_STAGES:
+        return (
+            f"this case is already filed with CR (form status '{stage}') — "
+            "recording an off-portal submission as well would put two filings "
+            "in the register for one return"
+        )
+
+    # 'signed' is the loaded gun. filings._check_gate PASSES on a signed row, so
+    # a case completed on paper while a signed filing sits live is ONE
+    # chargeable, irreversible call away from filing the same return twice. The
+    # upload is harmless preparation and stays allowed; the declaration is not.
+    if step == "submit" and stage == tpsi_filings.STAGE_SIGNED:
+        return (
+            "a CR-signed filing is waiting to be submitted — completing this "
+            "case on paper would leave that filing one chargeable call away "
+            "from filing the same return again. Restart the filing first."
+        )
+    return None
+
+
 def composite(case_id: str) -> dict:
     """The case plus BOTH statuses — the shape the v11 case header needs."""
     case = get_case(case_id)

@@ -91,6 +91,16 @@ AML_STATUS_CHANGED = "AML_STATUS_CHANGED"
 #   instead of a string literal per call site.
 DOCUMENT_GENERATED = "DOCUMENT_GENERATED"
 
+# ---- NAR1 manual (off-portal) path (BE-6) ----------------------------------
+#   Already seeded in audit_event_types by migration 021 (AUDIT_CODES), so no
+#   new migration is needed -- these constants only give callers one canonical
+#   name instead of a string literal per call site. Deliberately NOT the
+#   TPSI_SUBMISSION_* family: nothing here goes near CR, and an off-portal
+#   submission must never be mistaken in the trail for one we transmitted.
+NAR1_MANUAL_SIGN_UPLOADED = "NAR1_MANUAL_SIGN_UPLOADED"
+NAR1_MANUAL_SUBMISSION_RECORDED = "NAR1_MANUAL_SUBMISSION_RECORDED"
+NAR1_MANUAL_RECEIPT_ENTERED = "NAR1_MANUAL_RECEIPT_ENTERED"
+
 # Company field -> the Viewpoint folder that owns it.
 _COMPANY_FIELD_CODES = {
     # Master file (names)

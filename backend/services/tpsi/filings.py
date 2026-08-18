@@ -278,12 +278,16 @@ class SubmitGateError(Exception):
     """A guard on the chargeable, irreversible submit refused."""
 
 
-_RECEIPT_FIELDS = (
+#: The receipt vocabulary CR returns from submitForm. PUBLIC because the manual
+#: (off-portal) path in services/nar1_cases.py validates a hand-entered receipt
+#: against this same tuple — the Confirmation screen renders one template for
+#: both paths, so the two shapes must not be allowed to drift apart (BE-6).
+RECEIPT_FIELDS = (
     "caseNo", "brNo", "accNo", "chiCoyName", "engCoyName",
     "docCodesWithBarcode", "pymtNo", "pymtRefNo", "pymtMtd",
     "transactionDate", "transactionTime", "totalAmount", "refNo",
 )
-_RECEIPT_LINE_FIELDS = ("rcptNo", "revCode", "docShtFrm", "revDesc", "amtChrg")
+RECEIPT_LINE_FIELDS = ("rcptNo", "revCode", "docShtFrm", "revDesc", "amtChrg")
 
 
 def parse_receipt(xml_bytes: bytes) -> dict:
@@ -291,9 +295,9 @@ def parse_receipt(xml_bytes: bytes) -> dict:
     from services.tpsi.soap import find_all
 
     element = parse_response(xml_bytes, "submitFormResponse")
-    receipt = {f: text_of(element, f) for f in _RECEIPT_FIELDS}
+    receipt = {f: text_of(element, f) for f in RECEIPT_FIELDS}
     receipt["paymentRcptList"] = [
-        {f: text_of(line, f) for f in _RECEIPT_LINE_FIELDS}
+        {f: text_of(line, f) for f in RECEIPT_LINE_FIELDS}
         for line in find_all(element, "paymentRcptList")
     ]
     return receipt
