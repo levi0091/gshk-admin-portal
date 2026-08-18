@@ -205,12 +205,38 @@ async def manual_sign(
     # Only after the upload succeeded: document_service raises on a storage
     # failure, and marking the case manually signed off the back of a failed
     # upload would open the manual-submit gate with no evidence behind it.
-    nar1_cases.update_case(case_id, {
+    # The VERSION as well as the id. upload_document versions in place: the
+    # documents row for (entity, 'nar1') is reused and rewritten every year, so
+    # this company's 2027 scan comes back under the same id already stored on the
+    # 2026 case and mutates the row that id points at. (id, version) is the pair
+    # document_versions is keyed on, and is the only pointer that still resolves
+    # to THIS case's evidence at the next annual return.
+    patch = {
         "manual_signed_document_id": document["id"],
+        "manual_signed_document_version": document.get("current_version") or 1,
         # The upload IS the choice of route; leaving this unset would keep the
         # case reading as an e-Sign case in every listing.
         "signing_method": "manual",
-    })
+    }
+    nar1_cases.update_case(case_id, patch)
+
+    # signing_method is a case FIELD, and PATCH /cases/{id} audits every change
+    # to it with old and new. Writing it here and logging only the document
+    # event would leave the field-change view of the trail with a hole the PATCH
+    # route does not have — CLAUDE.md's PBI-11 table asks for one
+    # CASE_FIELD_UPDATED per changed field. Only on a real change: a re-upload on
+    # an already-manual case changed nothing, and a no-op must not write a false
+    # audit row (Task 6).
+    previous_method = case.get("signing_method")
+    if previous_method != "manual":
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.CASE_FIELD_UPDATED, event_code=ev.CASE_FIELD_UPDATED,
+            entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+            old_value=previous_method, new_value="manual",
+            metadata={"field": "signing_method"},
+        )
+
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.NAR1_MANUAL_SIGN_UPLOADED,
@@ -218,9 +244,11 @@ async def manual_sign(
         entity_type="nar1_case", entity_id=case_id, case_id=case_id,
         new_value=file.filename,
         metadata={"document_id": document["id"], "filename": file.filename,
-                  "bytes": len(content)},
+                  "bytes": len(content),
+                  "version": patch["manual_signed_document_version"]},
     )
-    return {"document_id": document["id"]}
+    return {"document_id": document["id"],
+            "document_version": patch["manual_signed_document_version"]}
 
 
 @router.post("/{case_id}/manual-submit")
@@ -270,13 +298,23 @@ async def manual_submit(
     # One clock reading for both columns: two calls to _now() would stamp two
     # different instants on a single event.
     now = _now()
-    nar1_cases.update_case(case_id, {
+    # A CONDITIONAL write, not update_case(). The manual_receipt check at the top
+    # of this handler is a read, and two concurrent requests both pass it; the
+    # condition has to travel with the UPDATE for Postgres to settle it. Nothing
+    # below this line runs unless this request is the one that claimed the row —
+    # audit_log is insert-only, so a second NAR1_MANUAL_SUBMISSION_RECORDED for
+    # one return could never be taken back.
+    claimed = nar1_cases.claim_manual_submission(case_id, {
         "manual_receipt": body.receipt,
         "manual_submitted_at": now,
         "signing_method": "manual",
         "submitted_at": now,
         "submitted_by": user["id"],
     })
+    if claimed is None:
+        raise HTTPException(
+            409, "this case already has a recorded off-portal submission"
+        )
 
     # The receipt is the only evidence the return was filed, so the trail
     # carries it whole. Safe in after_state (which audit_service does NOT scrub)

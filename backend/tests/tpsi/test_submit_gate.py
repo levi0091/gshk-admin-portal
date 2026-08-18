@@ -229,3 +229,119 @@ def test_receipt_writeback_failure_does_not_fail_the_submission():
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
         result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
     assert result["receipt"]["caseNo"] == "180256934"
+
+
+# ---- the off-portal interlock (BE-6 fix round 1) ---------------------------
+#
+# nar1_cases.manual_conflict() guards the manual path against a live filing but
+# only in one direction: it ALLOWS a manual completion while a filing sits at
+# 'validated', and 'validated' -> 'signed' -> 'submitted' then knew nothing about
+# the case having been filed on paper. Every step that puts the form in front of
+# CR now refuses.
+
+
+def _case_supabase(case: dict | None):
+    """A Supabase double for the nar1_cases lookup manual_completion() makes."""
+    table = MagicMock()
+    (table.select.return_value.eq.return_value.limit.return_value
+     .execute.return_value.data) = [case] if case else []
+    sb = MagicMock()
+    sb.table.return_value = table
+    return sb
+
+
+COMPLETED_CASE = {
+    "id": "c1", "case_no": "NAR-2026-0007",
+    "manual_receipt": {"caseNo": "180256934"},
+    "manual_submitted_at": "2026-08-18T02:00:00+00:00",
+}
+
+
+def test_submit_refuses_a_case_already_filed_off_portal():
+    """Every other gate condition passes: signed, payload stored, funds ample,
+    confirm=True. Only the interlock stands between this and a second lodgement
+    of the same statutory return."""
+    filing = _signed(nar1_case_id="c1")
+    with patch.object(filings, "get_filing", return_value=filing), \
+         patch.object(filings, "get_supabase",
+                      return_value=_case_supabase(COMPLETED_CASE)), \
+         patch("services.tpsi.reads.check_balance") as balance:
+        with pytest.raises(filings.ManualCompletionInterlock, match="off-portal"):
+            filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    # Refused before ANY CR traffic, the free balance read included.
+    balance.assert_not_called()
+
+
+def test_sign_refuses_a_case_already_filed_off_portal():
+    """The refusal has to surface here, not one step later at the charge."""
+    filing = _signed(nar1_case_id="c1", stage=filings.STAGE_VALIDATED)
+    client = _client()
+    with patch.object(filings, "get_filing", return_value=filing), \
+         patch.object(filings, "get_supabase",
+                      return_value=_case_supabase(COMPLETED_CASE)):
+        with pytest.raises(filings.ManualCompletionInterlock, match="off-portal"):
+            filings.sign(client, "f1", "DIRECTOR1", "pw")
+    client.post_form.assert_not_called()
+
+
+def test_edrive_refuses_a_case_already_filed_off_portal():
+    """e-Drive is a lodgement channel too — STAGE_EDRIVE is in
+    nar1_cases.CR_FILED_STAGES — and it is reachable straight from 'validated',
+    so guarding only sign/submit would leave the same door open."""
+    filing = _signed(nar1_case_id="c1", stage=filings.STAGE_VALIDATED)
+    client = _client()
+    with patch.object(filings, "get_filing", return_value=filing), \
+         patch.object(filings, "get_supabase",
+                      return_value=_case_supabase(COMPLETED_CASE)):
+        with pytest.raises(filings.ManualCompletionInterlock, match="off-portal"):
+            filings.upload_edrive(client, "f1")
+    client.post_form.assert_not_called()
+
+
+def test_the_interlock_is_a_submit_gate_error_so_the_route_audits_the_refusal():
+    """routers/tpsi.submit_filing logs TPSI_SUBMISSION_FAILED for
+    SubmitGateError. If the interlock stopped being one, a refused submit would
+    vanish from the audit trail."""
+    assert issubclass(filings.ManualCompletionInterlock, filings.SubmitGateError)
+
+
+def test_a_case_with_no_off_portal_receipt_does_not_block_the_chain():
+    """The interlock keys on manual_receipt — the recorded SUBMISSION — not on a
+    wet-signed scan having been uploaded. Uploading the scan is preparation and
+    must leave the e-Sign chain usable."""
+    case = {"id": "c1", "manual_receipt": None,
+            "manual_signed_document_id": "d1"}
+    with patch.object(filings, "get_filing",
+                      return_value=_signed(nar1_case_id="c1")), \
+         patch.object(filings, "get_supabase", return_value=_case_supabase(case)), \
+         patch.object(filings, "_update"), \
+         patch.object(filings, "_write_back_receipt"), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    assert result["receipt"]["caseNo"] == "180256934"
+
+
+def test_a_filing_with_no_case_is_not_looked_up_at_all():
+    """NNC1 and bare TPSI filings carry no nar1_case_id. Reading nar1_cases for
+    them would be a round trip on every submit that can never find anything."""
+    sb = MagicMock()
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch.object(filings, "get_supabase", return_value=sb), \
+         patch.object(filings, "_update"), \
+         patch.object(filings, "_write_back_receipt"), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    assert not any(c.args and c.args[0] == "nar1_cases" for c in sb.table.call_args_list)
+
+
+def test_the_interlock_fails_closed_when_the_case_cannot_be_read():
+    """A Supabase outage must block the chargeable call, not wave it through."""
+    broken = MagicMock()
+    broken.table.side_effect = RuntimeError("supabase unreachable")
+    with patch.object(filings, "get_filing",
+                      return_value=_signed(nar1_case_id="c1")), \
+         patch.object(filings, "get_supabase", return_value=broken), \
+         patch("services.tpsi.reads.check_balance") as balance:
+        with pytest.raises(RuntimeError, match="supabase unreachable"):
+            filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    balance.assert_not_called()

@@ -205,6 +205,75 @@ def _extract_eform(submission_xml: str) -> str:
     return submission_xml[open_match.start() : end + len(close)]
 
 
+# ---------------------------------------------------------------------------
+# The off-portal (wet-signature) interlock — BE-6
+# ---------------------------------------------------------------------------
+#
+# nar1_cases.manual_conflict() guards the manual path against a live filing, but
+# only in one direction. It deliberately allows a manual completion while a
+# filing sits at 'validated' (the client changed their mind mid-chain), and
+# 'validated' -> 'signed' -> 'submitted' is then free of any check that knows the
+# case has already been filed on paper. That is one chargeable, IRREVERSIBLE
+# call away from lodging the same statutory return with CR twice.
+#
+# So the interlock is two-way: every step of the e-Sign chain that puts a form in
+# front of CR refuses a case whose return is already filed off-portal. It is read
+# from the database on every call rather than cached, and it FAILS CLOSED — if
+# the case cannot be read, the chargeable call does not happen.
+
+
+class SubmitGateError(Exception):
+    """A guard on the chargeable, irreversible submit refused.
+
+    Defined here rather than in the Submit section below because
+    ManualCompletionInterlock subclasses it and `sign` raises that.
+    """
+
+
+class ManualCompletionInterlock(SubmitGateError):
+    """The case behind this filing was already filed off-portal.
+
+    A SubmitGateError so `submit_filing` refuses, audits (TPSI_SUBMISSION_FAILED)
+    and 409s it exactly like every other guard on the chargeable call. `sign` and
+    `upload_edrive` raise it too and their routes handle it explicitly, so the
+    refusal surfaces before the signature rather than at the charge.
+    """
+
+
+def manual_completion(filing: dict) -> dict | None:
+    """The off-portal completion recorded against this filing's case, or None.
+
+    A filing with no `nar1_case_id` (NNC1, or a bare TPSI filing) has no case to
+    have been completed, so there is nothing to check.
+    """
+    case_id = filing.get("nar1_case_id")
+    if not case_id:
+        return None
+    rows = (
+        get_supabase().table("nar1_cases")
+        .select("id,case_no,manual_receipt,manual_submitted_at")
+        .eq("id", case_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    case = (rows or [None])[0] or {}
+    return case if case.get("manual_receipt") else None
+
+
+def _refuse_if_filed_off_portal(filing: dict, action: str) -> None:
+    case = manual_completion(filing)
+    if case is None:
+        return
+    raise ManualCompletionInterlock(
+        f"case {case.get('case_no') or case.get('id')} was already filed "
+        f"off-portal (wet signature, receipt recorded "
+        f"{case.get('manual_submitted_at') or 'earlier'}) — {action} would lodge "
+        "the same annual return with CR a second time and charge the deposit "
+        "account for it"
+    )
+
+
 def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str) -> dict:
     """verifyPinSigning{Code}. No charge.
 
@@ -216,6 +285,10 @@ def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str)
     from services.tpsi.soap import append_to_signatures
 
     filing = get_filing(filing_id)
+    # First, and before the stage check: a signature on a case already filed on
+    # paper is the step that arms the chargeable one. Naming the real obstacle
+    # here beats letting it surface a step later, at the charge.
+    _refuse_if_filed_off_portal(filing, "signing this filing")
     if filing["stage"] != STAGE_VALIDATED:
         raise ValueError("filing must be validated before it can be signed")
 
@@ -257,6 +330,10 @@ def upload_edrive(client, filing_id: str) -> dict:
     this filing can never go on to submitForm.
     """
     filing = get_filing(filing_id)
+    # e-Drive is a lodgement channel, not a preview: STAGE_EDRIVE is one of
+    # nar1_cases.CR_FILED_STAGES precisely because CR holds the return after it.
+    # Blocking only sign/submit would leave this door open from 'validated'.
+    _refuse_if_filed_off_portal(filing, "sending it to CR e-Drive")
     if filing["stage"] not in (STAGE_VALIDATED, STAGE_SIGNED):
         raise ValueError("filing must be validated before it can go to e-Drive")
 
@@ -272,11 +349,6 @@ def upload_edrive(client, filing_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # Submit — CHARGEABLE AND IRREVERSIBLE
 # ---------------------------------------------------------------------------
-
-
-class SubmitGateError(Exception):
-    """A guard on the chargeable, irreversible submit refused."""
-
 
 #: The receipt vocabulary CR returns from submitForm. PUBLIC because the manual
 #: (off-portal) path in services/nar1_cases.py validates a hand-entered receipt
@@ -362,6 +434,10 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
     from services.tpsi.soap import append_deposit_account
 
     filing = get_filing(filing_id)
+    # BEFORE any CR traffic at all, including the free balance read: this is the
+    # chargeable, irreversible one, and a case already filed on paper must never
+    # get as far as a request that could spend.
+    _refuse_if_filed_off_portal(filing, "submitting it to CR")
     fee = fee_for(filing["form_code"])
     balance = reads.check_balance(client, deposit_account)  # LIVE, never cached
     _check_gate(filing, confirm, balance, fee)

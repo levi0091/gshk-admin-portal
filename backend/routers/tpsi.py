@@ -674,6 +674,11 @@ async def sign_filing(
             signatory, password = pair
 
         result = filings.sign(client_for(user), filing_id, signatory, password)
+    except filings.ManualCompletionInterlock as exc:
+        # 409, not 400: nothing about the request is malformed — the case was
+        # filed off-portal and this filing must not go any further towards the
+        # chargeable call. Refused before CR ever sees the signature.
+        raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
@@ -695,6 +700,8 @@ async def edrive_filing(
 ):
     try:
         result = filings.upload_edrive(client_for(user), filing_id)
+    except filings.ManualCompletionInterlock as exc:
+        raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:

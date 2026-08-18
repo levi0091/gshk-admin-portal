@@ -59,6 +59,31 @@ def update_case(case_id: str, patch: dict) -> dict:
     )
 
 
+def claim_manual_submission(case_id: str, patch: dict) -> dict | None:
+    """Record the off-portal submission, but ONLY if none is recorded yet.
+
+    Returns the updated row, or None when another request got there first.
+
+    The router's read-then-write was TOCTOU: two concurrent requests both saw
+    manual_receipt NULL and both wrote. Last write wins on one row, so there was
+    never a second statutory record — but the trail got two
+    NAR1_MANUAL_SUBMISSION_RECORDED entries for one return (and audit_log is
+    insert-only, so neither can be taken back), and the stored receipt might not
+    be the one the first response reported. The condition belongs in the UPDATE,
+    where Postgres settles it.
+    """
+    patch = {**patch, "updated_at": _now()}
+    rows = (
+        get_supabase().table(_TABLE)
+        .update(patch)
+        .eq("id", case_id)
+        .is_("manual_receipt", None)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
 def current_filing(case_id: str) -> dict | None:
     """The filing that represents this case right now.
 
@@ -98,13 +123,24 @@ RECEIPT_REQUIRED = (
 )
 RECEIPT_LINE_REQUIRED = ("rcptNo", "revCode", "docShtFrm", "amtChrg")
 
-#: Everything a receipt MAY carry -- CR's own vocabulary, nothing else. Anything
-#: outside it is a problem, not a silently-dropped key: manual_receipt is a
+#: The KEY NAMES a receipt may carry -- CR's own vocabulary, nothing else. A key
+#: outside it is a problem, not a silently-dropped one: manual_receipt is a
 #: statutory record rendered by the same template as CR's, and audit_service
 #: scrubs `metadata` but not `after_state`, so arbitrary caller JSON must never
 #: reach either.
+#:
+#: This constrains names ONLY. RECEIPT_SCALARS below constrains the values,
+#: because a legitimate key is otherwise a wide-open door: a `caseNo` whose value
+#: is {"password": "hunter2"} passes every name check there is.
 RECEIPT_ALLOWED = set(tpsi_filings.RECEIPT_FIELDS) | {"paymentRcptList"}
 RECEIPT_LINE_ALLOWED = set(tpsi_filings.RECEIPT_LINE_FIELDS)
+
+#: A receipt field holds one printed value. CR's own parser yields strings; a UI
+#: posting JSON numbers, booleans or nulls is not smuggling anything, so those
+#: pass too. Only STRUCTURES are refused -- they are the shape that carries a
+#: payload past a name check. (bool is a subclass of int; named anyway so the
+#: intent survives a future reader.)
+RECEIPT_SCALARS = (str, int, float, bool, type(None))
 
 #: Stages that mean CR already holds this return. Recording an off-portal
 #: submission on top would put a second statutory filing in the register for one
@@ -152,11 +188,31 @@ def validate_receipt(receipt: dict) -> list[str]:
         f"{key}: not a receipt field"
         for key in sorted(set(receipt) - RECEIPT_ALLOWED)
     ]
+    # The names above, the VALUES here. A name check alone is a wide-open door:
+    # `caseNo` holding {"password": "hunter2"} satisfies every one of them, and
+    # the receipt goes whole into manual_receipt and into after_state, which
+    # audit_service does not scrub.
+    problems += [
+        f"{key}: must be a single receipt value, not a {type(value).__name__}"
+        for key, value in sorted(receipt.items())
+        if key in RECEIPT_ALLOWED and key != "paymentRcptList"
+        and not isinstance(value, RECEIPT_SCALARS)
+    ]
 
     lines = receipt.get("paymentRcptList") or []
     if not lines:
         problems.append("paymentRcptList: at least one payment line is required")
+    # A shape check before the field checks. This endpoint's whole contract is
+    # "every problem at once, as a 400", and a list of strings, an unwrapped
+    # single line, or a bare number used to raise AttributeError/TypeError out of
+    # it as a 500 -- `line or {}` guards None, not a non-mapping.
+    if lines and not isinstance(lines, list):
+        problems.append("paymentRcptList: must be a list of payment lines")
+        lines = []
     for index, line in enumerate(lines):
+        if line is not None and not isinstance(line, dict):
+            problems.append(f"paymentRcptList[{index}]: must be a payment line object")
+            continue
         line = line or {}
         problems += [
             f"paymentRcptList[{index}].{field}: required"
@@ -166,6 +222,13 @@ def validate_receipt(receipt: dict) -> list[str]:
         problems += [
             f"paymentRcptList[{index}].{key}: not a receipt field"
             for key in sorted(set(line) - RECEIPT_LINE_ALLOWED)
+        ]
+        problems += [
+            f"paymentRcptList[{index}].{key}: must be a single receipt value, "
+            f"not a {type(value).__name__}"
+            for key, value in sorted(line.items())
+            if key in RECEIPT_LINE_ALLOWED
+            and not isinstance(value, RECEIPT_SCALARS)
         ]
     return problems
 
@@ -204,6 +267,12 @@ def composite(case_id: str) -> dict:
     filing = current_filing(case_id)
     return {
         **case,
+        # Named explicitly, not left to **case: the signed-form pointer is only
+        # resolvable as (document_id, version) — upload_document versions the
+        # SAME documents row every year — and the Confirmation screen reads the
+        # key unconditionally. A missing key and a null version are different
+        # failures to debug.
+        "manual_signed_document_version": case.get("manual_signed_document_version"),
         "filing_id": (filing or {}).get("id"),
         "workflow_status": nar1_case_status.derive(case, filing),
         "form_status": form_status(filing) if filing else None,
