@@ -86,6 +86,29 @@ def _code(case: dict, filing: dict | None) -> str:
     return SIGNING
 
 
+def badge_from_row(row: dict) -> dict:
+    """The same badge, for a row that already carries the answer.
+
+    `nar1_case_registry` (migration 024) restates _code() in SQL because the
+    dashboard sorts and filters on the badge and PostgREST cannot do either to an
+    expression. This is the ONE place that reads those columns back, so the
+    listing hands the frontend the identical shape derive() produces -- a case on
+    the dashboard and the same case on its detail screen must not differ in the
+    key names of their badge, let alone its value.
+
+    It does NOT re-derive. Re-deriving in Python would silently paper over a
+    divergence between the two implementations, and tests/test_migration_024.py
+    exists precisely to make that divergence loud.
+    """
+    code = row["workflow_status"]
+    return {
+        "code": code,
+        "label": WORKFLOW_LABELS[code],
+        "off_portal": bool(row.get("workflow_off_portal")),
+        "overdue": bool(row.get("workflow_overdue")),
+    }
+
+
 def derive(case: dict, filing: dict | None) -> dict:
     """The workflow badge for one case.
 

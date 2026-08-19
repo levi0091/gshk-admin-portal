@@ -128,6 +128,56 @@ def test_there_are_exactly_seven_badges():
     assert len(st.WORKFLOW_STATUSES) == 7
 
 
+# ---- badge_from_row — the dashboard's read-back of the SQL answer ---------
+
+@pytest.mark.parametrize("code", st.WORKFLOW_STATUSES)
+def test_badge_from_row_produces_derives_shape_for_every_code(code):
+    """The dashboard reads the badge out of nar1_case_registry rather than
+    re-deriving it. The two screens must not differ in the key names."""
+    badge = st.badge_from_row({"workflow_status": code,
+                               "workflow_off_portal": False,
+                               "workflow_overdue": False})
+    assert set(badge) == {"code", "label", "off_portal", "overdue"}
+    assert badge["code"] == code
+    assert badge["label"] == st.WORKFLOW_LABELS[code]
+
+
+def test_badge_from_row_carries_the_flags_the_view_computed():
+    badge = st.badge_from_row({"workflow_status": "signing",
+                               "workflow_off_portal": True,
+                               "workflow_overdue": True})
+    assert badge["off_portal"] is True
+    assert badge["overdue"] is True
+
+
+def test_badge_from_row_reads_a_missing_flag_as_false_not_none():
+    """SQL NULL and a column the caller did not select both arrive as None. The
+    frontend renders a flag, and `null` is not a third state it knows."""
+    badge = st.badge_from_row({"workflow_status": "signing"})
+    assert badge["off_portal"] is False
+    assert badge["overdue"] is False
+
+
+def test_badge_from_row_refuses_a_status_that_is_not_one_of_the_seven():
+    """Loud, not silent. A code with no label means the view and this module
+    have drifted apart, which is exactly what test_migration_024 exists to
+    catch — swallowing it here would hide the drift behind a blank badge."""
+    with pytest.raises(KeyError):
+        st.badge_from_row({"workflow_status": "awaiting_cr"})
+
+
+def test_badge_from_row_does_not_re_derive():
+    """It reports what the SQL decided. Re-deriving in Python would paper over a
+    divergence between the two implementations of one rule, and the whole point
+    of the parity test is to make that divergence loud."""
+    row = {"workflow_status": "completed", "workflow_off_portal": False,
+           "workflow_overdue": False,
+           # Facts that derive() would read as data_verification.
+           "filing_stage": None, "verification_sent_at": None,
+           "client_approved": None, "manual_receipt_present": False}
+    assert st.badge_from_row(row)["code"] == "completed"
+
+
 def test_the_module_does_no_io():
     """A pure function is what makes this table-driven test the specification.
     An import of the DB client here would make it untestable without Supabase."""

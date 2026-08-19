@@ -6,11 +6,13 @@ different authorities: the second sends mail to clients and spends money.
 """
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from middleware.auth import require_permission
-from services import audit_events as ev, document_service, nar1_cases
+from services import (
+    audit_events as ev, document_service, nar1_case_status, nar1_cases,
+)
 from services.audit_service import log_event
 
 router = APIRouter()
@@ -59,6 +61,65 @@ async def create_case(
         metadata={"case_no": row.get("case_no"), "entity_id": body.entity_id},
     )
     return row
+
+
+@router.get("")
+async def list_cases(
+    scope: str | None = Query(None, description="dashboard"),
+    search: str | None = Query(None),
+    workflow_status: str | None = Query(None, description="one of the seven badges"),
+    anniv_op: str | None = Query(None, description="lte | gte | eq"),
+    anniv_days: int | None = Query(None, description="signed day count"),
+    sort: str | None = Query(None),
+    dir: str = Query("asc"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(nar1_cases._DEFAULT_PAGE_SIZE, ge=1,
+                           le=nar1_cases._MAX_PAGE_SIZE),
+    user=Depends(require_permission("nar1", "read")),
+):
+    """The case dashboard — one row per case (BE-7).
+
+    Deliberately NOT the company listing: a company with two open cases is two
+    rows here, and a row click opens that case's workflow rather than the
+    company profile. The company-level anniversary filter is untouched and still
+    lives on GET /companies — this reuses the same `days_to_anniversary` column
+    (migration 019) through `nar1_case_registry`, it does not restate it.
+
+    Read-only, so nothing is audited: CLAUDE.md puts reads outside audit scope,
+    and a dashboard load per page view would drown the trail it shares with the
+    statutory events.
+    """
+    # Rejected, not silently ignored. A filter the server drops looks like a
+    # filter that matched everything, and on a paginated listing the user has no
+    # way to tell the difference.
+    #
+    # `scope` gets the same treatment as every other parameter here. It has one
+    # legal value today, so accepting anything else and returning the dashboard
+    # anyway would be the exact defect this block exists to prevent: a caller
+    # asking for something we do not serve, and receiving something else with
+    # no indication. Omitting it stays legal -- the dashboard is this route's
+    # only listing -- so a caller that never learned about `scope` is not broken.
+    if scope is not None and scope != "dashboard":
+        raise HTTPException(422, f"Unknown scope '{scope}'")
+    if anniv_op is not None and anniv_op not in nar1_cases._ANNIV_OPS:
+        raise HTTPException(422, f"Unknown comparison '{anniv_op}'")
+    if (anniv_op is None) != (anniv_days is None):
+        raise HTTPException(422, "anniv_op and anniv_days must be supplied together")
+    if workflow_status and workflow_status not in nar1_case_status.WORKFLOW_STATUSES:
+        raise HTTPException(422, f"Unknown workflow status '{workflow_status}'")
+    if sort and sort not in nar1_cases._SORTABLE:
+        raise HTTPException(422, f"Cannot sort by '{sort}'")
+
+    return await nar1_cases.list_dashboard(
+        search=search,
+        workflow_status=workflow_status,
+        anniv_op=anniv_op,
+        anniv_days=anniv_days,
+        sort=sort,
+        direction=dir,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/{case_id}")

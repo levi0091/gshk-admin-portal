@@ -4,6 +4,7 @@ This module owns the client facts and the off-portal facts. It never writes a CR
 fact: tpsi_filings owns those, and nar1_case_status.derive() reads both to
 produce the badge.
 """
+import asyncio
 from datetime import datetime, timezone
 
 from db.supabase import get_supabase
@@ -259,6 +260,147 @@ def manual_conflict(filing: dict | None, *, step: str) -> str | None:
             "from filing the same return again. Restart the filing first."
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# The case dashboard — BE-7
+# ---------------------------------------------------------------------------
+
+#: The relation, not the table: `nar1_case_registry` (migration 024) is
+#: nar1_cases joined to company_registry and to the filing the badge is about,
+#: with days_to_anniversary and the workflow badge as real columns. It has to be
+#: a relation because the dashboard paginates: sorting or filtering the 50 rows
+#: the server happened to send answers the wrong question, and PostgREST cannot
+#: order or filter on an expression.
+_REGISTRY = "nar1_case_registry"
+
+#: Signed: negative means the anniversary has passed and the return is still
+#: inside the 42-day statutory window. Same vocabulary as the company listing
+#: (routers/companies.py), which already ships this filter over the same column.
+_ANNIV_OPS = {"lte", "gte", "eq"}
+
+#: Columns a table header may sort by. Whitelisted -- `sort` reaches PostgREST's
+#: order clause, so it must never be caller-controlled free text.
+_SORTABLE = {
+    "case_no", "company_name", "br_number", "case_status", "filing_stage",
+    "workflow_status", "days_to_anniversary", "created_at", "updated_at",
+}
+
+#: The deadline is the reason this screen exists, so it is the default order:
+#: soonest first, and negative (already past, still filable) sorts ahead of that.
+_DEFAULT_SORT = "days_to_anniversary"
+_DEFAULT_PAGE_SIZE = 50
+_MAX_PAGE_SIZE = 200
+
+_LIST_COLS = (
+    "id, case_no, entity_id, company_name, company_name_zh, br_number, "
+    "cr_number, case_type, nar1_type, case_status, signing_method, assigned_to, "
+    "filing_id, filing_stage, verification_sent_at, client_response_at, "
+    "client_approved, manual_receipt_present, manual_submitted_at, created_at, "
+    "updated_at, days_to_anniversary, workflow_status, workflow_off_portal, "
+    "workflow_overdue"
+)
+
+
+async def list_dashboard(
+    *,
+    search: str | None = None,
+    workflow_status: str | None = None,
+    anniv_op: str | None = None,
+    anniv_days: int | None = None,
+    sort: str | None = None,
+    direction: str = "asc",
+    page: int = 1,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+) -> dict:
+    """One row per case, filtered, counted and sorted IN THE DATABASE.
+
+    The routers validate these arguments and answer 422; the whitelists are
+    re-checked here anyway. `anniv_op` becomes a method name and `sort` becomes
+    a PostgREST order clause, so a caller that skipped the router must not be
+    able to reach either -- the same reasoning that put the manual-submission
+    interlock in the service rather than the route (Task 10).
+    """
+    if anniv_op is not None and anniv_op not in _ANNIV_OPS:
+        raise ValueError(f"Unknown comparison '{anniv_op}'")
+    if (anniv_op is None) != (anniv_days is None):
+        raise ValueError("anniv_op and anniv_days must be supplied together")
+    if workflow_status is not None and workflow_status not in nar1_case_status.WORKFLOW_STATUSES:
+        raise ValueError(f"Unknown workflow status '{workflow_status}'")
+    if sort is not None and sort not in _SORTABLE:
+        raise ValueError(f"Cannot sort by '{sort}'")
+
+    sb = get_supabase()
+
+    def base(cols: str, count: str | None = None):
+        """Every filter EXCEPT the status tab — applied to the count queries too.
+
+        Filtering only the page query would leave the pager quoting a total for
+        a set the user is not looking at. The status tab is deliberately outside
+        this: the per-status counts are what the tabs render, and applying the
+        selected tab to them would collapse every other tab to zero.
+        """
+        q = (sb.table(_REGISTRY).select(cols, count=count) if count
+             else sb.table(_REGISTRY).select(cols))
+        if search:
+            q = q.or_(
+                f"company_name.ilike.%{search}%,"
+                f"case_no.ilike.%{search}%,"
+                f"br_number.ilike.%{search}%"
+            )
+        if anniv_op:
+            col = "days_to_anniversary"
+            q = getattr(q, anniv_op)(col, anniv_days)
+            # A company with no incorporation_date has a NULL day count and
+            # cannot answer a numeric question. PostgREST would drop it anyway;
+            # being explicit means the intent survives the next edit.
+            q = q.not_.is_(col, "null")
+        return q
+
+    def count_of(status: str | None = None) -> int:
+        # An exact COUNT, never len(rows): PostgREST caps returned rows at 1000,
+        # so counting fetched rows silently under-reports once the registry grows.
+        q = base("id", count="exact")
+        if status:
+            q = q.eq("workflow_status", status)
+        return q.limit(1).execute().count or 0
+
+    # Eight independent counts. Sequentially that is 8 x ~200ms of pure
+    # round-trip latency on every dashboard load (the measurement that drove the
+    # same change in routers/companies.py).
+    values = await asyncio.gather(
+        asyncio.to_thread(count_of),
+        *[asyncio.to_thread(lambda s=s: count_of(s))
+          for s in nar1_case_status.WORKFLOW_STATUSES],
+    )
+    counts = {"all": values[0]}
+    counts.update(zip(nar1_case_status.WORKFLOW_STATUSES, values[1:]))
+
+    # Derived from the counts rather than a ninth query — it is the same number.
+    total = counts[workflow_status] if workflow_status else counts["all"]
+
+    q = base(_LIST_COLS)
+    if workflow_status:
+        q = q.eq("workflow_status", workflow_status)
+    start = (page - 1) * page_size
+    rows = (
+        # nullsfirst=False explicitly: Postgres puts NULLs FIRST on a DESC sort,
+        # which would open "furthest from anniversary" with every company that
+        # has no incorporation date and therefore no answer.
+        q.order(sort or _DEFAULT_SORT, desc=(direction == "desc"), nullsfirst=False)
+        .range(start, start + page_size - 1)
+        .execute().data
+    ) or []
+
+    for row in rows:
+        # The badge in derive()'s shape, so a case on the dashboard and the same
+        # case on its detail screen agree on key names as well as values. Read
+        # back, never re-derived — re-deriving would paper over exactly the
+        # divergence tests/test_migration_024.py exists to expose.
+        row["workflow_status"] = nar1_case_status.badge_from_row(row)
+
+    return {"rows": rows, "total": total, "page": page,
+            "page_size": page_size, "counts": counts}
 
 
 def composite(case_id: str) -> dict:
