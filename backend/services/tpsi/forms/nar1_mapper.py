@@ -87,9 +87,20 @@ _CAPACITY_COMPANY_SECRETARY = "Company Secretary"
 _ALLOTTEE_INDIVIDUAL = "I"
 _ALLOTTEE_CORPORATE = "C"
 
-#: indvHkidNo max_length in the worksheet. A stripped HKID longer than this is
-#: caught here, where the intent to strip lives, not only by nar1.validate().
-_HKID_MAX_LENGTH = 8
+#: indvHkidNo carries the PARTIAL HKID, not the full one. Verified live against
+#: CR TEST on 2026-08-21: a full 8-character HKID is refused with "HKID No.
+#: length must be at most 5", and a 5-character one that is not letters+3-digits
+#: with "The partial HKID number is invalid. Please input the partial HKID
+#: number correctly, e.g. A123 or XA123."
+#:
+#: The worksheet's max_length of 8 is WRONG — it describes the full number. CR's
+#: own validate_NAR1 example carries "A123", and the CR test workbook has a
+#: dedicated "Partial HKID" column ("T001"). Filing the full number would also
+#: send CR more personal data than it asks for.
+_HKID_MAX_LENGTH = 5
+
+#: One or two letters followed by exactly three digits — CR's own two examples.
+_PARTIAL_HKID = re.compile(r"^[A-Z]{1,2}[0-9]{3}$")
 
 #: shType is the SHAREHOLDER TYPE of a shareHolderGrp, not a payment state:
 #: "1" = sole shareholder, "2" = joint (worksheet: "Shareholder Type: 1 -
@@ -255,6 +266,20 @@ def _address(addr: dict | None, problems: list[str], where: str,
     }
 
 
+def _partial_hkid(digits: str) -> str | None:
+    """The PARTIAL HKID CR wants on a NAR1: leading letters + first 3 digits.
+
+    "A1234567" -> "A123", "XA1234567" -> "XA123". A number already stored in
+    partial form passes through unchanged. Returns None when no such form can
+    be derived, so the caller reports it rather than filing something CR will
+    reject (verified live 2026-08-21).
+    """
+    if _PARTIAL_HKID.match(digits):
+        return digits
+    match = re.match(r"^([A-Z]{1,2})([0-9]{3})", digits)
+    return f"{match.group(1)}{match.group(2)}" if match else None
+
+
 def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
     """HKID if there is one, otherwise a passport. CR takes one or the other.
 
@@ -268,18 +293,25 @@ def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
     at all, and that must be said out loud rather than dropped.
     """
     if not docs:
+        problems.append(
+            f"{where}: no HKID or passport on record. CR refuses the return "
+            "without a partial identity number for every individual — "
+            "record one before filing"
+        )
         return {}
     hkid = next((d for d in docs if d.get("id_type") == "hkid"), None)
     if hkid:
         digits = "".join(c for c in str(hkid.get("id_number") or "")
                          if c.isalnum()).upper()
-        if len(digits) > _HKID_MAX_LENGTH:
+        partial = _partial_hkid(digits)
+        if partial is None:
             problems.append(
-                f"{where}: HKID {digits!r} is {len(digits)} characters after "
-                f"stripping punctuation and indvHkidNo takes "
-                f"{_HKID_MAX_LENGTH} — check the number on record"
+                f"{where}: HKID {digits!r} does not yield a partial number CR "
+                "accepts — indvHkidNo on the NAR1 is one or two letters "
+                "followed by three digits (e.g. A123 or XA123)"
             )
-        return {"indvHkidNo": digits}
+            return {}
+        return {"indvHkidNo": partial}
     passport = next((d for d in docs if d.get("id_type") == "passport"), None)
     if passport is None:
         kinds = sorted({str(d.get("id_type")) for d in docs})
@@ -294,17 +326,29 @@ def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
     # indvPptNo is mandatory:false, so an absent number is omitted downstream by
     # the same filter that drops it for a person with no document at all.
     number = str(passport.get("id_number") or "")
-    out = {"indvPptNo": number}
-    # indvPptIssCtry is mandatory:false, so an issuing country CR has no code
-    # for is omitted rather than raised. It goes through the same resolver as
-    # every other country: DEV's person_identity_documents.issuing_country is
-    # alpha-2 too, so the old name-only table dropped most of them silently.
+    # It goes through the same resolver as every other country: DEV's
+    # person_identity_documents.issuing_country is alpha-2 too, so the old
+    # name-only table dropped most of them silently.
     code = resolve_country(passport.get("issuing_country"))
-    # Only alongside a number: indvPptIssCtry on its own declares the issuer of
-    # a passport the return does not name.
-    if code and number:
-        out["indvPptIssCtry"] = code
-    return out
+    if not number:
+        problems.append(
+            f"{where}: passport on record with no number — CR needs a partial "
+            "passport number for every individual without a HKID"
+        )
+        return {}
+    # BOTH OR NEITHER. The schema marks indvPptIssCtry mandatory:false, so this
+    # used to be omitted when the country would not resolve — but CR refuses
+    # that combination outright: "Passport number and issuing country/region
+    # should be reported together." (verified live 2026-08-21). An unresolvable
+    # issuing country is therefore a problem to report, not a field to drop.
+    if not code:
+        problems.append(
+            f"{where}: passport issuing country "
+            f"{passport.get('issuing_country')!r} has no CR code, and CR "
+            "refuses a passport number without its issuing country"
+        )
+        return {}
+    return {"indvPptNo": number, "indvPptIssCtry": code}
 
 
 def _identity_number(docs: list[dict]) -> str:

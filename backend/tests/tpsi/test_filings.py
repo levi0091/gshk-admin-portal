@@ -202,10 +202,44 @@ SIGN_OK = b"""<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelop
    <cr:result>Pin Signature(s) Verified Successfully.</cr:result>
  </cr:verifyPinSigningResponse></soap:Body></soap:Envelope>"""
 
+def _cr_certificate_b64():
+    """A stand-in for the <ds:X509Certificate> CR puts on every validate
+    response. `sign()` encrypts <cr:EncryptionKey> to THIS certificate's public
+    key rather than to TPSI_CR_PUBLIC_KEY, so a validated payload without one
+    cannot be signed — which is why the fixture below carries a real DER."""
+    import base64 as _b64
+    import datetime as _dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ICRIS TEST")])
+    now = _dt.datetime(2026, 1, 1)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + _dt.timedelta(days=3650))
+        .sign(key, hashes.SHA256())
+    )
+    return _b64.b64encode(
+        cert.public_bytes(serialization.Encoding.DER)
+    ).decode()
+
+
+CR_CERT_B64 = _cr_certificate_b64()
+
 VALIDATED_XML = (
     '<cr:submission><cr:EForm id="eForm"><cr:formModel id="formData">'
     "<cr:formCode>NAR1</cr:formCode></cr:formModel></cr:EForm>"
-    '<cr:EFormSignatures><cr:Signature id="CR"/></cr:EFormSignatures>'
+    '<cr:EFormSignatures><cr:Signature id="CR">'
+    f"<ds:X509Certificate>{CR_CERT_B64}</ds:X509Certificate>"
+    "</cr:Signature></cr:EFormSignatures>"
     "</cr:submission>"
 )
 
@@ -277,7 +311,9 @@ def test_sign_failure_records_signing_failed_not_a_generic_failure(monkeypatch):
         # just before its closing tag, so sign() fails earlier without it.
         "validated_xml": (
             "<cr:submission><cr:EForm>x</cr:EForm>"
-            "<cr:EFormSignatures></cr:EFormSignatures></cr:submission>"
+            "<cr:EFormSignatures>"
+            f"<ds:X509Certificate>{CR_CERT_B64}</ds:X509Certificate>"
+            "</cr:EFormSignatures></cr:submission>"
         ),
     }
     monkeypatch.setattr(filings, "get_filing", lambda _id: filing)

@@ -88,6 +88,17 @@ def graph(**over):
         "identity_documents": {},
     }
     base.update(over)
+    # CR refuses a NAR1 that files any individual with no partial identity
+    # number ("Please input the partial HKID number or partial passport
+    # number", verified live 2026-08-21), so a graph whose people carry no
+    # documents cannot produce a fileable return. Give every person a valid
+    # HKID by default; tests that are ABOUT identity pass their own
+    # `identity_documents` and this leaves them alone.
+    if "identity_documents" not in over:
+        base["identity_documents"] = {
+            pid: [{"id_type": "hkid", "id_number": "A123456(7)"}]
+            for pid in base["persons"]
+        }
     return base
 
 
@@ -802,9 +813,12 @@ def test_a_corporate_secretary_in_both_tables_is_emitted_once_with_its_tcsp():
     assert secs[0]["corpTcspNo"] == "TC000807"
 
 
-def test_hkid_is_sent_without_its_bracketed_check_digit():
-    """indvHkidNo is max 8 characters. "A123456(7)" is 10 and would be rejected
-    on length; stripping the punctuation gives the 8 CR expects."""
+def test_hkid_is_sent_as_the_partial_number_cr_asks_for():
+    """indvHkidNo on a NAR1 is the PARTIAL HKID: leading letters plus the first
+    three digits, at most 5 characters. Verified live 2026-08-21 -- CR rejects
+    a full 8-character number with "HKID No. length must be at most 5", and
+    CR's own workbook has a separate "Partial HKID" column feeding this field.
+    Sending the full number would also disclose more than CR asks for."""
     g = graph(
         officers=[{"person_id": "p1", "party_type": "individual",
                    "role": "director", "is_current": True}],
@@ -813,7 +827,7 @@ def test_hkid_is_sent_without_its_bracketed_check_digit():
         identity_documents={"p1": [{"id_type": "hkid", "id_number": "A123456(7)",
                                     "is_primary": True}]},
     )
-    assert mapped(g)["indDirList"][0]["indvHkidNo"] == "A1234567"
+    assert mapped(g)["indDirList"][0]["indvHkidNo"] == "A123"
 
 
 def test_a_china_id_is_a_problem_not_a_director_filed_without_any_id():
@@ -855,8 +869,9 @@ def test_a_passport_row_with_no_number_does_not_crash_the_mapper():
     """`passport["id_number"]` was the one unguarded subscript left in a helper
     that reads every other column with .get(). A null column is a KeyError —
     an unhandled 500 on the prepare endpoint rather than a fault the user can
-    read. indvPptNo is mandatory:false, so an absent number is simply omitted,
-    exactly as it is for a person carrying no document at all."""
+    read. It is now a reported problem instead: CR requires a partial identity
+    number for every individual, so a passport row with no number cannot be
+    filed and must be said out loud."""
     g = graph(
         officers=[{"person_id": "p1", "party_type": "individual",
                    "role": "director", "is_current": True}],
@@ -865,22 +880,20 @@ def test_a_passport_row_with_no_number_does_not_crash_the_mapper():
         identity_documents={"p1": [{"id_type": "passport",
                                     "issuing_country": "Singapore"}]},
     )
-    d = mapped(g)["indDirList"][0]
-    assert "indvPptNo" not in d
-    # And not the issuing country on its own — that declares the issuer of a
-    # passport the return never names.
-    assert "indvPptIssCtry" not in d
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("passport" in p for p in exc.value.problems)
 
 
-def test_an_over_length_hkid_is_caught_in_the_mapper():
-    """indvHkidNo is 8 characters. nar1.validate() catches this downstream, but
-    the mapper is where the intent to strip to 8 lives."""
+def test_an_hkid_that_yields_no_partial_number_is_caught_in_the_mapper():
+    """Two letters plus three digits IS valid ("XA123" is one of CR's own two
+    examples), so the guard is on the SHAPE, not merely on length."""
     g = graph(
         officers=[{"person_id": "p1", "party_type": "individual",
                    "role": "director", "is_current": True}],
         persons={"p1": person()},
         addresses={"a1": ADDR, "a2": ADDR},
-        identity_documents={"p1": [{"id_type": "hkid", "id_number": "AB123456(7)",
+        identity_documents={"p1": [{"id_type": "hkid", "id_number": "!!!",
                                     "is_primary": True}]},
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:

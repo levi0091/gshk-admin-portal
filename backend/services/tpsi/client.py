@@ -149,9 +149,27 @@ class TpsiClient:
             return self.post_soap(path, body_xml, _retrying=True, _prebuilt=payload)
 
         if response.status_code >= 500:
+            # CR returns FIELD-LEVEL VALIDATION FAULTS as HTTP 500, carrying
+            # <detail><webServiceFaultBeans><faultString>. Verified live on
+            # 2026-08-21: "Please check selectPersonId field.", "HKID No. length
+            # must be at most 5", and so on all arrive this way. Raising a
+            # hardcoded "outside the window" here threw every one of those away
+            # and, worse, asserted a cause that was false — those faults were
+            # returned at 11:30 HKT on a Friday, squarely inside the window.
+            #
+            # raise_for_fault already parses this exact shape and raises the
+            # right TpsiError subclass with .faults populated, which
+            # filings.validate persists to cr_error. So try it first and only
+            # fall back when the body is genuinely not a SOAP fault.
+            from services.tpsi.errors import raise_for_fault
+
+            try:
+                raise_for_fault(response.content)
+            except TpsiUnavailableError:
+                pass  # unparseable body — the generic message below is right
             raise TpsiUnavailableError(
-                f"TPSI returned {response.status_code} — the TEST form APIs run "
-                "Mon-Fri 10:00-16:00 HKT only"
+                f"TPSI returned {response.status_code} with no SOAP fault; the "
+                "TEST form APIs run Mon-Fri 10:00-16:00 HKT only"
             )
         if response.status_code >= 400:
             raise TpsiError(f"TPSI returned {response.status_code}")

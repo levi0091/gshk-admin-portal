@@ -194,6 +194,8 @@ def _extract_eform(submission_xml: str) -> str:
     """
     import re as _re
 
+    from services.tpsi.soap import CR_NS
+
     open_match = _re.search(r"<(\w+:)?EForm[\s>]", submission_xml)
     if not open_match:
         raise TpsiError("no <EForm> in the validated payload")
@@ -202,7 +204,24 @@ def _extract_eform(submission_xml: str) -> str:
     end = submission_xml.find(close)
     if end == -1:
         raise TpsiError("unterminated <EForm> in the validated payload")
-    return submission_xml[open_match.start() : end + len(close)]
+    sliced = submission_xml[open_match.start() : end + len(close)]
+
+    # ...but the slice alone is NOT what CR digests. Its reference program does
+    #     xml2String(xmlObj.getElementsByTagName('cr:EForm')[0])
+    # i.e. XMLSerializer over the parsed subtree, and a serializer re-emits the
+    # namespace declaration for every prefix the subtree uses. CR declares
+    # xmlns:cr on the RESPONSE element, not on EForm, so the raw slice carries
+    # no declaration and hashes to something CR never computes.
+    # Injected as text rather than actually re-serialising, because everything
+    # else about these bytes must survive untouched.
+    if prefix and f"xmlns:{prefix[:-1]}=" not in sliced.split(">", 1)[0]:
+        sliced = _re.sub(
+            rf"^<{prefix}EForm\b",
+            f'<{prefix}EForm xmlns:{prefix[:-1]}="{CR_NS}"',
+            sliced,
+            count=1,
+        )
+    return sliced
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +299,7 @@ def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str)
     NAR1 carries ONE overall signature by a single authorised individual — a
     director OR the company secretary. No consent signatures (spec D2).
     """
-    from services.tpsi.config import get_config
-    from services.tpsi.crypto import build_pin_sign
+    from services.tpsi.crypto import build_pin_sign, signing_public_key_pem
     from services.tpsi.soap import append_to_signatures
 
     filing = get_filing(filing_id)
@@ -297,7 +315,10 @@ def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str)
         _extract_eform(validated),
         signatory_user_id,
         eservice_password,
-        get_config().cr_public_key_pem,
+        # The certificate CR signed THIS response with — not
+        # config.cr_public_key_pem, which is the change-password key. See
+        # crypto.signing_public_key_pem.
+        signing_public_key_pem(validated),
     )
     # CR: the overall signature goes inside EFormSignatures, BELOW its own.
     signed = append_to_signatures(validated, pin_sign)

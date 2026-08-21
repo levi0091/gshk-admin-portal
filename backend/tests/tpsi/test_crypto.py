@@ -17,6 +17,13 @@ GCM_KEY = b"\x01" * 32
 NONCE = bytes(range(1, 13))
 
 
+def _iv_of(signature_b64):
+    """The ivBase64 field out of the UserSignature blob (see crypto's docstring)."""
+    import re
+    blob = base64.b64decode(signature_b64).decode()
+    return re.search(r'ivBase64:"([^"]*)"', blob).group(1)
+
+
 @pytest.fixture(scope="module")
 def pem():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -71,18 +78,35 @@ def test_credential_hash_changes_with_rand():
 
 def test_user_signature_signs_eform_plus_credential_hash():
     ch = crypto.user_credential_hash("U", "p", RAND)
-    sig, key_b64 = crypto.user_signature(EFORM, ch, GCM_KEY)
+    sig = crypto.user_signature(EFORM, ch, GCM_KEY)
     base64.b64decode(sig)
-    base64.b64decode(key_b64)
-    other, _ = crypto.user_signature(EFORM + "x", ch, GCM_KEY)
+    other = crypto.user_signature(EFORM + "x", ch, GCM_KEY)
     assert sig != other       # changing the form changes the signature
+
+
+def test_user_signature_carries_the_iv_and_key_inside_the_value():
+    """CR's createEFormSignatureV2 base64s a literal
+    {ciphertextBase64:"..",ivBase64:"..",gcmKeyBase64:".."} into the tag, so
+    the IV and the GCM key travel inside it and there is no separate
+    AESGCMEncryptionKey element. Verified live 2026-08-21."""
+    ch = crypto.user_credential_hash("U", "p", RAND)
+    blob = base64.b64decode(
+        crypto.user_signature(EFORM, ch, GCM_KEY, NONCE)
+    ).decode()
+    assert blob.startswith('{ciphertextBase64:"')
+    assert '",ivBase64:"' in blob
+    assert '",gcmKeyBase64:"' in blob
+    assert blob.endswith('"}')
+    assert " " not in blob
+    # the key in the blob IS the key that was used
+    assert base64.b64encode(GCM_KEY).decode() in blob
 
 
 def test_user_signature_changes_when_the_credential_hash_changes():
     ch1 = crypto.user_credential_hash("U", "p", RAND)
     ch2 = crypto.user_credential_hash("U", "different", RAND)
-    a, _ = crypto.user_signature(EFORM, ch1, GCM_KEY)
-    b, _ = crypto.user_signature(EFORM, ch2, GCM_KEY)
+    a = crypto.user_signature(EFORM, ch1, GCM_KEY)
+    b = crypto.user_signature(EFORM, ch2, GCM_KEY)
     assert a != b
 
 
@@ -149,21 +173,17 @@ def test_user_signature_nonce_is_never_derived_from_whether_the_key_was_injected
     loop, which will call this once per director, could silently reuse a
     key+nonce pair, which is the textbook AES-GCM forgery failure."""
     ch = crypto.user_credential_hash("U", "p", RAND)
-    sig_a, _ = crypto.user_signature(EFORM, ch, GCM_KEY)
-    sig_b, _ = crypto.user_signature(EFORM, ch, GCM_KEY)
-    nonce_a = base64.b64decode(sig_a)[:12]
-    nonce_b = base64.b64decode(sig_b)[:12]
-    assert nonce_a != nonce_b
+    assert _iv_of(crypto.user_signature(EFORM, ch, GCM_KEY)) !=            _iv_of(crypto.user_signature(EFORM, ch, GCM_KEY))
 
 
 def test_user_signature_is_deterministic_when_key_and_nonce_are_both_injected():
     """The other half of the guard above: explicit injection of BOTH still
     works, which is what the frozen build_pin_sign vector above relies on."""
     ch = crypto.user_credential_hash("U", "p", RAND)
-    a, key_a = crypto.user_signature(EFORM, ch, GCM_KEY, nonce=NONCE)
-    b, key_b = crypto.user_signature(EFORM, ch, GCM_KEY, nonce=NONCE)
+    a = crypto.user_signature(EFORM, ch, GCM_KEY, nonce=NONCE)
+    b = crypto.user_signature(EFORM, ch, GCM_KEY, nonce=NONCE)
     assert a == b
-    assert key_a == key_b
+    assert _iv_of(a) == base64.b64encode(NONCE).decode()
 
 
 def test_pin_sign_leaks_no_plaintext(pem):
