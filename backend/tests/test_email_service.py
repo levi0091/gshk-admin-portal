@@ -1,0 +1,278 @@
+"""services/email_service.py — the Resend transport (BE-3).
+
+Resend's HTTP API over httpx rather than the `resend` package: httpx is already
+a dependency, the request shape stays visible in review, and this repo already
+made the same call for Supabase (the Python client rejected the new key format).
+
+*** THE LIVE-KEY TRAP ***
+`backend/.env` holds a LIVE RESEND_API_KEY and `main.py` calls `load_dotenv()`,
+so importing anything that imports `main` puts the real key into `os.environ`
+before a single test runs. A test that forgot to override it AND forgot to patch
+the transport would post to Resend for real, from the client's account. So the
+autouse fixture below does both: a dummy key, and a `post` that raises if it is
+ever reached without an explicit patch.
+"""
+import base64
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from services import email_service
+
+
+def _refuse(*args, **kwargs):
+    raise AssertionError(
+        "a test reached the real httpx.post — RESEND_API_KEY in backend/.env "
+        "is a live key and this would have sent mail from GSHK's account"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    # PROD-shaped by default: that is the configuration the send path is really
+    # about. The non-prod guard gets its own tests below.
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
+    monkeypatch.delenv("VERIFICATION_FROM", raising=False)
+    monkeypatch.setattr(email_service.httpx, "post", _refuse)
+    email_service.get_email_config.cache_clear()
+    yield
+    email_service.get_email_config.cache_clear()
+
+
+def _response(status=200, payload=None):
+    r = MagicMock(status_code=status)
+    r.json.return_value = payload if payload is not None else {"id": "msg_1"}
+    r.text = str(payload or "")
+    return r
+
+
+def _post(response=None):
+    return patch("services.email_service.httpx.post",
+                 return_value=response or _response())
+
+
+# ---------------------------------------------------------------------------
+# The request Resend actually receives
+# ---------------------------------------------------------------------------
+
+
+def test_sends_from_the_gshk_controlled_domain():
+    """no-reply@getstarted.hk, not a gmail address: SPF/DKIM only align on a
+    domain the sender controls, which is the whole reason this decision moved."""
+    with _post() as post:
+        email_service.send(to="client@example.com", subject="S", html="<p>H</p>")
+    assert post.call_args.kwargs["json"]["from"] == "no-reply@getstarted.hk"
+
+
+def test_the_sender_can_be_overridden_by_configuration(monkeypatch):
+    monkeypatch.setenv("VERIFICATION_FROM", "returns@getstarted.hk")
+    email_service.get_email_config.cache_clear()
+    with _post() as post:
+        email_service.send(to="client@example.com", subject="S", html="<p>H</p>")
+    assert post.call_args.kwargs["json"]["from"] == "returns@getstarted.hk"
+
+
+def test_authenticates_with_the_resend_key():
+    with _post() as post:
+        email_service.send(to="client@example.com", subject="S", html="<p>H</p>")
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer re_test_key"
+
+
+def test_the_recipient_subject_and_body_travel_as_given():
+    with _post() as post:
+        email_service.send(to="client@example.com", subject="Confirm",
+                           html="<p>Body</p>")
+    payload = post.call_args.kwargs["json"]
+    assert payload["to"] == ["client@example.com"]
+    assert payload["subject"] == "Confirm"
+    assert payload["html"] == "<p>Body</p>"
+
+
+def test_the_call_is_bounded_by_a_timeout():
+    """No timeout means a hung Resend hangs the request thread holding the case,
+    and the admin never learns whether the client was mailed."""
+    with _post() as post:
+        email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert post.call_args.kwargs["timeout"] > 0
+
+
+def test_the_api_key_never_appears_in_the_returned_payload():
+    with _post():
+        result = email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert "re_test_key" not in str(result)
+
+
+def test_the_result_reports_the_message_id_and_the_delivered_address():
+    with _post():
+        result = email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert result["id"] == "msg_1"
+    assert result["to"] == "c@example.com"
+    assert result["intended_to"] == "c@example.com"
+    assert result["redirected"] is False
+
+
+def test_no_attachments_key_is_sent_when_there_are_none():
+    with _post() as post:
+        email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert "attachments" not in post.call_args.kwargs["json"]
+
+
+def test_a_pdf_attachment_is_base64_encoded():
+    with _post() as post:
+        email_service.send(
+            to="c@example.com", subject="S", html="<p>H</p>",
+            attachments=[("NAR1.pdf", b"%PDF-1.4 body")],
+        )
+    attachment = post.call_args.kwargs["json"]["attachments"][0]
+    assert attachment["filename"] == "NAR1.pdf"
+    assert base64.b64decode(attachment["content"]) == b"%PDF-1.4 body"
+
+
+# ---------------------------------------------------------------------------
+# Failure — nothing leaks, nothing is reported as sent
+# ---------------------------------------------------------------------------
+
+
+def test_a_resend_error_raises_and_does_not_leak_the_key():
+    with _post(_response(422, {"message": "domain not verified"})):
+        with pytest.raises(email_service.EmailError) as exc:
+            email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert "domain not verified" in str(exc.value)
+    assert "re_test_key" not in str(exc.value)
+
+
+def test_an_error_body_that_is_not_json_still_raises_a_readable_error():
+    broken = MagicMock(status_code=502)
+    broken.json.side_effect = ValueError("no json")
+    broken.text = "<html>bad gateway</html>"
+    with _post(broken):
+        with pytest.raises(email_service.EmailError) as exc:
+            email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert "502" in str(exc.value)
+
+
+def test_a_transport_failure_raises_without_carrying_the_request_object():
+    """httpx exceptions carry the request, and the request carries the
+    Authorization header. Neither the message nor the chained context may."""
+    import httpx
+
+    with patch("services.email_service.httpx.post",
+               side_effect=httpx.ConnectError("boom")):
+        with pytest.raises(email_service.EmailError) as exc:
+            email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert "re_test_key" not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+
+
+def test_a_missing_api_key_fails_before_any_http_call(monkeypatch):
+    """Name only, never the value — this message reaches logs."""
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    email_service.get_email_config.cache_clear()
+    with patch("services.email_service.httpx.post") as post:
+        with pytest.raises(RuntimeError, match="RESEND_API_KEY"):
+            email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The non-production interlock
+#
+# DEV's Supabase is a copy of Viewpoint carrying REAL client and director email
+# addresses. A DEV deployment holding the live Resend key must not be one button
+# away from mailing them a statutory form. Same shape as the TPSI interlock:
+# APP_ENV decides, and the dangerous crossing is refused outright.
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_production_deployment_refuses_to_mail_a_real_address(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
+    email_service.get_email_config.cache_clear()
+    with patch("services.email_service.httpx.post") as post:
+        with pytest.raises(RuntimeError, match="EMAIL_REDIRECT_TO"):
+            email_service.send(to="realclient@example.com", subject="S",
+                               html="<p>H</p>")
+    post.assert_not_called()
+
+
+def test_an_unset_app_env_is_treated_as_non_production(monkeypatch):
+    """The default must be the safe one. An unset variable is not a licence."""
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
+    email_service.get_email_config.cache_clear()
+    with patch("services.email_service.httpx.post") as post:
+        with pytest.raises(RuntimeError, match="EMAIL_REDIRECT_TO"):
+            email_service.send(to="realclient@example.com", subject="S",
+                               html="<p>H</p>")
+    post.assert_not_called()
+
+
+def test_the_redirect_replaces_the_recipient_and_says_who_it_was_for(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("EMAIL_REDIRECT_TO", "levi@zenexflow.com")
+    email_service.get_email_config.cache_clear()
+    with _post() as post:
+        result = email_service.send(to="realclient@example.com", subject="Confirm",
+                                    html="<p>H</p>")
+    payload = post.call_args.kwargs["json"]
+    assert payload["to"] == ["levi@zenexflow.com"]
+    assert "realclient@example.com" in payload["subject"]
+    assert "realclient@example.com" in payload["html"]
+    assert result["to"] == "levi@zenexflow.com"
+    assert result["intended_to"] == "realclient@example.com"
+    assert result["redirected"] is True
+
+
+def test_production_refuses_a_redirect(monkeypatch):
+    """On PROD every client would silently receive nothing while the portal
+    reported every send as successful."""
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("EMAIL_REDIRECT_TO", "levi@zenexflow.com")
+    email_service.get_email_config.cache_clear()
+    with patch("services.email_service.httpx.post") as post:
+        with pytest.raises(RuntimeError, match="EMAIL_REDIRECT_TO"):
+            email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The verification message
+# ---------------------------------------------------------------------------
+
+
+def test_the_verification_email_names_the_company_and_the_case():
+    subject, html = email_service.verification_email(
+        {"case_no": "NAR-2026-0041"},
+        {"company_name": "ACME LIMITED", "br_number": "00000001"},
+    )
+    assert "ACME LIMITED" in subject or "ACME LIMITED" in html
+    assert "NAR-2026-0041" in html
+    assert "00000001" in html
+
+
+def test_the_verification_email_never_embeds_a_credential():
+    _, html = email_service.verification_email(
+        {"case_no": "NAR-2026-0041"}, {"company_name": "ACME LIMITED"}
+    )
+    for forbidden in ("password", "token", "api_key", "bearer"):
+        assert forbidden not in html.lower()
+
+
+def test_a_company_name_carrying_markup_is_escaped_not_injected():
+    """Company names come out of the Viewpoint ETL. An unescaped one lands in
+    the client's mailbox as live markup."""
+    _, html = email_service.verification_email(
+        {"case_no": "NAR-2026-0041"},
+        {"company_name": "<script>alert(1)</script> LIMITED"},
+    )
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_a_missing_company_name_does_not_render_the_word_none():
+    subject, html = email_service.verification_email({}, {})
+    assert "None" not in subject
+    assert "None" not in html

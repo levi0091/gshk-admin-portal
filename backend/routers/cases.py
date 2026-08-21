@@ -4,6 +4,7 @@ Permission module is `nar1` (OQ-B, Levi 2026-08-16) — deliberately not
 `companies`. Editing a company record and driving a statutory filing are
 different authorities: the second sends mail to clients and spends money.
 """
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -11,7 +12,8 @@ from pydantic import BaseModel
 
 from middleware.auth import require_permission
 from services import (
-    audit_events as ev, document_service, nar1_case_status, nar1_cases,
+    audit_events as ev, document_service, email_service, nar1_case_status,
+    nar1_cases, nar1_pdf,
 )
 from services.audit_service import log_event
 
@@ -398,5 +400,219 @@ async def manual_submit(
         new_value="Completed",
         metadata={"channel": "off_portal", "cr_called": False,
                   "submitted_at": now},
+    )
+    return nar1_cases.composite(case_id)
+
+
+# ---------------------------------------------------------------------------
+# Client verification (BE-3)
+#
+# R1 has NO inbound mail handling and no client-facing endpoint. The client
+# replies to a human, and an admin records the answer here. Both routes are
+# staff-only (`nar1:write`): there is no token, no magic link, and nothing an
+# unauthenticated caller can reach -- which is precisely why this flow has no
+# security surface to get wrong. Do not add one without revisiting that.
+# ---------------------------------------------------------------------------
+
+#: Deliberately weak, and only ever applied to an address a human typed into the
+#: override box. It exists to catch "please send it to Mary" -- free text that
+#: would otherwise be handed to Resend as a recipient. The address on record
+#: comes out of the ETL and is filtered in nar1_cases.recipient_email.
+_ADDRESS = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+#: Stages whose validated_xml IS the document CR is holding. `validation_failed`
+#: is deliberately excluded and handled separately -- see _verification_gate.
+_SENDABLE_STAGES = ("validated", "signed", "signing_failed", "submission_failed")
+
+
+def _verification_gate(case: dict, filing: dict | None) -> str | None:
+    """Why this case may not be sent for verification, or None."""
+    if case.get("manual_receipt"):
+        return ("this case was completed off-portal; there is nothing left for "
+                "the client to approve")
+    if filing is None:
+        return "no filing has been prepared for this case yet"
+    if (filing.get("form_code") or "").strip().lower() != "nar1":
+        return (f"this filing is a {filing.get('form_code')} form; only NAR1 "
+                "can be sent for client verification")
+    if filing.get("stage") in nar1_cases.CR_FILED_STAGES:
+        return ("CR already holds this return; asking the client to approve it "
+                "now is a request their answer cannot change")
+    # THE STALE-SNAPSHOT HOLE. filings.validate() sets the stage on failure but
+    # LEAVES THE PREVIOUS validated_xml in place. So a filing CR has just
+    # rejected still satisfies "has validated_xml", and a gate that checked only
+    # that would mail the client a form CR is no longer holding.
+    if filing.get("stage") == "validation_failed":
+        return ("the most recent validation of this filing failed; re-validate "
+                "before sending it to the client")
+    if filing.get("stage") not in _SENDABLE_STAGES or not filing.get("validated_xml"):
+        return ("this filing has not been validated by CR yet; the client would "
+                "be approving a form that may be rejected minutes later")
+    return None
+
+
+class VerificationSendIn(BaseModel):
+    #: Overrides the address on record. Optional.
+    to: str | None = None
+
+
+@router.post("/{case_id}/verification/send")
+async def send_verification(
+    case_id: str, body: VerificationSendIn,
+    user=Depends(require_permission("nar1", "write")),
+):
+    """Mail the client the PDF of the return CR validated, for approval.
+
+    The attachment is rendered from `validated_xml` -- the document CR is
+    holding -- not from the company profile as it reads today. Those two diverge
+    the moment anyone edits the company, and the client must approve the thing
+    that will actually be filed.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    filing = nar1_cases.current_filing(case_id)
+    refusal = _verification_gate(case, filing)
+    if refusal:
+        raise HTTPException(409, refusal)
+
+    if body.to is not None:
+        # The override directs a document carrying directors' residential
+        # addresses and identity numbers. Free text is not an address.
+        if not _ADDRESS.match(body.to.strip()):
+            raise HTTPException(422, f"not an email address: {body.to!r}")
+        recipient = body.to.strip()
+    else:
+        recipient = nar1_cases.recipient_email(case["entity_id"])
+        if not recipient:
+            raise HTTPException(
+                409, "no email address is on record for this company; supply "
+                     "one explicitly to send the verification")
+
+    entity = nar1_cases.entity_for(case["entity_id"])
+
+    try:
+        # validated_at and stage are stamped into the footer: without them a
+        # snapshot CR has since rejected is indistinguishable from a fresh one.
+        pdf = nar1_pdf.render(
+            filing["validated_xml"],
+            validated_at=filing.get("validated_at"),
+            stage=filing.get("stage"),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            422, f"the validated snapshot could not be rendered: {exc}")
+
+    subject, html = email_service.verification_email(case, entity)
+    try:
+        sent = email_service.send(
+            to=recipient, subject=subject, html=html,
+            attachments=[(f"NAR1-{case.get('case_no') or case_id}.pdf", pdf)],
+        )
+    except email_service.EmailError as exc:
+        # 502, and NOTHING is written: a case marked sent on a mail that never
+        # left sits in Awaiting Client forever, waiting on a reply to nothing.
+        raise HTTPException(502, f"the verification email was not sent: {exc}")
+    except RuntimeError as exc:
+        # Unset RESEND_API_KEY, or a DEV service with no EMAIL_REDIRECT_TO. A
+        # deployment fault, not a crash -- a 500 tells the admin the portal
+        # broke, when the truth is that it is misconfigured.
+        raise HTTPException(503, str(exc))
+
+    sent_at = datetime.now(timezone.utc).isoformat()
+    patch = {"verification_sent_at": sent_at}
+
+    # A previous answer answered the PREVIOUS request. Left in place it pins the
+    # badge at Client Rejected forever while the client is looking at a fresh
+    # PDF -- so it is cleared, and because that is a workflow change it has to
+    # be visible as one rather than silently ceasing to count.
+    superseded = case.get("client_approved")
+    if superseded is not None or case.get("client_response_at") is not None:
+        patch["client_approved"] = None
+        patch["client_response_at"] = None
+
+    nar1_cases.update_case(case_id, patch)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.EMAIL_SENT, event_code=ev.EMAIL_SENT,
+        entity_type="case", entity_id=case_id, case_id=case_id,
+        new_value=sent.get("to") or recipient,
+        # Identifiers only. The PDF is the whole statutory return; its bytes
+        # belong on the filing row, not in an insert-only trail -- and
+        # after_state is NOT scrubbed by audit_service.
+        metadata={"message_id": sent.get("id"),
+                  "intended_to": sent.get("intended_to", recipient),
+                  "redirected": bool(sent.get("redirected")),
+                  "case_no": case.get("case_no")},
+    )
+
+    if "client_approved" in patch:
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.CASE_STATUS_CHANGED,
+            event_code=ev.CASE_STATUS_CHANGED,
+            entity_type="case", entity_id=case_id, case_id=case_id,
+            old_value=("approved" if superseded
+                       else "rejected" if superseded is False else None),
+            new_value="awaiting_client",
+            metadata={"reason": "a fresh verification request superseded the "
+                                "previous client answer"},
+        )
+
+    return {"sent_at": sent_at, "to": sent.get("to") or recipient,
+            "redirected": bool(sent.get("redirected")),
+            "message_id": sent.get("id")}
+
+
+class VerificationResponseIn(BaseModel):
+    #: Required, with no default: an absent answer is not a "no".
+    approved: bool
+
+
+@router.post("/{case_id}/verification/response")
+async def record_verification_response(
+    case_id: str, body: VerificationResponseIn,
+    user=Depends(require_permission("nar1", "write")),
+):
+    """Record the client's Yes/No, as relayed to an admin.
+
+    R1 has no inbound mail handling: a human reads the reply and records it
+    here. That is why this route is staff-only, and why it refuses to record an
+    answer to a request that was never sent.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    if not case.get("verification_sent_at"):
+        raise HTTPException(
+            409, "no verification request has been sent for this case; "
+                 "recording a reply now would put an approval in the trail "
+                 "with no request behind it")
+
+    previous = case.get("client_approved")
+    if previous is body.approved:
+        # A no-op must not put a second client decision into an insert-only
+        # trail -- the same rule PATCH /cases and manual-sign already follow.
+        return nar1_cases.composite(case_id)
+
+    nar1_cases.update_case(case_id, {
+        "client_approved": body.approved,
+        "client_response_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.CLIENT_APPROVAL_RECEIVED,
+        event_code=ev.CLIENT_APPROVAL_RECEIVED,
+        entity_type="case", entity_id=case_id, case_id=case_id,
+        old_value=(None if previous is None
+                   else "approved" if previous else "rejected"),
+        new_value="approved" if body.approved else "rejected",
+        metadata={"case_no": case.get("case_no"), "recorded_by_staff": True},
     )
     return nar1_cases.composite(case_id)

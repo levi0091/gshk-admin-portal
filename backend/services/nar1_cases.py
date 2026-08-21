@@ -420,3 +420,75 @@ def composite(case_id: str) -> dict:
         "form_status": form_status(filing) if filing else None,
         "receipt": (filing or {}).get("receipt") or case.get("manual_receipt"),
     }
+
+
+# ---------------------------------------------------------------------------
+# BE-3 — who the verification email goes to, and what it says
+# ---------------------------------------------------------------------------
+
+#: `contacts` has NO `email` column. It is the Viewpoint shape:
+#: (contact_type, contact_value), and the type vocabulary is VP's own codes --
+#: measured on DEV: 'phone', 'TM' (telephone mobile), 'TB' (telephone business),
+#: 'EB' (email business), and 14 rows with a NULL type. So the type cannot be
+#: trusted as the test, and the VALUE is what decides: an address contains '@'.
+#: The type only breaks ties.
+_EMAIL_TYPE_HINTS = ("email", "e-mail", "mail")
+
+
+def _looks_like_an_address(value: str) -> bool:
+    """Deliberately weak. This picks a candidate out of a messy ETL column; the
+    router validates the address it is actually about to mail."""
+    value = (value or "").strip()
+    return "@" in value and " " not in value and value.count("@") == 1
+
+
+def _email_rank(row: dict) -> tuple:
+    """Preferred first, then a type that admits to being email, then oldest --
+    so the answer is stable rather than whatever PostgREST happened to return."""
+    ctype = (row.get("contact_type") or "").strip().lower()
+    typed_email = ctype.startswith("e") or any(h in ctype for h in _EMAIL_TYPE_HINTS)
+    return (
+        0 if row.get("is_preferred") else 1,
+        0 if typed_email else 1,
+        row.get("created_at") or "",
+    )
+
+
+def recipient_email(entity_id: str) -> str | None:
+    """The address on record for this company, or None.
+
+    None is a legitimate answer and the caller must treat it as one: plenty of
+    ETL'd companies carry no email at all. Guessing would mail a statutory
+    return -- carrying directors' residential addresses and identity numbers --
+    to whoever happened to be first in the table.
+    """
+    rows = (
+        get_supabase()
+        .table("contacts")
+        .select("contact_type,contact_value,is_preferred,created_at")
+        .eq("entity_id", entity_id)
+        .execute()
+        .data
+        or []
+    )
+    candidates = [r for r in rows if _looks_like_an_address(r.get("contact_value"))]
+    if not candidates:
+        return None
+    return sorted(candidates, key=_email_rank)[0]["contact_value"].strip()
+
+
+def entity_for(entity_id: str) -> dict:
+    """The company the email is about. Raises LookupError so the router 404s."""
+    rows = (
+        get_supabase()
+        .table("entities")
+        .select("id,company_name,company_name_zh,br_number,cr_number")
+        .eq("id", entity_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise LookupError(f"no entity {entity_id}")
+    return rows[0]

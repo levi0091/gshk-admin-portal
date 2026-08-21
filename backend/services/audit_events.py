@@ -186,3 +186,19 @@ def person_field_code(field: str) -> str:
 
 def party_code(relation: str, operation: str) -> Optional[str]:
     return _PARTY_CODES.get((relation, operation))
+
+
+# ---- Client verification (BE-3) --------------------------------------------
+#   Both already seeded in audit_event_types by migration 012 (_NATIVE list:
+#   "Email Sent"/email and "Client Approval Received"/client), so no new
+#   migration is needed -- these constants only give callers one canonical name
+#   instead of a string literal per call site, the same reason
+#   DOCUMENT_GENERATED above exists.
+#
+#   EMAIL_SENT is CLAUDE.md's mandated action_type for "any workflow email sent
+#   via Resend". CLIENT_APPROVAL_RECEIVED is its mandated type for the client's
+#   Yes/No -- note the PBI-11 table scopes that one to NNC1, but the NAR1
+#   verification loop records exactly the same fact and inventing a parallel
+#   NAR1-only code would split one concept across two vocabularies.
+EMAIL_SENT = "EMAIL_SENT"
+CLIENT_APPROVAL_RECEIVED = "CLIENT_APPROVAL_RECEIVED"
