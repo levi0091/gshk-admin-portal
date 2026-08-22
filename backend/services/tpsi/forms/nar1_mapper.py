@@ -863,18 +863,58 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None) -> dict
         {
             "clsOfShares": sc["class_name"],
             "currency": sc.get("currency") or "HKD",
+            # THREE DIFFERENT QUANTITIES, and only the first is a count.
+            # CR's worksheet: noOfShareIssuedOnThisCls is "Total Number",
+            # issuedCapital is "Total Amount", paidUpCapital is "Total Amount
+            # Paid up or Regarded as Paid up".
+            #
+            # issuedCapital used to be filled from total_issued -- the share
+            # COUNT into a money field. Invisible on CR's examples and on most
+            # of our data because the two coincide, but 61 of 5,740 real DEV
+            # classes disagree, and unmistakably: 1,000 shares against
+            # 5,000,000 paid, and one class paid 61,460.68, which no share
+            # count is.
+            #
+            # total_paid is the amount (Viewpoint PaidCap); total_issued is the
+            # count (Viewpoint Issued). nominal_value cannot bridge them -- it
+            # is 0 or 1 on all but 3 classes, because Hong Kong shares have had
+            # NO PAR VALUE since Cap. 622 (2014), so there is no per-share
+            # price to multiply by.
+            #
+            # So the amount is total_paid, which is also what CR's own two NAR1
+            # examples show: issuedCapital equals paidUpCapital in both.
+            # LIMIT: for partly-paid shares the issued amount exceeds the paid
+            # amount, and Viewpoint carries no column for the difference. This
+            # files them as equal, which is right for fully-paid shares and the
+            # closest available otherwise.
             "noOfShareIssuedOnThisCls": _whole_number(
                 sc.get("total_issued"), problems,
                 f"share class {sc.get('class_name')} total_issued"),
             "issuedCapital": _whole_number(
-                sc.get("total_issued"), problems,
-                f"share class {sc.get('class_name')} total_issued"),
+                sc.get("total_paid"), problems,
+                f"share class {sc.get('class_name')} total_paid"),
             "paidUpCapital": _whole_number(
                 sc.get("total_paid"), problems,
                 f"share class {sc.get('class_name')} total_paid"),
         }
         for sc in graph["share_classes"]
     ]
+    # A class with shares issued but nothing recorded as paid would now file
+    # issuedCapital = 0, and zero issued capital against issued shares is not a
+    # credible statutory return -- it is missing data. Six classes on DEV look
+    # like this (10,000-20,000 shares, total_paid 0). Filing the share count
+    # there, as this used to, was not better; it was just less obviously wrong.
+    # Say it out loud instead, like every other gap in this mapper.
+    for sc in graph["share_classes"]:
+        issued = _decimal(sc.get("total_issued"), [], "") or Decimal(0)
+        paid = _decimal(sc.get("total_paid"), [], "") or Decimal(0)
+        if issued > 0 and paid == 0:
+            problems.append(
+                f"share class {sc.get('class_name')}: {issued} shares issued "
+                "but total_paid is 0, so the return would declare no issued "
+                "capital for them — record the amount before filing"
+            )
+
     if share_capitals:
         data["shareCapitals"] = share_capitals
 

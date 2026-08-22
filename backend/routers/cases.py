@@ -262,12 +262,21 @@ class ManualSubmitIn(BaseModel):
 async def manual_sign(
     case_id: str,
     file: UploadFile = File(...),
-    user=Depends(require_permission("documents", "write")),
+    user=Depends(require_permission("nar1", "write")),
 ):
     """Upload the wet-signed NAR1 (BE-6). No CR call.
 
-    `documents:write`, not `tpsi:*`: this is a document going into storage. The
-    privileged act is recording the SUBMISSION, which is the next endpoint.
+    `nar1:write` (Levi 2026-08-22), NOT `documents:write`. It was the latter on
+    the reasoning that this is "a document going into storage" — but the
+    handler also writes `signing_method` and the signed-document pointer onto
+    `nar1_cases`, and `signing_method` is a field `PATCH /cases/{id}` requires
+    `nar1:write` to change. Two routes changing one column under two different
+    permissions is the gap: a `documents:write`-only role could flip a case
+    onto the manual path and open the `tpsi:submit` manual-submit gate behind
+    it.
+
+    Still not `tpsi:*`: the privileged act is recording the SUBMISSION, which
+    is the next endpoint and does require `tpsi:submit`.
     """
     try:
         case = nar1_cases.get_case(case_id)

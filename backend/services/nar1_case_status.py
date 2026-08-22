@@ -127,6 +127,18 @@ def derive(case: dict, filing: dict | None) -> dict:
         # An independent overlay, never a stage: a case can be overdue at any
         # step. Meaningless once filed -- whether it was filed LATE is a
         # different question this badge does not answer.
+        #
+        # PERMANENTLY FALSE, AND THAT IS THE DECISION, NOT A BUG.
+        # migration 019 floors days_to_anniversary at -FILING_WINDOW_DAYS, so
+        # `days < -42` can never hold: verified on DEV, 5,998 rows, range
+        # exactly [-42, 322], zero matches. Levi 2026-08-22: the overdue badge
+        # is not needed, so the floor stays and this stays dead.
+        #
+        # Left in place deliberately rather than deleted -- the flag is part of
+        # the response shape and of nar1_case_registry (migration 024). If you
+        # are here because you want an overdue badge, the change is to the
+        # CLAMP in migration 019, not to this comparison; raising the threshold
+        # here alone would still never fire.
         "overdue": (
             code != COMPLETED
             and days is not None

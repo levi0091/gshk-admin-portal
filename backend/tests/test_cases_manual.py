@@ -267,7 +267,29 @@ def test_manual_sign_stores_the_document_and_audits(client):
     assert upload.await_args.kwargs["content"] == b"%PDF-1.4 signed"
 
 
-def test_manual_sign_requires_documents_write(client):
+def test_manual_sign_requires_nar1_write_not_documents_write(client):
+    """Levi 2026-08-22. This was gated on `documents:write` on the reasoning
+    that it is just a document upload -- but the handler also writes
+    `signing_method` onto nar1_cases, which is a field PATCH /cases/{id}
+    requires `nar1:write` to change, and setting it opens the tpsi:submit
+    manual-submit gate behind it. A documents-only role must not be able to
+    flip a case onto the manual path."""
+    # _permissions_for is per-MODULE and returns bare permission names, so the
+    # mock has to answer differently per module -- a flat set would 403 no
+    # matter which module the route asks for, and would pass this test even if
+    # the gate were still documents:write.
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for",
+               side_effect=lambda user, module:
+                   {"write"} if module == "documents" else set()):
+        response = client.post(
+            "/cases/c1/manual-sign", headers=H,
+            files={"file": ("signed.pdf", b"%PDF", "application/pdf")},
+        )
+    assert response.status_code == 403
+
+
+def test_manual_sign_403s_without_any_permission(client):
     with patch("middleware.auth._resolve_user", return_value=REGULAR), \
          patch("middleware.auth._permissions_for", return_value=set()):
         response = client.post(

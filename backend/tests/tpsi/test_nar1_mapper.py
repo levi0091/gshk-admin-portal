@@ -1306,3 +1306,47 @@ def test_the_mapper_does_no_io():
     import inspect
     src = inspect.getsource(nar1_mapper)
     assert "supabase" not in src.lower()
+
+
+def test_issued_capital_is_the_amount_not_the_share_count():
+    """CR's worksheet: noOfShareIssuedOnThisCls is "Total Number",
+    issuedCapital is "Total Amount". They coincide on CR's own examples and on
+    most real data, which is exactly why filling issuedCapital from the share
+    COUNT went unnoticed -- but 61 of 5,740 real DEV classes disagree, one of
+    them paid 61,460.68 against 1,042 shares.
+
+    nominal_value cannot bridge the two: it is 0 or 1 on all but 3 classes,
+    because HK shares have no par value since Cap. 622. The amount column is
+    total_paid, which is also what CR's two NAR1 examples show -- issuedCapital
+    equals paidUpCapital in both."""
+    g = graph(
+        share_classes=[{"id": "sc1", "class_name": "Ordinary", "currency": "HKD",
+                        "total_issued": 1000, "total_paid": 5000000}],
+        shareholdings=[{"share_class_id": "sc1", "person_id": "p1",
+                        "party_type": "individual", "shares_held": 1000,
+                        "is_current": True}],
+        persons={"p1": person()}, addresses={"a1": ADDR, "a2": ADDR},
+    )
+    cap = mapped(g)["shareCapitals"][0]
+    assert cap["noOfShareIssuedOnThisCls"] == 1000      # the count
+    assert cap["issuedCapital"] == 5000000              # the amount
+    assert cap["paidUpCapital"] == 5000000
+
+
+def test_shares_issued_with_nothing_paid_is_reported_not_filed_as_zero():
+    """issuedCapital reads total_paid, so a class with shares issued and
+    total_paid = 0 would declare NO issued capital for them. Zero issued
+    capital against issued shares is missing data, not a fact -- six DEV
+    classes look like this. Filing the share count there (what this used to do)
+    was not better, only less obviously wrong."""
+    g = graph(
+        share_classes=[{"id": "sc1", "class_name": "Ordinary", "currency": "HKD",
+                        "total_issued": 10000, "total_paid": 0}],
+        shareholdings=[{"share_class_id": "sc1", "person_id": "p1",
+                        "party_type": "individual", "shares_held": 10000,
+                        "is_current": True}],
+        persons={"p1": person()}, addresses={"a1": ADDR, "a2": ADDR},
+    )
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("total_paid is 0" in p for p in exc.value.problems)
