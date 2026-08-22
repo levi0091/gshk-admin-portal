@@ -254,6 +254,12 @@ def _prepare_patches(**overrides):
         "build": MagicMock(return_value="<cr:brNo>1</cr:brNo>"),
         "create": MagicMock(return_value={"id": "f1", "stage": "draft"}),
         "log": AsyncMock(),
+        # The case-side guard: prepare refuses to open a second filing on a
+        # case CR already holds, or one completed off-portal. Mocked here like
+        # every other collaborator so no test in this file reaches Supabase.
+        "blocking": MagicMock(return_value=None),
+        "case": MagicMock(return_value={"id": "c1", "entity_id": "e1",
+                                        "manual_receipt": None}),
     }
     defaults.update(overrides)
     return defaults
@@ -270,6 +276,10 @@ def _with_prepare(p):
     stack.enter_context(patch("routers.tpsi.nar1.build_nar1_xml", new=p["build"]))
     stack.enter_context(patch("routers.tpsi.filings.create_filing", new=p["create"]))
     stack.enter_context(patch("routers.tpsi.log_event", new=p["log"]))
+    stack.enter_context(
+        patch("routers.tpsi.nar1_cases.blocking_filing", new=p["blocking"]))
+    stack.enter_context(
+        patch("routers.tpsi.nar1_cases.get_case", new=p["case"]))
     return stack
 
 
@@ -412,6 +422,10 @@ def test_prepare_survives_an_audit_failure(client):
         stack.enter_context(patch("routers.tpsi.nar1.build_nar1_xml", new=p["build"]))
         stack.enter_context(
             patch("routers.tpsi.filings.create_filing", new=p["create"]))
+        stack.enter_context(
+            patch("routers.tpsi.nar1_cases.blocking_filing", new=p["blocking"]))
+        stack.enter_context(
+            patch("routers.tpsi.nar1_cases.get_case", new=p["case"]))
         stack.enter_context(patch("services.audit_service.get_supabase",
                                   side_effect=RuntimeError("audit down")))
         response = client.post("/tpsi/filings/prepare", headers=H,
@@ -478,6 +492,10 @@ def test_prepare_drives_the_real_mapper_not_just_a_mock(client):
         stack.enter_context(
             patch("routers.tpsi.filings.create_filing", new=p["create"]))
         stack.enter_context(patch("routers.tpsi.log_event", new=p["log"]))
+        stack.enter_context(
+            patch("routers.tpsi.nar1_cases.blocking_filing", new=p["blocking"]))
+        stack.enter_context(
+            patch("routers.tpsi.nar1_cases.get_case", new=p["case"]))
         response = client.post("/tpsi/filings/prepare", headers=H,
                                json={"entity_id": "e1", "nar1_case_id": "c1"})
     assert response.status_code == 400
@@ -1180,3 +1198,50 @@ def test_pdf_survives_an_audit_failure(client):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 200
     assert response.content.startswith(b"%PDF-")
+
+
+def test_prepare_refuses_a_case_cr_already_holds(client):
+    """The badge-corruption guard. Nothing writes stage 'superseded', so a new
+    draft is simply the NEWEST row for the case: current_filing() returns it and
+    case detail reports "Data Verification" for a return CR has registered,
+    while nar1_case_registry -- which prefers a filed stage -- still reports
+    "Completed". One case, two contradictory badges, and the live filing hidden
+    behind a draft that can never advance."""
+    p = _prepare_patches(
+        blocking=MagicMock(return_value={"id": "f0", "stage": "submitted"}))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 409
+    assert "already holds" in response.text
+    p["create"].assert_not_called()
+    # Refused before the entity is even loaded -- no work done for a filing
+    # that was never going to be opened.
+    p["load"].assert_not_awaited()
+
+
+def test_prepare_refuses_a_case_completed_off_portal(client):
+    """The mirror of the manual interlock: manual_receipt means the return was
+    filed on paper, so a CR filing opened now would be a second filing in the
+    register for one return."""
+    p = _prepare_patches(
+        case=MagicMock(return_value={"id": "c1", "entity_id": "e1",
+                                     "manual_receipt": {"caseNo": "1234"}}))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 409
+    assert "off-portal" in response.text
+    p["create"].assert_not_called()
+
+
+def test_prepare_still_allows_a_case_with_a_live_draft(client):
+    """Only FILED stages block. Re-preparing after a failed validate is normal
+    and must stay open, or a case whose first attempt CR rejected is stuck."""
+    p = _prepare_patches(
+        blocking=MagicMock(return_value={"id": "f0", "stage": "validation_failed"}))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    p["create"].assert_called_once()

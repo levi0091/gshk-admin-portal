@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
-from services import nar1_pdf
+from services import nar1_cases, nar1_pdf
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source
@@ -421,6 +421,40 @@ async def prepare_filing(
     Declared above the other /filings routes so the literal path is matched
     before any /filings/{filing_id} pattern.
     """
+    # BEFORE anything else: a case CR already holds must not get a second draft.
+    #
+    # Nothing in the system writes stage 'superseded', so a new draft is simply
+    # the NEWEST row for the case. current_filing() returns it, and case detail
+    # then reports "Data Verification" for a return CR has already registered —
+    # while nar1_case_registry, which prefers a filed stage, still reports
+    # "Completed". One case, two contradictory badges, and the live filing
+    # hidden behind a draft that can never advance.
+    #
+    # blocking_filing() is the right question here for the same reason the
+    # manual path uses it: "has this return been filed?" is about ANY attempt,
+    # not the latest one.
+    try:
+        blocking = nar1_cases.blocking_filing(body.nar1_case_id)
+        case = nar1_cases.get_case(body.nar1_case_id)
+    except LookupError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise _handle(exc)
+
+    if case.get("manual_receipt"):
+        raise HTTPException(
+            409,
+            "this case was completed off-portal; opening a CR filing against "
+            "it would put two filings in the register for one return",
+        )
+    if blocking and blocking.get("stage") in nar1_cases.CR_FILED_STAGES:
+        raise HTTPException(
+            409,
+            f"CR already holds this return (form status "
+            f"'{blocking.get('stage')}'); preparing another filing would "
+            "hide it behind a draft that cannot be advanced",
+        )
+
     # Hong Kong's year, not UTC's: for the first eight hours of every HK working
     # day UTC is still on yesterday's date, and on 1 January that is the wrong
     # year on the statutory form.
