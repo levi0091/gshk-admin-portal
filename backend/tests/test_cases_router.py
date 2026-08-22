@@ -3,7 +3,7 @@
 Patches middleware.auth._resolve_user to a super_admin identity, as
 test_tpsi_router.py and test_companies_router.py do.
 """
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +17,18 @@ H = {"Authorization": "Bearer tok"}
 
 def _super():
     return patch("middleware.auth._resolve_user", return_value=SUPER)
+
+
+def _nobody():
+    """A Supabase double that recognises no token, for the auth-gate tests.
+
+    Patches ONLY the Supabase boundary, so the real _resolve_user still runs.
+    Tests must never reach the live client (CLAUDE.md), and a test that does is
+    green locally and red in CI -- see test_case_endpoints_require_authentication.
+    """
+    sb = MagicMock()
+    sb.auth.get_user.return_value = MagicMock(user=None)
+    return patch("middleware.auth.get_supabase", return_value=sb)
 
 
 @pytest.fixture
@@ -189,9 +201,18 @@ def test_patch_rejects_an_invalid_signing_method_even_if_it_would_be_a_no_op(cli
 
 
 def test_case_endpoints_require_authentication(client):
-    """No patch installed -> the real dependency runs and rejects the dummy token."""
-    assert client.get("/cases/c1", headers=H).status_code in (401, 403)
-    assert client.post("/cases", headers=H, json={}).status_code in (401, 403, 422)
+    """No identity patch: the real dependency runs against a Supabase double
+    that recognises nobody.
+
+    Mocked at the Supabase boundary and nowhere else -- the real _resolve_user,
+    the real require_permission chain and the real HTTPBearer all run, which is
+    the whole point of this test. Reaching the LIVE client instead would make
+    the result depend on ambient env: backend/.env supplies a working key here,
+    CI supplies none, so get_supabase() raised and the refusal arrived as a 500.
+    """
+    with _nobody():
+        assert client.get("/cases/c1", headers=H).status_code in (401, 403)
+        assert client.post("/cases", headers=H, json={}).status_code in (401, 403, 422)
 
 
 def test_case_endpoints_are_gated_on_the_nar1_module(client):
@@ -384,8 +405,13 @@ def test_dashboard_writes_nothing_to_the_audit_log(client):
 
 
 def test_dashboard_requires_authentication(client):
-    """No patch installed -> the real dependency runs and rejects the dummy token."""
-    assert client.get("/cases?scope=dashboard", headers=H).status_code in (401, 403)
+    """As above: real auth chain, Supabase double that recognises nobody.
+
+    The second assertion sends no Authorization header at all, so HTTPBearer
+    refuses it before _resolve_user is ever reached.
+    """
+    with _nobody():
+        assert client.get("/cases?scope=dashboard", headers=H).status_code in (401, 403)
     assert client.get("/cases").status_code in (401, 403)
 
 
