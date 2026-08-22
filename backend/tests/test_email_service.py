@@ -59,8 +59,9 @@ def _post(response=None):
 
 
 def test_sends_from_the_gshk_controlled_domain():
-    """no-reply@getstarted.hk, not a gmail address: SPF/DKIM only align on a
-    domain the sender controls, which is the whole reason this decision moved."""
+    """no-reply@getstarted.hk. SPF/DKIM only align on a domain the sender
+    controls, so the sender address is not a cosmetic choice — a free-mail
+    address here would fail alignment and land in spam."""
     with _post() as post:
         email_service.send(to="client@example.com", subject="S", html="<p>H</p>")
     assert post.call_args.kwargs["json"]["from"] == "no-reply@getstarted.hk"

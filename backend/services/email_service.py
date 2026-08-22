@@ -43,8 +43,8 @@ RESEND_ENDPOINT = "https://api.resend.com/emails"
 #: admin would never learn whether the client was mailed.
 TIMEOUT_SECONDS = 15.0
 
-#: Levi 2026-08-16, superseding the earlier Gmail decision. SPF/DKIM only align
-#: on a domain the sender controls, and GSHK controls getstarted.hk.
+#: Levi 2026-08-16. SPF/DKIM only align on a domain the sender controls, and
+#: GSHK controls getstarted.hk — which is what makes Resend viable here.
 DEFAULT_FROM = "no-reply@getstarted.hk"
 
 
