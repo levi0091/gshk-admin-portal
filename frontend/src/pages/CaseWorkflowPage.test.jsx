@@ -140,6 +140,19 @@ describe('CaseWorkflowPage — the stage gate is enforced, not just drawn', () =
     expect(screen.getByRole('tab', { name: /Data Verification/ }))
       .toHaveAttribute('aria-selected', 'true')
   })
+
+  it('clears the locked-stage note once the operator moves somewhere', async () => {
+    // Left up, it would explain a refusal that has already been moved past.
+    const user = userEvent.setup()
+    routeGet(caseAt({ form_status: { code: 'validated' }, verification_sent_at: null,
+                      client_approved: null }))
+    await renderPage()
+    await user.click(screen.getByRole('tab', { name: /Signing/ }))
+    expect(await screen.findByText(/to unlock/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: /Data Verification/ }))
+    expect(screen.queryByText(/to unlock/)).not.toBeInTheDocument()
+  })
 })
 
 describe('CaseWorkflowPage — permissions gate the consequential controls', () => {

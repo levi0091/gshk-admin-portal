@@ -151,7 +151,9 @@ export default function CaseWorkflowPage() {
       <CaseStepper
         caseRow={c}
         step={current}
-        onGo={setStep}
+        // Moving somewhere clears the "that stage is locked" note. Leaving it up
+        // would have it explaining a refusal the operator has already moved past.
+        onGo={n => { setStep(n); setNotice(null) }}
         onLocked={setNotice}
       />
 
