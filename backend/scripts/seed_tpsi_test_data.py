@@ -232,7 +232,129 @@ def seed(dry_run: bool = False) -> dict:
         linked += 1
 
     summary["linked"] = linked
-    print(f"seeded ({linked} officer associations). Re-running is safe - every write is an upsert.")
+
+    # ---- 4. Everything CR's workbook does NOT carry ------------------------
+    #
+    # The workbook has no addresses, no share capital and no secretaries, so a
+    # seed built from it alone cannot produce a NAR1 that map_entity will even
+    # build, let alone one CR accepts. The 2026-08-21 live run had to patch all
+    # of this in memory. Synthesised here instead so the next window is spent
+    # testing rather than patching.
+    supabase = get_supabase()
+
+    # 4a. One registered office per company, one residence per person.
+    def _address(key: str, line1: str, city: str) -> str:
+        return _upsert_by_source_key("addresses", {
+            "vp_source_key": f"{MARKER}addr:{key}",
+            "line1": line1, "line2": "Test Tower", "line3": "1 Test Street",
+            "city": city, "country": "Hong Kong", "is_hk_address": True,
+        })["id"]
+
+    for brn, entity_id in entity_by_brn.items():
+        supabase.table("entities").update(
+            {"registered_address_id": _address(f"ro:{brn}", "Flat A, 12/F", "CENTRAL")}
+        ).eq("id", entity_id).execute()
+
+    for user_id, person_id in person_by_userid.items():
+        supabase.table("persons").update({
+            "residential_address_id": _address(
+                f"res:{user_id}", "Flat B, 8/F", "WAN CHAI"),
+            # selectPersonId is this, and CR rejects a signature from a user id
+            # it does not recognise ("Please check selectPersonId field.").
+            "eservice_user_id": user_id,
+        }).eq("id", person_id).execute()
+
+    # 4b. Identity documents. The FULL number is stored, as it is in Viewpoint;
+    #     nar1_mapper derives the partial CR wants for the NAR1 ("T001137" +
+    #     check digit 6 -> "T001"). Storing the partial here would conflate the
+    #     two and break ND2A, which files the full number.
+    identity = 0
+    for account in accounts:
+        person_id = person_by_userid.get(account.get("User ID", ""))
+        hkid = account.get("HKID", "")
+        if not (person_id and hkid):
+            continue
+        check = account.get("HKID Check Digit", "")
+        _upsert_by_source_key("person_identity_documents", {
+            "vp_source_key": f"{MARKER}id:{account['User ID']}",
+            "person_id": person_id, "id_type": "hkid",
+            "id_number": f"{hkid}({check})" if check else hkid,
+            "is_primary": True,
+        })
+        identity += 1
+    summary["identity_documents"] = identity
+
+    # 4c. Corporate officers need their OWN entity, or the mapper has no
+    #     address to file for them. The workbook's "Officer BRN" is a company
+    #     seeded above, so the FK can simply be pointed at it.
+    corporate_linked = 0
+    for officer in corp_officers:
+        entity_id = entity_by_brn.get(officer.get("BRN", ""))
+        officer_entity_id = entity_by_brn.get(officer.get("Officer BRN", ""))
+        if not (entity_id and officer_entity_id):
+            continue
+        capacity = officer.get("Capacity", "").strip().lower()
+        key = f"{MARKER}corp:{officer.get('BRN')}:{officer.get('Officer BRN')}:{capacity}"
+        supabase.table("entity_officers").update(
+            {"corporate_entity_id": officer_entity_id}
+        ).eq("vp_source_key", key).execute()
+        corporate_linked += 1
+    summary["corporate_entity_links"] = corporate_linked
+
+    # 4d. company_secretaries. entity_officers records the officer register;
+    #     the NAR1 secretary block is read from this table, and CR's workbook
+    #     expresses secretaries only as officer rows.
+    secretaries = 0
+    for officer in ind_officers:
+        if officer.get("Capacity", "").strip().lower() not in ("company secretary", "secretary"):
+            continue
+        entity_id = entity_by_brn.get(officer.get("BRN", ""))
+        person_id = person_by_hkid.get(officer.get("HKID", ""))
+        if not (entity_id and person_id):
+            continue
+        _upsert_by_source_key("company_secretaries", {
+            "vp_source_key": f"{MARKER}sec:{officer.get('BRN')}:{officer.get('HKID')}",
+            "entity_id": entity_id, "person_id": person_id,
+            "is_gshk": False, "is_current": True,
+            "appointed_date": _date(officer.get("Association Date", "")),
+        })
+        secretaries += 1
+    summary["secretaries"] = secretaries
+
+    # 4e. Share capital. NAR1 Schedule 1 must account for every issued share,
+    #     so the holding below is deliberately the WHOLE issued capital — an
+    #     under-allotted class is a MappingError, not a filing.
+    shares = 0
+    for brn, entity_id in entity_by_brn.items():
+        director = next(
+            (person_by_hkid.get(o.get("HKID", "")) for o in ind_officers
+             if o.get("BRN") == brn
+             and o.get("Capacity", "").strip().lower() == "director"),
+            None,
+        )
+        if not director:
+            continue
+        class_id = _upsert_by_source_key("share_classes", {
+            "vp_source_key": f"{MARKER}class:{brn}",
+            "entity_id": entity_id, "class_name": "Ordinary",
+            "currency": "HKD", "nominal_value": 1, "votes_per_share": 1,
+            "total_issued": 100, "total_paid": 100,
+        })["id"]
+        _upsert_by_source_key("shareholdings", {
+            "vp_source_key": f"{MARKER}holding:{brn}",
+            "entity_id": entity_id, "share_class_id": class_id,
+            "person_id": director, "party_type": "individual",
+            "shares_held": 100, "amount_paid": 100, "is_current": True,
+        })
+        shares += 1
+    summary["share_classes"] = shares
+
+    print(
+        f"seeded ({linked} officer associations, {identity} identity documents, "
+        f"{secretaries} secretaries, {shares} share classes, "
+        f"{corporate_linked} corporate officer links). "
+        "Re-running is safe - every write is an upsert."
+    )
     return summary
 
 
