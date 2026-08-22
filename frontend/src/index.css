@@ -695,3 +695,31 @@ tbody tr.clickable { cursor: pointer; }
   cursor: pointer; font-family: inherit; transition: opacity .15s;
 }
 .info-banner-cta:hover { opacity: .88; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   v11 · CR Credentials (s21) — shared account vs per-user signing (W-6)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Scope tabs. Rendered only for a Super Admin: an ordinary user has exactly one
+   pane (their own signing credentials) and a single-tab tab bar is noise. */
+.cr-tabs {
+  display: inline-flex; margin-bottom: 16px; border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; background: var(--bg-card);
+}
+.cr-tab {
+  padding: 9px 18px; font-size: 12px; font-weight: 600; font-family: inherit;
+  color: var(--t-muted); background: transparent; border: none; cursor: pointer;
+  transition: .15s;
+}
+.cr-tab:hover { color: var(--indigo); background: var(--indigo-5); }
+.cr-tab.active { background: var(--indigo); color: #fff; }
+
+/* Whose credential this pane is about — the one thing a reader must not get
+   wrong on this screen, so it is stated above the fields, not in a hint. */
+.cr-scope {
+  display: flex; align-items: flex-start; gap: 11px; border-radius: 8px;
+  padding: 13px 15px; margin-bottom: 16px; font-size: 12px; line-height: 1.55;
+}
+.cr-scope.shared { background: var(--indigo-5); border: 1px solid var(--indigo-20); color: var(--t-body); }
+.cr-scope.mine   { background: var(--bang-10);  border: 1px solid var(--bang);      color: var(--t-body); }
+.cr-scope b { color: var(--t-head); }
