@@ -36,6 +36,8 @@ router = APIRouter()
 
 
 class CredentialIn(BaseModel):
+    """POST — first-time setup. A TPSI password is required: there is nothing
+    stored yet to fall back on."""
     presentor_account_id: str
     tpsi_password: str
     eservice_user_id: str | None = None
@@ -43,7 +45,18 @@ class CredentialIn(BaseModel):
     deposit_account_no: str | None = None
 
 
-def _opt(body: CredentialIn, name: str):
+class CredentialUpdateIn(BaseModel):
+    """PUT — rotation. EVERY secret is optional, because changing one field must
+    not require re-supplying the others. Omitted fields keep their stored value
+    (see _opt); an explicit null clears."""
+    presentor_account_id: str
+    tpsi_password: str | None = None
+    eservice_user_id: str | None = None
+    eservice_password: str | None = None
+    deposit_account_no: str | None = None
+
+
+def _opt(body, name: str):
     """Tell "client omitted this field" apart from "client sent null".
 
     Pydantic fills an omitted optional with None, and credentials._payload reads
@@ -193,12 +206,12 @@ async def set_credentials(
 
 @router.put("/credentials")
 async def rotate_credentials(
-    body: CredentialIn, user=Depends(require_permission("tpsi", "write"))
+    body: CredentialUpdateIn, user=Depends(require_permission("tpsi", "write"))
 ):
     meta = credentials.rotate_credential(
         user_id=user["id"],
         presentor_account_id=body.presentor_account_id,
-        tpsi_password=body.tpsi_password,
+        tpsi_password=_opt(body, "tpsi_password"),
         eservice_user_id=_opt(body, "eservice_user_id"),
         eservice_password=_opt(body, "eservice_password"),
         deposit_account_no=_opt(body, "deposit_account_no"),

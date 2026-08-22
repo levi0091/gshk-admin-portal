@@ -255,6 +255,16 @@ def test_explicit_null_still_clears():
     assert payload["deposit_account_no"] is None
 
 
+def test_rotation_can_change_one_field_without_resupplying_the_password():
+    """Changing the deposit account must not force the user to retype their TPSI
+    password from memory — against an API that locks accounts on failed auth."""
+    payload = creds._payload(
+        "u1", "T1", creds.UNSET, creds.UNSET, creds.UNSET, "N999", rotated=True,
+    )
+    assert "tpsi_password_enc" not in payload   # untouched -> not written
+    assert payload["deposit_account_no"] == "N999"
+
+
 # ── load_eservice — per-user signing credential accessor (BE-5, W-7) ────────
 
 

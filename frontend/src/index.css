@@ -587,3 +587,36 @@ tbody tr.clickable { cursor: pointer; }
     color: var(--t-muted); text-align: left; flex-shrink: 0;
   }
 }
+
+/* ── Alerts & action bar ────────────────────────────────────────────────────
+   Ported verbatim from Wireframe/admin-portal-nar1/wireframe_v10.html (the
+   approved NAR1 wireframe) so the app and the wireframe cannot drift. The
+   wireframe has used these since v9; the React app had no alert family at all
+   and pages were inline-styling around the gap. Blocks C and D need them
+   heavily — the CR fault panel, the balance pre-flight, and the irreversible
+   submit gate are all alerts. */
+.alert {
+  border-radius: var(--r); padding: 13px 15px;
+  display: flex; align-items: flex-start; gap: 11px;
+  margin-bottom: 18px; border: 1.5px solid transparent;
+}
+.al-icon { font-size: 15px; flex-shrink: 0; line-height: 1.4; }
+.al-body { font-size: 13px; color: var(--t-body); line-height: 1.5; }
+.al-info { background: var(--indigo-10); border-color: var(--indigo-20); }
+.al-success { background: var(--bang-10); border-color: #B3D5C8; }
+.al-danger { background: #FEE2E2; border-color: #FCA5A5; }
+.al-warn { background: var(--peridot-10); border-color: #EFD200; }
+
+.action-bar {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: 14px 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; margin-top: 20px; box-shadow: var(--sh-sm);
+}
+.ab-note { font-size: 12px; color: var(--t-muted); }
+.ab-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .action-bar { flex-direction: column; align-items: stretch; }
+  .ab-actions { justify-content: flex-end; }
+}
