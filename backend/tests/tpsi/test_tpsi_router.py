@@ -66,7 +66,7 @@ def test_balance_returns_the_amount(client):
     # call the real (unmocked) credentials.record_password_expiry -> a real
     # Supabase call. This test isn't exercising the login-audit path, so pin
     # last_auth to the "cached token" value (see test_cached_token_... below).
-    with _super(), \
+    with _super(), _shared_presenter(), \
          patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
          patch("routers.tpsi.reads.check_balance", return_value=Decimal("1831538.0")), \
          patch("routers.tpsi.log_event", new=AsyncMock()):
@@ -93,6 +93,22 @@ def test_endpoints_require_authentication(client):
     assert client.get("/tpsi/balance?account_no=X").status_code in (401, 403)
 
 
+def _shared_presenter(deposit="N00061980009"):
+    """The shared presenter record, mocked at its boundary.
+
+    GET /tpsi/balance resolves the deposit account from this record now, so the
+    account number never has to reach the frontend — an ordinary user may see
+    the balance, not the firm's account number. That makes `load_for_use` part
+    of the balance path, and a test that leaves it unmocked reaches the LIVE
+    Supabase client: green locally off backend/.env, red in CI.
+    """
+    return patch(
+        "routers.tpsi.shared_credentials.load_for_use",
+        return_value=MagicMock(account_id="ACCT", tpsi_password="pw",
+                               deposit_account_no=deposit),
+    )
+
+
 def test_fresh_login_is_audited_and_password_expiry_persisted(client):
     """TPSI_AUTH marks when a CR session opened. The 180-day expiry must be
     captured here — it is the only place CR tells us. Persisted against the
@@ -108,7 +124,7 @@ def test_fresh_login_is_audited_and_password_expiry_persisted(client):
     async def fake_log(**kwargs):
         events.append(kwargs["action_type"])
 
-    with _super(), \
+    with _super(), _shared_presenter(), \
          patch("routers.tpsi.client_for", return_value=tpsi_client), \
          patch("routers.tpsi.reads.check_balance", return_value=Decimal("1")), \
          patch("routers.tpsi.shared_credentials.record_password_expiry",
@@ -131,7 +147,7 @@ def test_cached_token_does_not_emit_a_login_event(client):
     async def fake_log(**kwargs):
         events.append(kwargs["action_type"])
 
-    with _super(), \
+    with _super(), _shared_presenter(), \
          patch("routers.tpsi.client_for", return_value=tpsi_client), \
          patch("routers.tpsi.reads.check_balance", return_value=Decimal("1")), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
@@ -165,7 +181,7 @@ def test_password_expiry_persistence_failure_does_not_fail_the_request(client):
     async def fake_log(**kwargs):
         events.append(kwargs["action_type"])
 
-    with _super(), \
+    with _super(), _shared_presenter(), \
          patch("routers.tpsi.client_for", return_value=tpsi_client), \
          patch("routers.tpsi.reads.check_balance", return_value=Decimal("1")), \
          patch("routers.tpsi.shared_credentials.record_password_expiry",

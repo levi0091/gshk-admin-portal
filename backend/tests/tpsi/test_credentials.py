@@ -38,8 +38,26 @@ def test_metadata_never_exposes_a_password():
     flat = str(meta)
     assert "pw" not in flat.replace("presentor", "")  # no plaintext
     assert "_enc" not in flat
-    assert meta["presentor_account_id"] == "T260727100116D"
     assert meta["has_eservice_password"] is True
+
+
+def test_metadata_does_not_echo_the_cr_account_id():
+    """Since BE-5 this row is a SIGNING credential; the CR login is the shared
+    presenter record, which is Super-Admin-only. Rows written before BE-5 still
+    hold GSHK's real CR account id in this column, so returning it from a
+    per-user endpoint would hand the firm's filing username to every holder of
+    `tpsi:read`."""
+    row = {
+        "presentor_account_id": "T260727100116D",
+        "eservice_user_id": "GSHKPN02",
+        "eservice_password_enc": encrypt("epw"),
+        "is_test": True,
+    }
+    with patch.object(creds, "_read", return_value=row):
+        meta = creds.get_metadata("user-1")
+
+    assert "presentor_account_id" not in meta
+    assert "T260727100116D" not in str(meta)
 
 
 def test_metadata_reports_absent_signing_password():
@@ -311,3 +329,44 @@ def test_load_for_use_raises_a_clear_error_for_a_signing_only_credential():
     with patch.object(creds, "_read", return_value=row):
         with pytest.raises(LookupError, match="signing"):
             creds.load_for_use("user-1")
+
+
+# ---------------------------------------------------------------------------
+# The per-user row is a SIGNING credential (BE-5). Its CR-login fields are
+# vestigial: migration 020 dropped NOT NULL from both, and `client_for()`
+# authenticates with the shared presenter record. The API must not demand them.
+# ---------------------------------------------------------------------------
+
+
+def test_a_signing_only_credential_can_be_created_without_any_cr_login():
+    """The case that used to be impossible: a new user storing their e-Service
+    signing password. They have no personal TPSI password -- there is no such
+    thing since BE-5 -- and POST demanded one, so a first save had to go through
+    PUT and was audited as a rotation of something that never existed."""
+    captured = {}
+    with patch.object(creds, "_upsert", side_effect=lambda p: captured.update(p) or p), \
+         patch.object(creds, "_to_metadata", side_effect=lambda r: r):
+        creds.set_credential(user_id="u1", eservice_user_id="GSHKPN02",
+                             eservice_password="epw")
+    assert "tpsi_password_enc" not in captured
+    assert "presentor_account_id" not in captured
+    assert captured["eservice_user_id"] == "GSHKPN02"
+
+
+def test_an_omitted_presenter_id_does_not_wipe_a_legacy_one():
+    """Rows written before BE-5 carry a presentor_account_id that
+    load_eservice() falls back on as the signatory id. Writing NULL over it
+    because the field was simply absent would silently break signing."""
+    captured = {}
+    with patch.object(creds, "_upsert", side_effect=lambda p: captured.update(p) or p), \
+         patch.object(creds, "_to_metadata", side_effect=lambda r: r):
+        creds.rotate_credential(user_id="u1", eservice_user_id="GSHKPN02")
+    assert "presentor_account_id" not in captured
+
+
+def test_an_explicit_presenter_id_is_still_written():
+    captured = {}
+    with patch.object(creds, "_upsert", side_effect=lambda p: captured.update(p) or p), \
+         patch.object(creds, "_to_metadata", side_effect=lambda r: r):
+        creds.rotate_credential(user_id="u1", presentor_account_id="ACCT")
+    assert captured["presentor_account_id"] == "ACCT"

@@ -149,15 +149,47 @@ describe('CrCredentialsPage — shared pane', () => {
       .toBeInTheDocument()
   })
 
-  it('refuses to save without a password rather than sending an empty one', async () => {
-    // PUT /tpsi/shared-credential requires tpsi_password on EVERY save
-    // (SharedCredentialIn.tpsi_password is a plain str). Sending '' would lock
-    // GSHK's only CR account against an API that locks on failed auth.
+  it('changes the deposit account WITHOUT re-supplying the password', async () => {
+    // Levi 2026-08-23. Forcing the password to be retyped to edit an unrelated
+    // field means typing it from memory; a typo is not caught here but at CR,
+    // as a failed authentication against the one account the whole firm files
+    // through — and CR locks an account after repeated failures.
     const user = userEvent.setup()
+    put.mockResolvedValue(SHARED)
+    await renderPage()
+    const deposit = await screen.findByLabelText('Deposit account number')
+    await user.clear(deposit)
+    await user.type(deposit, 'N999')
+    await user.click(screen.getByRole('button', { name: /Update shared account/ }))
+
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    const body = put.mock.calls[0][1]
+    expect(body.deposit_account_no).toBe('N999')
+    // Omitted entirely — the stored password stands. Never '' or the mask.
+    expect('tpsi_password' in body).toBe(false)
+  })
+
+  it('does not call an untouched password a rotation', async () => {
+    // rotated=true clears the recorded expiry. Doing that when the password did
+    // not change would drop the one warning that exists to stop an expired
+    // password blocking a filing mid-submission.
+    const user = userEvent.setup()
+    put.mockResolvedValue(SHARED)
     await renderPage()
     await screen.findByLabelText('Presenter account ID')
     await user.click(screen.getByRole('button', { name: /Update shared account/ }))
-    expect(await screen.findByRole('alert')).toHaveTextContent(/requires it on every change/)
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(put.mock.calls[0][1].rotated).toBe(false)
+  })
+
+  it('still demands a password when nothing is stored yet', async () => {
+    const user = userEvent.setup()
+    routeGet({ shared: {} })
+    await renderPage()
+    const account = await screen.findByLabelText('Presenter account ID')
+    await user.type(account, 'T999')
+    await user.click(screen.getByRole('button', { name: /Save shared account/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/nothing is stored yet/)
     expect(put).not.toHaveBeenCalled()
   })
 
@@ -240,30 +272,42 @@ describe('CrCredentialsPage — my e-Service signing', () => {
     expect(screen.queryByLabelText('Deposit account number')).not.toBeInTheDocument()
   })
 
-  it('PUTs even on a first save, because POST demands a password that no longer exists', async () => {
-    // CredentialIn.tpsi_password is a required non-nullable str, and since BE-5
-    // there is no per-user TPSI password to supply. PUT upserts identically.
+  it('POSTs a first save so the audit trail does not call it a rotation', async () => {
+    // TPSI_CRED_SET is "first stored", TPSI_CRED_ROTATE is "replaced". The log
+    // is insert-only, so recording a first save as a rotation of something that
+    // never existed could not be corrected afterwards.
     const user = userEvent.setup()
     routeGet({ mine: {} })
     await renderPage()
     const id = await screen.findByLabelText('e-Service (e-Reg) user ID')
     await user.type(id, 'GSHKPN09')
     await user.click(screen.getByRole('button', { name: /Save credentials/ }))
-    await waitFor(() => expect(put).toHaveBeenCalled())
-    expect(post).not.toHaveBeenCalled()
-    expect(put.mock.calls[0][0]).toBe('/tpsi/credentials')
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(put).not.toHaveBeenCalled()
+    expect(post.mock.calls[0][0]).toBe('/tpsi/credentials')
   })
 
-  it('never sends an empty presenter account id for the required field', async () => {
+  it('sends SIGNING fields only — never a CR account or TPSI password', async () => {
+    // An ordinary user has no TPSI account of their own and must never be shown
+    // or asked for GSHK's. The backend reads the shared record itself.
     const user = userEvent.setup()
     routeGet({ mine: {} })
     await renderPage()
     const id = await screen.findByLabelText('e-Service (e-Reg) user ID')
     await user.type(id, 'GSHKPN09')
     await user.click(screen.getByRole('button', { name: /Save credentials/ }))
-    await waitFor(() => expect(put).toHaveBeenCalled())
-    // Falls back to the e-Service ID, which IS the CR identity that signs.
-    expect(put.mock.calls[0][1].presentor_account_id).toBe('GSHKPN09')
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    const body = post.mock.calls[0][1]
+    expect(body.eservice_user_id).toBe('GSHKPN09')
+    expect('presentor_account_id' in body).toBe(false)
+    expect('tpsi_password' in body).toBe(false)
+  })
+
+  it('never asks an ordinary user for a TPSI password at all', async () => {
+    await renderPage()
+    await screen.findByLabelText('e-Service (e-Reg) user ID')
+    expect(screen.queryByLabelText('TPSI login password')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Presenter account ID')).not.toBeInTheDocument()
   })
 
   it('refuses to save with nothing identifying the signer', async () => {

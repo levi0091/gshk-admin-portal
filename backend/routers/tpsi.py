@@ -36,20 +36,32 @@ router = APIRouter()
 
 
 class CredentialIn(BaseModel):
-    """POST — first-time setup. A TPSI password is required: there is nothing
-    stored yet to fall back on."""
-    presentor_account_id: str
-    tpsi_password: str
+    """POST — first-time setup of a user's own SIGNING credential.
+
+    Since BE-5 this row is a signing credential and nothing else: the CR LOGIN
+    is the shared presenter record, and `client_for()` authenticates every call
+    with that. Migration 020 dropped NOT NULL from both CR-login columns for
+    exactly this reason ("The per-user row is now a SIGNING credential").
+
+    So `presentor_account_id` and `tpsi_password` are OPTIONAL here. They were
+    required when each user held their own CR login; demanding them now asks
+    the caller for a personal TPSI password that no longer exists, which made
+    POST unreachable for a signing-only credential and forced a first save
+    through PUT — auditing it as TPSI_CRED_ROTATE, a rotation of something that
+    had never been set.
+    """
+    presentor_account_id: str | None = None
+    tpsi_password: str | None = None
     eservice_user_id: str | None = None
     eservice_password: str | None = None
     deposit_account_no: str | None = None
 
 
 class CredentialUpdateIn(BaseModel):
-    """PUT — rotation. EVERY secret is optional, because changing one field must
-    not require re-supplying the others. Omitted fields keep their stored value
+    """PUT — rotation. EVERY field is optional, because changing one must not
+    require re-supplying the others. Omitted fields keep their stored value
     (see _opt); an explicit null clears."""
-    presentor_account_id: str
+    presentor_account_id: str | None = None
     tpsi_password: str | None = None
     eservice_user_id: str | None = None
     eservice_password: str | None = None
@@ -186,8 +198,8 @@ async def set_credentials(
 ):
     meta = credentials.set_credential(
         user_id=user["id"],
-        presentor_account_id=body.presentor_account_id,
-        tpsi_password=body.tpsi_password,
+        presentor_account_id=_opt(body, "presentor_account_id"),
+        tpsi_password=_opt(body, "tpsi_password"),
         eservice_user_id=_opt(body, "eservice_user_id"),
         eservice_password=_opt(body, "eservice_password"),
         deposit_account_no=_opt(body, "deposit_account_no"),
@@ -210,7 +222,7 @@ async def rotate_credentials(
 ):
     meta = credentials.rotate_credential(
         user_id=user["id"],
-        presentor_account_id=body.presentor_account_id,
+        presentor_account_id=_opt(body, "presentor_account_id"),
         tpsi_password=_opt(body, "tpsi_password"),
         eservice_user_id=_opt(body, "eservice_user_id"),
         eservice_password=_opt(body, "eservice_password"),
@@ -229,8 +241,16 @@ async def rotate_credentials(
 
 
 class SharedCredentialIn(BaseModel):
+    """The firm's single CR filing identity.
+
+    `tpsi_password` is OPTIONAL on purpose: omitted, the stored one stands. The
+    common edit is the deposit account, and making that require the password to
+    be retyped from memory risks storing a typo — which surfaces only at CR as a
+    failed authentication, and CR locks an account after repeated failures. It
+    is required only when nothing is stored yet (enforced in set_shared).
+    """
     presentor_account_id: str
-    tpsi_password: str
+    tpsi_password: str | None = None
     deposit_account_no: str | None = None
     rotated: bool = False
 
@@ -253,11 +273,14 @@ async def put_shared_credential(
     try:
         meta = shared_credentials.set_shared(
             presentor_account_id=body.presentor_account_id,
-            tpsi_password=body.tpsi_password,
+            tpsi_password=_opt(body, "tpsi_password"),
             deposit_account_no=_opt(body, "deposit_account_no"),
             updated_by=user["id"],
             rotated=body.rotated,
         )
+    except ValueError as exc:
+        # "nothing stored yet, so supply one" — the caller's problem to fix.
+        raise HTTPException(400, str(exc))
     except Exception as exc:
         raise _handle(exc)
 
@@ -327,13 +350,28 @@ async def change_password(
 
 
 @router.get("/balance")
-async def balance(account_no: str, user=Depends(require_permission("tpsi", "read"))):
+async def balance(
+    account_no: str | None = None,
+    user=Depends(require_permission("tpsi", "read")),
+):
+    """The deposit balance, for whichever account GSHK files from.
+
+    `account_no` is OPTIONAL and normally omitted. An ordinary user may see the
+    balance — it decides whether a filing can go ahead — but has no business
+    knowing or supplying the shared account NUMBER, and requiring it here would
+    have forced the frontend to fetch and hold a super-admin-only field. The
+    shared presenter record is the source, exactly as it is for a submit.
+    """
     try:
-        client = client_for(user)
-        amount: Decimal = reads.check_balance(client, account_no)
+        shared = shared_credentials.load_for_use()
+        resolved = _deposit_account(account_no, shared)
+        client = client_for(user, shared)
+        amount: Decimal = reads.check_balance(client, resolved)
     except Exception as exc:
         raise _handle(exc)
 
+    # The trail records WHICH account was read — that is internal, and an audit
+    # entry naming no account would be useless.
     await audit_auth(user, client)
     await log_event(
         user_id=user["id"],
@@ -341,10 +379,18 @@ async def balance(account_no: str, user=Depends(require_permission("tpsi", "read
         action_type=ev.TPSI_BALANCE_CHECK,
         event_code=ev.TPSI_BALANCE_CHECK,
         entity_type="tpsi",
-        entity_id=account_no,
-        metadata={"account_no": account_no},
+        entity_id=resolved,
+        metadata={"account_no": resolved},
     )
-    return {"account_no": account_no, "balance": str(amount)}
+
+    # The RESPONSE does not echo the account number back unless the caller
+    # already supplied it. The balance is what a filer needs; the shared
+    # account's number is a super-admin-only field (GET /tpsi/shared-credential)
+    # and must not leak out of a read any `tpsi:read` holder can make.
+    body = {"balance": str(amount)}
+    if account_no:
+        body["account_no"] = account_no
+    return body
 
 
 @router.get("/doc-status")

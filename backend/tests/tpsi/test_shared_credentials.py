@@ -150,3 +150,63 @@ def test_a_plain_write_does_not_touch_the_expiry():
             updated_by="u1",
         )
     assert "tpsi_password_expires_at" not in captured
+
+
+# ---------------------------------------------------------------------------
+# The password is optional on an EDIT (Levi 2026-08-23)
+#
+# GSHK files under one shared CR account. Forcing the password to be re-supplied
+# to change an unrelated field means retyping it from memory; a typo is not
+# caught here but at CR, on the next filing, as a failed authentication -- and
+# CR locks an account after repeated failures. One slip while editing a deposit
+# account number could lock the whole firm out of filing.
+# ---------------------------------------------------------------------------
+
+
+def test_the_deposit_account_can_change_without_resupplying_the_password():
+    captured = {}
+    stored = {"tpsi_password_enc": "already-stored"}
+    with patch.object(sc, "_read", return_value=stored), \
+         patch.object(sc, "_upsert", side_effect=lambda p: captured.update(p) or p), \
+         patch.object(sc, "_to_metadata", side_effect=lambda r: r):
+        sc.set_shared(
+            presentor_account_id="ACCT",
+            deposit_account_no="N999",
+            updated_by="u1",
+        )
+    # Untouched -> not written, so the stored password stands.
+    assert "tpsi_password_enc" not in captured
+    assert captured["deposit_account_no"] == "N999"
+
+
+def test_a_supplied_password_is_still_stored():
+    captured = {}
+    with patch.object(sc, "_read", return_value={"tpsi_password_enc": "old"}), \
+         patch.object(sc, "_upsert", side_effect=lambda p: captured.update(p) or p), \
+         patch.object(sc, "encrypt", return_value="enc-new"), \
+         patch.object(sc, "_to_metadata", side_effect=lambda r: r):
+        sc.set_shared(
+            presentor_account_id="ACCT",
+            tpsi_password="brand-new",
+            updated_by="u1",
+        )
+    assert captured["tpsi_password_enc"] == "enc-new"
+
+
+def test_the_first_ever_write_still_demands_a_password():
+    """The column is nullable, so nothing at the database would refuse a row
+    with no password. It would fail much later, at CR, as an authentication
+    error nobody could trace back to this call."""
+    with patch.object(sc, "_read", return_value=None), \
+         patch.object(sc, "_upsert") as upsert:
+        with pytest.raises(ValueError, match="must be supplied"):
+            sc.set_shared(presentor_account_id="ACCT", updated_by="u1")
+    upsert.assert_not_called()
+
+
+def test_a_stored_row_with_no_password_also_demands_one():
+    with patch.object(sc, "_read", return_value={"tpsi_password_enc": None}), \
+         patch.object(sc, "_upsert") as upsert:
+        with pytest.raises(ValueError, match="must be supplied"):
+            sc.set_shared(presentor_account_id="ACCT", updated_by="u1")
+    upsert.assert_not_called()

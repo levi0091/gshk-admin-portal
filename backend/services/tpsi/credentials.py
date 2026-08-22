@@ -100,7 +100,13 @@ def _to_metadata(row: dict) -> dict:
     Carries a masked last-four HINT for each stored password (see _hint) — never
     the password, never the ciphertext."""
     return {
-        "presentor_account_id": row["presentor_account_id"],
+        # presentor_account_id is deliberately NOT returned. Since BE-5 this row
+        # is a signing credential; the CR login is the shared presenter record,
+        # which is Super-Admin-only (GET /tpsi/shared-credential). On rows
+        # written before BE-5 this column holds GSHK's real CR account id, so
+        # echoing it here would hand the firm's filing username to every holder
+        # of `tpsi:read` through a per-user endpoint. Nothing reads it: the
+        # signatory fallback in load_eservice() reads the ROW, not this payload.
         "eservice_user_id": row.get("eservice_user_id"),
         "has_eservice_password": row.get("eservice_password_enc") is not None,
         "tpsi_password_hint": _hint(row.get("tpsi_password_enc")),
@@ -163,8 +169,8 @@ def load_for_use(user_id: str) -> PresenterCredential:
 
 def _payload(
     user_id: str,
-    presentor_account_id: str,
-    tpsi_password: str,
+    presentor_account_id,
+    tpsi_password,
     eservice_user_id,
     eservice_password,
     deposit_account_no,
@@ -172,9 +178,15 @@ def _payload(
 ) -> dict:
     payload = {
         "user_id": user_id,
-        "presentor_account_id": presentor_account_id,
         "is_test": get_config().env == "test",
     }
+    # _UNSET-guarded like every other column here. Since BE-5 the caller has no
+    # reason to send this at all -- the CR login is the shared record -- but
+    # legacy rows still carry a value that load_eservice() falls back on as the
+    # signatory id. Writing NULL over it because the field was simply absent
+    # would silently break signing for those users.
+    if presentor_account_id is not _UNSET:
+        payload["presentor_account_id"] = presentor_account_id
     # Same _UNSET discipline as the optional fields below. Without it there is
     # no way to change the deposit account or the e-Service ID without also
     # re-supplying the TPSI password -- which the user would have to retype from
@@ -207,8 +219,8 @@ def _payload(
 def set_credential(
     *,
     user_id: str,
-    presentor_account_id: str,
-    tpsi_password: str,
+    presentor_account_id: str | None = _UNSET,
+    tpsi_password: str | None = _UNSET,
     eservice_user_id: str | None = _UNSET,
     eservice_password: str | None = _UNSET,
     deposit_account_no: str | None = _UNSET,
@@ -226,7 +238,7 @@ def set_credential(
 def rotate_credential(
     *,
     user_id: str,
-    presentor_account_id: str,
+    presentor_account_id: str | None = _UNSET,
     tpsi_password: str | None = _UNSET,
     eservice_user_id: str | None = _UNSET,
     eservice_password: str | None = _UNSET,

@@ -117,10 +117,19 @@ def _payload(presentor_account_id, tpsi_password, deposit_account_no,
     payload = {
         "id": True,
         "presentor_account_id": presentor_account_id,
-        "tpsi_password_enc": encrypt(tpsi_password),
         "is_test": get_config().env == "test",
         "updated_by": updated_by,
     }
+    # Same _UNSET discipline as deposit_account_no below, and for a sharper
+    # reason. This is GSHK's ONLY CR identity: every user of the portal files
+    # through it. Forcing the password to be re-supplied to change an unrelated
+    # field (the deposit account) means retyping it from memory, and a typo is
+    # not caught here -- it is caught by CR, on the next filing, as a failed
+    # authentication. CR locks an account after repeated failures, so one slip
+    # while editing a deposit account number could lock the whole firm out of
+    # filing. Omitted -> the stored password stands.
+    if tpsi_password is not _UNSET:
+        payload["tpsi_password_enc"] = encrypt(tpsi_password)
     # Omitted key -> PostgREST leaves the column untouched. Explicit None ->
     # the column is cleared. See credentials._payload for why the distinction
     # is load-bearing on a 180-day password rotation.
@@ -141,11 +150,23 @@ def _payload(presentor_account_id, tpsi_password, deposit_account_no,
 def set_shared(
     *,
     presentor_account_id: str,
-    tpsi_password: str,
+    tpsi_password: str | None = _UNSET,
     deposit_account_no: str | None = _UNSET,
     updated_by: str,
     rotated: bool = False,
 ) -> dict:
+    """Create or update the one shared presenter record.
+
+    `tpsi_password` omitted keeps whatever is stored — but there has to BE
+    something stored. Refused here rather than at the database, because the
+    column is nullable and a row with no password would fail much later, at CR,
+    as an authentication error nobody could trace back to this call.
+    """
+    if tpsi_password is _UNSET and not (_read() or {}).get("tpsi_password_enc"):
+        raise ValueError(
+            "no shared TPSI password is stored yet, so one must be supplied "
+            "when the shared presenter credential is first set"
+        )
     return _to_metadata(
         _upsert(_payload(presentor_account_id, tpsi_password,
                          deposit_account_no, updated_by, rotated))

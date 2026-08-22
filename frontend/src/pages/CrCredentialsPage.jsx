@@ -181,26 +181,29 @@ function SharedPane({ onNotice, onError }) {
     e.preventDefault()
     onError(null); onNotice(null)
 
-    // Unlike the per-user route, PUT /tpsi/shared-credential requires
-    // tpsi_password on EVERY save (SharedCredentialIn.tpsi_password is a plain
-    // str). So there is no "leave it to keep it" here, and pretending otherwise
-    // would send an empty string and lock GSHK's only CR account.
-    if (!password) {
-      onError('Enter the TPSI login password to save the shared account. '
-            + 'This endpoint requires it on every change.')
+    // A password is needed only when there is nothing stored to fall back on.
+    // On an edit it is OMITTED unless deliberately changed: the common edit is
+    // the deposit account, and making that require the password to be retyped
+    // from memory risks storing a typo — which surfaces only at CR, as a failed
+    // authentication, against the one account the whole firm files through.
+    if (isNew && !password) {
+      onError('Enter the TPSI login password — nothing is stored yet for the '
+            + 'shared CR account.')
       return
     }
 
     setSaving(true)
     try {
-      const saved = await api.put('/tpsi/shared-credential', {
+      const body = {
         presentor_account_id: accountId.trim(),
-        tpsi_password: password,
         deposit_account_no: depositAccount.trim() || null,
         // A rotation clears the recorded expiry: the 180-day clock restarts and
-        // the old date would otherwise keep warning about a password that is gone.
-        rotated: !isNew,
-      })
+        // the old date would otherwise keep warning about a password that is
+        // gone. Only a real password change is a rotation.
+        rotated: Boolean(password) && !isNew,
+      }
+      if (password) body.tpsi_password = password
+      const saved = await api.put('/tpsi/shared-credential', body)
       setMeta(saved)
       setPassword(null)
       onNotice(isNew ? 'Shared CR account saved.' : 'Shared CR account updated.')
@@ -252,7 +255,7 @@ function SharedPane({ onNotice, onError }) {
                 hint={meta.tpsi_password_hint}
                 value={password}
                 onChange={setPassword}
-                help="Authenticates the portal to TPSI. It never signs anything. Required on every save of this account."
+                help="Authenticates the whole portal to TPSI — every user files under it. It never signs anything. Leave it untouched to keep the stored one."
               />
 
               <div className="f-group" style={{ marginBottom: 0 }}>
@@ -346,34 +349,30 @@ function MinePane({ canWrite, onNotice, onError }) {
     return <div className="empty-state" style={{ padding: 32 }}>Loading your signing credentials…</div>
   }
 
-  const isNew = !meta.presentor_account_id
-
-  /**
-   * `presentor_account_id` is a required field on both CredentialIn and
-   * CredentialUpdateIn, but since BE-5 it no longer authenticates anything —
-   * `client_for()` uses the shared record. On this row it survives only as the
-   * signatory fallback when `eservice_user_id` is unset
-   * (credentials.py: `eservice_user_id or presentor_account_id`).
-   *
-   * So: keep whatever is already stored, and on a first save fall back to the
-   * e-Service ID, which IS the CR identity that signs. Never send an empty
-   * string for a required field.
-   */
-  function presenterForPayload() {
-    return meta.presentor_account_id || eserviceUserId.trim()
-  }
+  // An empty object is what the API returns when this user has no row at all.
+  // The presenter account id is no longer part of the payload — see below.
+  const isNew = Object.keys(meta).length === 0
 
   async function handleSave(e) {
     e.preventDefault()
     onError(null); onNotice(null)
 
-    if (!presenterForPayload()) {
+    if (!eserviceUserId.trim()) {
       onError('Enter your e-Service user ID before saving.')
       return
     }
 
+    /**
+     * SIGNING CREDENTIALS ONLY. No `presentor_account_id`, no `tpsi_password`.
+     *
+     * Since BE-5 the CR login is the shared presenter record and `client_for()`
+     * authenticates every call with it, so an ordinary user has no TPSI account
+     * or password of their own — and must never be shown or asked for GSHK's.
+     * The backend reads the shared record itself; both fields are optional on
+     * CredentialIn/CredentialUpdateIn and `_UNSET`-guarded, so omitting them
+     * leaves any legacy stored value untouched rather than clearing it.
+     */
     const payload = {
-      presentor_account_id: presenterForPayload(),
       eservice_user_id: eserviceUserId.trim() || null,
     }
     // Untouched secrets are OMITTED, not sent as null: the backend reads a
@@ -382,17 +381,13 @@ function MinePane({ canWrite, onNotice, onError }) {
 
     setSaving(true)
     try {
-      // ALWAYS PUT, including a first save. `credentials.rotate_credential`
-      // upserts exactly as `set_credential` does, and PUT's optional
-      // `tpsi_password` is what makes a signing-only row reachable at all.
-      //
-      // POST is not an option here any more: `CredentialIn.tpsi_password` is a
-      // required, non-nullable str, and since BE-5 there is no per-user TPSI
-      // password to supply — `client_for()` authenticates with the shared
-      // record. A first save therefore audits as TPSI_CRED_ROTATE rather than
-      // TPSI_CRED_SET, which is the honest trade for not sending a field that
-      // no longer exists. Worth a backend fix; not this block's.
-      const saved = await api.put('/tpsi/credentials', payload)
+      // POST for a first save, PUT for a change, so the audit trail says what
+      // actually happened: TPSI_CRED_SET is "first stored", TPSI_CRED_ROTATE is
+      // "replaced". The log is insert-only, so recording a first save as a
+      // rotation of something that never existed could not be corrected later.
+      const saved = isNew
+        ? await api.post('/tpsi/credentials', payload)
+        : await api.put('/tpsi/credentials', payload)
       setMeta(saved)
       setPassword(null)
       onNotice(isNew ? 'Signing credentials saved.' : 'Signing credentials updated.')
@@ -406,10 +401,9 @@ function MinePane({ canWrite, onNotice, onError }) {
   async function handleClear() {
     onError(null); onNotice(null); setSaving(true)
     try {
-      const saved = await api.put('/tpsi/credentials', {
-        presentor_account_id: presenterForPayload(),
-        eservice_password: null,
-      })
+      // An explicit null CLEARS the column — that is the intent here, and the
+      // only field mentioned, so nothing else is touched.
+      const saved = await api.put('/tpsi/credentials', { eservice_password: null })
       setMeta(saved)
       setPassword(null)
       onNotice('Stored signing password removed.')
