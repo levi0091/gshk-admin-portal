@@ -293,10 +293,31 @@ def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
     at all, and that must be said out loud rather than dropped.
     """
     if not docs:
+        # CR's escape for a person who genuinely holds neither is the literal
+        # NIL -- and it goes in BOTH identity fields at once. CR's own
+        # validate_NNC1 example shows the rule with two individuals side by
+        # side: the one with a passport carries <hkid></hkid> EMPTY alongside
+        # his number, while the one with neither carries hkid=NIL AND
+        # passportNo=NIL together, with the issuing country left empty.
+        #
+        # (An earlier note here claimed CR rejects NIL. That was wrong: NIL was
+        # tested in one field at a time with the other omitted, which is why CR
+        # kept answering "please input the partial HKID number OR partial
+        # passport number". Never verified live for NAR1 -- CR's NAR1 examples
+        # all carry a real A123, so they never exercise it.)
+        #
+        # Still a refusal, deliberately. An ABSENT document row means we do not
+        # know, and NIL asserts to the Registry that the person holds no
+        # identity document at all -- a statement of fact we have not
+        # established. 24 current officers on DEV are in this state; that is
+        # chaseable data, not a mapping problem. If GSHK confirms a person
+        # genuinely holds neither, that needs recording as such before it can
+        # be filed.
         problems.append(
-            f"{where}: no HKID or passport on record. CR refuses the return "
-            "without a partial identity number for every individual — "
-            "record one before filing"
+            f"{where}: no HKID or passport on record. CR needs a partial "
+            "identity number for every individual, and 'no document on file' "
+            "is not the same as 'holds none' — chase the number, or have GSHK "
+            "confirm the person holds neither"
         )
         return {}
     hkid = next((d for d in docs if d.get("id_type") == "hkid"), None)
