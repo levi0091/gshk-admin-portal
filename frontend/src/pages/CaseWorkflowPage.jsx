@@ -1,28 +1,38 @@
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { api } from '../lib/api.js'
 import { formatDate, formatDateTime } from '../lib/format.js'
 import { labelForDays } from '../lib/anniversary.js'
-import useAbortableGet from '../lib/useAbortableGet.js'
+import { useAuth } from '../context/AuthContext.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
 import AuditTrailTab from '../components/AuditTrailTab.jsx'
+import CaseStepper from '../components/case/CaseStepper.jsx'
+import StageDataVerification from '../components/case/StageDataVerification.jsx'
+import StageClientVerification from '../components/case/StageClientVerification.jsx'
+import StageSigning from '../components/case/StageSigning.jsx'
+import StageSubmission from '../components/case/StageSubmission.jsx'
+import StageConfirmation from '../components/case/StageConfirmation.jsx'
+import { STAGE_LABELS, reachedStage } from '../components/case/workflow.js'
 
 /**
- * The NAR1 case screen (wireframe_v11 `s20`) — HEADER ONLY so far.
+ * The NAR1 case workflow (wireframe_v11 `s20`).
  *
- * FE-0 delivers the route and the shell: the dashboard opens a case directly
- * (that is the point of the case dashboard), so `/cases/{id}` has to resolve to
- * something real rather than a 404. What it shows is genuinely what the backend
- * knows — the case, both statuses, the deadline and the audit trail.
+ * Five stages behind a gate that is enforced here, not merely drawn: a return
+ * cannot be signed before the client approved it, or filed before it was
+ * signed. The gate is derived from the case record every time it renders, so it
+ * cannot drift out of step with what the backend actually knows.
  *
- * The five workflow STAGES (Data Verification → Client Verification → Signing →
- * Submission → Confirmation, e-Sign and manual paths) are FE-2, FE-3 and FE-4.
- * They are deliberately not stubbed with dead buttons here: a control that looks
- * live and does nothing is worse than an honest absence, and these particular
- * buttons spend money at the Companies Registry.
+ * Two status badges in the header, never merged (D-6): the WORKFLOW status is
+ * where the case is with GSHK, the FORM status is what the Companies Registry
+ * has done with the filing. See components/CaseStatusBadge.jsx.
+ *
+ * Every stage reports back through `onChanged`, which re-reads the case rather
+ * than patching local state. The backend derives the workflow status from two
+ * records, and guessing at the new one here is exactly how a screen starts
+ * disagreeing with the trail it shares.
  */
 
-// Same shape as CompanyProfilePage's Kv — one definition of what a label/value
-// row looks like across the portal.
 function Kv({ label, children }) {
   return (
     <div className="kv-row">
@@ -35,20 +45,70 @@ function Kv({ label, children }) {
 export default function CaseWorkflowPage() {
   const { caseId } = useParams()
   const navigate = useNavigate()
-  const { data: c, loading, error } = useAbortableGet(`/cases/${caseId}`)
+  const { hasPermission, isSuperAdmin } = useAuth()
 
-  if (loading) return <div className="empty-state" style={{ padding: 32 }}>Loading case…</div>
+  const can = (mod, perm) => isSuperAdmin || hasPermission(mod, perm)
+  const canWrite = can('nar1', 'write')
+  const canValidate = can('tpsi', 'write')
+  const canSubmit = can('tpsi', 'submit')
+  const canReadTpsi = can('tpsi', 'read')
 
-  if (error) {
+  const [caseRow, setCaseRow] = useState(undefined)
+  const [loadError, setLoadError] = useState(null)
+  const [failure, setFailure] = useState(null)
+  const [notice, setNotice] = useState(null)
+  const [step, setStep] = useState(null)
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api.get(`/cases/${caseId}`)
+      setCaseRow(data)
+      // Open on the furthest stage that is actually reachable, the first time
+      // only — re-reading after an action must not yank the operator forward
+      // out of the stage they are still working in.
+      setStep(s => s ?? reachedStage(data))
+      return data
+    } catch (e) {
+      setLoadError(e.message)
+      setCaseRow(null)
+      return null
+    }
+  }, [caseId])
+
+  useEffect(() => { load() }, [load])
+
+  const onChanged = useCallback(async () => {
+    setFailure(null)
+    const fresh = await load()
+    if (!fresh) return
+    // Advance by ONE stage, and only when the action genuinely unlocked it.
+    // Never move backwards (a restart must not eject the operator mid-read) and
+    // never skip ahead — each stage has something to show for what just
+    // happened before the next one is asked for.
+    setStep(s => {
+      const from = s ?? 1
+      const reached = reachedStage(fresh)
+      return reached > from ? from + 1 : from
+    })
+  }, [load])
+
+  if (caseRow === undefined) {
+    return <div className="empty-state" style={{ padding: 32 }}>Loading case…</div>
+  }
+  if (loadError) {
     return (
       <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
-        Failed to load this case: {error}
+        Failed to load this case: {loadError}
       </div>
     )
   }
-  if (!c) return null
+  if (!caseRow) return null
 
+  const c = caseRow
   const { text: annivText, due } = labelForDays(c.days_to_anniversary)
+  const current = step ?? 1
+
+  const stageProps = { caseRow: c, onChanged, onError: setFailure }
 
   return (
     <>
@@ -56,8 +116,8 @@ export default function CaseWorkflowPage() {
         <div>
           <div className="pg-title">{c.case_no || 'Case'}</div>
           <div className="pg-sub">
-            {c.company_name}
-            {c.br_number ? ` · BRN ${c.br_number}` : ''}
+            {c.company_name}{c.br_number ? ` · BRN ${c.br_number}` : ''}
+            {' · '}{STAGE_LABELS[current - 1]}
           </div>
         </div>
         <div className="pg-actions">
@@ -73,26 +133,34 @@ export default function CaseWorkflowPage() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-hdr">
-          <div>
-            <div className="card-title">Case summary</div>
-            <div className="card-sub">
-              Where this return stands with us, and what the Companies Registry
-              has done with it
-            </div>
+      {failure && (
+        <div className="alert al-danger" role="alert" style={{ marginBottom: 16 }}>
+          <span className="al-icon">⚠</span>
+          <div className="al-body">
+            {failure.message}
+            {failure.hint && <div style={{ marginTop: 4 }}>{failure.hint}</div>}
           </div>
         </div>
+      )}
+      {notice && (
+        <div className="alert al-info" role="status" style={{ marginBottom: 16 }}>
+          <span className="al-icon">ℹ</span><div className="al-body">{notice}</div>
+        </div>
+      )}
+
+      <CaseStepper
+        caseRow={c}
+        step={current}
+        onGo={setStep}
+        onLocked={setNotice}
+      />
+
+      <div className="card mb-16">
         <div className="kv-list">
-          <Kv label="Case type">
-            <span className="badge b-inactive">{c.case_type || 'NAR1'}</span>
-          </Kv>
+          <Kv label="Case type"><span className="badge b-inactive">{c.case_type || 'NAR1'}</span></Kv>
           <Kv label="Company status"><StatusBadge status={c.case_status} /></Kv>
-          {/* Two questions, two answers — never merged. See CaseStatusBadge. */}
           <Kv label="Workflow status"><WorkflowBadge status={c.workflow_status} /></Kv>
-          <Kv label="CR form status">
-            <FormBadge stage={c.form_status?.code} />
-          </Kv>
+          <Kv label="CR form status"><FormBadge stage={c.form_status?.code} /></Kv>
           <Kv label="Days to anniversary">
             <span className={due ? 'td-anniv-due' : ''}>{annivText}</span>
           </Kv>
@@ -101,46 +169,24 @@ export default function CaseWorkflowPage() {
               ? (c.signing_method === 'manual' ? 'Manual (wet signature)' : 'e-Sign via CR')
               : <span className="td-muted">Not chosen yet</span>}
           </Kv>
-          <Kv label="Verification sent">
-            {c.verification_sent_at
-              ? formatDateTime(c.verification_sent_at)
-              : <span className="td-muted">Not sent</span>}
-          </Kv>
-          <Kv label="Client response">
-            {c.client_response_at
-              ? `${c.client_approved ? 'Approved' : 'Declined'} · ${formatDate(c.client_response_at)}`
-              : <span className="td-muted">No response recorded</span>}
-          </Kv>
-        </div>
-
-        {/* CR returns every fault at once so one pass can fix them all — so show
-            every one, not just the first. */}
-        {c.form_status?.failed && c.form_status.faults?.length > 0 && (
-          <div style={{ margin: '16px 0 0', padding: '12px 14px', background: '#FEE2E2',
-                        border: '1px solid #C53030', borderRadius: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: '#C53030', marginBottom: 6 }}>
-              The Companies Registry rejected this form
-            </div>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--t-body)' }}>
-              {c.form_status.faults.map((f, i) => (
-                <li key={i}>{typeof f === 'string' ? f : (f.faultString || JSON.stringify(f))}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="card-hdr">
-          <div>
-            <div className="card-title">Workflow</div>
-            <div className="card-sub">
-              The five filing stages are not built yet. Until they are, a NAR1 is
-              driven from the Companies Registry portal and recorded here.
-            </div>
-          </div>
         </div>
       </div>
+
+      {current === 1 && (
+        <StageDataVerification {...stageProps} canWrite={canWrite} canValidate={canValidate} />
+      )}
+      {current === 2 && (
+        <StageClientVerification {...stageProps} canWrite={canWrite} />
+      )}
+      {current === 3 && (
+        <StageSigning {...stageProps} canWrite={canWrite && canValidate} />
+      )}
+      {current === 4 && (
+        <StageSubmission {...stageProps} canSubmit={canSubmit} />
+      )}
+      {current === 5 && (
+        <StageConfirmation caseRow={c} canRead={canReadTpsi} onError={setFailure} />
+      )}
 
       <div className="card">
         <div className="card-hdr">
@@ -152,6 +198,11 @@ export default function CaseWorkflowPage() {
         {/* audit_log.case_id holds the ENTITY id, not the case id — see
             routers/audit.py and the _audit_target() helper in routers/cases.py. */}
         <AuditTrailTab caseId={c.entity_id} />
+      </div>
+
+      <div className="f-hint" style={{ marginTop: 12 }}>
+        Created {formatDate(c.created_at)}
+        {c.updated_at ? ` · last updated ${formatDateTime(c.updated_at)}` : ''}
       </div>
     </>
   )

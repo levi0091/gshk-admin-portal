@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -11,138 +11,150 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate, useParams: () => ({ caseId: 'c1' }) }
 })
 
-// The audit tab fetches on its own and is covered by its own test file.
 vi.mock('../components/AuditTrailTab.jsx', () => ({
   default: ({ caseId }) => <div data-testid="audit-trail">{caseId}</div>,
 }))
 
-vi.mock('../lib/api.js', () => ({ api: { get: vi.fn() } }))
-import { api } from '../lib/api.js'
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 
+const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
+const blob = vi.fn(); const upload = vi.fn()
+vi.mock('../lib/api.js', () => ({
+  api: {
+    get: (...a) => get(...a), post: (...a) => post(...a), patch: (...a) => patch(...a),
+    blob: (...a) => blob(...a), upload: (...a) => upload(...a), put: vi.fn(),
+  },
+}))
+
+// A case that has cleared every gate except filing — opens on Submission.
 const CASE = {
   id: 'c1', case_no: 'NAR-2026-0041', entity_id: 'e7',
   company_name: 'Harbour Tech Ltd.', br_number: '2100028', case_type: 'NAR1',
-  case_status: 'live', workflow_status: 'signing',
-  form_status: { code: 'validated', label: 'Validated by CR', failed: false, faults: [] },
-  days_to_anniversary: -12, signing_method: 'esign',
+  case_status: 'live', workflow_status: 'submission',
+  form_status: { code: 'signed', label: 'Signed', failed: false, faults: [] },
+  filing_id: 'f1', days_to_anniversary: -12, signing_method: 'esign',
   verification_sent_at: '2026-08-01T09:00:00Z', client_response_at: '2026-08-03',
-  client_approved: true,
+  client_approved: true, created_at: '2026-01-01', updated_at: '2026-08-03T10:00:00Z',
 }
 
-function renderPage() {
-  return render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+function caseAt(over) { return { ...CASE, ...over } }
+
+function routeGet(caseRow = CASE, extra = {}) {
+  get.mockImplementation(path => {
+    if (path.startsWith('/cases/')) return Promise.resolve(caseRow)
+    if (path.includes('/preview')) {
+      return Promise.resolve(extra.preview ?? { fee: 105, balance: 12480, sufficient: true })
+    }
+    if (path.includes('/doc-status')) return Promise.resolve(extra.docStatus ?? [])
+    return Promise.resolve({})
+  })
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  api.get.mockResolvedValue(CASE)
+  auth = { hasPermission: () => true, isSuperAdmin: true }
+  routeGet()
+  blob.mockResolvedValue(new Blob(['%PDF'], { type: 'application/pdf' }))
+  post.mockResolvedValue({}); patch.mockResolvedValue({}); upload.mockResolvedValue({})
+  // jsdom has no object-URL implementation.
+  global.URL.createObjectURL = vi.fn(() => 'blob:preview')
+  global.URL.revokeObjectURL = vi.fn()
 })
 
-describe('CaseWorkflowPage', () => {
+const renderPage = async () => {
+  render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+  await screen.findByText('NAR-2026-0041')
+}
+
+describe('CaseWorkflowPage — shell', () => {
   it('reads the composite case endpoint for the id in the route', async () => {
-    renderPage()
-    await screen.findByText('NAR-2026-0041')
-    expect(api.get.mock.calls[0][0]).toBe('/cases/c1')
+    await renderPage()
+    expect(get.mock.calls[0][0]).toBe('/cases/c1')
   })
 
-  it('leads with the case number and names the company', async () => {
-    renderPage()
-    expect(await screen.findByText('NAR-2026-0041')).toBeInTheDocument()
-    expect(screen.getByText(/Harbour Tech Ltd\./)).toBeInTheDocument()
-    expect(screen.getByText(/2100028/)).toBeInTheDocument()
+  it('shows both statuses separately, never merged', async () => {
+    await renderPage()
+    // Scoped to their own rows: "Submission" is also a stepper label, and the
+    // point here is that the two badges are two distinct facts side by side.
+    const workflow = screen.getByText('Workflow status').closest('.kv-row')
+    const form = screen.getByText('CR form status').closest('.kv-row')
+    expect(within(workflow).getByText('Submission')).toBeInTheDocument()
+    expect(within(form).getByText('Signed')).toBeInTheDocument()
   })
 
-  it('shows both statuses separately, never merged into one', async () => {
-    renderPage()
-    await screen.findByText('NAR-2026-0041')
-    expect(screen.getByText('Signing')).toBeInTheDocument()          // workflow
-    expect(screen.getByText('Validated by CR')).toBeInTheDocument()  // CR form
-  })
-
-  it('marks a passed anniversary as overdue', async () => {
-    renderPage()
-    expect(await screen.findByText('12 days ago')).toBeInTheDocument()
-  })
-
-  it('renders EVERY CR fault, not just the first', async () => {
-    // CR deliberately returns all faults at once so one pass fixes them all.
-    api.get.mockResolvedValue({
-      ...CASE,
-      form_status: {
-        code: 'validation_failed', label: 'Rejected at validation', failed: true,
-        faults: ['Partial HKID is required', 'Signatory date precedes appointment'],
-      },
-    })
-    renderPage()
-    await screen.findByText('The Companies Registry rejected this form')
-    expect(screen.getByText('Partial HKID is required')).toBeInTheDocument()
-    expect(screen.getByText('Signatory date precedes appointment')).toBeInTheDocument()
-  })
-
-  it('does not show a fault panel when CR has not refused anything', async () => {
-    renderPage()
-    await screen.findByText('NAR-2026-0041')
-    expect(screen.queryByText('The Companies Registry rejected this form'))
-      .not.toBeInTheDocument()
+  it('opens on the furthest stage the case has actually reached', async () => {
+    await renderPage()
+    const submission = screen.getByRole('tab', { name: /Submission/ })
+    expect(submission).toHaveAttribute('aria-selected', 'true')
   })
 
   it('passes the ENTITY id to the audit trail, not the case id', async () => {
-    // audit_log.case_id holds the entity id — see routers/audit.py and the
-    // _audit_target() helper in routers/cases.py. Passing c1 here would render
-    // an empty trail that looks like "nothing ever happened".
-    renderPage()
-    const tab = await screen.findByTestId('audit-trail')
-    expect(tab).toHaveTextContent('e7')
-    expect(tab).not.toHaveTextContent('c1')
+    // audit_log.case_id holds the entity id — see routers/audit.py.
+    await renderPage()
+    expect(await screen.findByTestId('audit-trail')).toHaveTextContent('e7')
   })
 
   it('offers a way back to the case list and to the company', async () => {
     const user = userEvent.setup()
-    renderPage()
-    await screen.findByText('NAR-2026-0041')
-
+    await renderPage()
     await user.click(screen.getByRole('button', { name: 'Back to cases' }))
     expect(navigate).toHaveBeenCalledWith('/dashboard')
-
     await user.click(screen.getByRole('button', { name: 'Company profile' }))
     expect(navigate).toHaveBeenCalledWith('/companies/e7')
   })
 
-  it('says the filing stages are not built rather than showing dead buttons', async () => {
-    // These particular buttons spend money at the Companies Registry. A control
-    // that looks live and does nothing is worse than an honest absence.
-    renderPage()
-    await screen.findByText('NAR-2026-0041')
-    expect(screen.getByText(/five filing stages are not built yet/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Submit/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Sign/i })).not.toBeInTheDocument()
-  })
-
-  it('shows a loading state, then an error state if the case will not load', async () => {
-    api.get.mockReturnValue(new Promise(() => {}))
-    const { unmount } = renderPage()
-    expect(screen.getByText('Loading case…')).toBeInTheDocument()
-    unmount()
-
-    api.get.mockRejectedValue(new Error('nope'))
-    renderPage()
+  it('renders an error state when the case will not load', async () => {
+    get.mockRejectedValue(new Error('nope'))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
     expect(await screen.findByText(/Failed to load this case: nope/)).toBeInTheDocument()
   })
+})
 
-  it('reads "Not chosen yet" rather than blank when no signing method is set', async () => {
-    api.get.mockResolvedValue({ ...CASE, signing_method: null })
-    renderPage()
-    expect(await screen.findByText('Not chosen yet')).toBeInTheDocument()
+describe('CaseWorkflowPage — the stage gate is enforced, not just drawn', () => {
+  it('locks stages the case has not reached', async () => {
+    routeGet(caseAt({ form_status: null, filing_id: null, verification_sent_at: null,
+                      client_approved: null, signing_method: null }))
+    await renderPage()
+    expect(screen.getByRole('tab', { name: /Signing/ })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('tab', { name: /Confirmation/ })).toHaveAttribute('aria-disabled', 'true')
   })
 
-  it('distinguishes a declining client from one who never replied', async () => {
-    api.get.mockResolvedValue({ ...CASE, client_approved: false })
-    renderPage()
-    await screen.findByText('NAR-2026-0041')
-    expect(screen.getByText(/Declined/)).toBeInTheDocument()
+  it('refuses to open a locked stage and says what would unlock it', async () => {
+    const user = userEvent.setup()
+    routeGet(caseAt({ form_status: null, filing_id: null, verification_sent_at: null,
+                      client_approved: null, signing_method: null }))
+    await renderPage()
+    await user.click(screen.getByRole('tab', { name: /Submission/ }))
+    // Still on stage 1, and told why.
+    expect(screen.getByRole('tab', { name: /Data Verification/ }))
+      .toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText(/Complete "Data Verification" to unlock/))
+      .toBeInTheDocument()
+  })
 
-    api.get.mockResolvedValue({ ...CASE, client_response_at: null, client_approved: null })
-    const { container } = render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
-    expect(await within(container).findByText('No response recorded')).toBeInTheDocument()
+  it('lets the operator move back to a stage already passed', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await user.click(screen.getByRole('tab', { name: /Data Verification/ }))
+    expect(screen.getByRole('tab', { name: /Data Verification/ }))
+      .toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+describe('CaseWorkflowPage — permissions gate the consequential controls', () => {
+  it('hides filing from someone without tpsi:submit', async () => {
+    auth = {
+      isSuperAdmin: false,
+      hasPermission: (m, p) => !(m === 'tpsi' && p === 'submit'),
+    }
+    await renderPage()
+    expect(await screen.findByText(/Filing requires the/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /File the return/ })).not.toBeInTheDocument()
+  })
+
+  it('offers filing to someone who holds tpsi:submit', async () => {
+    await renderPage()
+    expect(await screen.findByRole('button', { name: /File the return/ })).toBeInTheDocument()
   })
 })

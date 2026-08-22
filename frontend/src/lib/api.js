@@ -17,7 +17,14 @@ export async function apiFetch(path, options = {}) {
   const resp = await fetch(`${BASE}${path}`, { ...options, headers })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'API error')
+    // The status rides on the error because the NAR1 workflow has to tell four
+    // failures apart and act differently on each: 400 is an inline fix, 409 is
+    // an expired TPSI password or a refused submit gate, 502 is a CR fault that
+    // must NEVER be auto-retried, and 503 is the CR TEST window being shut.
+    // Without this they all arrive as an indistinguishable Error(message).
+    const e = new Error(err.detail || 'API error')
+    e.status = resp.status
+    throw e
   }
   return resp.json()
 }
@@ -36,6 +43,28 @@ async function apiUpload(path, formData) {
   return resp.json()
 }
 
+/**
+ * GET a binary body (the NAR1 PDF preview).
+ *
+ * Separate from `get` because `apiFetch` calls `resp.json()`, which would throw
+ * on a PDF. Returns a Blob the caller turns into an object URL — the bytes
+ * never touch state, and the caller is responsible for revoking the URL.
+ */
+async function apiBlob(path, options = {}) {
+  const resp = await fetch(`${BASE}${path}`, {
+    ...options,
+    headers: { ...(await getAuthHeaders()), ...(options.headers || {}) },
+  })
+  if (!resp.ok) {
+    // An error body IS json even when the success body is not.
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+    const e = new Error(err.detail || 'Request failed')
+    e.status = resp.status
+    throw e
+  }
+  return resp.blob()
+}
+
 export const api = {
   // `options` carries the AbortSignal from useAbortableGet; apiFetch already
   // spreads it into fetch(), so nothing else needs to change.
@@ -45,4 +74,5 @@ export const api = {
   patch: (path, body) => apiFetch(path, { method: 'PATCH', body: JSON.stringify(body) }),
   del: (path) => apiFetch(path, { method: 'DELETE' }),
   upload: apiUpload,
+  blob: apiBlob,
 }
