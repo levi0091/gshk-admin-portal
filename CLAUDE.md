@@ -35,7 +35,7 @@ The G-FlowDesk Admin Portal — a ZenexFlow-built internal tool for GSHK's data 
 | Frontend testing | Vitest + React Testing Library | Every React component/hook ships with tests |
 | Database | Supabase (PostgreSQL) | Auth via Supabase Auth (email/password) |
 | DB Migrations | Alembic | All schema changes via Alembic migrations — never edit schema manually |
-| Email | **Gmail** | Transactional emails — client verification, notifications. **Levi 2026-08-02: supersedes Resend.** See Block P-3 of prd-nar1-wireframe-amend-frontend for the auth decision (Workspace service account vs personal OAuth). |
+| Email | Resend | Transactional emails — client verification, notifications |
 | AI | Claude API | Called from Railway backend only — never from frontend |
 
 ### URLs
@@ -224,7 +224,7 @@ await log_event(
 | `CASE_FIELD_UPDATED` | Entity | Any edit to a case data field — one entry per changed field |
 | `AML_STATUS_CHANGED` | NAR1 / NNC1 | Admin updates AML screening status |
 | `DOCUMENT_GENERATED` | NAR1 / NNC1 | Any document (AoA, FWR, NNC1, CoI, NAR1) generated |
-| `EMAIL_SENT` | NAR1 / NNC1 | Any workflow email sent (via Gmail) |
+| `EMAIL_SENT` | NAR1 / NNC1 | Any workflow email sent via Resend |
 | `TPSI_SUBMISSION_ATTEMPTED` | NAR1 / NNC1 | Before calling any TPSI submit endpoint |
 | `TPSI_SUBMISSION_SUCCESS` | NAR1 / NNC1 | On successful TPSI response |
 | `TPSI_SUBMISSION_FAILED` | NAR1 / NNC1 | On TPSI error |
