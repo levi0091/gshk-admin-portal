@@ -4,6 +4,7 @@ import LoginPage from './pages/LoginPage.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
 import CompanyRegistryPage from './pages/CompanyRegistryPage.jsx'
 import CompanyProfilePage from './pages/CompanyProfilePage.jsx'
+import CaseWorkflowPage from './pages/CaseWorkflowPage.jsx'
 import PersonsRegistryPage from './pages/PersonsRegistryPage.jsx'
 import PersonProfilePage from './pages/PersonProfilePage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
@@ -45,6 +46,8 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="registry" element={<CompanyRegistryPage />} />
           <Route path="companies/:companyId" element={<CompanyProfilePage />} />
+          {/* The case dashboard opens a case directly, not the company. */}
+          <Route path="cases/:caseId" element={<CaseWorkflowPage />} />
           <Route path="persons" element={<PersonsRegistryPage />} />
           <Route path="persons/:personId" element={<PersonProfilePage />} />
           <Route

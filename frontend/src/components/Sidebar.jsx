@@ -110,11 +110,15 @@ export default function Sidebar({ isOpen, collapsed, onClose }) {
         <div className="nav-section-lbl" style={sectionLbl}>
           Main
         </div>
+        {/* Two different modules on purpose. The dashboard is now the NAR1 CASE
+            list (GET /cases, `nar1:read`); the registry is companies
+            (`companies:read`). A role may hold one without the other, and
+            showing a nav item that answers 403 is worse than not showing it. */}
+        {hasPermission('nar1', 'read') && (
+          <NavItem to="/dashboard" icon={<DashIcon />}>Post-incorporation</NavItem>
+        )}
         {hasPermission('companies', 'read') && (
-          <>
-            <NavItem to="/dashboard" icon={<DashIcon />}>Dashboard</NavItem>
-            <NavItem to="/registry" icon={<RegistryIcon />}>Company Registry</NavItem>
-          </>
+          <NavItem to="/registry" icon={<RegistryIcon />}>Company Registry</NavItem>
         )}
         {hasPermission('persons', 'read') && (
           <NavItem to="/persons" icon={<PersonsIcon />}>Persons Registry</NavItem>

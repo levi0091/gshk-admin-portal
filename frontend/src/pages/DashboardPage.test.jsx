@@ -14,22 +14,35 @@ vi.mock('react-router-dom', async () => {
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn() } }))
 import { api } from '../lib/api.js'
 
+// The shape GET /cases?scope=dashboard returns (nar1_cases.list_dashboard).
+// Harbour Tech appears TWICE on purpose — one company, two outstanding returns.
+// That is the whole reason this screen lists cases rather than companies.
 const PAYLOAD = {
-  total: 2,
+  total: 3,
   page: 1,
   page_size: 50,
-  tiles: { action_required: 3, pending: 1 },
-  status_counts: { all: 2, pending_aml: 3, to_verify: 0, client_rejected: 0, pending_client: 1, submitted_to_cr: 0, cr_approved: 0 },
-  companies: [
+  counts: {
+    all: 3, data_verification: 2, client_verification: 0, awaiting_client: 1,
+    client_rejected: 0, signing: 0, submission: 0, completed: 0,
+  },
+  rows: [
     {
-      id: 'e1', vp_source_key: 'ACME01', company_name: 'Acme Ltd', br_number: '77712345',
-      status: 'pending_aml', active_workflow: 'nar1', has_pending_case: true,
-      created_at: '2023-08-01', updated_at: '2026-06-26', incorporation_date: '2023-08-12',
+      id: 'c1', case_no: 'NAR-2025-0028', entity_id: 'e1',
+      company_name: 'Harbour Tech Ltd.', br_number: '2100028', case_type: 'NAR1',
+      case_status: 'live', filing_stage: 'draft', workflow_status: 'data_verification',
+      days_to_anniversary: -12, created_at: '2023-08-01', updated_at: '2026-06-26',
     },
     {
-      id: 'e2', vp_source_key: 'HARB02', company_name: 'Harbour Tech', br_number: null,
-      status: 'live', active_workflow: null, has_pending_case: false,
-      created_at: '2024-05-02', updated_at: '2026-06-25', incorporation_date: null,
+      id: 'c2', case_no: 'NAR-2026-0028', entity_id: 'e1',
+      company_name: 'Harbour Tech Ltd.', br_number: '2100028', case_type: 'NAR1',
+      case_status: 'live', filing_stage: null, workflow_status: 'data_verification',
+      days_to_anniversary: 47, created_at: '2023-08-01', updated_at: '2026-06-26',
+    },
+    {
+      id: 'c3', case_no: 'NAR-2026-0031', entity_id: 'e2',
+      company_name: 'Skyline Capital', br_number: '2100031', case_type: 'NAR1',
+      case_status: 'live', filing_stage: 'validated', workflow_status: 'awaiting_client',
+      days_to_anniversary: 34, created_at: '2024-05-02', updated_at: '2026-06-25',
     },
   ],
 }
@@ -43,102 +56,186 @@ beforeEach(() => {
   api.get.mockResolvedValue(PAYLOAD)
 })
 
-describe('DashboardPage', () => {
+describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
   it('shows a loading state before data arrives', () => {
     api.get.mockReturnValue(new Promise(() => {}))
     renderPage()
     expect(screen.getByText('Loading…')).toBeInTheDocument()
   })
 
-  it('renders the two counter tiles from the API', async () => {
+  it('reads cases, not companies', async () => {
     renderPage()
-    await screen.findByText('Acme Ltd')
-    expect(screen.getByText('Action Required').parentElement).toHaveTextContent('3')
-    expect(screen.getByText('Pending').parentElement).toHaveTextContent('1')
-  })
-
-  it('renders company rows with entity id, status badge and workflow tag', async () => {
-    renderPage()
-    await screen.findByText('Acme Ltd')
-    // Scope to the table — "Pending AML" also appears as a filter tab label.
-    const table = within(screen.getByRole('table'))
-    expect(table.getByText('ACME01')).toBeInTheDocument()
-    expect(table.getByText('77712345')).toBeInTheDocument()
-    expect(table.getByText('Pending AML')).toBeInTheDocument()
-    expect(table.getByText('NAR1')).toBeInTheDocument()
-    expect(table.getByText('Live')).toBeInTheDocument()
+    await screen.findByText('NAR-2025-0028')
+    expect(api.get.mock.calls[0][0]).toMatch(/^\/cases\?/)
   })
 
   it('requests the dashboard scope with pagination', async () => {
     renderPage()
-    await screen.findByText('Acme Ltd')
+    await screen.findByText('NAR-2025-0028')
     const url = api.get.mock.calls[0][0]
     expect(url).toContain('scope=dashboard')
     expect(url).toContain('page=1')
     expect(url).toContain('page_size=50')
   })
 
-  it('filters by status when a filter tab is clicked', async () => {
+  it('lists one row per case, so a company with two returns appears twice', async () => {
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    const table = within(screen.getByRole('table'))
+    expect(table.getAllByText('Harbour Tech Ltd.')).toHaveLength(2)
+    expect(table.getByText('NAR-2025-0028')).toBeInTheDocument()
+    expect(table.getByText('NAR-2026-0028')).toBeInTheDocument()
+  })
+
+  it('opens the CASE, not the company profile, when a row is clicked', async () => {
+    // The behaviour Levi asked for by name (2026-08-15): "clicking on the record
+    // should bring me directly to the case management screen and not the
+    // company profile page."
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText('Acme Ltd')
-    await user.click(screen.getByRole('tab', { name: /Pending AML/ }))
+    await user.click(await screen.findByText('NAR-2025-0028'))
+    expect(navigate).toHaveBeenCalledWith('/cases/c1')
+  })
+
+  it('shows the workflow status and the CR form status as SEPARATE badges', async () => {
+    // D-6: two vocabularies answering different questions. A case can be at
+    // "Data Verification" with us while CR holds nothing at all — merging them
+    // would lose that, in both directions.
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    const table = within(screen.getByRole('table'))
+    expect(table.getAllByText('Data Verification').length).toBeGreaterThan(0)
+    expect(table.getByText('Not yet sent to CR')).toBeInTheDocument()
+    expect(table.getByText('Validated by CR')).toBeInTheDocument()
+  })
+
+  it('reads an em dash for a case with no filing yet, never a fake draft', async () => {
+    renderPage()
+    await screen.findByText('NAR-2026-0028')
+    // c2 has filing_stage: null. "Not yet sent to CR" belongs to c1's real
+    // draft filing and must not be borrowed for a case with no filing at all.
+    expect(within(screen.getByRole('table')).getAllByText('Not yet sent to CR'))
+      .toHaveLength(1)
+  })
+
+  it('counts the two stat tiles from the per-status counts', async () => {
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    // Action Required = the five statuses whose next move is ours (2 here).
+    expect(screen.getByText('Action Required').parentElement).toHaveTextContent('2')
+    // Pending = awaiting_client (1).
+    expect(screen.getByText('Pending').parentElement).toHaveTextContent('1')
+  })
+
+  it('filters by workflow status when a filter tab is clicked', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('tab', { name: /Awaiting Client/ }))
     await waitFor(() => {
-      expect(api.get.mock.calls.some(c => c[0].includes('status=pending_aml'))).toBe(true)
+      expect(api.get.mock.calls.some(c => c[0].includes('workflow_status=awaiting_client')))
+        .toBe(true)
     })
   })
 
   it('debounces search and sends it to the server', async () => {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText('Acme Ltd')
+    await screen.findByText('NAR-2025-0028')
     await user.type(screen.getByLabelText('Search Company or BRN'), 'harbour')
     await waitFor(() => {
       expect(api.get.mock.calls.some(c => c[0].includes('search=harbour'))).toBe(true)
     }, { timeout: 2000 })
   })
 
-  it('navigates to the company profile when a row is clicked', async () => {
-    const user = userEvent.setup()
+  it('renders a passed anniversary as overdue and a future one plainly', async () => {
     renderPage()
-    await user.click(await screen.findByText('Acme Ltd'))
-    expect(navigate).toHaveBeenCalledWith('/companies/e1')
+    await screen.findByText('NAR-2025-0028')
+    const table = within(screen.getByRole('table'))
+    expect(table.getByText('12 days ago')).toBeInTheDocument()
+    expect(table.getByText('in 47 days')).toBeInTheDocument()
   })
 
-  it('sorts server-side when a column header is clicked, and toggles direction', async () => {
+  it('warns about cases past the anniversary and can narrow to them', async () => {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText('Acme Ltd')
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.getByText(/passed the NAR1 anniversary/)).toBeInTheDocument()
 
-    await user.click(screen.getByRole('columnheader', { name: /Create Date/ }))
+    await user.click(screen.getByRole('button', { name: 'Review overdue' }))
     await waitFor(() => {
-      expect(api.get.mock.calls.some(c => c[0].includes('sort=created_at&dir=asc'))).toBe(true)
-    })
-
-    // clicking the same column again flips to descending
-    await user.click(screen.getByRole('columnheader', { name: /Create Date/ }))
-    await waitFor(() => {
-      expect(api.get.mock.calls.some(c => c[0].includes('sort=created_at&dir=desc'))).toBe(true)
+      // Both parameters or neither — the backend 422s on a half-supplied pair.
+      const hit = api.get.mock.calls.find(c => c[0].includes('anniv_op=lte'))
+      expect(hit).toBeTruthy()
+      expect(hit[0]).toContain('anniv_days=0')
     })
   })
 
-  it('renders an empty state when no companies match', async () => {
-    api.get.mockResolvedValue({ ...PAYLOAD, companies: [], total: 0 })
+  it('does not warn when nothing has passed its anniversary', async () => {
+    api.get.mockResolvedValue({
+      ...PAYLOAD,
+      rows: [{ ...PAYLOAD.rows[2] }],   // days_to_anniversary: 34
+    })
     renderPage()
-    expect(await screen.findByText('No companies match this view.')).toBeInTheDocument()
+    await screen.findByText('NAR-2026-0031')
+    expect(screen.queryByText(/passed the NAR1 anniversary/)).not.toBeInTheDocument()
+  })
+
+  it('sorts server-side on a whitelisted column and toggles direction', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+
+    await user.click(screen.getByRole('columnheader', { name: /Days to anniversary/ }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(c => c[0].includes('sort=days_to_anniversary&dir=asc')))
+        .toBe(true)
+    })
+    await user.click(screen.getByRole('columnheader', { name: /Days to anniversary/ }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(c => c[0].includes('sort=days_to_anniversary&dir=desc')))
+        .toBe(true)
+    })
+  })
+
+  it('does not offer a sort the server would reject', async () => {
+    // nar1_cases._SORTABLE has no entity_id / case_type. Offering the header
+    // would produce a control that 422s — a broken control, not a feature.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('columnheader', { name: 'Entity ID' }))
+    await user.click(screen.getByRole('columnheader', { name: 'Case Type' }))
+    expect(api.get.mock.calls.some(c => /sort=(entity_id|case_type)/.test(c[0]))).toBe(false)
+  })
+
+  it('says plainly that pre-incorporation is not built rather than showing an empty table', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('tab', { name: 'Pre-incorporation' }))
+    expect(screen.getByText(/Pre-incorporation cases \(NNC1\) are not built yet/))
+      .toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+
+  it('renders an empty state when no cases match', async () => {
+    api.get.mockResolvedValue({ ...PAYLOAD, rows: [], total: 0 })
+    renderPage()
+    expect(await screen.findByText('No cases match this view.')).toBeInTheDocument()
   })
 
   it('renders an error state when the request fails', async () => {
     api.get.mockRejectedValue(new Error('boom'))
     renderPage()
-    expect(await screen.findByText(/Failed to load dashboard: boom/)).toBeInTheDocument()
+    expect(await screen.findByText(/Failed to load cases: boom/)).toBeInTheDocument()
   })
 
   it('pages forward and disables Previous on page 1', async () => {
     const user = userEvent.setup()
     api.get.mockResolvedValue({ ...PAYLOAD, total: 120 })
     renderPage()
-    await screen.findByText('Acme Ltd')
+    await screen.findByText('NAR-2025-0028')
     expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Next' }))
     await waitFor(() => {
@@ -153,7 +250,8 @@ describe('DashboardPage', () => {
 // previous one or checked whether it was still wanted, so a slow earlier
 // response could land after a newer one and win — and a slow earlier FAILURE
 // could paint the error banner over a view that had already loaded fine.
-// That is the failure message Levi saw.
+// That is the failure message Levi saw. Carried over from the company dashboard
+// this screen replaced: the hazard belongs to the pattern, not the payload.
 describe('DashboardPage — overlapping requests (UAT W-8)', () => {
   function deferred() {
     let resolve, reject
@@ -161,8 +259,6 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
     return { promise, resolve, reject }
   }
 
-  // Click a tab, having queued a controllable promise for each of the two
-  // requests that produces: the initial load, then the tab change.
   async function toggleTo(tabName) {
     const user = userEvent.setup()
     const first = deferred()
@@ -175,33 +271,33 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
   }
 
   it('does not report a failure from a request the user has already moved past', async () => {
-    const { first, second } = await toggleTo(/Pending AML/)
+    const { first, second } = await toggleTo(/Awaiting Client/)
 
     first.reject(new Error('boom'))     // superseded request fails, late
     second.resolve(PAYLOAD)             // the one the user is waiting for
 
-    await screen.findByText('Acme Ltd')
-    expect(screen.queryByText(/Failed to load dashboard/)).not.toBeInTheDocument()
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.queryByText(/Failed to load cases/)).not.toBeInTheDocument()
   })
 
   it('ignores a slow response that arrives after a newer one', async () => {
-    const { first, second } = await toggleTo(/Pending AML/)
+    const { first, second } = await toggleTo(/Awaiting Client/)
 
     second.resolve({
       ...PAYLOAD,
-      companies: [{ ...PAYLOAD.companies[0], id: 'e9', company_name: 'Newer Co' }],
+      rows: [{ ...PAYLOAD.rows[0], id: 'c9', case_no: 'NAR-2026-9999' }],
     })
-    await screen.findByText('Newer Co')
+    await screen.findByText('NAR-2026-9999')
 
     first.resolve(PAYLOAD)              // stale data lands last
     await waitFor(() => {
-      expect(screen.getByText('Newer Co')).toBeInTheDocument()
+      expect(screen.getByText('NAR-2026-9999')).toBeInTheDocument()
     })
-    expect(screen.queryByText('Acme Ltd')).not.toBeInTheDocument()
+    expect(screen.queryByText('NAR-2025-0028')).not.toBeInTheDocument()
   })
 
   it('keeps showing Loading… when only the superseded request has resolved', async () => {
-    const { first } = await toggleTo(/Pending AML/)
+    const { first } = await toggleTo(/Awaiting Client/)
 
     first.resolve(PAYLOAD)              // stale; the current request is still out
     // Drain the microtask queue so the stale .then/.finally definitely runs.
@@ -213,7 +309,7 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
   })
 
   it('aborts the superseded request rather than leaving it in flight', async () => {
-    const { } = await toggleTo(/Pending AML/)
+    await toggleTo(/Awaiting Client/)
 
     const signal = api.get.mock.calls[0][1]?.signal
     expect(signal).toBeInstanceOf(AbortSignal)

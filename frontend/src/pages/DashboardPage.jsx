@@ -1,23 +1,72 @@
-import { useState, useEffect, Fragment } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { formatDate } from '../lib/format.js'
+import { labelForDays } from '../lib/anniversary.js'
 import useAbortableGet from '../lib/useAbortableGet.js'
-import StatusBadge from '../components/StatusBadge.jsx'
-import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import SortableTh from '../components/SortableTh.jsx'
+import StatusBadge from '../components/StatusBadge.jsx'
+import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
+import AddCompanyModal from '../components/AddCompanyModal.jsx'
+
+/**
+ * Post-incorporation — the NAR1 case dashboard (wireframe_v11 `s2`).
+ *
+ * ONE ROW PER CASE, not per company. A company holding two outstanding annual
+ * returns appears twice, and a row opens that case's workflow directly rather
+ * than the company profile — the whole point of the screen is the filing, not
+ * the company. Companies as such live on the Company Registry (`s9`).
+ *
+ * This replaced the old company dashboard, which read `/companies?scope=dashboard`
+ * and could not represent two open cases against one company at all.
+ *
+ * Every filter, count and sort is applied SERVER-side (`GET /cases?scope=dashboard`)
+ * — the page never holds the full set, so filtering here would quietly describe
+ * only the current page.
+ */
 
 const PAGE_SIZE = 50
 
-// Filter tabs, in wireframe_v7 order. Carrot = action on me, indigo = waiting on
-// others, green = done. These stay at 0 until the NAR1/NNC1 case workflows land.
+// The seven workflow badges, in v11 order. Carrot = act on me, indigo = waiting
+// on someone else, red = refused, green = done. Keys are the backend's derived
+// `workflow_status` codes (services/nar1_case_status.py).
 const TABS = [
   { key: null, label: 'All', cls: '' },
-  { key: 'pending_aml', label: 'Pending AML', cls: 'ft-action' },
-  { key: 'to_verify', label: 'To Verify', cls: 'ft-action' },
-  { key: 'client_rejected', label: 'Client Rejected', cls: 'ft-action' },
-  { key: 'pending_client', label: 'Pending Client', cls: 'ft-pending' },
-  { key: 'submitted_to_cr', label: 'Submitted to CR', cls: 'ft-pending' },
-  { key: 'cr_approved', label: 'CR Approved', cls: 'ft-done' },
+  { key: 'data_verification', label: 'Data Verification', cls: 'ft-action' },
+  { key: 'awaiting_client', label: 'Awaiting Client', cls: 'ft-pending' },
+  { key: 'client_verification', label: 'Client Verification', cls: 'ft-action' },
+  { key: 'client_rejected', label: 'Client Rejected', cls: 'ft-danger' },
+  { key: 'signing', label: 'Signing', cls: 'ft-action' },
+  { key: 'submission', label: 'Submission', cls: 'ft-action' },
+  { key: 'completed', label: 'Completed', cls: 'ft-done' },
+]
+
+// "Action Required" vs "Pending" on the two stat cards: the split is who the
+// next move belongs to. Completed belongs to neither.
+const ACTION_STATUSES = ['data_verification', 'client_verification', 'client_rejected',
+                         'signing', 'submission']
+const PENDING_STATUSES = ['awaiting_client']
+
+// v11 order. `null` = not sortable: the backend whitelists what may reach
+// PostgREST's order clause (nar1_cases._SORTABLE), and offering a header the
+// server would 422 on is a broken control, not a feature.
+//
+// v11 also draws an "Incorporation Date" column. It is NOT here, because
+// `nar1_case_registry` (migration 024) does not select it — the column would
+// render an em dash on every row forever, which reads as missing data rather
+// than as a missing feature. Restoring it is a one-line addition of
+// `e.incorporation_date` to that view (company_registry already exposes it via
+// `e.*`) plus a migration; that is backend work, not this block's.
+const COLUMNS = [
+  ['case_no', 'Case ID'],
+  [null, 'Case Type'],
+  [null, 'Entity ID'],
+  ['updated_at', 'Last Updated'],
+  ['company_name', 'Company Name'],
+  ['br_number', 'BRN'],
+  ['case_status', 'Status'],
+  ['workflow_status', 'Workflow'],
+  ['days_to_anniversary', 'Days to anniversary'],
+  ['created_at', 'Create Date'],
 ]
 
 export default function DashboardPage() {
@@ -25,6 +74,8 @@ export default function DashboardPage() {
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState(null)
+  const [phase, setPhase] = useState('all')
+  const [overdueOnly, setOverdueOnly] = useState(false)
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
   const [sort, setSort] = useState(null)
@@ -46,24 +97,40 @@ export default function DashboardPage() {
     scope: 'dashboard', page: String(page), page_size: String(PAGE_SIZE),
   })
   if (query) params.set('search', query)
-  if (status) params.set('status', status)
+  if (status) params.set('workflow_status', status)
   if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  // "Review overdue" — the anniversary has passed and the return is still
+  // inside the 42-day window. The server counts negative days for exactly that
+  // state, so `≤ 0` is the whole filter. Both parameters or neither: the
+  // backend 422s on a half-supplied pair.
+  if (overdueOnly) { params.set('anniv_op', 'lte'); params.set('anniv_days', '0') }
 
-  // Cancels the previous request on every toggle — UAT W-8. See the hook.
-  const { data, loading, error } = useAbortableGet(`/companies?${params}`)
+  const { data, loading, error } = useAbortableGet(`/cases?${params}`)
 
-  const companies = data?.companies || []
-  const counts = data?.status_counts || {}
-  const tiles = data?.tiles || {}
+  const rows = data?.rows || []
+  const counts = data?.counts || {}
   const total = data?.total || 0
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE))
+
+  const sum = keys => keys.reduce((n, k) => n + (counts[k] ?? 0), 0)
+  const actionCount = sum(ACTION_STATUSES)
+  const pendingCount = sum(PENDING_STATUSES)
+
+  // Rows already past the anniversary and still filable. Counted from the page
+  // in view, so the banner says "on this page" rather than implying a total it
+  // has not been given — the server sends no separate overdue count.
+  const overdueHere = rows.filter(r => r.days_to_anniversary != null
+                                    && r.days_to_anniversary <= 0).length
 
   return (
     <>
       <div className="pg-hdr">
         <div>
-          <div className="pg-title">Dashboard</div>
-          <div className="pg-sub">Client companies — pending work first, most recently updated on top</div>
+          <div className="pg-title">Post-incorporation</div>
+          <div className="pg-sub">
+            Open cases — one row per case, so a company with two outstanding
+            returns appears twice. Pending work first.
+          </div>
         </div>
         <div className="pg-actions">
           <button className="btn btn-action" onClick={() => setShowAdd(true)}>
@@ -79,17 +146,55 @@ export default function DashboardPage() {
         />
       )}
 
-      <div className="stats-grid">
+      {overdueHere > 0 && (
+        <div className="info-banner warn">
+          <svg width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2"
+               viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 9v4M12 17h.01M10.3 3.3 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0Z"
+                  strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <div className="info-banner-txt">
+            <b>
+              {overdueHere} {overdueHere === 1 ? 'case has' : 'cases have'} passed
+              the NAR1 anniversary.
+            </b>{' '}
+            A company's annual return (NAR1) must reach the Companies Registry
+            within <b>42 days</b> of its incorporation anniversary. Late delivery
+            incurs escalating registration fees and possible prosecution — review
+            and file now.
+          </div>
+          <button className="info-banner-cta"
+                  onClick={() => { setOverdueOnly(v => !v); setPage(1) }}>
+            {overdueOnly ? 'Show all' : 'Review overdue'}
+          </button>
+        </div>
+      )}
+
+      <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(2,minmax(0,1fr))', maxWidth: 560 }}>
         <div className="stat-card accent-left">
           <div className="stat-lbl">Action Required</div>
-          <div className="stat-val stat-accent">{tiles.action_required ?? 0}</div>
-          <div className="stat-sub">Pending AML · To Verify · Client Rejected</div>
+          <div className="stat-val stat-accent">{actionCount}</div>
+          <div className="stat-sub">Data Verification · Client response · Signing · Submission</div>
         </div>
         <div className="stat-card accent-indigo">
           <div className="stat-lbl">Pending</div>
-          <div className="stat-val" style={{ color: 'var(--indigo)' }}>{tiles.pending ?? 0}</div>
-          <div className="stat-sub">Pending Client · Submitted to CR</div>
+          <div className="stat-val" style={{ color: 'var(--indigo)' }}>{pendingCount}</div>
+          <div className="stat-sub">Awaiting client response</div>
         </div>
+      </div>
+
+      {/* Pre-incorporation (NNC1) has no cases yet — the toggle is present
+          because v11 places it here, and selecting it says so plainly rather
+          than showing an empty table that looks like a loading failure. */}
+      <div className="seg seg-inline" role="tablist" aria-label="Incorporation phase">
+        {[['all', 'All cases'], ['post', 'Post-incorporation'], ['pre', 'Pre-incorporation']]
+          .map(([key, label]) => (
+            <button key={key} role="tab" aria-selected={phase === key}
+                    className={`seg-btn ${phase === key ? 'active' : ''}`}
+                    onClick={() => { setPhase(key); setPage(1) }}>
+              {label}
+            </button>
+          ))}
       </div>
 
       <div className="search-wrap">
@@ -124,21 +229,25 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Only true while the default ordering is in force. */}
       <div className="sort-note" style={{ visibility: sort ? 'hidden' : 'visible' }}>
         <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2"
              viewBox="0 0 16 16" aria-hidden="true">
           <path d="M4 3v10M4 13l-2-2M4 13l2-2M9 4h5M9 8h3M9 12h1" strokeLinecap="round" />
         </svg>
-        Sorted by pending work first, then most recently updated. Non-client companies are in the
-        {' '}
+        Sorted by filing deadline — soonest first, and anniversaries already
+        passed ahead of those. Companies due for NAR1 are found on the{' '}
         <span style={{ color: 'var(--indigo)', cursor: 'pointer', fontWeight: 600 }}
               onClick={() => navigate('/registry')}>Company Registry</span>.
       </div>
 
       {error ? (
         <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
-          Failed to load dashboard: {error}
+          Failed to load cases: {error}
+        </div>
+      ) : phase === 'pre' ? (
+        <div className="empty-state" style={{ padding: 32 }}>
+          Pre-incorporation cases (NNC1) are not built yet. Switch to
+          Post-incorporation to see NAR1 cases.
         </div>
       ) : (
         <>
@@ -146,52 +255,51 @@ export default function DashboardPage() {
             <table>
               <thead>
                 <tr>
-                  {[
-                    ['vp_source_key', 'Entity ID'],
-                    ['updated_at', 'Last Updated'],
-                    ['company_name', 'Company Name'],
-                    ['br_number', 'BRN'],
-                    ['status', 'Status'],
-                    ['active_workflow', 'Workflow'],
-                    ['created_at', 'Create Date'],
-                    ['incorporation_date', 'Incorporation Date'],
-                  ].map(([col, label]) => (
-                    <SortableTh key={col} col={col} sort={sort} dir={dir} onSort={onSort}>
-                      {label}
-                    </SortableTh>
+                  {COLUMNS.map(([col, label]) => (
+                    col
+                      ? <SortableTh key={label} col={col} sort={sort} dir={dir} onSort={onSort}>
+                          {label}
+                        </SortableTh>
+                      : <th key={label}>{label}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={8} className="empty-state">Loading…</td></tr>
-                ) : companies.length === 0 ? (
-                  <tr><td colSpan={8} className="empty-state">No companies match this view.</td></tr>
-                ) : companies.map((c, i) => (
-                  <Fragment key={c.id}>
-                    {/* Separator at the pending → completed boundary (wireframe_v7).
-                        Only rendered when the page actually contains both. */}
-                    {i > 0 && companies[i - 1].has_pending_case && !c.has_pending_case && (
-                      <tr className="tbl-group-row">
-                        <td colSpan={8}>Completed — no pending case</td>
-                      </tr>
-                    )}
-                  <tr className="clickable" onClick={() => navigate(`/companies/${c.id}`)}>
-                    <td data-label="Entity ID"><span className="td-id">{c.vp_source_key || '—'}</span></td>
-                    <td data-label="Last Updated"><span className="td-muted">{formatDate(c.updated_at)}</span></td>
-                    <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>
-                    <td data-label="BRN"><span className="td-muted">{c.br_number || '—'}</span></td>
-                    <td data-label="Status"><StatusBadge status={c.status} /></td>
-                    <td data-label="Workflow">
-                      {c.active_workflow
-                        ? <span className="filing-tag">{c.active_workflow.toUpperCase()}</span>
-                        : <span className="td-muted">—</span>}
-                    </td>
-                    <td data-label="Create Date"><span className="td-muted">{formatDate(c.created_at)}</span></td>
-                    <td data-label="Incorporation Date"><span className="td-muted">{formatDate(c.incorporation_date)}</span></td>
-                  </tr>
-                  </Fragment>
-                ))}
+                  <tr><td colSpan={COLUMNS.length} className="empty-state">Loading…</td></tr>
+                ) : rows.length === 0 ? (
+                  <tr><td colSpan={COLUMNS.length} className="empty-state">
+                    No cases match this view.
+                  </td></tr>
+                ) : rows.map(c => {
+                  const { text, due } = labelForDays(c.days_to_anniversary)
+                  return (
+                    <tr key={c.id} className="clickable"
+                        onClick={() => navigate(`/cases/${c.id}`)}>
+                      <td data-label="Case ID"><span className="td-id">{c.case_no || '—'}</span></td>
+                      <td data-label="Case Type">
+                        <span className="badge b-inactive">{c.case_type || 'NAR1'}</span>
+                      </td>
+                      <td data-label="Entity ID"><span className="td-id">{c.entity_id || '—'}</span></td>
+                      <td data-label="Last Updated"><span className="td-muted">{formatDate(c.updated_at)}</span></td>
+                      <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>
+                      <td data-label="BRN"><span className="td-muted">{c.br_number || '—'}</span></td>
+                      <td data-label="Status"><StatusBadge status={c.case_status} /></td>
+                      <td data-label="Workflow">
+                        {/* Both vocabularies, side by side and never merged: where
+                            the case is with us, and what CR has done with the form. */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
+                          <WorkflowBadge status={c.workflow_status} />
+                          <FormBadge stage={c.filing_stage} />
+                        </div>
+                      </td>
+                      <td data-label="Days to anniversary" aria-label="Days to anniversary">
+                        <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>
+                      </td>
+                      <td data-label="Create Date"><span className="td-muted">{formatDate(c.created_at)}</span></td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

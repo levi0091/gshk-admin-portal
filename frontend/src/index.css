@@ -620,3 +620,78 @@ tbody tr.clickable { cursor: pointer; }
   .action-bar { flex-direction: column; align-items: stretch; }
   .ab-actions { justify-content: flex-end; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   v11 · NAR1 case dashboard (s2)
+   Ported verbatim from Wireframe/admin-portal-nar1/wireframe_v11.html.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Two separate badge families on purpose.
+   `bw-*` is the WORKFLOW status (where the case is in GSHK's process, 7 values)
+   and `bf-*` is the CR FORM status (what the Companies Registry has done with
+   the filing, 9 values). They are shown side by side on the same row, so
+   sharing one class family would let the two vocabularies be confused at a
+   glance and in the code. Keep them apart. */
+.badge.bw-data      { background: var(--carrot-10); color: var(--carrot); }
+.badge.bw-data::before      { background: var(--carrot); }
+.badge.bw-verify    { background: var(--indigo-10); color: var(--indigo); }
+.badge.bw-verify::before    { background: var(--indigo); }
+.badge.bw-awaiting  { background: var(--indigo-10); color: var(--indigo); }
+.badge.bw-awaiting::before  { background: var(--indigo); }
+.badge.bw-rejected  { background: #FEE2E2;          color: #C53030; }
+.badge.bw-rejected::before  { background: #C53030; }
+.badge.bw-sign      { background: var(--carrot-10); color: var(--carrot); }
+.badge.bw-sign::before      { background: var(--carrot); }
+.badge.bw-submit    { background: var(--carrot-10); color: var(--carrot); }
+.badge.bw-submit::before    { background: var(--carrot); }
+.badge.bw-done      { background: var(--bang-10);   color: var(--bang); }
+.badge.bw-done::before      { background: var(--bang); }
+
+.badge.bf-draft      { background: var(--indigo-10); color: var(--indigo); }
+.badge.bf-validated  { background: var(--bang-10);   color: var(--bang); }
+.badge.bf-signed     { background: var(--bang-10);   color: var(--bang); }
+.badge.bf-submitted  { background: var(--bang-10);   color: var(--bang); }
+.badge.bf-registered { background: var(--bang-10);   color: var(--bang); }
+.badge.bf-failed     { background: #FEE2E2;          color: #C53030; }
+.badge.bf-superseded { background: var(--indigo-10); color: var(--t-muted); }
+
+/* Client Rejected is the one status that is neither "act on me" (carrot) nor
+   "waiting on someone else" (indigo) — it is a refusal, so it gets its own red. */
+.filter-tab.ft-danger { color: #C53030; }
+.filter-tab.ft-danger.active { background: #C53030; color: #fff; }
+
+/* The overdue-anniversary treatment v11 calls `.anniv-due` already exists here
+   as `.td-anniv-due` (line ~350), byte-identical, and the company listing
+   already uses it. The case dashboard reuses that one class rather than adding
+   a second name for the same rule — Levi 2026-08-16 wants the column reading
+   the same on both screens, which is easier to guarantee with one definition. */
+
+/* Pre-/Post-incorporation phase toggle. */
+.seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg-btn {
+  flex: 1; padding: 8px 10px; font-size: 12px; font-weight: 600;
+  color: var(--t-muted); background: var(--bg-card); border: none;
+  cursor: pointer; font-family: inherit; transition: background .12s;
+}
+.seg-btn.active { background: var(--indigo); color: #fff; }
+.seg.seg-inline { display: inline-flex; width: auto; margin-bottom: 14px; }
+.seg.seg-inline .seg-btn { flex: 0 0 auto; padding: 8px 18px; }
+
+.info-banner {
+  display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px;
+  border-radius: 10px; background: var(--indigo-10);
+  border: 1px solid var(--border); margin-bottom: 16px;
+}
+.info-banner svg { flex-shrink: 0; color: var(--indigo); margin-top: 1px; }
+.info-banner-txt { font-size: 12px; color: var(--t-body); line-height: 1.5; }
+.info-banner-txt b { color: var(--t-head); }
+/* Carrot, not a new red token — the app's existing "action required" colour. */
+.info-banner.warn { background: var(--carrot-10); border-color: var(--carrot); }
+.info-banner.warn svg { color: var(--carrot); }
+.info-banner-cta {
+  margin-left: auto; flex-shrink: 0; align-self: center; white-space: nowrap;
+  padding: 7px 14px; border: none; border-radius: var(--r-sm);
+  background: var(--carrot); color: #fff; font-size: 12px; font-weight: 700;
+  cursor: pointer; font-family: inherit; transition: opacity .15s;
+}
+.info-banner-cta:hover { opacity: .88; }
