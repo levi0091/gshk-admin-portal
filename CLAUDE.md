@@ -174,11 +174,18 @@ async def submit_company(user=Depends(require_permission("companies", "write")))
 | Companies | `companies` | `read`, `write` |
 | Persons | `persons` | `read`, `write` |
 | Documents | `documents` | `read`, `write`, `delete` |
+| NAR1 | `nar1` | `read`, `write` |
 | NNC1 Data | `nnc1_data` *(future)* | `read`, `write` |
 | TPSI | `tpsi` | `read`, `write`, `submit` |
 | Audit Trail | `audit_trail` | `read` **only** — no write or admin level exists |
 
 > The old `nar1_data` module was removed (migration 015) — the portal manages companies through their full lifecycle, and a distinct "NAR1 data" surface was never built. `/auth/me` is gated on authentication only (`require_user`), not a business module, so a role can hold any subset of modules and still log in.
+
+> **`nar1` (migration 021)** gates the NAR1 *case* surface — the case record, its workflow status, client verification, and the manual signing flow. It is deliberately not `companies:*`: a role that may edit a company profile is not thereby entitled to drive a statutory filing. It is **not** a revival of `nar1_data` above, which was a data-entry surface that never existed.
+>
+> Two NAR1 writes sit on a **different** module on purpose, because they spend money or commit a filing: `POST /cases/{id}/manual-submit` requires `tpsi:submit`, as the e-Sign submit does. See the audit codes below.
+
+> **The shared CR presenter credential is `super_admin` only** (migration 020, decision OQ-C 2026-08-16). One CR filing identity is shared by the whole portal — `GET`/`PUT /tpsi/shared-credential` are gated on the `super_admin` role itself, not on a `tpsi` permission level, so holding `tpsi:write` does not let a user repoint every future filing at another CR account. **This reverses PBI-44's per-user presenter model** (see `PRD/Done/prd-tpsi-integration-nnc1-nar1-2026-07-31.md` §7.3). The **e-Service signing** credential remains per-user — signing is a personal act.
 
 > `audit_trail` is intentionally read-only at the permission level. Do not add a `write` permission for this module under any circumstances.
 
@@ -224,11 +231,23 @@ await log_event(
 | `CASE_FIELD_UPDATED` | Entity | Any edit to a case data field — one entry per changed field |
 | `AML_STATUS_CHANGED` | NAR1 / NNC1 | Admin updates AML screening status |
 | `DOCUMENT_GENERATED` | NAR1 / NNC1 | Any document (AoA, FWR, NNC1, CoI, NAR1) generated |
-| `EMAIL_SENT` | NAR1 / NNC1 | Any workflow email sent via Resend |
+| `EMAIL_SENT` | NAR1 / NNC1 | Any workflow email sent — **Resend**, via `services/email_service.py` |
 | `TPSI_SUBMISSION_ATTEMPTED` | NAR1 / NNC1 | Before calling any TPSI submit endpoint |
 | `TPSI_SUBMISSION_SUCCESS` | NAR1 / NNC1 | On successful TPSI response |
 | `TPSI_SUBMISSION_FAILED` | NAR1 / NNC1 | On TPSI error |
-| `CLIENT_APPROVAL_RECEIVED` | NNC1 | Client Yes/No response recorded |
+| `CLIENT_APPROVAL_RECEIVED` | NAR1 / NNC1 | Client Yes/No response recorded |
+| `TPSI_CRED_SET` | TPSI | A user's own CR credential first stored (migration 016) |
+| `TPSI_CRED_ROTATE` | TPSI | A user's own CR credential replaced (migration 016) |
+| `TPSI_CRED_CONFIG` | TPSI | The **shared** presenter credential set or rotated (migration 020) |
+| `NAR1_MANUAL_SIGN_UPLOADED` | NAR1 | A wet-signed NAR1 scan uploaded against a case (migration 021) |
+| `NAR1_MANUAL_RECEIPT_ENTERED` | NAR1 | An off-portal CR receipt recorded on a case (migration 021) |
+| `NAR1_MANUAL_SUBMISSION_RECORDED` | NAR1 | A filing made off-portal declared complete (migration 021) |
+
+> `CLIENT_APPROVAL_RECEIVED` was scoped NNC1-only in the original PBI-11 table. BE-3 fires it for **NAR1** too: an admin records the client's Yes/No against the case. The event predates any inbound-mail handling — R1 has none, so a human relays the reply and records it under `nar1:write`.
+>
+> The three `NAR1_MANUAL_*` codes describe the **off-portal** path, where the return is signed on paper and filed outside the portal. `NAR1_MANUAL_SUBMISSION_RECORDED` is the declaring act and is gated on `tpsi:submit`, because it closes the case as filed exactly as a real CR submission does — and because it makes the e-Sign chain refuse afterwards, so it must not be reachable by a role that could not have submitted in the first place.
+
+> **New audit codes must be seeded into `audit_event_types` by a migration**, with `origin='g_flowdesk'` and `category` set **explicitly** — the column default is `origin='viewpoint'`, which would mislabel every G-FlowDesk code as inherited Viewpoint history. There is **no FK** from the audit rows to this table, so an unseeded code does not fail loudly: it writes fine and then renders unlabelled in the trail. Migration 022 exists because exactly that happened to `CASE_STATUS_CHANGED` and `CASE_FIELD_UPDATED`.
 
 **Rules:**
 - `audit_service.log_event()` failures must NOT block the primary operation — wrap in try/except and log to stderr
