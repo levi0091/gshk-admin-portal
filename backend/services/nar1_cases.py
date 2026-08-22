@@ -18,6 +18,19 @@ _TABLE = "nar1_cases"
 SUPPORTED_FORM_CODES = ("Nar1",)
 
 
+def _escape_filter_value(term: str) -> str:
+    """One `ilike` value for a PostgREST `or_()` expression, safely.
+
+    PostgREST splits an or_() on commas and dots, so those characters in a user
+    term become grammar rather than data. Double-quoting the value makes
+    PostgREST read it as a single literal; the escapes below stop the term from
+    closing that quote early. `%` wildcards are added OUTSIDE the quotes'
+    content deliberately -- they are ours, not the user's.
+    """
+    cleaned = term.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"%{cleaned}%"'
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -343,10 +356,17 @@ async def list_dashboard(
         q = (sb.table(_REGISTRY).select(cols, count=count) if count
              else sb.table(_REGISTRY).select(cols))
         if search:
+            # PostgREST's or_() takes a COMMA-SEPARATED, DOT-DELIMITED filter
+            # grammar, so a search term containing either character is not data
+            # -- it is more grammar. `a,b.eq.c` adds a filter clause nobody
+            # asked for, and an unbalanced `)` 400s the whole listing. Neither
+            # is a data breach (the view is service-role only) but a search box
+            # must not be able to rewrite the query it appears in.
+            term = _escape_filter_value(search)
             q = q.or_(
-                f"company_name.ilike.%{search}%,"
-                f"case_no.ilike.%{search}%,"
-                f"br_number.ilike.%{search}%"
+                f"company_name.ilike.{term},"
+                f"case_no.ilike.{term},"
+                f"br_number.ilike.{term}"
             )
         if anniv_op:
             col = "days_to_anniversary"

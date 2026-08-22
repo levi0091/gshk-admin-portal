@@ -121,6 +121,28 @@ def test_restart_verification_clears_the_client_response(client):
     assert patch_body["verification_sent_at"] is None
 
 
+def test_restart_verification_on_a_never_sent_case_writes_no_audit_row(client):
+    """audit_log is insert-only, so a restart that changes nothing must not
+    record a status transition that did not happen. Every other branch in the
+    handler compares against `before` first; this one used to fire regardless."""
+    logged = []
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value={"id": "c1", "entity_id": "e1",
+                             "verification_sent_at": None,
+                             "client_approved": None,
+                             "client_response_at": None}), \
+         patch("routers.cases.nar1_cases.update_case") as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event",
+               new=AsyncMock(side_effect=lambda **kw: logged.append(kw))):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"restart_verification": True})
+    assert response.status_code == 200
+    spy.assert_not_called()
+    assert logged == []
+
+
 def test_patch_ignores_fields_it_does_not_own(client):
     """A PATCH must never be able to set client_approved directly -- that fact
     is owned by the verification endpoint, which audits it."""

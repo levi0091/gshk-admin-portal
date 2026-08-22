@@ -255,7 +255,13 @@ def test_manual_sign_stores_the_document_and_audits(client):
     # unset would keep the case looking like an e-Sign case in every listing.
     assert spy.call_args.args[1]["signing_method"] == "manual"
     assert logged["action_type"] == "NAR1_MANUAL_SIGN_UPLOADED"
-    assert logged["case_id"] == "c1"
+    # audit_log.case_id holds the ENTITY id, because that is what
+    # routers/audit.py's company filter matches on (.eq("case_id", company_id))
+    # and what routers/companies.py writes. Putting the case id here instead
+    # made every NAR1 event invisible on the company's audit trail.
+    assert logged["case_id"] == "e1"
+    assert logged["entity_id"] == "c1"
+    assert logged["entity_type"] == "nar1_case"
     # Filed against the COMPANY, not the case: documents are owned by entities.
     assert upload.await_args.kwargs["owner_id"] == "e1"
     assert upload.await_args.kwargs["content"] == b"%PDF-1.4 signed"

@@ -115,3 +115,38 @@ def test_a_password_only_rotation_leaves_the_deposit_account_untouched():
         )
     assert "deposit_account_no" not in captured
     assert captured["last_rotated_at"] is not None
+
+
+def test_rotation_clears_the_replaced_passwords_expiry():
+    """tpsi_password_expires_at describes the password being REPLACED. Left in
+    place it reports an expiry -- normally already past -- for a credential that
+    no longer exists, and that column is the one signal meant to warn before an
+    expired password blocks a filing. record_password_expiry() refills it from
+    `password_expires_in` on the next authenticate."""
+    captured = {}
+    with patch.object(sc, "_upsert", side_effect=lambda p: captured.update(p) or p), \
+         patch.object(sc, "encrypt", return_value="enc"), \
+         patch.object(sc, "_to_metadata", side_effect=lambda r: r):
+        sc.set_shared(
+            presentor_account_id="ACCT",
+            tpsi_password="new-pw",
+            updated_by="u1",
+            rotated=True,
+        )
+    assert captured["tpsi_password_expires_at"] is None
+
+
+def test_a_plain_write_does_not_touch_the_expiry():
+    """Only a rotation replaces the password, so only a rotation may clear it.
+    A non-rotating write must leave the column untouched (omitted), not clear
+    an expiry that still describes the stored credential."""
+    captured = {}
+    with patch.object(sc, "_upsert", side_effect=lambda p: captured.update(p) or p), \
+         patch.object(sc, "encrypt", return_value="enc"), \
+         patch.object(sc, "_to_metadata", side_effect=lambda r: r):
+        sc.set_shared(
+            presentor_account_id="ACCT",
+            tpsi_password="pw",
+            updated_by="u1",
+        )
+    assert "tpsi_password_expires_at" not in captured

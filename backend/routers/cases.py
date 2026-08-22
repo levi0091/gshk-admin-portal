@@ -4,6 +4,7 @@ Permission module is `nar1` (OQ-B, Levi 2026-08-16) — deliberately not
 `companies`. Editing a company record and driving a statutory filing are
 different authorities: the second sends mail to clients and spends money.
 """
+import asyncio
 import re
 from datetime import datetime, timezone
 
@@ -22,6 +23,39 @@ router = APIRouter()
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _audit_target(case: dict) -> dict:
+    """Where a NAR1 audit row points.
+
+    `audit_log.case_id` HOLDS THE ENTITY ID, not the case id. That is the
+    convention the rest of the repo already writes and reads:
+    `routers/companies.py` puts `company["id"]` there, and `routers/audit.py`
+    filters the company trail with `.eq("case_id", company_id)`.
+
+    Writing `nar1_cases.id` into it instead — which every log_event in this
+    file used to do — made the whole NAR1 workflow **invisible** on a company's
+    audit trail: status changes, client verification, manual signing and the
+    off-portal submission all wrote rows that no company query could ever
+    return, and that rendered with a blank company name. That trail is the
+    record PBI-11 exists to keep, so the id space has to match.
+
+    The case's own id keeps its place in `entity_id`, where
+    `entity_type="nar1_case"` says how to read it.
+    """
+    target = {
+        "entity_type": "nar1_case",
+        "entity_id": case["id"],
+        "case_id": case.get("entity_id"),
+    }
+    try:
+        entity = nar1_cases.entity_for(case["entity_id"])
+    except Exception:  # noqa: BLE001
+        # Audit must never block or fail the operation it is recording, and a
+        # missing company name is a worse trail, not a broken one.
+        return target
+    target["company_name"] = (entity or {}).get("company_name")
+    return target
 
 
 class CaseIn(BaseModel):
@@ -58,7 +92,7 @@ async def create_case(
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.CASE_STATUS_CHANGED, event_code=ev.CASE_STATUS_CHANGED,
-        entity_type="nar1_case", entity_id=row["id"], case_id=row["id"],
+        **_audit_target(row),
         new_value="Data Verification",
         metadata={"case_no": row.get("case_no"), "entity_id": body.entity_id},
     )
@@ -176,9 +210,19 @@ async def patch_case(
         events.append((ev.CASE_FIELD_UPDATED, "assigned_to",
                        before.get("assigned_to"), body.assigned_to))
 
-    if body.restart_verification:
-        # All three together, or the case reads as still-approved on the next
-        # GET and jumps straight back to Signing.
+    if body.restart_verification and any(
+        before.get(field) is not None
+        for field in ("verification_sent_at", "client_approved",
+                      "client_response_at")
+    ):
+        # Guarded, because audit_log is insert-only: restarting a case that was
+        # never sent for verification changes nothing, and writing
+        # CASE_STATUS_CHANGED anyway puts a status transition in a permanent
+        # trail that did not happen. Every other branch in this handler already
+        # compares against `before` before recording; this one did not.
+        #
+        # All three cleared together, or the case reads as still-approved on
+        # the next GET and jumps straight back to Signing.
         patch["verification_sent_at"] = None
         patch["client_approved"] = None
         patch["client_response_at"] = None
@@ -193,7 +237,7 @@ async def patch_case(
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],
             action_type=action, event_code=action,
-            entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+            **_audit_target(before),
             old_value=old, new_value=new, metadata={"field": field},
         )
     return nar1_cases.composite(case_id)
@@ -295,7 +339,7 @@ async def manual_sign(
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],
             action_type=ev.CASE_FIELD_UPDATED, event_code=ev.CASE_FIELD_UPDATED,
-            entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+            **_audit_target(case),
             old_value=previous_method, new_value="manual",
             metadata={"field": "signing_method"},
         )
@@ -304,7 +348,7 @@ async def manual_sign(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.NAR1_MANUAL_SIGN_UPLOADED,
         event_code=ev.NAR1_MANUAL_SIGN_UPLOADED,
-        entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+        **_audit_target(case),
         new_value=file.filename,
         metadata={"document_id": document["id"], "filename": file.filename,
                   "bytes": len(content),
@@ -387,7 +431,7 @@ async def manual_submit(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.NAR1_MANUAL_RECEIPT_ENTERED,
         event_code=ev.NAR1_MANUAL_RECEIPT_ENTERED,
-        entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+        **_audit_target(case),
         after_state={"manual_receipt": body.receipt},
         metadata={"caseNo": body.receipt.get("caseNo"),
                   "totalAmount": body.receipt.get("totalAmount")},
@@ -396,7 +440,7 @@ async def manual_submit(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.NAR1_MANUAL_SUBMISSION_RECORDED,
         event_code=ev.NAR1_MANUAL_SUBMISSION_RECORDED,
-        entity_type="nar1_case", entity_id=case_id, case_id=case_id,
+        **_audit_target(case),
         new_value="Completed",
         metadata={"channel": "off_portal", "cr_called": False,
                   "submitted_at": now},
@@ -496,7 +540,12 @@ async def send_verification(
     try:
         # validated_at and stage are stamped into the footer: without them a
         # snapshot CR has since rejected is indistinguishable from a fresh one.
-        pdf = nar1_pdf.render(
+        #
+        # Off the event loop: reportlab is CPU-bound and this handler is
+        # `async def`, so rendering inline blocks every other request this
+        # worker is serving, not just this one.
+        pdf = await asyncio.to_thread(
+            nar1_pdf.render,
             filing["validated_xml"],
             validated_at=filing.get("validated_at"),
             stage=filing.get("stage"),
@@ -507,7 +556,11 @@ async def send_verification(
 
     subject, html = email_service.verification_email(case, entity)
     try:
-        sent = email_service.send(
+        # Same reason, and worse: email_service.send is a synchronous
+        # httpx.post with a 15-second timeout, so a hung Resend would stall
+        # the whole worker for 15 seconds rather than this one request.
+        sent = await asyncio.to_thread(
+            email_service.send,
             to=recipient, subject=subject, html=html,
             attachments=[(f"NAR1-{case.get('case_no') or case_id}.pdf", pdf)],
         )
@@ -538,7 +591,7 @@ async def send_verification(
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.EMAIL_SENT, event_code=ev.EMAIL_SENT,
-        entity_type="case", entity_id=case_id, case_id=case_id,
+        **_audit_target(case),
         new_value=sent.get("to") or recipient,
         # Identifiers only. The PDF is the whole statutory return; its bytes
         # belong on the filing row, not in an insert-only trail -- and
@@ -554,7 +607,7 @@ async def send_verification(
             user_id=user["id"], user_display_name=user["display_name"],
             action_type=ev.CASE_STATUS_CHANGED,
             event_code=ev.CASE_STATUS_CHANGED,
-            entity_type="case", entity_id=case_id, case_id=case_id,
+            **_audit_target(case),
             old_value=("approved" if superseded
                        else "rejected" if superseded is False else None),
             new_value="awaiting_client",
@@ -609,7 +662,7 @@ async def record_verification_response(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.CLIENT_APPROVAL_RECEIVED,
         event_code=ev.CLIENT_APPROVAL_RECEIVED,
-        entity_type="case", entity_id=case_id, case_id=case_id,
+        **_audit_target(case),
         old_value=(None if previous is None
                    else "approved" if previous else "rejected"),
         new_value="approved" if body.approved else "rejected",

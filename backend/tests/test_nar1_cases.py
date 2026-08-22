@@ -424,3 +424,23 @@ async def test_list_dashboard_refuses_arguments_the_router_would_have_rejected(k
         with pytest.raises(ValueError):
             await nar1_cases.list_dashboard(**kwargs)
     msb.assert_not_called()
+
+
+# ---- search is data, not filter grammar ------------------------------------
+
+def test_search_term_with_commas_and_dots_cannot_add_filter_clauses():
+    """PostgREST's or_() is a comma-separated, dot-delimited grammar, so a term
+    containing either used to become MORE GRAMMAR rather than a value:
+    `a,br_number.eq.X` silently adds a clause nobody asked for."""
+    hostile = 'ACME,br_number.eq.SECRET'
+    escaped = nar1_cases._escape_filter_value(hostile)
+    # Quoted as ONE literal, so the separators inside it are inert.
+    assert escaped.startswith('"%') and escaped.endswith('%"')
+    assert escaped == '"%ACME,br_number.eq.SECRET%"'
+
+
+def test_search_term_cannot_close_the_quote_early():
+    """A double quote in the term would otherwise end the literal and let the
+    rest of the term be read as grammar again."""
+    assert nar1_cases._escape_filter_value('a"b') == '"%a\\"b%"'
+    assert nar1_cases._escape_filter_value("a\\b") == r'"%a\\b%"'

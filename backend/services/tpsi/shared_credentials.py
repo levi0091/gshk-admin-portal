@@ -128,6 +128,13 @@ def _payload(presentor_account_id, tpsi_password, deposit_account_no,
         payload["deposit_account_no"] = deposit_account_no
     if rotated:
         payload["last_rotated_at"] = datetime.now(timezone.utc).isoformat()
+        # The stored expiry describes the password just REPLACED, so leaving it
+        # makes the metadata report an expiry — usually already in the past —
+        # for a credential that no longer exists. That is the one signal meant
+        # to warn before an expired password blocks a filing, so a stale value
+        # is worse than none. record_password_expiry() refills it from the
+        # `password_expires_in` on the next authenticate.
+        payload["tpsi_password_expires_at"] = None
     return payload
 
 
