@@ -70,12 +70,48 @@ export const FORM_CLASS = {
   edrive: 'bf-submitted',
 }
 
+/**
+ * The workflow badge.
+ *
+ * The backend sends a composite OBJECT, not a code: `badge_from_row()` on the
+ * dashboard and `derive()` on the case screen both return
+ * `{code, label, off_portal, overdue}`. Rendering that object directly is what
+ * blanked admin-dev — React error #31, "Objects are not valid as a React
+ * child", which unmounts the whole tree.
+ *
+ * A bare code string is still accepted: it is the shape a caller would
+ * reasonably reach for, and being strict about it buys nothing.
+ *
+ * The server's `label` wins over the local map when present — the backend
+ * derives the badge from two records and is the authority on what it says.
+ * The map remains for a bare code and as the fallback.
+ *
+ * `off_portal` means the filing went to CR's e-Drive: finished, but not by us.
+ * v11 has no badge for it (Levi 2026-08-02, e-Drive is not offered), so it is
+ * shown as a marker beside the badge rather than a status of its own.
+ * `overdue` is deliberately not rendered — migration 019 floors
+ * days_to_anniversary at -42, so it is permanently false by design, and the
+ * dashboard's own column states the overdue fact precisely.
+ */
 export function WorkflowBadge({ status }) {
   if (!status) return <span className="td-muted">—</span>
+
+  const code = typeof status === 'string' ? status : status.code
+  const label = (typeof status === 'string' ? null : status.label)
+    || WORKFLOW_LABEL[code] || code
+  const offPortal = typeof status === 'string' ? false : Boolean(status.off_portal)
+
+  if (!code) return <span className="td-muted">—</span>
+
   return (
-    <span className={`badge ${WORKFLOW_CLASS[status] || 'bw-data'}`}>
-      {WORKFLOW_LABEL[status] || status}
-    </span>
+    <>
+      <span className={`badge ${WORKFLOW_CLASS[code] || 'bw-data'}`}>{label}</span>
+      {offPortal && (
+        <span className="badge bf-superseded" title="Filed through CR's e-Drive, outside G-FlowDesk">
+          Off-portal
+        </span>
+      )}
+    </>
   )
 }
 

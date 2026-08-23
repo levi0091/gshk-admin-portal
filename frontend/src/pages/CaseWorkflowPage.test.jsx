@@ -31,7 +31,11 @@ vi.mock('../lib/api.js', () => ({
 const CASE = {
   id: 'c1', case_no: 'NAR-2026-0041', entity_id: 'e7',
   company_name: 'Harbour Tech Ltd.', br_number: '2100028', case_type: 'NAR1',
-  case_status: 'live', workflow_status: 'submission',
+  // The composite object the backend sends (nar1_case_status.derive), NOT a
+  // bare code — rendering the object is React error #31, which blanks the page.
+  case_status: 'live',
+  workflow_status: { code: 'submission', label: 'Submission',
+                     off_portal: false, overdue: false },
   form_status: { code: 'signed', label: 'Signed', failed: false, faults: [] },
   filing_id: 'f1', days_to_anniversary: -12, signing_method: 'esign',
   verification_sent_at: '2026-08-01T09:00:00Z', client_response_at: '2026-08-03',

@@ -14,6 +14,19 @@ vi.mock('react-router-dom', async () => {
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn() } }))
 import { api } from '../lib/api.js'
 
+/**
+ * The workflow badge as the backend ACTUALLY sends it — a composite object,
+ * not a code (nar1_case_status.badge_from_row).
+ *
+ * These fixtures used a bare string, which is how a render crash reached DEV
+ * with 318 tests green: the mock encoded my assumption instead of the contract,
+ * and React error #31 ("Objects are not valid as a React child") only fires on
+ * the real shape. Keep this in step with badge_from_row/derive.
+ */
+const badge = (code, label, extra = {}) => ({
+  code, label, off_portal: false, overdue: false, ...extra,
+})
+
 // The shape GET /cases?scope=dashboard returns (nar1_cases.list_dashboard).
 // Harbour Tech appears TWICE on purpose — one company, two outstanding returns.
 // That is the whole reason this screen lists cases rather than companies.
@@ -29,19 +42,22 @@ const PAYLOAD = {
     {
       id: 'c1', case_no: 'NAR-2025-0028', entity_id: 'e1',
       company_name: 'Harbour Tech Ltd.', br_number: '2100028', case_type: 'NAR1',
-      case_status: 'live', filing_stage: 'draft', workflow_status: 'data_verification',
+      case_status: 'live', filing_stage: 'draft',
+      workflow_status: badge('data_verification', 'Data Verification'),
       days_to_anniversary: -12, created_at: '2023-08-01', updated_at: '2026-06-26',
     },
     {
       id: 'c2', case_no: 'NAR-2026-0028', entity_id: 'e1',
       company_name: 'Harbour Tech Ltd.', br_number: '2100028', case_type: 'NAR1',
-      case_status: 'live', filing_stage: null, workflow_status: 'data_verification',
+      case_status: 'live', filing_stage: null,
+      workflow_status: badge('data_verification', 'Data Verification'),
       days_to_anniversary: 47, created_at: '2023-08-01', updated_at: '2026-06-26',
     },
     {
       id: 'c3', case_no: 'NAR-2026-0031', entity_id: 'e2',
       company_name: 'Skyline Capital', br_number: '2100031', case_type: 'NAR1',
-      case_status: 'live', filing_stage: 'validated', workflow_status: 'awaiting_client',
+      case_status: 'live', filing_stage: 'validated',
+      workflow_status: badge('awaiting_client', 'Awaiting Client'),
       days_to_anniversary: 34, created_at: '2024-05-02', updated_at: '2026-06-25',
     },
   ],

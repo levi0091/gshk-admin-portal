@@ -31,6 +31,57 @@ describe('WorkflowBadge', () => {
     expect(screen.queryByText('data_verification')).not.toBeInTheDocument()
   })
 
+  // ---- the shape the backend ACTUALLY sends -------------------------------
+  // badge_from_row()/derive() return a composite object, not a code. Rendering
+  // it directly is React error #31 ("Objects are not valid as a React child"),
+  // which unmounts the entire tree — the admin-dev blank dashboard. Every test
+  // here used a bare string, so 318 of them passed while DEV was broken.
+
+  it('accepts the composite badge object the backend sends', () => {
+    render(<WorkflowBadge status={{
+      code: 'signing', label: 'Signing', off_portal: false, overdue: false,
+    }} />)
+    expect(screen.getByText('Signing')).toBeInTheDocument()
+  })
+
+  it('colours the composite badge by its code', () => {
+    const { container } = render(<WorkflowBadge status={{
+      code: 'client_rejected', label: 'Client Rejected', off_portal: false, overdue: false,
+    }} />)
+    expect(container.querySelector('.badge.bw-rejected')).toBeTruthy()
+  })
+
+  it('prefers the label the SERVER derived over the local map', () => {
+    // The backend derives the badge from two records and is the authority on
+    // what it says; the local map is for a bare code and as a fallback.
+    render(<WorkflowBadge status={{
+      code: 'signing', label: 'Awaiting counter-signature', off_portal: false, overdue: false,
+    }} />)
+    expect(screen.getByText('Awaiting counter-signature')).toBeInTheDocument()
+    expect(screen.queryByText('Signing')).not.toBeInTheDocument()
+  })
+
+  it('marks an off-portal filing beside the badge', () => {
+    // e-Drive: finished at CR, but not by us. v11 has no badge for it.
+    render(<WorkflowBadge status={{
+      code: 'completed', label: 'Completed', off_portal: true, overdue: false,
+    }} />)
+    expect(screen.getByText('Completed')).toBeInTheDocument()
+    expect(screen.getByText('Off-portal')).toBeInTheDocument()
+  })
+
+  it('does not render an off-portal marker for a normal case', () => {
+    render(<WorkflowBadge status={{
+      code: 'completed', label: 'Completed', off_portal: false, overdue: false,
+    }} />)
+    expect(screen.queryByText('Off-portal')).not.toBeInTheDocument()
+  })
+
+  it('reads as an em dash for a badge object with no code', () => {
+    render(<WorkflowBadge status={{ label: null, off_portal: false }} />)
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+
   it('carries the bw-* class so the colour matches the filter tabs', () => {
     const { container } = render(<WorkflowBadge status="client_rejected" />)
     expect(container.querySelector('.badge.bw-rejected')).toBeTruthy()

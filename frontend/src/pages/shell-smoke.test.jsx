@@ -29,7 +29,10 @@ const PAYLOAD = {
   rows: [{
     id: 'c1', case_no: 'NAR-2026-0001', entity_id: 'e1',
     company_name: 'Harbour Tech Ltd.', br_number: '2100028', case_type: 'NAR1',
-    case_status: 'live', filing_stage: null, workflow_status: 'data_verification',
+    case_status: 'live', filing_stage: null,
+    // The composite object nar1_case_status.badge_from_row() actually returns.
+    workflow_status: { code: 'data_verification', label: 'Data Verification',
+                       off_portal: false, overdue: false },
     days_to_anniversary: 34, created_at: '2024-05-02', updated_at: '2026-06-25',
   }],
 }
