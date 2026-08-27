@@ -8,6 +8,8 @@ import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import { useLookups } from '../lib/lookups.js'
+import NewCaseModal from '../components/NewCaseModal.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
 
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
@@ -92,6 +94,10 @@ export default function CompanyProfilePage() {
   const lookups = useLookups()
   const [busy, setBusy] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
+  const [newCase, setNewCase] = useState(false)
+  const { hasPermission, isSuperAdmin } = useAuth()
+  // nar1:read shows cases; nar1:write is what opens one.
+  const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
   const [linkModal, setLinkModal] = useState(null)
 
@@ -201,6 +207,14 @@ export default function CompanyProfilePage() {
           <button className="btn btn-outline" onClick={() => setShowUpload(true)}>Upload Document</button>
         </div>
       </div>
+
+      {newCase && (
+        <NewCaseModal
+          entity={company}
+          onClose={() => setNewCase(false)}
+          onCreated={c => navigate(`/cases/${c.id}`)}
+        />
+      )}
 
       {showUpload && (
         <UploadDocumentModal
@@ -371,8 +385,17 @@ export default function CompanyProfilePage() {
                   <div className="card-title">Cases</div>
                   <div className="card-sub">NAR1 &amp; NNC1 workflow cases</div>
                 </div>
+                {/* The annual return is started from the company it is for.
+                    Without this the only route was the dashboard, where you
+                    then had to search back to the company you were already on. */}
+                {canOpenCase && (
+                  <button className="btn btn-outline btn-sm"
+                          onClick={() => setNewCase(true)}>
+                    + New case
+                  </button>
+                )}
               </div>
-              <CasesPane cases={company.cases} />
+              <CasesPane cases={company.cases} onOpen={id => navigate(`/cases/${id}`)} />
             </div>
           </div>
         )}
@@ -422,7 +445,7 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
   )
 }
 
-function CasesPane({ cases }) {
+function CasesPane({ cases, onOpen }) {
   const all = [
     ...(cases?.nar1 || []).map(c => ({ ...c, kind: 'NAR1 — Annual Return' })),
     ...(cases?.nnc1 || []).map(c => ({ ...c, kind: 'NNC1 — Incorporation' })),
@@ -434,7 +457,8 @@ function CasesPane({ cases }) {
   }
   return all.map(c => (
     <div className={`case-acc${open === c.id ? ' open' : ''}`} key={c.id}>
-      <div className="case-acc-hdr" onClick={() => setOpen(open === c.id ? null : c.id)}>
+      <div className="case-acc-hdr"
+           onClick={() => (onOpen ? onOpen(c.id) : setOpen(open === c.id ? null : c.id))}>
         <span className="case-chevron">❯</span>
         <div className="case-acc-titles">
           <div className="case-acc-type">{c.kind}</div>

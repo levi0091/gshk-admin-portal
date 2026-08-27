@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import { formatDate } from '../lib/format.js'
 import { labelForDays } from '../lib/anniversary.js'
 import useAbortableGet from '../lib/useAbortableGet.js'
+import { useAuth } from '../context/AuthContext.jsx'
 import SortableTh from '../components/SortableTh.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
-import AddCompanyModal from '../components/AddCompanyModal.jsx'
+import NewCaseModal from '../components/NewCaseModal.jsx'
 
 /**
  * Post-incorporation — the NAR1 case dashboard (wireframe_v11 `s2`).
@@ -71,6 +72,9 @@ const COLUMNS = [
 
 export default function DashboardPage() {
   const navigate = useNavigate()
+  const { hasPermission, isSuperAdmin } = useAuth()
+  // nar1:read shows the cases; nar1:write is what opens and drives one.
+  const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState(null)
@@ -133,16 +137,22 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="pg-actions">
-          <button className="btn btn-action" onClick={() => setShowAdd(true)}>
-            + Add Company
-          </button>
+          {/* This screen lists CASES, so its action opens one. "+ Add Company"
+              belonged to the Company Registry and left no way at all to start
+              the work the dashboard is actually about. Gated on nar1:write:
+              read lets you watch the cases, write lets you open and drive one. */}
+          {canOpenCase && (
+            <button className="btn btn-action" onClick={() => setShowAdd(true)}>
+              + Open Case
+            </button>
+          )}
         </div>
       </div>
 
       {showAdd && (
-        <AddCompanyModal
+        <NewCaseModal
           onClose={() => setShowAdd(false)}
-          onCreated={c => navigate(`/companies/${c.id}`)}
+          onCreated={c => navigate(`/cases/${c.id}`)}
         />
       )}
 

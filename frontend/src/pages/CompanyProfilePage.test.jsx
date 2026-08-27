@@ -11,8 +11,14 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate, useParams: () => ({ companyId: 'e1' }) }
 })
 
-vi.mock('../lib/api.js', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() } }))
+vi.mock('../lib/api.js', () => ({
+  api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), del: vi.fn() },
+}))
 import { api } from '../lib/api.js'
+
+// The Cases pane gates "+ New case" on nar1:write, so this needs an identity.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { _resetLookups } from '../lib/lookups.js'
 
 const CLIENT = {
@@ -64,6 +70,7 @@ beforeEach(() => {
   _resetLookups()
   mockGet(CLIENT)
   api.patch.mockResolvedValue({})
+  auth = { hasPermission: () => true, isSuperAdmin: true }
 })
 
 describe('CompanyProfilePage', () => {

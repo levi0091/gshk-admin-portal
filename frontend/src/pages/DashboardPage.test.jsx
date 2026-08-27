@@ -11,8 +11,12 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate }
 })
 
-vi.mock('../lib/api.js', () => ({ api: { get: vi.fn() } }))
+vi.mock('../lib/api.js', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
 import { api } from '../lib/api.js'
+
+// The dashboard gates "+ Open Case" on nar1:write, so it needs an identity.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 
 /**
  * The workflow badge as the backend ACTUALLY sends it — a composite object,
@@ -70,6 +74,7 @@ function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks()
   api.get.mockResolvedValue(PAYLOAD)
+  auth = { hasPermission: () => true, isSuperAdmin: true }
 })
 
 describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
@@ -342,5 +347,25 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
     expect(signal.aborted).toBe(false)
     unmount()
     expect(signal.aborted).toBe(true)
+  })
+})
+
+// The dashboard lists CASES, so its primary action opens one. "+ Add Company"
+// belonged to the Company Registry and left no way to start the work this
+// screen exists for.
+describe('DashboardPage — the primary action opens a case', () => {
+  it('offers "Open Case", not "Add Company"', async () => {
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.getByRole('button', { name: /Open Case/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add Company/ })).not.toBeInTheDocument()
+  })
+
+  it('hides it from a role that may only READ nar1 cases', async () => {
+    // read shows the cases; write is what opens and drives one.
+    auth = { isSuperAdmin: false, hasPermission: (m, p) => `${m}:${p}` === 'nar1:read' }
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.queryByRole('button', { name: /Open Case/ })).not.toBeInTheDocument()
   })
 })
