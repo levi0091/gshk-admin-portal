@@ -69,7 +69,9 @@ beforeEach(() => {
     const u = String(url)
     if (u.includes('/return-data')) return Promise.resolve(RETURN_DATA)
     if (u.includes('/summary')) return Promise.resolve(FILING_SUMMARY)
-    return Promise.resolve({ fee: 105, balance: 12480, sufficient: true })
+    return Promise.resolve({ fee: '105.00', max_fee: '3480.00',
+                             fee_is_certain: false,
+                             balance: '12480', sufficient: true })
   })
   post.mockResolvedValue({}); patch.mockResolvedValue({}); upload.mockResolvedValue({})
   blob.mockResolvedValue(new Blob(['%PDF'], { type: 'application/pdf' }))
@@ -351,6 +353,26 @@ describe('Submission — e-Sign', () => {
     renderIt()
     await waitFor(() => expect(get).toHaveBeenCalledWith('/tpsi/filings/f1/preview'))
     expect(await screen.findByText(/Fee HK\$105/)).toBeInTheDocument()
+  })
+
+  it('does not present the on-time fee as THE fee', async () => {
+    // Measured against live CR: a return 7 months late was billed HK$2,610
+    // against a pre-flight that said "Fee HK$105". CR decides the tier, so the
+    // screen must say what it knows and no more.
+    renderIt()
+    expect(await screen.findByText(/Fee HK\$105.00 if filed on time/)).toBeInTheDocument()
+    expect(screen.getByText(/up to HK\$3480.00/)).toBeInTheDocument()
+    expect(screen.getByText(/Companies Registry decides which/)).toBeInTheDocument()
+  })
+
+  it('stays quiet about late fees when the fee IS certain', async () => {
+    get.mockImplementation(url => String(url).includes('/summary')
+      ? Promise.resolve(FILING_SUMMARY)
+      : Promise.resolve({ fee: '105.00', max_fee: '105.00', fee_is_certain: true,
+                          balance: '12480', sufficient: true }))
+    renderIt()
+    await screen.findByText(/Fee HK\$105.00 if filed on time/)
+    expect(screen.queryByText(/decides which tier/)).not.toBeInTheDocument()
   })
 
   it('summarises the FROZEN return, not the live company profile', async () => {

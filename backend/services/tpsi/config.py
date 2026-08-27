@@ -29,8 +29,10 @@ FORM_FEES: dict[str, tuple[bool, Decimal | None]] = {
     # if the annual return is delivered within 42 days after the most recent
     # anniversary of the date of incorporation..."). The publications/fees.htm
     # URL in the original brief 404s; this compliance page is the current
-    # source. Late filing attracts HK$870-HK$3,480; that path is out of scope
-    # (spec §13).
+    # source. Late filing attracts HK$870-HK$3,480; COMPUTING which tier applies
+    # is out of scope (spec §13) -- but see MAX_FEES below, because "we do not
+    # compute it" and "we may check the balance as though it were HK$105" are
+    # different statements, and only the first was intended.
     "Nar1":  (True,  Decimal("105.00")),
     "Nnc1":  (True,  None),               # R3 — fee recorded when NNC1 is built
     "Nnc1g": (True,  None),
@@ -45,6 +47,33 @@ FORM_FEES: dict[str, tuple[bool, Decimal | None]] = {
     "Nr1":   (False, Decimal("0")),
     "Nsc1":  (False, Decimal("0")),
 }
+
+#: THE MOST a form can cost, used ONLY to decide whether the deposit account
+#: can cover it. Not displayed as "the fee" and never written to a filing row.
+#:
+#: WHY THIS EXISTS. `FORM_FEES` holds the ON-TIME fee. A NAR1 filed late is
+#: charged more, and CR -- not this portal -- decides the tier. Checking
+#: `balance >= 105` therefore green-lit filings the account could not actually
+#: cover, and the operator was shown HK$105 for a charge that was not HK$105.
+#:
+#: Measured on the CR TEST environment, 2026-08-27: a private company's annual
+#: return delivered ~7 months past its anniversary was billed **HK$2,610**
+#: under revenue code 16, document code **NAR1L** -- the trailing "L" is CR's
+#: own marker for a late form. Our pre-flight had quoted HK$105.
+#:
+#: HK$3,480 is the top of the published range on CR's compliance page (the
+#: >9-months tier). Being conservative here costs a filing only when the
+#: account is genuinely nearly empty; being optimistic costs a wasted, failed
+#: submission attempt at CR.
+MAX_FEES: dict[str, Decimal] = {
+    "Nar1": Decimal("3480.00"),
+}
+
+
+def max_fee_for(form_code: str) -> Decimal:
+    """The worst case for a sufficiency check. Falls back to the flat fee for
+    forms with no late-filing tariff."""
+    return MAX_FEES.get(form_code, fee_for(form_code))
 
 
 @dataclass(frozen=True)

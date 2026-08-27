@@ -7,6 +7,7 @@ and skip straight to the chargeable call.
 """
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from db.supabase import get_supabase
 from services.tpsi.config import FORM_FEES
@@ -410,10 +411,20 @@ def _check_gate(filing: dict, confirm: bool, balance, fee) -> None:
         )
     if not filing.get("signed_xml"):
         raise SubmitGateError("no signed payload stored for this filing")
-    if balance < fee:
+    # Checked against the WORST case, not the on-time fee. CR decides the
+    # late-filing tier, and a NAR1 quoted at HK$105 was billed HK$2,610 on the
+    # test environment (see config.MAX_FEES). Comparing against HK$105 let a
+    # filing through that the account could not cover, and the failure then
+    # happened at CR, mid-charge, instead of here.
+    from services.tpsi.config import max_fee_for
+
+    ceiling = max_fee_for(filing["form_code"])
+    if balance < ceiling:
         raise SubmitGateError(
-            f"deposit balance {balance} is below the {fee} fee for "
-            f"{filing['form_code']}"
+            f"deposit balance {balance} is below {ceiling}, the most "
+            f"{filing['form_code']} can cost — a late annual return is charged "
+            f"more than the HK${fee} on-time fee, and CR decides the tier. Top "
+            "up the deposit account before filing."
         )
     if confirm is not True:
         raise SubmitGateError("explicit confirmation is required to submit")
@@ -426,20 +437,46 @@ def preview(client, filing_id: str, deposit_account: str) -> dict:
     decision to spend are two distinct events in the trail.
     """
     from services.tpsi import reads
-    from services.tpsi.config import fee_for
+    from services.tpsi.config import fee_for, max_fee_for
 
     filing = get_filing(filing_id)
     fee = fee_for(filing["form_code"])
+    ceiling = max_fee_for(filing["form_code"])
     balance = reads.check_balance(client, deposit_account)
     return {
         "filing_id": filing_id,
         "form_code": filing["form_code"],
         "stage": filing["stage"],
+        # `fee` is the ON-TIME fee and is reported as such. It is NOT a
+        # prediction of the charge: CR decides the late-filing tier, and a
+        # return quoted here at HK$105 was billed HK$2,610 on the test
+        # environment. `max_fee` is what the gate below actually enforces, and
+        # `fee_is_certain` says whether the two are the same number — so the UI
+        # can stop presenting a guess as a fact.
         "fee": str(fee),
+        "max_fee": str(ceiling),
+        "fee_is_certain": ceiling == fee,
         "balance": str(balance),
-        "sufficient": balance >= fee,
+        "sufficient": balance >= ceiling,
         "ready": filing["stage"] == STAGE_SIGNED and bool(filing.get("signed_xml")),
     }
+
+
+def _charged_amount(receipt: dict, predicted) -> str:
+    """What CR billed, falling back to our prediction only if the receipt is silent.
+
+    `totalAmount` is the receipt's own figure and is the only authority on what
+    left the deposit account. Falls back rather than raising: the money has
+    already moved by the time this runs, and refusing to record a successful
+    irreversible filing over a missing field would be the worse failure.
+    """
+    total = (receipt or {}).get("totalAmount")
+    if total in (None, ""):
+        return str(predicted)
+    try:
+        return str(Decimal(str(total)))
+    except (InvalidOperation, ValueError):
+        return str(predicted)
 
 
 def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
@@ -488,7 +525,15 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
         {
             "stage": STAGE_SUBMITTED,
             "receipt": receipt,
-            "fee_amount": str(fee),
+            # WHAT CR ACTUALLY CHARGED, not what we predicted. `fee_for` returns
+            # the on-time NAR1 fee (HK$105); a late annual return is charged
+            # HK$870-HK$3,480 and CR decides which tier applies. Measured on the
+            # CR TEST environment 2026-08-27: a return 7 months past its
+            # anniversary was billed HK$2,610 under revenue code 16, document
+            # NAR1L -- the trailing "L" is CR's own marker for a late form.
+            # Storing our prediction here made the filing row disagree with the
+            # receipt beside it, which is the one place the numbers must match.
+            "fee_amount": _charged_amount(receipt, fee),
             "balance_at_submit": str(balance),
             "submitted_at": _now(),
             "cr_error": None,

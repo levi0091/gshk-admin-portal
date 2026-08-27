@@ -345,3 +345,117 @@ def test_the_interlock_fails_closed_when_the_case_cannot_be_read():
         with pytest.raises(RuntimeError, match="supabase unreachable"):
             filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
     balance.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# LATE-FILING FEES. `FORM_FEES["Nar1"]` is the ON-TIME fee; CR charges more for
+# a late annual return and decides the tier itself.
+#
+# Measured on the CR TEST environment 2026-08-27, driving the real UI: a return
+# ~7 months past its anniversary was billed HK$2,610 (revCode 16, docShtFrm
+# NAR1L -- the trailing "L" is CR's marker for a late form) against a pre-flight
+# that had quoted the operator HK$105.
+#
+# The old gate compared the balance against HK$105. Every test above used
+# either 999,999 or 10, so NOTHING exercised the band between 105 and 3,480 --
+# which is the only band where the defect is visible.
+# ---------------------------------------------------------------------------
+
+LATE_RECEIPT = RECEIPT.replace(b"<cr:totalAmount>105.0</cr:totalAmount>",
+                               b"<cr:totalAmount>2610.0</cr:totalAmount>")
+
+
+def test_refuses_a_balance_that_covers_the_on_time_fee_but_not_a_late_one():
+    """HK$500 clears HK$105 and cannot clear HK$2,610. The old gate let this
+    through, and the failure then happened at CR, mid-charge."""
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("500")):
+        with pytest.raises(filings.SubmitGateError, match="most Nar1 can cost"):
+            filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+
+
+def test_the_refusal_explains_that_a_late_return_costs_more():
+    # "balance 500 is below the 105.00 fee" would have been nonsense on its face.
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("500")):
+        with pytest.raises(filings.SubmitGateError) as exc:
+            filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    assert "late annual return" in str(exc.value)
+    assert "3480" in str(exc.value)
+
+
+def test_a_balance_above_the_ceiling_still_submits():
+    client = _client()
+    client.post_form.return_value = RECEIPT
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("3480")), \
+         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_write_back_receipt"):
+        filings.submit(client, "f1", confirm=True, deposit_account="ACC")
+    assert upd.call_args[0][1]["stage"] == filings.STAGE_SUBMITTED
+
+
+def test_records_what_CR_ACTUALLY_charged_not_what_we_predicted():
+    """The filing row and the receipt beside it must not disagree about money."""
+    client = _client()
+    client.post_form.return_value = LATE_RECEIPT
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")), \
+         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_write_back_receipt"):
+        filings.submit(client, "f1", confirm=True, deposit_account="ACC")
+
+    written = upd.call_args[0][1]
+    assert written["fee_amount"] == "2610.0", "must be CR's figure, not HK$105"
+    assert written["receipt"]["totalAmount"] == "2610.0"
+
+
+def test_falls_back_to_the_predicted_fee_when_the_receipt_is_silent():
+    """The money has already moved by then. Refusing to record a successful
+    irreversible filing over a missing field is the worse failure."""
+    client = _client()
+    client.post_form.return_value = RECEIPT.replace(
+        b"<cr:totalAmount>105.0</cr:totalAmount>", b"")
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")), \
+         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_write_back_receipt"):
+        filings.submit(client, "f1", confirm=True, deposit_account="ACC")
+
+    assert upd.call_args[0][1]["fee_amount"] == "105.00"
+
+
+def test_a_junk_total_does_not_crash_a_completed_submission():
+    client = _client()
+    client.post_form.return_value = RECEIPT.replace(
+        b"<cr:totalAmount>105.0</cr:totalAmount>",
+        b"<cr:totalAmount>N/A</cr:totalAmount>")
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")), \
+         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_write_back_receipt"):
+        filings.submit(client, "f1", confirm=True, deposit_account="ACC")
+
+    assert upd.call_args[0][1]["fee_amount"] == "105.00"
+
+
+def test_preview_reports_the_on_time_fee_AND_the_ceiling_it_gates_on():
+    """Reporting only `fee` is how the operator was shown HK$105 for a charge
+    that was not HK$105."""
+    with patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("500")):
+        preview = filings.preview(_client(), "f1", deposit_account="ACC")
+
+    assert preview["fee"] == "105.00"
+    assert preview["max_fee"] == "3480.00"
+    assert preview["fee_is_certain"] is False
+    # 500 covers the on-time fee; it does NOT make this filing safe to attempt.
+    assert preview["sufficient"] is False
+
+
+def test_a_form_with_no_late_tariff_reports_a_certain_fee():
+    with patch.object(filings, "get_filing", return_value=_signed(form_code="Nd2a")), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("500")):
+        preview = filings.preview(_client(), "f1", deposit_account="ACC")
+    assert preview["fee_is_certain"] is True
+    assert preview["fee"] == preview["max_fee"]

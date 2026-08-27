@@ -118,11 +118,24 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
              style={{ marginBottom: 14 }}>
           <span className="al-icon">{sufficient ? 'ℹ' : '⚠'}</span>
           <div className="al-body">
-            <b>Fee HK${preflight.fee}</b> against a deposit balance of{' '}
-            <b>HK${preflight.balance}</b>.{' '}
+            <b>Fee HK${preflight.fee} if filed on time</b>, against a deposit
+            balance of <b>HK${preflight.balance}</b>.{' '}
             {sufficient
               ? 'The balance covers this filing.'
-              : 'The balance does not cover this filing — top up the deposit account before filing.'}
+              : `The balance does not cover this filing — top up the deposit account before filing.`}
+            {/* The quoted fee is the ON-TIME one. CR decides the late-filing
+                tier and can charge far more: a return 7 months past its
+                anniversary was billed HK$2,610 against this HK$105 quote on
+                the test environment. Saying "Fee HK$105" full stop was telling
+                the operator something we do not know. */}
+            {preflight.fee_is_certain === false && (
+              <div style={{ marginTop: 6 }}>
+                A <b>late</b> annual return costs more — up to HK$
+                {preflight.max_fee}, and the Companies Registry decides which
+                tier applies. The exact charge appears on the receipt after
+                filing, and the balance above is checked against the maximum.
+              </div>
+            )}
           </div>
         </div>
       )}
