@@ -138,7 +138,19 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           </>
         ) : (
           <>
-            {failure?.hint && (
+            {/* Two different sources of "what is wrong", shown separately
+                because they mean different things: `problems` is OUR mapper
+                saying this company cannot be turned into a NAR1 (fix the
+                company record), `faults` is CR rejecting a form we did build
+                (fix the form). Collapsing them would send the operator to the
+                wrong screen. */}
+            {failure?.problems && (
+              <FaultPanel
+                faults={failure.problems}
+                title="This company cannot be filed as a NAR1 yet"
+              />
+            )}
+            {failure?.hint && !failure.problems && (
               <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
                 <span className="al-icon">⚠</span>
                 <div className="al-body">{failure.hint}</div>

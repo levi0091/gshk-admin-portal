@@ -93,10 +93,12 @@ describe('CaseWorkflowPage — shell', () => {
     expect(submission).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('passes the ENTITY id to the audit trail, not the case id', async () => {
-    // audit_log.case_id holds the entity id — see routers/audit.py.
+  it('does NOT repeat the audit trail on the workflow screen', async () => {
+    // Levi 2026-08-26: every action here is already in the Audit Log module,
+    // and two places to check what happened is one too many.
     await renderPage()
-    expect(await screen.findByTestId('audit-trail')).toHaveTextContent('e7')
+    expect(screen.queryByTestId('audit-trail')).not.toBeInTheDocument()
+    expect(screen.queryByText('Audit trail')).not.toBeInTheDocument()
   })
 
   it('offers a way back to the case list and to the company', async () => {

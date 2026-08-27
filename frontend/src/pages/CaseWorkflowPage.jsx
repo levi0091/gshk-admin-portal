@@ -6,7 +6,6 @@ import { labelForDays } from '../lib/anniversary.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
-import AuditTrailTab from '../components/AuditTrailTab.jsx'
 import CaseStepper from '../components/case/CaseStepper.jsx'
 import StageDataVerification from '../components/case/StageDataVerification.jsx'
 import StageClientVerification from '../components/case/StageClientVerification.jsx'
@@ -137,7 +136,16 @@ export default function CaseWorkflowPage() {
         <div className="alert al-danger" role="alert" style={{ marginBottom: 16 }}>
           <span className="al-icon">⚠</span>
           <div className="al-body">
-            {failure.message}
+            <b>{failure.message}</b>
+            {/* Every reason the backend gathered — it collects them all so one
+                pass can fix them all, and showing one would waste that. */}
+            {failure.problems && (
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                {failure.problems.map((p, i) => (
+                  <li key={i}>{typeof p === 'string' ? p : JSON.stringify(p)}</li>
+                ))}
+              </ul>
+            )}
             {failure.hint && <div style={{ marginTop: 4 }}>{failure.hint}</div>}
           </div>
         </div>
@@ -190,17 +198,10 @@ export default function CaseWorkflowPage() {
         <StageConfirmation caseRow={c} canRead={canReadTpsi} onError={setFailure} />
       )}
 
-      <div className="card">
-        <div className="card-hdr">
-          <div>
-            <div className="card-title">Audit trail</div>
-            <div className="card-sub">Every recorded action on this case</div>
-          </div>
-        </div>
-        {/* audit_log.case_id holds the ENTITY id, not the case id — see
-            routers/audit.py and the _audit_target() helper in routers/cases.py. */}
-        <AuditTrailTab caseId={c.entity_id} />
-      </div>
+      {/* No audit trail here (Levi 2026-08-26). Every action on this case is
+          already in the Audit Log module, and repeating it on the workflow
+          screen means two places to check what happened. The trail stays where
+          it is complete; this screen stays about the work in front of you. */}
 
       <div className="f-hint" style={{ marginTop: 12 }}>
         Created {formatDate(c.created_at)}

@@ -80,14 +80,29 @@ export function stageDone(c, i) {
  */
 export function describeError(err) {
   const message = err?.message || 'Something went wrong.'
+  // Every specific reason the backend gathered, carried through so the caller
+  // can list them all. `api.describeApiError` puts them here; without them a
+  // 400 can only say "something is wrong somewhere", which is what the NAR1
+  // workflow used to do.
+  const problems = Array.isArray(err?.problems) && err.problems.length
+    ? err.problems : null
+
   switch (err?.status) {
     case 400:
-      return { message, hint: 'Correct the highlighted details and try again.', retry: false }
+      return {
+        message,
+        problems,
+        hint: problems
+          ? null   // the list says it better than any sentence could
+          : 'Correct the highlighted details and try again.',
+        retry: false,
+      }
     case 403:
-      return { message, hint: 'Your role does not allow this action.', retry: false }
+      return { message, problems, hint: 'Your role does not allow this action.', retry: false }
     case 409:
       return {
         message,
+        problems,
         hint: /password/i.test(message)
           ? 'The shared TPSI password needs changing in Settings → CR Credentials before this can proceed.'
           : 'The case is not in a state that allows this yet.',
@@ -96,6 +111,7 @@ export function describeError(err) {
     case 502:
       return {
         message,
+        problems,
         // Never auto-retry: CR locks an account after repeated auth failures,
         // and a chargeable submit must not be fired twice on a guess.
         hint: 'The Companies Registry refused this. Fix what it reported — do not simply retry.',
@@ -104,10 +120,11 @@ export function describeError(err) {
     case 503:
       return {
         message,
+        problems,
         hint: 'The CR test service answers Monday to Friday, 10:00–16:00 Hong Kong time. Try again inside that window.',
         retry: true,
       }
     default:
-      return { message, hint: null, retry: true }
+      return { message, problems, hint: null, retry: true }
   }
 }
