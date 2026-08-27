@@ -14,9 +14,10 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from services import (
     audit_events as ev, document_service, email_service, nar1_case_status,
-    nar1_cases, nar1_pdf,
+    nar1_cases, nar1_pdf, nar1_return_data,
 )
 from services.audit_service import log_event
+from services.tpsi.forms import nar1_source
 
 router = APIRouter()
 
@@ -166,6 +167,29 @@ async def get_case(case_id: str, user=Depends(require_permission("nar1", "read")
         return nar1_cases.composite(case_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+
+
+@router.get("/{case_id}/return-data")
+async def get_return_data(
+    case_id: str, user=Depends(require_permission("nar1", "read"))
+):
+    """What CR is about to be shown, read off the live company profile.
+
+    `nar1:read`, not `tpsi:write`: this opens no filing and contacts no one. It
+    is the Data Verification card, and an operator who may look at the case may
+    look at the return it is about.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    try:
+        graph = await nar1_source.load_entity_graph(case["entity_id"])
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    return nar1_return_data.summarise(graph)
 
 
 @router.patch("/{case_id}")

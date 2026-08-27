@@ -3,6 +3,7 @@ import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
 import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
+import ReturnDataCard from './ReturnDataCard.jsx'
 import { describeError, isValidated } from './workflow.js'
 
 /**
@@ -23,6 +24,14 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
 
   const validated = isValidated(caseRow)
   const faults = caseRow.form_status?.failed ? caseRow.form_status.faults : null
+
+  // "CR validation stays locked until they are ticked" (wireframe_v11 s20).
+  // The two checks are assertions about work done OUTSIDE the portal — AML
+  // screening, and the e-Filing accounts CR will look for when the return is
+  // signed. Validating first is not harmful (validateFormNar1 is free), but it
+  // lets a case reach the client with neither done, and the frozen snapshot
+  // makes that expensive to walk back.
+  const prechecksDone = Boolean(caseRow.aml_cleared) && Boolean(caseRow.accounts_ready)
 
   async function patch(field, value) {
     onError(null)
@@ -72,6 +81,10 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
 
   return (
     <>
+      {/* The return itself, first — the wireframe opens this stage with the
+          data, and everything below it is a decision about that data. */}
+      <ReturnDataCard caseId={caseRow.id} reloadKey={caseRow.updated_at} />
+
       <div className="card mb-16">
         <div className="card-hdr">
           <div>
@@ -159,12 +172,15 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
             <FaultPanel faults={faults} />
             <div className="action-bar" style={{ marginTop: faults?.length ? 16 : 0 }}>
               <div className="ab-note">
-                {caseRow.filing_id
-                  ? 'Re-checks the corrected details with CR.'
-                  : 'Builds the return and asks CR to check it.'}
+                {!prechecksDone
+                  ? 'Tick both manual checks above before validating with CR.'
+                  : caseRow.filing_id
+                    ? 'Re-checks the corrected details with CR.'
+                    : 'Builds the return and asks CR to check it.'}
               </div>
               <div className="ab-actions">
-                <button className="btn btn-action" disabled={!canValidate || busy !== null}
+                <button className="btn btn-action"
+                        disabled={!canValidate || !prechecksDone || busy !== null}
                         onClick={runValidation}>
                   {busy === 'validate' ? 'Checking with CR…' : 'Validate with CR'}
                 </button>

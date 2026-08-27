@@ -4,7 +4,6 @@ import { api } from '../lib/api.js'
 import { formatDate, formatDateTime } from '../lib/format.js'
 import { labelForDays } from '../lib/anniversary.js'
 import { useAuth } from '../context/AuthContext.jsx'
-import StatusBadge from '../components/StatusBadge.jsx'
 import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
 import CaseStepper from '../components/case/CaseStepper.jsx'
 import StageDataVerification from '../components/case/StageDataVerification.jsx'
@@ -31,15 +30,6 @@ import { STAGE_LABELS, reachedStage } from '../components/case/workflow.js'
  * records, and guessing at the new one here is exactly how a screen starts
  * disagreeing with the trail it shares.
  */
-
-function Kv({ label, children }) {
-  return (
-    <div className="kv-row">
-      <span className="kv-key">{label}</span>
-      <span className="kv-val">{children ?? <span className="td-muted">—</span>}</span>
-    </div>
-  )
-}
 
 export default function CaseWorkflowPage() {
   const { caseId } = useParams()
@@ -111,12 +101,39 @@ export default function CaseWorkflowPage() {
 
   return (
     <>
+      {/* Breadcrumb, stage-as-title, case line, then the two badges side by
+          side — the v11 header, which the shipped screen had replaced with the
+          case number and a six-row property list. */}
+      <div className="crumb">
+        <button className="crumb-link" onClick={() => navigate('/dashboard')}>
+          Post-incorporation
+        </button>
+        <span className="crumb-sep">›</span>
+        {c.entity_id ? (
+          <button className="crumb-link"
+                  onClick={() => navigate(`/companies/${c.entity_id}`)}>
+            {c.company_name || 'Company'}
+          </button>
+        ) : (
+          <span>{c.company_name || 'Company'}</span>
+        )}
+        <span className="crumb-sep">›</span>
+        <span>{c.case_type || 'NAR1'} · Annual Return{c.ar_period_year ? ` ${c.ar_period_year}` : ''}</span>
+        <span className="crumb-sep">›</span>
+        <span className="crumb-here">{STAGE_LABELS[current - 1]}</span>
+      </div>
+
       <div className="pg-hdr">
         <div>
-          <div className="pg-title">{c.case_no || 'Case'}</div>
+          <div className="pg-title">{STAGE_LABELS[current - 1]}</div>
           <div className="pg-sub">
-            {c.company_name}{c.br_number ? ` · BRN ${c.br_number}` : ''}
-            {' · '}{STAGE_LABELS[current - 1]}
+            Case {c.case_no || '—'} · Annual Return ({c.case_type || 'NAR1'})
+            {c.company_name ? ` · ${c.company_name}` : ''}
+            {c.br_number ? ` · BRN ${c.br_number}` : ''}
+            {annivText ? ' · ' : ''}
+            {annivText && (
+              <span className={due ? 'td-anniv-due' : ''}>{annivText}</span>
+            )}
           </div>
         </div>
         <div className="pg-actions">
@@ -130,6 +147,26 @@ export default function CaseWorkflowPage() {
             </button>
           )}
         </div>
+      </div>
+
+      {/* Two vocabularies, never merged (D-6): where the case is with GSHK, and
+          what CR has done with the filing. */}
+      <div className="live-strip mb-16">
+        <span className="ls-key">Workflow</span>
+        <WorkflowBadge status={c.workflow_status} />
+        <span className="ls-div" />
+        <span className="ls-key">CR form</span>
+        {c.form_status?.code
+          ? <FormBadge stage={c.form_status.code} />
+          : <span className="td-muted">Not sent to CR yet</span>}
+        {c.signing_method && (
+          <>
+            <span className="ls-div" />
+            <span className="ls-key">Signing</span>
+            <span>{c.signing_method === 'manual'
+              ? 'Manual (wet signature)' : 'e-Sign via CR'}</span>
+          </>
+        )}
       </div>
 
       {failure && (
@@ -164,23 +201,6 @@ export default function CaseWorkflowPage() {
         onGo={n => { setStep(n); setNotice(null) }}
         onLocked={setNotice}
       />
-
-      <div className="card mb-16">
-        <div className="kv-list">
-          <Kv label="Case type"><span className="badge b-inactive">{c.case_type || 'NAR1'}</span></Kv>
-          <Kv label="Company status"><StatusBadge status={c.case_status} /></Kv>
-          <Kv label="Workflow status"><WorkflowBadge status={c.workflow_status} /></Kv>
-          <Kv label="CR form status"><FormBadge stage={c.form_status?.code} /></Kv>
-          <Kv label="Days to anniversary">
-            <span className={due ? 'td-anniv-due' : ''}>{annivText}</span>
-          </Kv>
-          <Kv label="Signing method">
-            {c.signing_method
-              ? (c.signing_method === 'manual' ? 'Manual (wet signature)' : 'e-Sign via CR')
-              : <span className="td-muted">Not chosen yet</span>}
-          </Kv>
-        </div>
-      </div>
 
       {current === 1 && (
         <StageDataVerification {...stageProps} canWrite={canWrite} canValidate={canValidate} />

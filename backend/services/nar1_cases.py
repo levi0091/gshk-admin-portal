@@ -423,12 +423,55 @@ async def list_dashboard(
             "page_size": page_size, "counts": counts}
 
 
+#: Facts the case header shows that live on the COMPANY, not on the case.
+#: `nar1_cases` holds only `entity_id`, so a detail read straight off the table
+#: has no company name, no BR number and no anniversary — which is exactly what
+#: the v11 header is made of. The dashboard never had this problem because it
+#: reads `nar1_case_registry` (024), which already joins them; the detail read
+#: did not, so the same case rendered fully on the list and half-empty one click
+#: later. Read the SAME view rather than re-joining `entities` here: a second
+#: join is a second definition of days_to_anniversary, and 019 pins that to
+#: Asia/Hong_Kong for a reason.
+_HEADER_COLS = (
+    "company_name", "company_name_zh", "br_number", "cr_number",
+    "days_to_anniversary", "case_type",
+)
+
+
+def _company_header(case_id: str) -> dict:
+    """The company-side header fields, from the registry view.
+
+    Deliberately NOT fatal. This decorates a case that has already been read;
+    if the view is unreachable the case detail should still render with the
+    facts the case itself owns, not 500.
+    """
+    try:
+        rows = (
+            get_supabase()
+            .table(_REGISTRY)
+            .select(", ".join(_HEADER_COLS))
+            .eq("id", case_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    return rows[0] if rows else {}
+
+
 def composite(case_id: str) -> dict:
     """The case plus BOTH statuses — the shape the v11 case header needs."""
     case = get_case(case_id)
     filing = current_filing(case_id)
     return {
         **case,
+        # Before the explicit keys below, never after: the view carries a
+        # `workflow_status` STRING of its own, and letting it land on top of
+        # derive()'s composite object is precisely the React-#31 blank page
+        # this header already shipped once.
+        **_company_header(case_id),
         # Named explicitly, not left to **case: the signed-form pointer is only
         # resolvable as (document_id, version) — upload_document versions the
         # SAME documents row every year — and the Confirmation screen reads the

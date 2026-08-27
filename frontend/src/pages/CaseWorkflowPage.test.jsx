@@ -44,8 +44,25 @@ const CASE = {
 
 function caseAt(over) { return { ...CASE, ...over } }
 
+//: What GET /cases/{id}/return-data answers — the Data Verification card reads
+//: it on every render of stage 1. Declared BEFORE the generic '/cases/' branch
+//: below, which would otherwise hand the card a case row and quietly render an
+//: empty return.
+const RETURN_DATA = {
+  year: 2026, company_name: 'Harbour Tech Ltd.', br_number: '2100028',
+  registered_office: 'Unit 12A, Central, Hong Kong',
+  directors: ['Chan Tai Man'], secretaries: ['Get Started HK Limited'],
+  signatory: { name: 'Chan Tai Man', capacity: 'Director', person_id: 'T2607D' },
+  member_count: 2,
+  share_classes: [{ name: 'Ordinary', total_issued: 100, currency: 'HKD' }],
+  problems: [],
+}
+
 function routeGet(caseRow = CASE, extra = {}) {
   get.mockImplementation(path => {
+    if (path.includes('/return-data')) {
+      return Promise.resolve(extra.returnData ?? RETURN_DATA)
+    }
     if (path.startsWith('/cases/')) return Promise.resolve(caseRow)
     if (path.includes('/preview')) {
       return Promise.resolve(extra.preview ?? { fee: 105, balance: 12480, sufficient: true })
@@ -68,7 +85,7 @@ beforeEach(() => {
 
 const renderPage = async () => {
   render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
-  await screen.findByText('NAR-2026-0041')
+  await screen.findByText(/NAR-2026-0041/)
 }
 
 describe('CaseWorkflowPage — shell', () => {
@@ -79,12 +96,37 @@ describe('CaseWorkflowPage — shell', () => {
 
   it('shows both statuses separately, never merged', async () => {
     await renderPage()
-    // Scoped to their own rows: "Submission" is also a stepper label, and the
-    // point here is that the two badges are two distinct facts side by side.
-    const workflow = screen.getByText('Workflow status').closest('.kv-row')
-    const form = screen.getByText('CR form status').closest('.kv-row')
-    expect(within(workflow).getByText('Submission')).toBeInTheDocument()
-    expect(within(form).getByText('Signed')).toBeInTheDocument()
+    // Scoped to the strip: "Submission" is also a stepper label and a page
+    // title, and the point here is that the two badges are two distinct facts
+    // standing side by side.
+    const strip = document.querySelector('.live-strip')
+    expect(within(strip).getByText('Workflow')).toBeInTheDocument()
+    expect(within(strip).getByText('Submission')).toBeInTheDocument()
+    expect(within(strip).getByText('CR form')).toBeInTheDocument()
+    expect(within(strip).getByText('Signed')).toBeInTheDocument()
+  })
+
+  it('says CR has not seen the form yet rather than showing a blank badge', async () => {
+    routeGet(caseAt({ form_status: null, filing_id: null,
+                      workflow_status: { code: 'data_verification',
+                                         label: 'Data Verification',
+                                         off_portal: false, overdue: false } }))
+    await renderPage()
+    const strip = document.querySelector('.live-strip')
+    expect(within(strip).getByText('Not sent to CR yet')).toBeInTheDocument()
+  })
+
+  it('titles the page with the STAGE and names the company in the breadcrumb', async () => {
+    // Regression (Levi 2026-08-27): the header showed the case number and a
+    // six-row property list whose company name, BRN and anniversary were all
+    // blank, because GET /cases/{id} read nar1_cases directly and those three
+    // facts live on the company.
+    await renderPage()
+    expect(screen.getByText('Submission', { selector: '.pg-title' })).toBeInTheDocument()
+    const crumb = document.querySelector('.crumb')
+    expect(within(crumb).getByText('Harbour Tech Ltd.')).toBeInTheDocument()
+    expect(screen.getByText(/Case NAR-2026-0041/)).toBeInTheDocument()
+    expect(screen.getByText(/BRN 2100028/)).toBeInTheDocument()
   })
 
   it('opens on the furthest stage the case has actually reached', async () => {

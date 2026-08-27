@@ -23,13 +23,36 @@ const onError = vi.fn()
 const CASE = {
   id: 'c1', entity_id: 'e7', case_no: 'NAR-2026-0041', filing_id: 'f1',
   company_name: 'Harbour Tech Ltd.', signing_method: 'esign',
+  // Both manual pre-checks done. "Validate with CR" is gated on them
+  // (wireframe_v11: validation stays locked until they are ticked), so a
+  // fixture without them cannot reach the CR button at all — and every test
+  // below that is about what validation DOES would silently pass by never
+  // getting there.
+  aml_cleared: true, accounts_ready: true,
   form_status: { code: 'validated', label: 'Validated by CR', failed: false, faults: [] },
 }
 const at = over => ({ ...CASE, ...over })
 
+//: GET /cases/{id}/return-data — the Data Verification card reads it on every
+//: render. Routed by URL rather than left to the blanket mock below, which
+//: would hand the card a deposit-balance payload and render an empty return
+//: that no assertion here would notice.
+const RETURN_DATA = {
+  year: 2026, company_name: 'Harbour Tech Ltd.', br_number: '2100028',
+  registered_office: 'Unit 12A, Central, Hong Kong',
+  directors: ['Chan Tai Man'], secretaries: ['Get Started HK Limited'],
+  signatory: { name: 'Chan Tai Man', capacity: 'Director', person_id: 'T2607D' },
+  member_count: 2,
+  share_classes: [{ name: 'Ordinary', total_issued: 100, currency: 'HKD' }],
+  problems: [],
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
-  get.mockResolvedValue({ fee: 105, balance: 12480, sufficient: true })
+  get.mockImplementation(url => Promise.resolve(
+    String(url).includes('/return-data')
+      ? RETURN_DATA
+      : { fee: 105, balance: 12480, sufficient: true }))
   post.mockResolvedValue({}); patch.mockResolvedValue({}); upload.mockResolvedValue({})
   blob.mockResolvedValue(new Blob(['%PDF'], { type: 'application/pdf' }))
   global.URL.createObjectURL = vi.fn(() => 'blob:preview')
@@ -47,9 +70,21 @@ describe('Data Verification', () => {
 
   it('records the two manual pre-checks against the case', async () => {
     const user = userEvent.setup()
-    renderIt({ form_status: { code: 'draft' }, filing_id: null })
+    renderIt({ form_status: { code: 'draft' }, filing_id: null,
+               aml_cleared: false, accounts_ready: false })
     await user.click(screen.getByRole('button', { name: /AML screening cleared/ }))
     await waitFor(() => expect(patch).toHaveBeenCalledWith('/cases/c1', { aml_cleared: true }))
+  })
+
+  it('will not let CR be called until both pre-checks are ticked', async () => {
+    // wireframe_v11: "CR validation stays locked until they are ticked". The
+    // checks assert work done outside the portal, and a case that reaches the
+    // client without them is expensive to walk back once the snapshot is
+    // frozen.
+    renderIt({ form_status: { code: 'draft' }, filing_id: null,
+               aml_cleared: true, accounts_ready: false })
+    expect(screen.getByRole('button', { name: /Validate with CR/ })).toBeDisabled()
+    expect(screen.getByText(/Tick both manual checks above/)).toBeInTheDocument()
   })
 
   it('prepares a filing and then validates it, in that order', async () => {

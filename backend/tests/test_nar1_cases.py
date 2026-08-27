@@ -444,3 +444,94 @@ def test_search_term_cannot_close_the_quote_early():
     rest of the term be read as grammar again."""
     assert nar1_cases._escape_filter_value('a"b') == '"%a\\"b%"'
     assert nar1_cases._escape_filter_value("a\\b") == r'"%a\\b%"'
+
+
+# ---- composite() carries the company-side header ---------------------------
+#
+# `nar1_cases` holds only entity_id, so a case read straight off the table has
+# no company name, no BR number and no anniversary -- and those are what the
+# v11 case header is made of. The dashboard never showed this because it reads
+# `nar1_case_registry`; the detail read did not, so the same case rendered
+# fully on the list and half-empty one click later (Levi, 2026-08-27).
+
+
+def _sb_with_registry(case_row: dict, filing_rows: list[dict],
+                      registry_row: dict | None) -> MagicMock:
+    """Like _sb_with, but answers `nar1_case_registry` too.
+
+    Deliberately a THIRD table double rather than a widened `_sb_with`: a bare
+    MagicMock answers `select().eq().limit().execute().data` with a MagicMock
+    whose `keys()` yields nothing, so `{**that}` expands to {} and a broken
+    merge would look exactly like a working one.
+    """
+    sb = _sb_with(case_row, filing_rows)
+    inner = sb.table.side_effect
+
+    registry_table = MagicMock()
+    (registry_table.select.return_value.eq.return_value
+     .limit.return_value.execute.return_value.data) = (
+        [registry_row] if registry_row is not None else [])
+
+    def _table(name):
+        return registry_table if name == "nar1_case_registry" else inner(name)
+
+    sb.table.side_effect = _table
+    return sb
+
+
+def test_composite_carries_the_company_name_brn_and_anniversary():
+    sb = _sb_with_registry(
+        {"id": "c1", "manual_receipt": None}, [],
+        {"company_name": "Harbour Tech Ltd.", "br_number": "2100028",
+         "cr_number": "3456789", "company_name_zh": "海港科技",
+         "days_to_anniversary": -12, "case_type": "NAR1"},
+    )
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        result = nar1_cases.composite("c1")
+
+    assert result["company_name"] == "Harbour Tech Ltd."
+    assert result["br_number"] == "2100028"
+    assert result["days_to_anniversary"] == -12
+    assert result["case_type"] == "NAR1"
+
+
+def test_composite_workflow_status_stays_the_derived_OBJECT():
+    """The view carries a workflow_status STRING of its own.
+
+    Letting it land on top of derive()'s composite object is React error #31 --
+    "Objects are not valid as a React child" -- which unmounts the whole tree
+    and blanks the page. That shipped once already.
+    """
+    sb = _sb_with_registry(
+        {"id": "c1", "manual_receipt": None}, [],
+        {"company_name": "Harbour Tech Ltd.", "workflow_status": "completed"},
+    )
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        result = nar1_cases.composite("c1")
+
+    assert isinstance(result["workflow_status"], dict)
+    assert result["workflow_status"]["code"] == "data_verification"
+
+
+def test_composite_still_renders_when_the_registry_view_is_unreachable():
+    """The header decorates a case that has already been read. A view outage
+    should cost the company name, not the whole case detail."""
+    sb = _sb_with({"id": "c1", "case_no": "NAR-2026-0041", "manual_receipt": None}, [])
+    boom = MagicMock()
+    boom.select.side_effect = RuntimeError("view is gone")
+    inner = sb.table.side_effect
+    sb.table.side_effect = lambda n: boom if n == "nar1_case_registry" else inner(n)
+
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        result = nar1_cases.composite("c1")
+
+    assert result["case_no"] == "NAR-2026-0041"
+    assert result["workflow_status"]["code"] == "data_verification"
+
+
+def test_composite_tolerates_a_case_missing_from_the_view():
+    sb = _sb_with_registry({"id": "c1", "manual_receipt": None}, [], None)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        result = nar1_cases.composite("c1")
+    assert result["id"] == "c1"
+    assert result.get("company_name") is None

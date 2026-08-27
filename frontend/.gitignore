@@ -1,0 +1,5 @@
+e2e/shots/
+e2e/.auth/
+test-results/
+playwright-report/
+.env.e2e.local
