@@ -400,6 +400,67 @@ def resolve_country(value: str | None) -> str | None:
 #: selectCapacityDesc, "Capacity (Individual)" sheet, NAR1-relevant rows only.
 #: The sheet's trailing "for ND4" section (Resigning Director, Resigning Company
 #: Secretary) belongs to form ND4 and is deliberately excluded.
+#: CR's HONG KONG DISTRICT codes — the "District" sheet, 125 rows.
+#:
+#: PROVEN LIVE 2026-08-27. `dstCtyStatePostal` is a CONTROLLED CODE for a Hong
+#: Kong address, not free text. Sending the district NAME "WAN CHAI" was
+#: refused four times over (once per address) with
+#:     ERR_ES_FORM_INVALID_VALUE: Please input valid District.
+#: while "CENTRAL" in the same document passed — because "CENTRAL" happens to
+#: BE its own code and "WAN CHAI" is spelt "WANCHAI".
+#:
+#: The code is derivable: uppercase the English description and drop every
+#: non-alphanumeric character. Verified against all 125 rows with zero
+#: exceptions, which is why `_district_key` normalises rather than carrying a
+#: second name->code table that could drift. The set is still committed so an
+#: unknown value is REFUSED here, with the offending text named, instead of
+#: being sent to CR to be rejected one round trip later.
+DISTRICT_CODES = frozenset({
+    'ABERDEEN', 'ADMIRALTY', 'APLEICHAU', 'BEACONHILL', 'BRAEMARHILL',
+    'CAUSEWAYBAY', 'CENTRAL', 'CHAIWAN', 'CHEUNGCHAU', 'CHEUNGMUKTAU',
+    'CHEUNGSHAWAN', 'CHUNGHOMKOK', 'CLEARWATERBAY', 'DIAMONDHILL', 'FANLING',
+    'FOTAN', 'HANGHAU', 'HAPPYVALLEY', 'HATSUEN', 'HOMANTIN', 'HUNGHOM',
+    'HUNGSHUIKIU', 'JARDINESLOOKOUT', 'JORDANVALLEY', 'KAITAK', 'KAMTIN',
+    'KEILINGHA', 'KENNEDYTOWN', 'KINGSPARK', 'KOWLOONBAY', 'KOWLOONCITY',
+    'KOWLOONTONG', 'KWAICHUNG', 'KWUNTONG', 'LAICHIKOK', 'LAMMAISLAND',
+    'LAMTEI', 'LAMTIN', 'LANTAUISLAND', 'LAUFAUSHAN', 'LOKFU', 'LOKMACHAU',
+    'LUENWOHUI', 'LUKKENG', 'MALIUSHUI', 'MAONSHAN', 'MATAUKOK', 'MATAUWAI',
+    'MAWAN', 'MAYAUTONG', 'MEIFOO', 'MIDLEVELS', 'MONGKOK', 'NGAUCHIWAN',
+    'NGAUTAUKOK', 'NORTHPOINT', 'PATHEUNG', 'PEAK', 'PENGCHAU', 'PINGSHEK',
+    'POKFULAM', 'QUARRYBAY', 'REPULSEBAY', 'SAIKUNG', 'SAIWANHO',
+    'SAIYINGPUN', 'SANPOKONG', 'SANTIN', 'SAUMAUPING', 'SHAMSHUIPO',
+    'SHAMTSENG', 'SHATAUKOK', 'SHATIN', 'SHAUKEIWAN', 'SHEKKIPMEI',
+    'SHEKKONG', 'SHEKO', 'SHEKTONGTSUI', 'SHEKWUHUI', 'SHEUNGKWAICHUNG',
+    'SHEUNGSHUI', 'SHEUNGWAN', 'SHOUSONHILL', 'SHUENWAN', 'SIUSAIWAN',
+    'SOKONPO', 'SOKWUNWAT', 'STANLEY', 'STONECUTTERSISLAND', 'SUNNYBAY',
+    'TAIHANG', 'TAIKOKTSUI', 'TAILAMCHUNG', 'TAIMEITUK', 'TAIMONGTSAI',
+    'TAIPO', 'TAIPOKAU', 'TAIPOMARKET', 'TAITAM', 'TAIWAI', 'TAIWOPING',
+    'TINGKAU', 'TINHAU', 'TINSHUIWAI', 'TIUKENGLENG', 'TOKWAWAN',
+    'TSEUNGKWANO', 'TSIMSHATSUI', 'TSINGLUNGTAU', 'TSINGYI', 'TSUENWAN',
+    'TSZWANSHAN', 'TUENMUN', 'TUNGTAU', 'WANCHAI', 'WANGTAUHOM',
+    'WESTKOWLOONCULTURALDISTRICT', 'WONGCHUKHANG', 'WONGTAISIN', 'WUKAISHA',
+    'WUKAUTANG', 'YAUMATEI', 'YAUTONG', 'YAUYATTSUEN', 'YUENLONG',
+})
+
+
+def _district_key(value: str) -> str:
+    return "".join(c for c in value.upper() if c.isalnum())
+
+
+def resolve_district(value: str | None) -> str | None:
+    """A stored district name -> CR's District code, or None if CR has no such
+    district.
+
+    Hong Kong addresses ONLY. Everywhere else `dstCtyStatePostal` is free text
+    (city / state / postcode), which is why `_address` consults this only when
+    the region resolves to HKG.
+    """
+    if not value:
+        return None
+    key = _district_key(str(value))
+    return key if key in DISTRICT_CODES else None
+
+
 CAPACITY_INDIVIDUAL = frozenset({
     "Authorized Representative",
     "Director",

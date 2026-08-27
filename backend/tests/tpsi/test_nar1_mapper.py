@@ -107,6 +107,10 @@ def person(pid="p1", **over):
         "id": pid, "full_name": "CHAN TAI MAN", "surname": "CHAN",
         "given_names": "TAI MAN", "full_name_zh": "陳大文",
         "email": "test@cr.gov.hk", "residential_address_id": "a2",
+        # selectPersonId is the signer's e-SERVICE (e-Filing) user ID, not an
+        # identity document number. CR proved it live on 2026-08-27: sending an
+        # HKID was refused with "Please check selectPersonId field."
+        "eservice_user_id": "T260727100116S",
     }
     p.update(over)
     return p
@@ -176,7 +180,15 @@ def test_a_body_corporate_signatory_leaves_selectpersonid_empty():
     assert "selectPersonId" not in mapped(graph())
 
 
-def test_an_individual_secretary_signs_with_their_identity_number():
+def test_an_individual_secretary_signs_with_their_eservice_user_id():
+    """selectPersonId is the signer's e-SERVICE (e-Filing) account, NOT an
+    identity document number.
+
+    CR settled this live on 2026-08-27: a validate carrying the secretary's
+    HKID here came back "Please check selectPersonId field." CR checks the
+    value is a real e-Filing account authorised for THIS company, which an
+    HKID can never be. D-4 added persons.eservice_user_id for exactly this.
+    """
     g = graph(
         secretaries=[{"person_id": "p1", "is_gshk": False, "is_current": True}],
         persons={"p1": person()},
@@ -186,7 +198,24 @@ def test_an_individual_secretary_signs_with_their_identity_number():
     )
     data = nar1_mapper.map_entity(g, year=2026)      # derived, not passed in
     assert data["selectPersonName"] == "CHAN TAI MAN"
-    assert data["selectPersonId"] == "A1234567"
+    assert data["selectPersonId"] == "T260727100116S"
+    # The HKID belongs in the officer's identity block, never here.
+    assert data["selectPersonId"] != "A1234567"
+
+
+def test_a_secretary_with_no_eservice_account_is_refused_not_filed():
+    """An HKID used to stand in here, so a person with no e-Filing account
+    filed a selectPersonId CR would reject after the fee was taken."""
+    g = graph(
+        secretaries=[{"person_id": "p1", "is_gshk": False, "is_current": True}],
+        persons={"p1": person(eservice_user_id=None)},
+        addresses={"a1": ADDR, "a2": ADDR},
+        identity_documents={"p1": [{"id_type": "hkid", "id_number": "A123456(7)",
+                                    "is_primary": True}]},
+    )
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        nar1_mapper.map_entity(g, year=2026)
+    assert any("e-Service" in p for p in exc.value.problems)
 
 
 def test_the_gshk_secretary_signs_in_preference_to_any_other():
@@ -690,7 +719,11 @@ def test_a_corporate_officer_files_its_own_address_not_the_filers():
     )
     addr = mapped(g)["corpDirList"][0]["stdAddress"]
     assert addr["bldg"] == "Corp Tower"
-    assert addr["dstCtyStatePostal"] == "WAN CHAI"
+    # CR's District is a CONTROLLED CODE for a HKG address, and the code is the
+    # name with its separators stripped. Proven live 2026-08-27: "WAN CHAI" was
+    # refused four times with "Please input valid District." while "CENTRAL"
+    # passed, because CENTRAL happens to be its own code.
+    assert addr["dstCtyStatePostal"] == "WANCHAI"
 
 
 def test_a_corporate_officers_br_number_and_chinese_name_are_filed():

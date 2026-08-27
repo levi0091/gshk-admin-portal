@@ -54,6 +54,7 @@ from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_INDIVIDUAL,
     HKG,
     resolve_country,
+    resolve_district,
 )
 
 #: HKT is a fixed UTC+8 offset with no DST (since 1979), so a fixed-offset
@@ -254,6 +255,24 @@ def _address(addr: dict | None, problems: list[str], where: str,
                           addr.get("postal_code")) if part
     )
     region = _hkg_region if hkg_only else _country_code
+    region_code = region(addr.get("country"), problems, where)
+
+    # For a HONG KONG address CR's District is a CONTROLLED CODE, not free
+    # text. Proven live 2026-08-27: "WAN CHAI" was refused with
+    # "ERR_ES_FORM_INVALID_VALUE: Please input valid District." while "CENTRAL"
+    # passed, because the code is the name with its spaces removed — WANCHAI.
+    # Refused HERE, naming the value, rather than one CR round trip later.
+    # Everywhere else the field really is city/state/postcode free text.
+    if region_code == HKG and district:
+        code = resolve_district(district)
+        if code is None:
+            problems.append(
+                f"{where}: {district!r} is not a Hong Kong district CR "
+                "recognises — dstCtyStatePostal must be one of CR's 125 "
+                "District codes for a HKG address"
+            )
+        district = code or district
+
     return {
         # E = the address is written in English. G-FlowDesk holds *_zh variants
         # but the NAR1 is filed in one language and `language` is already E.
@@ -262,7 +281,7 @@ def _address(addr: dict | None, problems: list[str], where: str,
         "bldg": addr.get("line2") or "",
         "stEstLotVlg": addr.get("line3") or "",
         "dstCtyStatePostal": district,
-        "ctryRegion": region(addr.get("country"), problems, where),
+        "ctryRegion": region_code,
     }
 
 
@@ -414,7 +433,16 @@ def _derive_signatory(graph: dict) -> dict | None:
             return {
                 "name": person.get("full_name") or person.get("full_name_zh") or "",
                 "capacity": _CAPACITY_COMPANY_SECRETARY,
-                "person_id": _identity_number(ids.get(person["id"], [])),
+                # The e-SERVICE USER ID, not an identity document number.
+                #
+                # CR proved this live on 2026-08-27: sending the signatory's
+                # HKID here was refused with "Please check selectPersonId
+                # field." selectPersonId is the signer's e-Filing account, which
+                # CR checks is real and authorised for THIS company -- an HKID
+                # is neither. D-4 added persons.eservice_user_id for exactly
+                # this (an identifier, not a secret, hence plaintext) and the
+                # seeder populates it; the mapper simply never read it.
+                "person_id": str(person.get("eservice_user_id") or "").strip(),
                 "date": None,
                 "is_corporate": False,
             }
@@ -516,7 +544,8 @@ def _signatory_block(graph: dict, signatory: dict | None,
         # An unstated kind is a natural person and must supply an id.
         problems.append(
             f"signatory {block['selectPersonName']}: signs as a natural person "
-            "but has no identity document on record, and selectPersonId is "
+            "but has no e-Service (e-Filing) user ID on record, and "
+            "selectPersonId is "
             "mandatory for a signatory who is not a body corporate"
         )
     return {k: v for k, v in block.items() if v}
