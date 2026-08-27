@@ -79,8 +79,13 @@ test.describe('NAR1 sign + submit — live CR test environment', () => {
     // The presenter account is a super-admin-only field and must not be here.
     await expect(summary).not.toContainText('N00108070000')
 
-    // Fee and balance pre-flight.
-    await expect(page.getByText(/Fee HK\$105/)).toBeVisible({ timeout: 60000 })
+    // Fee and balance pre-flight. The COMPUTED fee, which for this company is
+    // NOT HK$105: its return date is years past, so CR charges a late tier.
+    // Asserting HK$105 here would have passed only while the quote was wrong.
+    await expect(page.getByText(/Fee HK\$3480\.00|Fee HK\$2610\.00/))
+      .toBeVisible({ timeout: 60000 })
+    const feeAlert = page.locator('.alert', { hasText: 'deposit balance' })
+    await expect(feeAlert).toContainText(/return date/)
 
     // ── The two gates before an irreversible filing ─────────────────────
     const fileBtn = page.getByRole('button', { name: 'File the return' })

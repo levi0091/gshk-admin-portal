@@ -200,12 +200,12 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
                 company record), `faults` is CR rejecting a form we did build
                 (fix the form). Collapsing them would send the operator to the
                 wrong screen. */}
-            {failure?.problems && (
-              <FaultPanel
-                faults={failure.problems}
-                title="This company cannot be filed as a NAR1 yet"
-              />
-            )}
+            {/* The live failure's `problems` are NOT repeated here. The page
+                banner already lists every one of them, and rendering the same
+                faults twice on one screen makes an operator wonder whether
+                they are two different sets. What stays below is a DIFFERENT
+                source: `faults` persisted on the case's form status, which is
+                what a reload shows. */}
             {failure?.hint && !failure.problems && (
               <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
                 <span className="al-icon">⚠</span>

@@ -397,7 +397,7 @@ def parse_receipt(xml_bytes: bytes) -> dict:
     return receipt
 
 
-def _check_gate(filing: dict, confirm: bool, balance, fee) -> None:
+def _check_gate(filing: dict, confirm: bool, balance, quote) -> None:
     """The four conditions, in CR's own order. Server-side, always.
 
     Every one is checked against state this service holds, never against
@@ -411,20 +411,22 @@ def _check_gate(filing: dict, confirm: bool, balance, fee) -> None:
         )
     if not filing.get("signed_xml"):
         raise SubmitGateError("no signed payload stored for this filing")
-    # Checked against the WORST case, not the on-time fee. CR decides the
-    # late-filing tier, and a NAR1 quoted at HK$105 was billed HK$2,610 on the
-    # test environment (see config.MAX_FEES). Comparing against HK$105 let a
-    # filing through that the account could not cover, and the failure then
-    # happened at CR, mid-charge, instead of here.
-    from services.tpsi.config import max_fee_for
-
-    ceiling = max_fee_for(filing["form_code"])
-    if balance < ceiling:
+    # Checked against the fee THIS return will actually attract, computed from
+    # the company's return date (services/tpsi/fees.py) -- and against the
+    # HK$3,480 ceiling when that cannot be computed. Never against the flat
+    # on-time fee: a NAR1 quoted at HK$105 was billed HK$2,610 on the test
+    # environment, and comparing with HK$105 let a filing through that the
+    # account could not cover. The failure then happened at CR, mid-charge.
+    if balance < quote.amount:
+        detail = (
+            f"the fee for this return is HK${quote.amount} "
+            f"({quote.band})"
+            if quote.certain else
+            f"this return could cost up to HK${quote.amount} ({quote.reason})"
+        )
         raise SubmitGateError(
-            f"deposit balance {balance} is below {ceiling}, the most "
-            f"{filing['form_code']} can cost — a late annual return is charged "
-            f"more than the HK${fee} on-time fee, and CR decides the tier. Top "
-            "up the deposit account before filing."
+            f"deposit balance {balance} does not cover it: {detail}. "
+            "Top up the deposit account before filing."
         )
     if confirm is not True:
         raise SubmitGateError("explicit confirmation is required to submit")
@@ -437,29 +439,87 @@ def preview(client, filing_id: str, deposit_account: str) -> dict:
     decision to spend are two distinct events in the trail.
     """
     from services.tpsi import reads
-    from services.tpsi.config import fee_for, max_fee_for
+    from services.tpsi.fees import MAX_FEE, ON_TIME_FEE
 
     filing = get_filing(filing_id)
-    fee = fee_for(filing["form_code"])
-    ceiling = max_fee_for(filing["form_code"])
+    # The COMPUTED fee for THIS company's return date, not the flat on-time
+    # figure. A return seven months late costs HK$2,610; quoting HK$105 both
+    # misinformed the operator and let the balance gate pass a filing the
+    # account could not cover.
+    quote = fee_quote_for(filing)
     balance = reads.check_balance(client, deposit_account)
     return {
         "filing_id": filing_id,
         "form_code": filing["form_code"],
         "stage": filing["stage"],
-        # `fee` is the ON-TIME fee and is reported as such. It is NOT a
-        # prediction of the charge: CR decides the late-filing tier, and a
-        # return quoted here at HK$105 was billed HK$2,610 on the test
-        # environment. `max_fee` is what the gate below actually enforces, and
-        # `fee_is_certain` says whether the two are the same number — so the UI
-        # can stop presenting a guess as a fact.
-        "fee": str(fee),
-        "max_fee": str(ceiling),
-        "fee_is_certain": ceiling == fee,
+        "fee": str(quote.amount),
+        # The whole quote, so the screen can show the band and the return date
+        # it was measured from. An operator can check those against the company
+        # record; they cannot check a bare number.
+        "fee_detail": quote.as_dict(),
+        "fee_is_certain": quote.certain,
+        "on_time_fee": str(ON_TIME_FEE),
+        "max_fee": str(MAX_FEE),
         "balance": str(balance),
-        "sufficient": balance >= ceiling,
+        "sufficient": balance >= quote.amount,
         "ready": filing["stage"] == STAGE_SIGNED and bool(filing.get("signed_xml")),
     }
+
+
+def fee_quote_for(filing: dict):
+    """The registration fee CR will charge for this filing.
+
+    Computed from the company's return date and today's date (see
+    services/tpsi/fees.py), which is what CR itself charges on. Returns an
+    UNCERTAIN quote at the HK$3,480 ceiling whenever the inputs do not support
+    a confident answer — never a confident wrong number, and never the on-time
+    fee as a stand-in, because this value also gates the deposit balance.
+
+    Never raises: it is called on the path to a chargeable submit, and a
+    lookup failure must degrade to the ceiling rather than block a filing that
+    is otherwise ready.
+    """
+    from services.tpsi import fees
+    from services.tpsi.forms import nar1_summary
+
+    if filing.get("form_code") != "Nar1":
+        from services.tpsi.config import fee_for
+        flat = fee_for(filing["form_code"])
+        return fees.FeeQuote(flat, "fixed fee", None, None, True)
+
+    try:
+        entity = _entity_for_fee(filing.get("entity_id"))
+    except Exception:  # noqa: BLE001
+        return fees.uncertain("the company record could not be read")
+
+    year = None
+    has_share_capital = False
+    xml = filing.get("validated_xml") or filing.get("request_xml")
+    if xml:
+        try:
+            summary = nar1_summary.summarise(xml)
+            year = summary.get("year")
+            has_share_capital = bool(summary.get("share_classes"))
+        except Exception:  # noqa: BLE001
+            pass
+
+    return fees.annual_return_fee(
+        incorporation_date=(entity or {}).get("incorporation_date"),
+        year=year,
+        private_with_share_capital=fees.is_private_with_share_capital(
+            entity, has_share_capital=has_share_capital),
+    )
+
+
+def _entity_for_fee(entity_id: str | None) -> dict:
+    if not entity_id:
+        return {}
+    rows = (
+        get_supabase().table("entities")
+        .select("id,company_type,incorporation_date")
+        .eq("id", entity_id).limit(1).execute().data or []
+    )
+    return rows[0] if rows else {}
 
 
 def _charged_amount(receipt: dict, predicted) -> str:
@@ -496,9 +556,9 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
     # chargeable, irreversible one, and a case already filed on paper must never
     # get as far as a request that could spend.
     _refuse_if_filed_off_portal(filing, "submitting it to CR")
-    fee = fee_for(filing["form_code"])
+    quote = fee_quote_for(filing)
     balance = reads.check_balance(client, deposit_account)  # LIVE, never cached
-    _check_gate(filing, confirm, balance, fee)
+    _check_gate(filing, confirm, balance, quote)
 
     signed = filing["signed_xml"]
     body = (
@@ -533,7 +593,7 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
             # NAR1L -- the trailing "L" is CR's own marker for a late form.
             # Storing our prediction here made the filing row disagree with the
             # receipt beside it, which is the one place the numbers must match.
-            "fee_amount": _charged_amount(receipt, fee),
+            "fee_amount": _charged_amount(receipt, quote.amount),
             "balance_at_submit": str(balance),
             "submitted_at": _now(),
             "cr_error": None,

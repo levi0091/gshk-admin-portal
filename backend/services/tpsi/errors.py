@@ -53,6 +53,23 @@ class TpsiSignatureError(_FaultError):
     """CR rejected the signature or the signatory's authority."""
 
 
+#: The two codes that mean the e-Service ACCOUNT itself is unusable, as opposed
+#: to this particular signature being wrong. They need their own message: the
+#: remedy is with CR, not in the form, and repeating the attempt makes it worse.
+_ACCOUNT_DEAD_CODES = {"ERR_MSG_USER_ACC_LOCKED", "ERR_MSG_USER_ACC_CLOSED"}
+
+
+def account_is_locked(exc: Exception) -> bool:
+    """Whether CR is saying the signatory's account is locked or closed.
+
+    CLAUDE.md's rule is never to auto-retry CR authentication because CR locks
+    accounts. This is what it looks like when that has already happened, and the
+    UI must say so unmistakably rather than offering another go.
+    """
+    faults = getattr(exc, "faults", None) or []
+    return any(code in _ACCOUNT_DEAD_CODES for code, _ in faults)
+
+
 def _local(tag: str) -> str:
     """Local name of a possibly-namespaced tag — prefixes are not stable."""
     return tag.rsplit("}", 1)[-1]

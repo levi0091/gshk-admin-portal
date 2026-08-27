@@ -78,6 +78,23 @@ export function stageDone(c, i) {
  * The four cases are genuinely different actions, not four wordings of "it
  * broke" — see the delivered contract §5.4.
  */
+/** What to do about each kind of CR refusal. Keyed by `_handle`'s `kind`. */
+const CR_REFUSAL_HINTS = {
+  account_locked:
+    'The Companies Registry has LOCKED or CLOSED this e-Service account. Do not '
+    + 'try again — further attempts keep it locked. The account holder must '
+    + 'contact CR to have it reinstated.',
+  signature:
+    'CR accepted the return but refused the signature. The signatory needs an '
+    + 'individual e-Service account that CR has associated with THIS company, '
+    + 'in a capacity allowed to sign. Editing the return will not fix this.',
+  validation:
+    'CR checked the return and rejected it. Fix the details it lists on the '
+    + 'company profile, then validate again — validation is free.',
+  default:
+    'The Companies Registry refused this. Fix what it reported — do not simply retry.',
+}
+
 export function describeError(err) {
   const message = err?.message || 'Something went wrong.'
   // Every specific reason the backend gathered, carried through so the caller
@@ -112,9 +129,15 @@ export function describeError(err) {
       return {
         message,
         problems,
+        kind: err?.kind || null,
         // Never auto-retry: CR locks an account after repeated auth failures,
         // and a chargeable submit must not be fired twice on a guess.
-        hint: 'The Companies Registry refused this. Fix what it reported — do not simply retry.',
+        //
+        // The three refusals need three different remedies, in three different
+        // places. Saying "fix what it reported" to someone whose CR account is
+        // locked is advice they cannot act on, and repeating the attempt is
+        // exactly what keeps it locked.
+        hint: CR_REFUSAL_HINTS[err?.kind] || CR_REFUSAL_HINTS.default,
         retry: false,
       }
     case 503:

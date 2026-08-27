@@ -73,6 +73,11 @@ export function describeApiError(detail, fallback = 'API error') {
         : JSON.stringify(detail))
     const e = new Error(message)
     if (problems) e.problems = problems
+    // WHAT KIND of refusal this was. The backend distinguishes a CR validation
+    // fault from a signature fault from a locked account, and they have
+    // different remedies in different places — carrying only the message would
+    // send the operator to edit a form when the problem is their CR account.
+    if (detail.kind) e.kind = detail.kind
     return e
   }
 

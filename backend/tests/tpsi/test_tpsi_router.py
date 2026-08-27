@@ -1381,3 +1381,99 @@ def test_summary_makes_no_CR_call(client):
                side_effect=AssertionError("summary must not authenticate to CR")):
         response = client.get("/tpsi/filings/f1/summary", headers=H)
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# CR REFUSALS. CR reports a LIST of faults and three materially different
+# kinds of refusal. `_handle` used to flatten all of it into str(exc), so the
+# UI could only say "something went wrong" and the operator went round the
+# loop one fault at a time.
+# ---------------------------------------------------------------------------
+
+from services.tpsi.errors import (  # noqa: E402
+    TpsiSignatureError, TpsiUnavailableError, TpsiValidationError,
+)
+
+
+def test_a_validation_refusal_carries_EVERY_fault_not_a_joined_string():
+    exc = TpsiValidationError([
+        ("ERR_MSG_INVALID_DISTRICT", "Please input valid District."),
+        ("ERR_MSG_MANDATORY", "Please check selectPersonId field."),
+    ])
+    http = _handle_for_test(exc)
+
+    assert http.status_code == 502
+    assert http.detail["problems"] == [
+        ["ERR_MSG_INVALID_DISTRICT", "Please input valid District."],
+        ["ERR_MSG_MANDATORY", "Please check selectPersonId field."],
+    ]
+    assert http.detail["kind"] == "validation"
+
+
+def test_a_signature_refusal_is_labelled_separately_from_a_data_one():
+    """Different remedies in different places: a signature fault means the
+    signatory is not authorised for this company at CR, and no amount of
+    editing the return will help."""
+    exc = TpsiSignatureError([
+        ("ERR_MSG_SIGNATORY_NOT_AUTH", "Signatory is not authorised."),
+    ])
+    http = _handle_for_test(exc)
+
+    assert http.detail["kind"] == "signature"
+    assert "signature" in http.detail["message"].lower()
+
+
+def test_a_locked_account_is_called_out_as_such():
+    """CLAUDE.md's never-auto-retry rule exists because CR locks accounts. This
+    is what it looks like once that has happened, and the UI must stop rather
+    than offer another go."""
+    exc = TpsiSignatureError([
+        ("ERR_MSG_USER_ACC_LOCKED", "User account is locked."),
+    ])
+    assert _handle_for_test(exc).detail["kind"] == "account_locked"
+
+
+def test_a_closed_account_is_treated_like_a_locked_one():
+    exc = TpsiSignatureError([("ERR_MSG_USER_ACC_CLOSED", "Account closed.")])
+    assert _handle_for_test(exc).detail["kind"] == "account_locked"
+
+
+def test_a_shut_service_window_stays_a_503_and_is_retryable():
+    """Outside Mon-Fri 10:00-16:00 HKT nothing is wrong with the return. A 502
+    would tell the operator to go and fix a form that is fine."""
+    http = _handle_for_test(TpsiUnavailableError("outside the service window"))
+    assert http.status_code == 503
+
+
+def test_faults_never_leak_a_credential():
+    exc = TpsiValidationError([("ERR", "bad password: hunter2")])
+    http = _handle_for_test(exc)
+    # The fault text is CR's, and it is shown -- but nothing this layer adds
+    # may carry a secret, and the detail must stay a plain data structure.
+    assert set(http.detail) == {"message", "problems", "kind"}
+
+
+def _handle_for_test(exc):
+    from routers.tpsi import _handle
+    return _handle(exc)
+
+
+def test_sign_surfaces_CRs_faults_through_the_route(client):
+    """End of the path, not just the mapper: the route must return the list."""
+    exc = TpsiSignatureError([("ERR_MSG_NO_ASSOCIATION",
+                               "Signatory not associated with this company.")])
+    # Signatory and password IN THE BODY: with an empty body the route falls
+    # through to credentials.load_eservice(), which is a live Supabase read and
+    # turns this into a database test with a PostgREST error for an assertion.
+    with _super(), \
+         patch("routers.tpsi.filings.sign", side_effect=exc), \
+         patch("routers.tpsi.client_for", MagicMock()), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={
+            "signatory_user_id": "T260727100116S", "eservice_password": "x",
+        })
+
+    assert response.status_code == 502
+    body = response.json()["detail"]
+    assert body["kind"] == "signature"
+    assert body["problems"][0][1] == "Signatory not associated with this company."

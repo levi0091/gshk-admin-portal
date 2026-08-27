@@ -29,7 +29,10 @@ from services.tpsi.errors import (
     TpsiAuthError,
     TpsiError,
     TpsiPasswordExpiredError,
+    TpsiSignatureError,
     TpsiUnavailableError,
+    TpsiValidationError,
+    account_is_locked,
 )
 
 router = APIRouter()
@@ -173,10 +176,36 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
 
 
 def _handle(exc: Exception) -> HTTPException:
+    """Map a TPSI failure onto a response the UI can act on.
+
+    CR REPORTS A LIST, AND THE LIST IS THE POINT. `TpsiValidationError` and
+    `TpsiSignatureError` carry `.faults` — every problem CR found, as
+    (code, message) pairs — and flattening them into `str(exc)` sent the
+    operator round the loop one fault at a time. They travel as `problems`,
+    the same structured shape `/tpsi/filings/prepare` already uses for mapper
+    problems, which the fault panel already knows how to render.
+
+    `kind` distinguishes the two rejections, because the remedies are in
+    different places: a validation fault means fix the company record or the
+    form; a signature fault means the signatory is not authorised for this
+    company at CR, and no amount of editing the return will help.
+    """
     if isinstance(exc, (LookupError, ValueError)):
         return HTTPException(400, str(exc))
     if isinstance(exc, TpsiPasswordExpiredError):
         return HTTPException(409, str(exc))
+
+    if isinstance(exc, (TpsiValidationError, TpsiSignatureError)):
+        signature = isinstance(exc, TpsiSignatureError)
+        return HTTPException(502, {
+            "message": ("The Companies Registry rejected the signature."
+                        if signature else
+                        "The Companies Registry rejected this return."),
+            "problems": [list(f) for f in (exc.faults or [])],
+            "kind": ("account_locked" if account_is_locked(exc)
+                     else "signature" if signature else "validation"),
+        })
+
     if isinstance(exc, TpsiAuthError):
         return HTTPException(502, str(exc))
     if isinstance(exc, TpsiUnavailableError):

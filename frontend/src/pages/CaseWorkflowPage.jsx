@@ -6,6 +6,7 @@ import { labelForDays } from '../lib/anniversary.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
 import CaseStepper from '../components/case/CaseStepper.jsx'
+import { readFault } from '../components/case/FaultPanel.jsx'
 import StageDataVerification from '../components/case/StageDataVerification.jsx'
 import StageClientVerification from '../components/case/StageClientVerification.jsx'
 import StageSigning from '../components/case/StageSigning.jsx'
@@ -175,15 +176,32 @@ export default function CaseWorkflowPage() {
           <div className="al-body">
             <b>{failure.message}</b>
             {/* Every reason the backend gathered — it collects them all so one
-                pass can fix them all, and showing one would waste that. */}
+                pass can fix them all, and showing one would waste that.
+                Rendered through readFault because CR sends (code, message)
+                PAIRS: JSON.stringify put ["ERR_MSG_...","..."] on screen. */}
             {failure.problems && (
               <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                {failure.problems.map((p, i) => (
-                  <li key={i}>{typeof p === 'string' ? p : JSON.stringify(p)}</li>
-                ))}
+                {failure.problems.map((p, i) => {
+                  const { field, msg } = readFault(p)
+                  return (
+                    <li key={i}>
+                      {msg}
+                      {field && <span className="td-muted"> ({field})</span>}
+                    </li>
+                  )
+                })}
               </ul>
             )}
-            {failure.hint && <div style={{ marginTop: 4 }}>{failure.hint}</div>}
+            {failure.hint && (
+              <div style={{ marginTop: 4 }}
+                   // A locked CR account is not an ordinary validation note:
+                   // it stops every filing by that signatory until CR reinstates
+                   // it, and further attempts keep it locked.
+                   className={failure.kind === 'account_locked' ? 'f-strong' : undefined}>
+                {failure.kind === 'account_locked' && <b>Account locked. </b>}
+                {failure.hint}
+              </div>
+            )}
           </div>
         </div>
       )}

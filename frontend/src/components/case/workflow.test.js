@@ -194,3 +194,62 @@ describe('describeError — four failures, four different actions', () => {
     expect(d.retry).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// CR refusals. Three kinds, three remedies, three different places to go.
+// ---------------------------------------------------------------------------
+
+describe('describeError — CR refusals', () => {
+  const crError = (kind, problems = []) =>
+    Object.assign(new Error('The Companies Registry rejected this return.'), {
+      status: 502, kind, problems,
+    })
+
+  it('never offers a retry on any CR refusal', () => {
+    // CR locks accounts on repeated auth failures and a submit spends money.
+    for (const kind of ['validation', 'signature', 'account_locked', undefined]) {
+      expect(describeError(crError(kind)).retry).toBe(false)
+    }
+  })
+
+  it('sends a validation fault to the company profile', () => {
+    const d = describeError(crError('validation'))
+    expect(d.hint).toMatch(/company profile/i)
+    expect(d.hint).toMatch(/validation is free/i)
+  })
+
+  it('says a signature fault cannot be fixed by editing the return', () => {
+    const d = describeError(crError('signature'))
+    expect(d.hint).toMatch(/Editing the return will not fix this/i)
+    expect(d.hint).toMatch(/associated with THIS company/i)
+  })
+
+  it('tells the operator to STOP when the account is locked', () => {
+    // Advice they can act on. "Fix what it reported" is not actionable when
+    // the problem is that CR has disabled the account, and trying again is
+    // what keeps it locked.
+    const d = describeError(crError('account_locked'))
+    expect(d.hint).toMatch(/Do not try again/i)
+    expect(d.hint).toMatch(/contact CR/i)
+    expect(d.kind).toBe('account_locked')
+  })
+
+  it('falls back to a safe hint for an unlabelled 502', () => {
+    const d = describeError(crError(undefined))
+    expect(d.hint).toMatch(/do not simply retry/i)
+  })
+
+  it('carries every fault CR reported', () => {
+    const d = describeError(crError('validation', [
+      ['ERR_MSG_INVALID_DISTRICT', 'Please input valid District.'],
+      ['ERR_MSG_MANDATORY', 'Please check selectPersonId field.'],
+    ]))
+    expect(d.problems).toHaveLength(2)
+  })
+
+  it('still explains a shut CR window as a window, not a bad return', () => {
+    const d = describeError(Object.assign(new Error('unavailable'), { status: 503 }))
+    expect(d.hint).toMatch(/10:00–16:00/)
+    expect(d.retry).toBe(true)
+  })
+})

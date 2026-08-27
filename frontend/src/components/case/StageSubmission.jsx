@@ -72,6 +72,14 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
   }, [filingId])
 
   const sufficient = preflight?.sufficient
+  // Late = the computed fee is above the on-time one. Derived from the two
+  // numbers rather than from the band text, so it cannot drift if CR renames
+  // a band.
+  const isLate = Boolean(
+    preflight?.fee_is_certain &&
+    preflight?.on_time_fee != null &&
+    Number(preflight.fee) > Number(preflight.on_time_fee)
+  )
   const blocked = preflight === undefined || preflight === null || !sufficient
 
   async function submit() {
@@ -118,22 +126,39 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
              style={{ marginBottom: 14 }}>
           <span className="al-icon">{sufficient ? 'ℹ' : '⚠'}</span>
           <div className="al-body">
-            <b>Fee HK${preflight.fee} if filed on time</b>, against a deposit
-            balance of <b>HK${preflight.balance}</b>.{' '}
+            {/* The COMPUTED fee for this company's return date, not the flat
+                on-time figure. A return 7 months past its anniversary is
+                HK$2,610; quoting HK$105 for it told the operator something
+                that was not true and let the balance check pass a filing the
+                account could not cover. */}
+            <b>Fee HK${preflight.fee}</b>, against a deposit balance of{' '}
+            <b>HK${preflight.balance}</b>.{' '}
             {sufficient
               ? 'The balance covers this filing.'
-              : `The balance does not cover this filing — top up the deposit account before filing.`}
-            {/* The quoted fee is the ON-TIME one. CR decides the late-filing
-                tier and can charge far more: a return 7 months past its
-                anniversary was billed HK$2,610 against this HK$105 quote on
-                the test environment. Saying "Fee HK$105" full stop was telling
-                the operator something we do not know. */}
+              : 'The balance does not cover this filing — top up the deposit account before filing.'}
+
+            {/* The band and the return date it was measured from. An operator
+                can check those against the company record; they cannot check a
+                bare number. */}
+            {preflight.fee_is_certain && preflight.fee_detail?.return_date && (
+              <div style={{ marginTop: 6 }}>
+                {isLate
+                  ? <>This return is <b>late</b>: delivered {preflight.fee_detail.band},
+                      counted from its return date {preflight.fee_detail.return_date}
+                      {' '}(the anniversary of incorporation).</>
+                  : <>Delivered {preflight.fee_detail.band} — return date{' '}
+                      {preflight.fee_detail.return_date}.</>}
+              </div>
+            )}
+
+            {/* Not computable. Says why, and gates on the ceiling — being
+                optimistic here means failing at CR with the money half spent. */}
             {preflight.fee_is_certain === false && (
               <div style={{ marginTop: 6 }}>
-                A <b>late</b> annual return costs more — up to HK$
-                {preflight.max_fee}, and the Companies Registry decides which
-                tier applies. The exact charge appears on the receipt after
-                filing, and the balance above is checked against the maximum.
+                The exact fee could not be worked out
+                {preflight.fee_detail?.reason ? ` — ${preflight.fee_detail.reason}` : ''}.
+                The balance is checked against the highest it could be
+                (HK${preflight.max_fee}); the real charge appears on the receipt.
               </div>
             )}
           </div>
@@ -152,7 +177,12 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
           checked={acknowledged}
           disabled={!canSubmit || blocked || busy}
           onToggle={setAcknowledged}
-          title="I understand this files the return and charges the fee"
+          // Names the ACTUAL amount. "charges the fee" let someone acknowledge
+          // a HK$2,610 charge believing it was HK$105 — the tick is the record
+          // that they knew what was being spent.
+          title={preflight?.fee_is_certain
+            ? `I understand this files the return and charges HK$${preflight.fee}`
+            : 'I understand this files the return and charges the fee'}
           sub="The filing is made with the Companies Registry immediately and cannot be reversed."
         />
       </div>

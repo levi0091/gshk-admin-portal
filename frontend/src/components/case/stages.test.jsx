@@ -355,24 +355,69 @@ describe('Submission — e-Sign', () => {
     expect(await screen.findByText(/Fee HK\$105/)).toBeInTheDocument()
   })
 
-  it('does not present the on-time fee as THE fee', async () => {
-    // Measured against live CR: a return 7 months late was billed HK$2,610
-    // against a pre-flight that said "Fee HK$105". CR decides the tier, so the
-    // screen must say what it knows and no more.
-    renderIt()
-    expect(await screen.findByText(/Fee HK\$105.00 if filed on time/)).toBeInTheDocument()
-    expect(screen.getByText(/up to HK\$3480.00/)).toBeInTheDocument()
-    expect(screen.getByText(/Companies Registry decides which/)).toBeInTheDocument()
-  })
-
-  it('stays quiet about late fees when the fee IS certain', async () => {
+  const withPreflight = over => {
     get.mockImplementation(url => String(url).includes('/summary')
       ? Promise.resolve(FILING_SUMMARY)
-      : Promise.resolve({ fee: '105.00', max_fee: '105.00', fee_is_certain: true,
-                          balance: '12480', sufficient: true }))
+      : Promise.resolve({
+          fee: '105.00', on_time_fee: '105.00', max_fee: '3480.00',
+          fee_is_certain: true, balance: '12480', sufficient: true,
+          fee_detail: { amount: '105.00', band: 'within 42 days of the return date',
+                        return_date: '2026-08-01', days_after_deadline: -30,
+                        certain: true, reason: null },
+          ...over,
+        }))
+  }
+
+  it('quotes the COMPUTED fee for a late return, not the on-time one', async () => {
+    // Measured against live CR: a return 7 months late was billed HK$2,610
+    // while the pre-flight said "Fee HK$105".
+    withPreflight({
+      fee: '2610.00',
+      fee_detail: {
+        amount: '2610.00',
+        band: 'more than 6 months after but within 9 months of the return date',
+        return_date: '2026-01-01', days_after_deadline: 196,
+        certain: true, reason: null,
+      },
+    })
     renderIt()
-    await screen.findByText(/Fee HK\$105.00 if filed on time/)
-    expect(screen.queryByText(/decides which tier/)).not.toBeInTheDocument()
+    expect(await screen.findByText(/Fee HK\$2610.00/)).toBeInTheDocument()
+    expect(screen.getByText(/within 9 months of the return date/)).toBeInTheDocument()
+    expect(screen.getByText(/2026-01-01/)).toBeInTheDocument()
+    // "late" sits in its own <b>, so the sentence is split across elements —
+    // read the alert's text rather than hunting for one node.
+    expect(document.querySelector('.alert').textContent)
+      .toMatch(/This return is\s*late/)
+  })
+
+  it('the acknowledgement names the amount actually being spent', async () => {
+    // Ticking "charges the fee" while believing it is HK$105 is not consent to
+    // spend HK$2,610.
+    withPreflight({ fee: '2610.00' })
+    renderIt()
+    expect(await screen.findByRole('button',
+      { name: /charges HK\$2610\.00/ })).toBeInTheDocument()
+  })
+
+  it('does not call an on-time return late', async () => {
+    withPreflight()
+    renderIt()
+    await screen.findByText(/Fee HK\$105.00/)
+    expect(document.querySelector('.alert').textContent).not.toMatch(/is\s*late/)
+    expect(screen.getByText(/within 42 days of the return date/)).toBeInTheDocument()
+  })
+
+  it('says why the fee is unknown rather than quoting a number as fact', async () => {
+    withPreflight({
+      fee: '3480.00', fee_is_certain: false,
+      fee_detail: { amount: '3480.00', band: 'up to HK$3480.00', return_date: null,
+                    days_after_deadline: null, certain: false,
+                    reason: 'the incorporation date is required to work out the registration fee' },
+    })
+    renderIt()
+    expect(await screen.findByText(/could not be worked out/)).toBeInTheDocument()
+    expect(screen.getByText(/incorporation date is required/)).toBeInTheDocument()
+    expect(screen.getByText(/checked against the highest it could be/)).toBeInTheDocument()
   })
 
   it('summarises the FROZEN return, not the live company profile', async () => {

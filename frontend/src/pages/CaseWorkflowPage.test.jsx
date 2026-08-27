@@ -219,3 +219,60 @@ describe('CaseWorkflowPage — permissions gate the consequential controls', () 
     expect(await screen.findByRole('button', { name: /File the return/ })).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// CR refusals on the page itself. The banner is where an operator meets them.
+// ---------------------------------------------------------------------------
+
+describe('CaseWorkflowPage — CR refusals', () => {
+  const refuse = (kind, problems) => {
+    post.mockRejectedValue(Object.assign(
+      new Error('The Companies Registry rejected this return.'),
+      { status: 502, kind, problems },
+    ))
+  }
+
+  const validateFrom = async () => {
+    const user = userEvent.setup()
+    routeGet(caseAt({
+      form_status: { code: 'draft', failed: false, faults: [] },
+      filing_id: 'f1', signing_method: null,
+      workflow_status: { code: 'data_verification', label: 'Data Verification' },
+      aml_cleared: true, accounts_ready: true,
+    }))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText(/NAR-2026-0041/)
+    await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
+  }
+
+  it('renders CR faults as sentences, never as raw JSON', async () => {
+    // CR sends [code, message] PAIRS. JSON.stringify put
+    // ["ERR_MSG_INVALID_DISTRICT","Please input valid District."] on screen.
+    refuse('validation', [
+      ['ERR_MSG_INVALID_DISTRICT', 'Please input valid District.'],
+      ['ERR_MSG_MANDATORY', 'Please check selectPersonId field.'],
+    ])
+    await validateFrom()
+
+    expect(await screen.findByText('Please input valid District.')).toBeInTheDocument()
+    expect(screen.getByText('Please check selectPersonId field.')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('["ERR_MSG')
+    expect(document.body.textContent).not.toContain('[object Object]')
+  })
+
+  it('shouts when CR says the account is locked', async () => {
+    refuse('account_locked', [['ERR_MSG_USER_ACC_LOCKED', 'User account is locked.']])
+    await validateFrom()
+
+    expect(await screen.findByText(/Account locked\./)).toBeInTheDocument()
+    expect(screen.getByText(/Do not try again/i)).toBeInTheDocument()
+  })
+
+  it('does not tell someone to edit the form when the signature was refused', async () => {
+    refuse('signature', [['ERR_MSG_NO_ASSOCIATION', 'Signatory not associated.']])
+    await validateFrom()
+
+    expect(await screen.findByText(/Editing the return will not fix this/i))
+      .toBeInTheDocument()
+  })
+})
