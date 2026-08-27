@@ -136,7 +136,24 @@ describe('Data Verification', () => {
     const user = userEvent.setup()
     renderIt()
     await user.click(screen.getByRole('button', { name: /Restart verification/ }))
+    await user.click(screen.getByRole('button', { name: /Restart — back to Data Verification/ }))
     await waitFor(() => expect(patch).toHaveBeenCalledWith('/cases/c1', { restart_verification: true }))
+  })
+
+  it('asks before discarding a CR-signed snapshot', async () => {
+    // One click used to discard the snapshot, the client's approval and any
+    // signature taken since. The wireframe puts it behind a confirmation.
+    const user = userEvent.setup()
+    renderIt()
+    await user.click(screen.getByRole('button', { name: /Restart verification/ }))
+
+    expect(screen.getByRole('alertdialog', { name: 'Restart verification' }))
+      .toBeInTheDocument()
+    expect(patch).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(patch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })
 

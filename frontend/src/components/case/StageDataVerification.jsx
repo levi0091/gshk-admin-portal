@@ -21,6 +21,7 @@ import { describeError, isValidated } from './workflow.js'
 export default function StageDataVerification({ caseRow, canWrite, canValidate, onChanged, onError }) {
   const [busy, setBusy] = useState(null)
   const [failure, setFailure] = useState(null)
+  const [confirmRestart, setConfirmRestart] = useState(false)
 
   const validated = isValidated(caseRow)
   const faults = caseRow.form_status?.failed ? caseRow.form_status.faults : null
@@ -68,7 +69,7 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
   }
 
   async function restart() {
-    onError(null); setBusy('restart')
+    onError(null); setConfirmRestart(false); setBusy('restart')
     try {
       await api.patch(`/cases/${caseRow.id}`, { restart_verification: true })
       onChanged()
@@ -142,9 +143,39 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
                 </div>
                 <div className="ab-actions">
                   <button className="btn btn-outline" disabled={!canWrite || busy !== null}
-                          onClick={restart}>
+                          onClick={() => setConfirmRestart(true)}>
                     {busy === 'restart' ? 'Restarting…' : 'Restart verification'}
                   </button>
+                </div>
+              </div>
+            )}
+
+            {/* Restart discards a CR-SIGNED snapshot and clears every step
+                taken since — client verification and signatures included. On
+                the wireframe it is behind a confirmation for that reason, and
+                the shipped button did it on one click. */}
+            {confirmRestart && (
+              <div className="modal-confirm" role="alertdialog"
+                   aria-label="Restart verification">
+                <div className="modal-confirm-card">
+                  <div className="modal-confirm-title">
+                    Restart verification for {caseRow.case_no || 'this case'}?
+                  </div>
+                  <div className="modal-confirm-text">
+                    The case goes back to Data Verification. The CR-signed
+                    snapshot is discarded, and the client verification and any
+                    signature recorded against it are cleared. The client will
+                    have to approve the return again.
+                  </div>
+                  <div className="modal-confirm-actions">
+                    <button className="btn btn-outline"
+                            onClick={() => setConfirmRestart(false)}>
+                      Cancel
+                    </button>
+                    <button className="btn btn-danger" onClick={restart}>
+                      Restart — back to Data Verification
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
