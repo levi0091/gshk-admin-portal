@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
 import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
+import FilingSummaryCard from './FilingSummaryCard.jsx'
 import { describeError } from './workflow.js'
 
 /** CR's own receipt vocabulary — mirrors nar1_cases.RECEIPT_REQUIRED. */
@@ -88,6 +89,10 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
   }
 
   return (
+    <>
+      {/* What is actually being filed, before the charge is confirmed. */}
+      <FilingSummaryCard filingId={filingId} />
+
     <div className="card mb-16">
       <div className="card-hdr">
         <div>
@@ -162,6 +167,7 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
         </div>
       )}
     </div>
+    </>
   )
 }
 

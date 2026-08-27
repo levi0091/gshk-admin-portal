@@ -47,12 +47,30 @@ const RETURN_DATA = {
   problems: [],
 }
 
+//: GET /tpsi/filings/{id}/summary — the FROZEN return, read back out of the
+//: validated XML. Deliberately a DIFFERENT company name from RETURN_DATA
+//: above: the two endpoints answer different questions, and a fixture that
+//: made them identical could not tell whether the Submission card had been
+//: wired to the live profile by mistake.
+const FILING_SUMMARY = {
+  form_code: 'Nar1', stage: 'signed', has_schedule_1: true,
+  company_name: 'Harbour Tech Ltd.', br_number: '2100028', year: '2026',
+  registered_office: 'Unit 12A, Central, HKG',
+  directors: ['CHAN, TAI MAN'], secretaries: ['Get Started HK Limited'],
+  share_classes: [{ name: 'Ordinary', currency: 'HKD', total_issued: '100' }],
+  member_count: 2, members: ['CHAN, TAI MAN', 'WONG, MEI LING'],
+  signatory: { name: 'CHAN, TAI MAN', capacity: 'Director', date: '27/08/2026' },
+  signed_at: '2026-08-27T06:00:00Z',
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
-  get.mockImplementation(url => Promise.resolve(
-    String(url).includes('/return-data')
-      ? RETURN_DATA
-      : { fee: 105, balance: 12480, sufficient: true }))
+  get.mockImplementation(url => {
+    const u = String(url)
+    if (u.includes('/return-data')) return Promise.resolve(RETURN_DATA)
+    if (u.includes('/summary')) return Promise.resolve(FILING_SUMMARY)
+    return Promise.resolve({ fee: 105, balance: 12480, sufficient: true })
+  })
   post.mockResolvedValue({}); patch.mockResolvedValue({}); upload.mockResolvedValue({})
   blob.mockResolvedValue(new Blob(['%PDF'], { type: 'application/pdf' }))
   global.URL.createObjectURL = vi.fn(() => 'blob:preview')
@@ -333,6 +351,19 @@ describe('Submission — e-Sign', () => {
     renderIt()
     await waitFor(() => expect(get).toHaveBeenCalledWith('/tpsi/filings/f1/preview'))
     expect(await screen.findByText(/Fee HK\$105/)).toBeInTheDocument()
+  })
+
+  it('summarises the FROZEN return, not the live company profile', async () => {
+    // The last thing read before an irreversible charge must be what CR will
+    // actually receive. RETURN_DATA (the profile) and FILING_SUMMARY (the
+    // snapshot) carry different director names precisely so this can tell
+    // which one reached the screen.
+    renderIt()
+    await screen.findByText(/Final summary/)
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/tpsi/filings/f1/summary'))
+    expect(screen.getByText('CHAN, TAI MAN')).toBeInTheDocument()
+    expect(screen.queryByText('Chan Tai Man')).not.toBeInTheDocument()
+    expect(get).not.toHaveBeenCalledWith(expect.stringContaining('/return-data'))
   })
 
   it('BLOCKS filing when the deposit balance will not cover the fee', async () => {

@@ -18,7 +18,7 @@ from services import audit_events as ev
 from services import nar1_cases, nar1_pdf
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
-from services.tpsi.forms import nar1, nar1_mapper, nar1_source
+from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
 # Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
 # and services/nar1_cases.py needed it too — a service importing a router is
 # an inverted dependency. Imported here so `routers.tpsi.form_status` still
@@ -812,6 +812,52 @@ async def edrive_filing(
 class SubmitIn(BaseModel):
     deposit_account: str | None = None
     confirm: bool = False
+
+
+@router.get("/filings/{filing_id}/summary")
+async def filing_summary(
+    filing_id: str, user=Depends(require_permission("tpsi", "read"))
+):
+    """What is actually about to be filed — read back out of the frozen XML.
+
+    Deliberately NOT `/cases/{id}/return-data`. That reads the company profile
+    and answers "what would we build today?", which is right for Data
+    Verification. Submission is irreversible, and the thing submitted is the
+    snapshot: if the profile moved after validation, this still shows what CR
+    will receive, and the difference is the operator's cue to restart
+    verification rather than a surprise on the receipt.
+
+    No CR call, nothing charged. The presenter account is NOT included — it
+    stays a super-admin-only field (see `_deposit_account`).
+    """
+    try:
+        row = filings.get_filing(filing_id)
+    except Exception as exc:
+        raise _handle(exc)
+
+    # `validated_xml` is CR's OWN signed document and is what the submit sends;
+    # `request_xml` is only what we proposed. Prefer the signed copy so the
+    # summary shows what CR holds, and fall back only before validation.
+    form_xml = row.get("validated_xml") or row.get("request_xml")
+    if not form_xml:
+        raise HTTPException(409, "this filing has no form to summarise yet")
+
+    try:
+        summary = nar1_summary.summarise(form_xml)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+    return {
+        **summary,
+        "form_code": row["form_code"],
+        "stage": row.get("stage"),
+        "validated_at": row.get("validated_at"),
+        "signed_at": row.get("signed_at"),
+        # Which copy the rows above were read from. An operator confirming an
+        # irreversible charge should be able to tell "CR's signed document"
+        # from "what we were about to send".
+        "source": "validated_xml" if row.get("validated_xml") else "request_xml",
+    }
 
 
 @router.get("/filings/{filing_id}/preview")

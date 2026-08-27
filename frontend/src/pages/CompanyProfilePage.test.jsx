@@ -165,6 +165,86 @@ describe('CompanyProfilePage', () => {
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument()
   })
 
+  // -- Editing under a live case (wireframe_v11 "Edit conflicts with a live
+  // case"). Validation freezes a snapshot; an edit after it changes the
+  // profile ONLY, and the two then disagree silently.
+
+  const withLiveCase = (code = 'signing') => ({
+    ...CLIENT,
+    cases: {
+      nar1: [{ id: 'c1', case_no: 'NAR-2026-0041',
+               workflow_status: { code, label: 'Signing' } }],
+      nnc1: [],
+    },
+  })
+
+  const editName = async (user, value = 'Skyline Capital Management') => {
+    const infoCard = (await screen.findByText('Company Information')).closest('.card')
+    await user.click(within(infoCard).getByRole('button', { name: 'Edit' }))
+    const nameInput = screen.getByLabelText('Company Name')
+    await user.clear(nameInput)
+    await user.type(nameInput, value)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+  }
+
+  it('warns before saving an edit that a live case would stop matching', async () => {
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+
+    expect(screen.getByRole('alertdialog',
+      { name: 'Edit conflicts with a live case' })).toBeInTheDocument()
+    expect(screen.getByText(/NAR-2026-0041/)).toBeInTheDocument()
+    // and NOTHING has been written yet
+    expect(api.patch).not.toHaveBeenCalled()
+  })
+
+  it('cancelling the warning leaves the record untouched', async () => {
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+    await user.click(screen.getByRole('button', { name: 'Cancel edit' }))
+
+    expect(api.patch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('saves anyway when the operator overrides — the edit is allowed', async () => {
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/companies/e1',
+      { company_name: 'Skyline Capital Management' }))
+  })
+
+  it('does NOT warn when the only case is still at Data Verification', async () => {
+    // Nothing is frozen yet, so there is nothing to disagree with. Warning
+    // here would fire on every edit and stop being read.
+    const user = userEvent.setup()
+    mockGet(withLiveCase('data_verification'))
+    renderPage()
+    await editName(user)
+
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+  })
+
+  it('the Save button does not smuggle the click event in as an override', async () => {
+    // `onClick={saveEdit}` hands React's event object to the first parameter.
+    // With `saveEdit(force = false)` that event is truthy, so the guard would
+    // be bypassed on every save and never fire once.
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+    expect(api.patch).not.toHaveBeenCalled()
+  })
+
   it('renders an error state when the fetch fails', async () => {
     api.get.mockRejectedValue(new Error('boom'))
     renderPage()

@@ -109,8 +109,20 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           disabled={!canWrite || busy !== null}
           onToggle={v => patch('accounts_ready', v)}
           title="e-Reg accounts created"
-          sub="Every signatory holds an individual e-Filing account with the Companies Registry."
+          sub="Every signatory holds an individual e-Filing account with the Companies Registry, and CR has associated it with this company."
         />
+        {/* The wireframe's presentor note, without naming the account. Two
+            different CR identities meet on this screen and confusing them
+            wastes a filing window: GSHK's presenter account is what SUBMITS
+            and pays, and it is already configured — the tick above is about
+            the signatory's own e-Filing account, which is what CR checks
+            against `selectPersonId` when the return is signed. The presenter's
+            id and deposit account stay a super-admin-only field. */}
+        <div className="f-hint" style={{ padding: '10px 4px 2px' }}>
+          This is <b>not</b> GSHK's presenter account. That one submits the
+          return and pays the fee, and is already set up; this tick is about the
+          account the <b>signatory</b> signs with.
+        </div>
       </div>
 
       <div className="card mb-16">

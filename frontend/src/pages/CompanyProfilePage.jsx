@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
+import { liveCaseWarning } from '../lib/liveCase.js'
 import { formatDate } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 import StatusBadge from '../components/StatusBadge.jsx'
@@ -93,6 +94,9 @@ export default function CompanyProfilePage() {
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
   const [busy, setBusy] = useState(false)
+  //: The live-case warning, held until the operator decides. null = no
+  //: conflict, or already acknowledged.
+  const [conflict, setConflict] = useState(null)
   const [showUpload, setShowUpload] = useState(false)
   const [newCase, setNewCase] = useState(false)
   const { hasPermission, isSuperAdmin } = useAuth()
@@ -141,13 +145,29 @@ export default function CompanyProfilePage() {
     }
   }
 
-  async function saveEdit() {
-    setBusy(true)
-    // Send only fields that actually changed — the backend writes one audit
-    // entry per changed field, so sending untouched fields would be noise.
-    const changed = Object.fromEntries(
+  // Send only fields that actually changed — the backend writes one audit
+  // entry per changed field, so sending untouched fields would be noise.
+  function changedFields() {
+    return Object.fromEntries(
       Object.entries(draft).filter(([k, v]) => (company[k] ?? '') !== v && v !== '')
     )
+  }
+
+  //` force` is a PARAMETER, not a state flag: the override arrives by the
+  // operator pressing a button, and routing that through setState would have
+  // saveEdit re-enter before React had applied it.
+  async function saveEdit(force = false) {
+    // A case past Data Verification is holding a FROZEN snapshot of this data.
+    // The edit is allowed — the wireframe is explicit that it is — but the
+    // operator has to be told that the return already validated, sent to the
+    // client or filed with CR will no longer match this record.
+    const changed = changedFields()
+    if (!force && Object.keys(changed).length) {
+      const warning = liveCaseWarning(company)
+      if (warning) { setConflict(warning); return }
+    }
+    setConflict(null)
+    setBusy(true)
     try {
       if (Object.keys(changed).length) {
         await api.patch(`/companies/${companyId}`, changed)
@@ -249,7 +269,7 @@ export default function CompanyProfilePage() {
               {editing ? (
                 <div className="hdr-actions">
                   <button className="btn-edit" onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
-                  <button className="btn btn-primary btn-sm" onClick={saveEdit} disabled={busy}>
+                  <button className="btn btn-primary btn-sm" onClick={() => saveEdit()} disabled={busy}>
                     {busy ? 'Saving…' : 'Save'}
                   </button>
                 </div>
@@ -400,6 +420,27 @@ export default function CompanyProfilePage() {
           </div>
         )}
       </div>
+
+      {/* The edit is NOT blocked — the wireframe is explicit that the profile
+          changes and the case snapshot does not. What is required is that the
+          operator be told which return will stop matching this record. */}
+      {conflict && (
+        <div className="modal-confirm" role="alertdialog"
+             aria-label="Edit conflicts with a live case">
+          <div className="modal-confirm-card">
+            <div className="modal-confirm-title">{conflict.title}</div>
+            <div className="modal-confirm-text">{conflict.body}</div>
+            <div className="modal-confirm-actions">
+              <button className="btn btn-outline" onClick={() => setConflict(null)}>
+                Cancel edit
+              </button>
+              <button className="btn btn-danger" onClick={() => saveEdit(true)}>
+                Save anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -420,8 +420,14 @@ async def get_company(
     }
     # Cases pane only for client entities (§6 visibility).
     if entity.get("is_client"):
+        # `nar1_case_registry` (024) rather than the raw table: it carries
+        # `workflow_status` and `filing_stage`, so the profile can tell whether
+        # a case has FROZEN A SNAPSHOT of this company's data. Editing under a
+        # live case leaves the profile and the validated return disagreeing,
+        # and the raw rows cannot see that — they know nothing about filings.
         nar1, nnc1 = await asyncio.gather(
-            q(lambda: (sb.table("nar1_cases").select("*").eq("entity_id", company_id).execute().data) or []),
+            q(lambda: (sb.table("nar1_case_registry").select("*")
+                       .eq("entity_id", company_id).execute().data) or []),
             q(lambda: (sb.table("nnc1_cases").select("*").eq("entity_id", company_id).execute().data) or []),
         )
         result["cases"] = {"nar1": nar1, "nnc1": nnc1}

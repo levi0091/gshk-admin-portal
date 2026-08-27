@@ -1261,3 +1261,123 @@ def test_prepare_still_allows_a_case_with_a_live_draft(client):
                                json={"entity_id": "e1", "nar1_case_id": "c1"})
     assert response.status_code == 201
     p["create"].assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# GET /tpsi/filings/{id}/summary — the Submission stage's "what am I filing?"
+# ---------------------------------------------------------------------------
+
+_SUMMARY_FRAGMENT = (
+    "<cr:compNameE>Harbour Tech Ltd.</cr:compNameE>"
+    "<cr:brNo>2100028</cr:brNo>"
+    "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"
+)
+
+
+def _filing(**over):
+    row = {"id": "f1", "form_code": "Nar1", "stage": "validated",
+           "request_xml": None, "validated_xml": None,
+           "validated_at": None, "signed_at": None}
+    row.update(over)
+    return row
+
+
+def test_summary_prefers_CRs_signed_document_over_what_we_proposed(client):
+    """`validated_xml` is CR's own signed copy and is what a submit sends;
+    `request_xml` is only the proposal. Summarising the proposal in front of an
+    irreversible charge would show a return CR may have altered."""
+    row = _filing(
+        request_xml="<cr:compNameE>Stale Ltd.</cr:compNameE>",
+        validated_xml=_SUMMARY_FRAGMENT,
+        validated_at="2026-08-27T05:06:31Z",
+    )
+    with _super(), patch("routers.tpsi.filings.get_filing", return_value=row):
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["company_name"] == "Harbour Tech Ltd."
+    assert body["source"] == "validated_xml"
+
+
+def test_summary_falls_back_to_the_request_before_validation(client):
+    row = _filing(request_xml=_SUMMARY_FRAGMENT, stage="draft")
+    with _super(), patch("routers.tpsi.filings.get_filing", return_value=row):
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "request_xml"
+
+
+def test_summary_parses_CRs_xmldsig_signature_block(client):
+    """The signed copy carries a <ds:Signature> whose prefix is never declared
+    either. Missing that declaration fails at the byte the signature starts —
+    which reads like corruption rather than a missing xmlns."""
+    signed = (
+        "<cr:submission><cr:EForm><cr:formModel>"
+        + _SUMMARY_FRAGMENT +
+        "</cr:formModel></cr:EForm>"
+        '<ds:Signature id="CR"><ds:SignedInfo>'
+        '<ds:SignatureMethod Algorithm="rsa-sha256"/>'
+        "</ds:SignedInfo><ds:SignatureValue>AAA=</ds:SignatureValue>"
+        "</ds:Signature></cr:submission>"
+    )
+    row = _filing(validated_xml=signed)
+    with _super(), patch("routers.tpsi.filings.get_filing", return_value=row):
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+
+    assert response.status_code == 200
+    assert response.json()["company_name"] == "Harbour Tech Ltd."
+
+
+def test_summary_409s_when_there_is_no_form_at_all(client):
+    with _super(), patch("routers.tpsi.filings.get_filing", return_value=_filing()):
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+    assert response.status_code == 409
+
+
+def test_summary_422s_on_unparseable_xml_rather_than_blanking_every_row(client):
+    row = _filing(validated_xml="<cr:compNameE>unclosed")
+    with _super(), patch("routers.tpsi.filings.get_filing", return_value=row):
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+    assert response.status_code == 422
+
+
+def test_summary_never_leaks_the_presenter_or_deposit_account(client):
+    """Those stay a super-admin-only field. The summary is a `tpsi:read`."""
+    row = _filing(
+        validated_xml=_SUMMARY_FRAGMENT,
+        presenter_user_id="u-secret", presentor_account_id="N00108070000",
+    )
+    with _super(), patch("routers.tpsi.filings.get_filing", return_value=row):
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+
+    assert response.status_code == 200
+    assert "N00108070000" not in response.text
+    assert "presentor_account_id" not in response.text
+    assert "presenter_user_id" not in response.text
+
+
+def test_summary_is_refused_without_tpsi_read(client):
+    # Mocked at middleware.auth.get_supabase, never the live client: reaching
+    # the real one makes a bad key surface as a 500 instead of a 403, which is
+    # how two auth tests passed locally and failed in CI for weeks.
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        # role_permissions query returns no rows -> insufficient
+        (msb.return_value.table.return_value.select.return_value
+         .eq.return_value.eq.return_value.execute.return_value.data) = []
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+    assert response.status_code == 403
+
+
+def test_summary_makes_no_CR_call(client):
+    """It reads a stored column. A CR call here would put a network dependency
+    — and outside 10:00-16:00 HKT, a failure — in front of the summary."""
+    row = _filing(validated_xml=_SUMMARY_FRAGMENT)
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.client_for",
+               side_effect=AssertionError("summary must not authenticate to CR")):
+        response = client.get("/tpsi/filings/f1/summary", headers=H)
+    assert response.status_code == 200
