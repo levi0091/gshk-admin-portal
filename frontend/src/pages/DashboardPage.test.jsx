@@ -49,6 +49,7 @@ const PAYLOAD = {
       case_status: 'live', filing_stage: 'draft',
       workflow_status: badge('data_verification', 'Data Verification'),
       days_to_anniversary: -12, created_at: '2023-08-01', updated_at: '2026-06-26',
+      created_by: 'u1', created_by_name: 'Levi Z.',
     },
     {
       id: 'c2', case_no: 'NAR-2026-0028', entity_id: 'e1',
@@ -56,6 +57,7 @@ const PAYLOAD = {
       case_status: 'live', filing_stage: null,
       workflow_status: badge('data_verification', 'Data Verification'),
       days_to_anniversary: 47, created_at: '2023-08-01', updated_at: '2026-06-26',
+      created_by: 'u2', created_by_name: 'Brian Yiu',
     },
     {
       id: 'c3', case_no: 'NAR-2026-0031', entity_id: 'e2',
@@ -63,6 +65,8 @@ const PAYLOAD = {
       case_status: 'live', filing_stage: 'validated',
       workflow_status: badge('awaiting_client', 'Awaiting Client'),
       days_to_anniversary: 34, created_at: '2024-05-02', updated_at: '2026-06-25',
+      // Opened before migration 021 added the column.
+      created_by: null, created_by_name: null,
     },
   ],
 }
@@ -228,6 +232,33 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     await user.click(screen.getByRole('columnheader', { name: 'Entity ID' }))
     await user.click(screen.getByRole('columnheader', { name: 'Case Type' }))
     expect(api.get.mock.calls.some(c => /sort=(entity_id|case_type)/.test(c[0]))).toBe(false)
+  })
+
+  it('shows who opened each case', async () => {
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.getByText('Levi Z.')).toBeInTheDocument()
+    expect(screen.getByText('Brian Yiu')).toBeInTheDocument()
+  })
+
+  it('shows an em dash, not the reader, for a case with no recorded author', async () => {
+    // Cases opened before migration 021 added the column carry no author.
+    // Falling back to the current user would be a lie about who opened it.
+    renderPage()
+    const row = (await screen.findByText('NAR-2026-0031')).closest('tr')
+    expect(within(row).getByText('—')).toBeInTheDocument()
+  })
+
+  it('sorts by the author\'s name, not by their uuid', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('columnheader', { name: /Created By/ }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(c => c[0].includes('sort=created_by_name')))
+        .toBe(true)
+    })
+    expect(api.get.mock.calls.some(c => /sort=created_by(&|$)/.test(c[0]))).toBe(false)
   })
 
   it('says plainly that pre-incorporation is not built rather than showing an empty table', async () => {

@@ -35,7 +35,11 @@ The G-FlowDesk Admin Portal — a ZenexFlow-built internal tool for GSHK's data 
 | Frontend testing | Vitest + React Testing Library | Every React component/hook ships with tests |
 | Database | Supabase (PostgreSQL) | Auth via Supabase Auth (email/password) |
 | DB Migrations | Alembic | All schema changes via Alembic migrations — never edit schema manually |
-| Email | **Resend** | Transactional emails — client verification, notifications. Sends from **`no-reply@getstarted.hk`** via the client's Resend account (`getstarted.hk` is a domain GSHK controls; verify SPF/DKIM in Resend). `RESEND_API_KEY` live. Levi 2026-08-16. |
+| Email | **Resend** | Transactional emails — client verification, notifications. Sends from **`no-reply@getstarted.hk`** via the client's Resend account (`getstarted.hk` is a domain GSHK controls; verify SPF/DKIM in Resend). Levi 2026-08-16. **The key in `.env` is currently REJECTED by Resend ("API key is invalid"), so no mail leaves the portal** — see `EMAIL_TRANSPORT` below. |
+
+> **`EMAIL_TRANSPORT=console` (2026-08-28).** Stubs mail out entirely: the message goes to stderr and *nothing is delivered*. It exists because the whole client-facing half of the NAR1 workflow is otherwise unreachable — `verification_sent_at` is only stamped after a successful send, so with Resend down no case can be driven to Awaiting Client, Signing or Submission. It must be asked for by name (no default, never inferred from a missing key), it is **refused outright when `APP_ENV=prod`**, every send it makes is audited with `transport: "console"`, and the Client Verification screen says in as many words that nothing was delivered. Remove it the moment Resend works.
+>
+> One verification email goes to **every current director** with an address on record (`nar1_cases.default_recipients`), not to a single contact. Directors with no address are still returned, carrying the reason, so a three-director board can never render as a two-director board.
 | AI | Claude API | Called from Railway backend only — never from frontend |
 
 ### URLs

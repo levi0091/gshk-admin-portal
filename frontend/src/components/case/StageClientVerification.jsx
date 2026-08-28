@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
 import CheckRow from './CheckRow.jsx'
+import RecipientPicker from './RecipientPicker.jsx'
 import { describeError } from './workflow.js'
 
 /**
@@ -18,14 +19,38 @@ import { describeError } from './workflow.js'
  */
 export default function StageClientVerification({ caseRow, canWrite, onChanged, onError }) {
   const [reviewed, setReviewed] = useState(false)
-  const [to, setTo] = useState('')
   const [busy, setBusy] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
   const [pdfError, setPdfError] = useState(null)
+  const [recipients, setRecipients] = useState([])
+  const [to, setTo] = useState(null)
+  const [maxRecipients, setMaxRecipients] = useState(20)
+  const [stubbed, setStubbed] = useState(false)
 
   const filingId = caseRow.filing_id
   const sent = Boolean(caseRow.verification_sent_at)
   const answered = Boolean(caseRow.client_response_at)
+  const caseId = caseRow.id
+
+  // Who this goes to unless the operator says otherwise. `to` stays null until
+  // this lands, so an empty chip row cannot be mistaken for "the operator
+  // cleared every director" while the list is still loading — the send button
+  // is gated on that distinction.
+  useEffect(() => {
+    let cancelled = false
+    api.get(`/cases/${caseId}/verification/recipients`)
+      .then(r => {
+        if (cancelled) return
+        setRecipients(r.recipients || [])
+        setTo(r.default_to || [])
+        if (r.max_recipients) setMaxRecipients(r.max_recipients)
+      })
+      .catch(e => { if (!cancelled) onError(describeError(e)) })
+    return () => { cancelled = true }
+    // onError is recreated per render by the parent; depending on it here would
+    // refetch the recipient list on every keystroke elsewhere on the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseId])
 
   // The PDF is fetched as a blob so the bearer token is not put in a URL. The
   // object URL is revoked on unmount; leaving it leaks the whole document.
@@ -49,8 +74,15 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   async function send() {
     onError(null); setBusy('send')
     try {
-      await api.post(`/cases/${caseRow.id}/verification/send`,
-                     to.trim() ? { to: to.trim() } : {})
+      // Always explicit, never `{}`. The chips on screen are what the operator
+      // agreed to send to; letting the server re-derive the list would mail a
+      // director they had just removed, and the two answers can differ the
+      // moment someone edits the company in another tab.
+      const result = await api.post(`/cases/${caseRow.id}/verification/send`, { to })
+      // The case is now marked sent either way, so the ONE place this can be
+      // said is here. Saying nothing would leave an operator believing three
+      // directors were emailed when the deployment delivered nothing.
+      setStubbed(result?.transport === 'console')
       onChanged()
     } catch (e) {
       onError(describeError(e))
@@ -121,6 +153,18 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
 
+        {stubbed && (
+          <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
+            <span className="al-icon">⚠</span>
+            <div className="al-body">
+              <b>Nothing was actually delivered.</b> This deployment has mail
+              stubbed out (<code>EMAIL_TRANSPORT=console</code>), so the case is
+              marked sent but no recipient received the return. Tell the client
+              another way, or configure Resend.
+            </div>
+          </div>
+        )}
+
         {/* The tick gates the send (R-5): an unread return going to a client
             over GSHK's name is the mistake this exists to slow down. */}
         <CheckRow
@@ -131,24 +175,21 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           sub="Check the particulars above before it goes to the client."
         />
 
-        <div className="f-group" style={{ marginTop: 12 }}>
-          <label className="f-label" htmlFor="cv-to">Send to</label>
-          <input id="cv-to" className="f-input" value={to} disabled={!canWrite}
-                 placeholder="Leave blank to use the address on record"
-                 onChange={e => setTo(e.target.value)} />
-          <span className="f-hint">
-            Overrides the client contact held against this company, for this send only.
-          </span>
-        </div>
-
         {canWrite && (
           <div className="action-bar">
             <div className="ab-note">
-              {reviewed ? 'The return will be attached as a PDF.'
-                        : 'Confirm you have reviewed the return to enable sending.'}
+              {!reviewed
+                ? 'Confirm you have reviewed the return to enable sending.'
+                : to === null
+                  ? 'Loading the recipients…'
+                  : to.length === 0
+                    ? 'Add at least one recipient below.'
+                    : `The return will be attached as a PDF, to ${to.length} `
+                      + `recipient${to.length === 1 ? '' : 's'}.`}
             </div>
             <div className="ab-actions">
-              <button className="btn btn-action" disabled={!reviewed || busy !== null}
+              <button className="btn btn-action"
+                      disabled={!reviewed || busy !== null || !to || to.length === 0}
                       onClick={send}>
                 {busy === 'send' ? 'Sending…' : sent ? 'Send again' : 'Send to client'}
               </button>
@@ -156,6 +197,17 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
       </div>
+
+      {/* Below the send card on purpose: the tick above is about the RETURN,
+          this is about the ADDRESSES, and merging them into one control would
+          let a single click assert both. */}
+      <RecipientPicker
+        recipients={recipients}
+        to={to || []}
+        onChange={setTo}
+        disabled={!canWrite || busy !== null || to === null}
+        maxRecipients={maxRecipients}
+      />
 
       <div className="card mb-16">
         <div className="card-hdr">

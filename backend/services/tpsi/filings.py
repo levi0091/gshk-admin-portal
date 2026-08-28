@@ -113,6 +113,35 @@ def get_filing(filing_id: str) -> dict:
     return rows[0]
 
 
+def supersede(filing_id: str) -> bool:
+    """Retire an attempt CR has not filed. Returns whether a row moved.
+
+    THE STAGE NOTHING EVER WROTE. `STAGE_SUPERSEDED` has existed since this
+    module was written and `current_filing()` has always excluded it, but no
+    caller ever set it — which is the defect migration 024's docstring records,
+    and the reason `Restart verification` promised to discard the CR-signed
+    snapshot and then left it in place. An operator who corrected the company
+    details and restarted would re-send the client, and file, CR's OLD signed
+    XML: the exact "show one document, file another" failure the verification
+    gate exists to prevent.
+
+    Conditional on the stage IN THE UPDATE, not read-then-written: a submit
+    landing between a read and a write would otherwise be retired here, and the
+    case would show no filing while CR held a registered return. The filter
+    below can only ever match a row that is still un-filed at the moment
+    Postgres applies it.
+    """
+    rows = (
+        get_supabase().table(_TABLE)
+        .update({"stage": STAGE_SUPERSEDED})
+        .eq("id", filing_id)
+        .not_.in_("stage", list(TERMINAL_STAGES))
+        .execute()
+        .data
+    )
+    return bool(rows)
+
+
 def create_filing(
     *,
     entity_id: str,

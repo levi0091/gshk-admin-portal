@@ -35,6 +35,9 @@ def _env(monkeypatch):
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
     monkeypatch.delenv("VERIFICATION_FROM", raising=False)
+    # A developer .env that stubs mail out would otherwise make every send test
+    # in this file return before httpx is reached — green, and proving nothing.
+    monkeypatch.delenv("EMAIL_TRANSPORT", raising=False)
     monkeypatch.setattr(email_service.httpx, "post", _refuse)
     email_service.get_email_config.cache_clear()
     yield
@@ -109,8 +112,9 @@ def test_the_result_reports_the_message_id_and_the_delivered_address():
     with _post():
         result = email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
     assert result["id"] == "msg_1"
-    assert result["to"] == "c@example.com"
-    assert result["intended_to"] == "c@example.com"
+    # Lists, always — a caller must not have to guess the shape from the count.
+    assert result["to"] == ["c@example.com"]
+    assert result["intended_to"] == ["c@example.com"]
     assert result["redirected"] is False
 
 
@@ -222,8 +226,8 @@ def test_the_redirect_replaces_the_recipient_and_says_who_it_was_for(monkeypatch
     assert payload["to"] == ["levi@zenexflow.com"]
     assert "realclient@example.com" in payload["subject"]
     assert "realclient@example.com" in payload["html"]
-    assert result["to"] == "levi@zenexflow.com"
-    assert result["intended_to"] == "realclient@example.com"
+    assert result["to"] == ["levi@zenexflow.com"]
+    assert result["intended_to"] == ["realclient@example.com"]
     assert result["redirected"] is True
 
 
@@ -277,3 +281,115 @@ def test_a_missing_company_name_does_not_render_the_word_none():
     subject, html = email_service.verification_email({}, {})
     assert "None" not in subject
     assert "None" not in html
+
+
+# ---------------------------------------------------------------------------
+# Several recipients on one message
+# ---------------------------------------------------------------------------
+
+
+def test_a_list_of_recipients_becomes_one_message_not_several():
+    """Three directors get ONE email with three addresses on it. Three separate
+    sends would break the thread the client replies into, and one Resend failure
+    would leave two directors informed and the third not."""
+    with _post() as post:
+        result = email_service.send(
+            to=["a@example.com", "b@example.com", "c@example.com"],
+            subject="S", html="<p>H</p>")
+    assert post.call_count == 1
+    assert post.call_args.kwargs["json"]["to"] == [
+        "a@example.com", "b@example.com", "c@example.com"]
+    assert result["to"] == ["a@example.com", "b@example.com", "c@example.com"]
+
+
+def test_a_bare_string_recipient_still_works():
+    """The signature this module shipped with. A caller that sends one address
+    is not wrong."""
+    with _post() as post:
+        email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
+    assert post.call_args.kwargs["json"]["to"] == ["c@example.com"]
+
+
+def test_an_empty_recipient_list_is_refused_before_the_http_call():
+    """Resend would answer 422 — a round trip spent learning something already
+    knowable here."""
+    with patch("services.email_service.httpx.post") as post:
+        with pytest.raises(email_service.EmailError):
+            email_service.send(to=[], subject="S", html="<p>H</p>")
+    post.assert_not_called()
+
+
+def test_a_redirect_names_every_intended_recipient(monkeypatch):
+    """A redirected copy that named only the first recipient would hide exactly
+    the fan-out being tested."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("EMAIL_REDIRECT_TO", "levi@zenexflow.com")
+    email_service.get_email_config.cache_clear()
+    with _post() as post:
+        result = email_service.send(to=["one@example.com", "two@example.com"],
+                                    subject="Confirm", html="<p>H</p>")
+    payload = post.call_args.kwargs["json"]
+    assert payload["to"] == ["levi@zenexflow.com"]
+    assert "one@example.com" in payload["subject"]
+    assert "two@example.com" in payload["subject"]
+    assert "two@example.com" in payload["html"]
+    assert result["intended_to"] == ["one@example.com", "two@example.com"]
+    assert result["redirected"] is True
+
+
+# ---------------------------------------------------------------------------
+# EMAIL_TRANSPORT=console — the stub, and the guards that keep it off PROD
+# ---------------------------------------------------------------------------
+
+
+def test_the_console_transport_delivers_nothing(monkeypatch, capsys):
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("EMAIL_TRANSPORT", "console")
+    email_service.get_email_config.cache_clear()
+    with patch("services.email_service.httpx.post") as post:
+        result = email_service.send(to=["a@example.com", "b@example.com"],
+                                    subject="Confirm", html="<p>H</p>")
+    post.assert_not_called()
+    assert result["transport"] == "console"
+    assert result["to"] == ["a@example.com", "b@example.com"]
+    assert "NOT SENT" in capsys.readouterr().err
+
+
+def test_the_console_transport_needs_no_api_key(monkeypatch):
+    """It is the configuration this exists FOR: Resend unusable, and the
+    workflow still has to be drivable."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("EMAIL_TRANSPORT", "console")
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    email_service.get_email_config.cache_clear()
+    result = email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
+    assert result["transport"] == "console"
+
+
+def test_production_refuses_the_console_transport(monkeypatch):
+    """The worst outcome this module can produce: every client silently
+    receiving nothing while the portal reports each send as successful."""
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("EMAIL_TRANSPORT", "console")
+    email_service.get_email_config.cache_clear()
+    with patch("services.email_service.httpx.post") as post:
+        with pytest.raises(RuntimeError, match="EMAIL_TRANSPORT"):
+            email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
+    post.assert_not_called()
+
+
+def test_a_real_send_is_never_labelled_as_stubbed():
+    """The mutation that would make the flag meaningless."""
+    with _post():
+        result = email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
+    assert result.get("transport", "resend") != "console"
+
+
+def test_an_unknown_transport_is_refused_rather_than_assumed(monkeypatch):
+    """A typo'd EMAIL_TRANSPORT must not quietly fall back to sending, nor to
+    not sending. Either guess is wrong in a way nobody would notice."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("EMAIL_TRANSPORT", "smtp")
+    email_service.get_email_config.cache_clear()
+    with pytest.raises(RuntimeError, match="EMAIL_TRANSPORT"):
+        email_service.send(to="a@example.com", subject="S", html="<p>H</p>")

@@ -17,6 +17,7 @@ from services import (
     nar1_cases, nar1_pdf, nar1_return_data,
 )
 from services.audit_service import log_event
+from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms import nar1_source
 
 router = APIRouter()
@@ -234,29 +235,46 @@ async def patch_case(
         events.append((ev.CASE_FIELD_UPDATED, "assigned_to",
                        before.get("assigned_to"), body.assigned_to))
 
-    if body.restart_verification and any(
-        before.get(field) is not None
-        for field in ("verification_sent_at", "client_approved",
-                      "client_response_at")
-    ):
-        # Guarded, because audit_log is insert-only: restarting a case that was
-        # never sent for verification changes nothing, and writing
-        # CASE_STATUS_CHANGED anyway puts a status transition in a permanent
-        # trail that did not happen. Every other branch in this handler already
-        # compares against `before` before recording; this one did not.
+    if body.restart_verification:
+        # THE SNAPSHOT GOES TOO. The confirmation the operator clicks through
+        # says "The case goes back to Data Verification. The CR-signed snapshot
+        # is discarded" — and until this line existed, only the client-side
+        # fields were cleared. The filing stayed at 'validated', so the case
+        # landed back on CLIENT Verification holding CR's OLD signed XML, and
+        # the next send mailed the client a return whose particulars had just
+        # been corrected. That is precisely the "show one document, file
+        # another" failure the verification gate exists to prevent.
         #
-        # All three cleared together, or the case reads as still-approved on
-        # the next GET and jumps straight back to Signing.
-        patch["verification_sent_at"] = None
-        patch["client_approved"] = None
-        patch["client_response_at"] = None
-        events.append((ev.CASE_STATUS_CHANGED, "verification",
-                       "sent", "restarted"))
+        # A filing CR already holds is left alone: `supersede()` filters on the
+        # stage inside the UPDATE and returns False for it. Restarting cannot
+        # un-file a return, and pretending otherwise would hide a registered
+        # filing behind a fresh draft.
+        filing = nar1_cases.current_filing(case_id)
+        if filing and tpsi_filings.supersede(filing["id"]):
+            events.append((ev.CASE_STATUS_CHANGED, "filing",
+                           filing.get("stage"), "superseded"))
 
-    if not patch:
+        if any(before.get(field) is not None
+               for field in ("verification_sent_at", "client_approved",
+                             "client_response_at")):
+            # Guarded, because audit_log is insert-only: restarting a case that
+            # was never sent for verification changes nothing, and writing
+            # CASE_STATUS_CHANGED anyway puts a status transition in a permanent
+            # trail that did not happen.
+            #
+            # All three cleared together, or the case reads as still-approved on
+            # the next GET and jumps straight back to Signing.
+            patch["verification_sent_at"] = None
+            patch["client_approved"] = None
+            patch["client_response_at"] = None
+            events.append((ev.CASE_STATUS_CHANGED, "verification",
+                           "sent", "restarted"))
+
+    if not patch and not events:
         return nar1_cases.composite(case_id)
 
-    nar1_cases.update_case(case_id, patch)
+    if patch:
+        nar1_cases.update_case(case_id, patch)
     for action, field, old, new in events:
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],
@@ -528,9 +546,61 @@ def _verification_gate(case: dict, filing: dict | None) -> str | None:
     return None
 
 
+#: One message, this many recipients at most. Resend's own ceiling is 50; the
+#: lower bound here is about the return rather than the transport -- a NAR1
+#: carries directors' residential addresses and identity numbers, and a
+#: twenty-address send is a mistake long before it is a limit.
+MAX_RECIPIENTS = 20
+
+
 class VerificationSendIn(BaseModel):
-    #: Overrides the address on record. Optional.
-    to: str | None = None
+    """Who this send goes to.
+
+    A list, because a board of three directors is three recipients on ONE
+    message. A bare string is still accepted: it is what the route shipped with,
+    and a caller that sends one is not wrong.
+
+    Absent (None) means "whoever the company's directors are" -- resolved at
+    send time, not by the client. An empty LIST is not the same thing and is
+    refused: it says the operator cleared every chip, and mailing the directors
+    anyway would send a statutory return to people they had just removed.
+    """
+    to: list[str] | str | None = None
+
+
+@router.get("/{case_id}/verification/recipients")
+async def verification_recipients(
+    case_id: str, user=Depends(require_permission("nar1", "read")),
+):
+    """Who this case's verification email goes to unless the operator says
+    otherwise: every current director, and the company address behind them.
+
+    Directors with NO address are returned too, each carrying the reason. The
+    send screen shows them greyed rather than omitting them — a three-director
+    board that renders two chips must not look like a two-director board.
+
+    `nar1:read`, not `write`: this only says who would be mailed. Read-only, so
+    nothing is audited.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    recipients = nar1_cases.default_recipients(case["entity_id"])
+    company_email = nar1_cases.recipient_email(case["entity_id"])
+    default_to = [r["email"] for r in recipients if r["email"]]
+    # Same fallback the send route applies, computed in one place so the screen
+    # cannot promise one set of addresses and the send use another.
+    if not default_to and company_email:
+        default_to = [company_email]
+
+    return {
+        "recipients": recipients,
+        "company_email": company_email,
+        "default_to": default_to,
+        "max_recipients": MAX_RECIPIENTS,
+    }
 
 
 @router.post("/{case_id}/verification/send")
@@ -556,17 +626,46 @@ async def send_verification(
         raise HTTPException(409, refusal)
 
     if body.to is not None:
-        # The override directs a document carrying directors' residential
-        # addresses and identity numbers. Free text is not an address.
-        if not _ADDRESS.match(body.to.strip()):
-            raise HTTPException(422, f"not an email address: {body.to!r}")
-        recipient = body.to.strip()
-    else:
-        recipient = nar1_cases.recipient_email(case["entity_id"])
-        if not recipient:
+        given = [body.to] if isinstance(body.to, str) else list(body.to)
+        # Refused, not quietly turned back into "the directors" — see
+        # VerificationSendIn. An operator who removed every chip did so on
+        # purpose, and the alternative is mailing the people they just took off.
+        if not given:
             raise HTTPException(
-                409, "no email address is on record for this company; supply "
-                     "one explicitly to send the verification")
+                422, "no recipient was given; add at least one address, or omit "
+                     "'to' to use the directors on record")
+        if len(given) > MAX_RECIPIENTS:
+            raise HTTPException(
+                422, f"{len(given)} recipients is more than one verification "
+                     f"email should carry (limit {MAX_RECIPIENTS})")
+        recipients = []
+        seen = set()
+        for address in given:
+            address = (address or "").strip()
+            # These direct a document carrying directors' residential addresses
+            # and identity numbers. Free text is not an address.
+            if not _ADDRESS.match(address):
+                raise HTTPException(422, f"not an email address: {address!r}")
+            # Case-insensitively deduped: two chips differing only in case are
+            # one mailbox, and Resend would deliver the return to it twice.
+            if address.lower() in seen:
+                continue
+            seen.add(address.lower())
+            recipients.append(address)
+    else:
+        # Every current director with an address — the people whose particulars
+        # this return declares. The company contact is the fallback for a
+        # company whose directors carry no address at all, which is most of the
+        # ETL'd book.
+        recipients = [r["email"] for r in
+                      nar1_cases.default_recipients(case["entity_id"]) if r["email"]]
+        if not recipients:
+            fallback = nar1_cases.recipient_email(case["entity_id"])
+            recipients = [fallback] if fallback else []
+        if not recipients:
+            raise HTTPException(
+                409, "no email address is on record for this company or its "
+                     "directors; supply one explicitly to send the verification")
 
     entity = nar1_cases.entity_for(case["entity_id"])
 
@@ -594,7 +693,7 @@ async def send_verification(
         # the whole worker for 15 seconds rather than this one request.
         sent = await asyncio.to_thread(
             email_service.send,
-            to=recipient, subject=subject, html=html,
+            to=recipients, subject=subject, html=html,
             attachments=[(f"NAR1-{case.get('case_no') or case_id}.pdf", pdf)],
         )
     except email_service.EmailError as exc:
@@ -621,17 +720,29 @@ async def send_verification(
 
     nar1_cases.update_case(case_id, patch)
 
+    delivered = sent.get("to") or recipients
+    intended = sent.get("intended_to") or recipients
+
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.EMAIL_SENT, event_code=ev.EMAIL_SENT,
         **_audit_target(case),
-        new_value=sent.get("to") or recipient,
+        # Joined, because the trail renders `new_value` as text. EVERY address
+        # is named: "who was told" is the fact this row exists to keep, and a
+        # trail that recorded only the first of three directors would be worse
+        # than one that recorded none -- it would look complete.
+        new_value=", ".join(delivered),
         # Identifiers only. The PDF is the whole statutory return; its bytes
         # belong on the filing row, not in an insert-only trail -- and
         # after_state is NOT scrubbed by audit_service.
         metadata={"message_id": sent.get("id"),
-                  "intended_to": sent.get("intended_to", recipient),
+                  "intended_to": intended,
+                  "recipient_count": len(intended),
                   "redirected": bool(sent.get("redirected")),
+                  # 'console' means NOTHING WAS DELIVERED — the send was stubbed
+                  # because Resend is not usable yet. Recorded so an EMAIL_SENT
+                  # row can never be read as proof a client was told.
+                  "transport": sent.get("transport", "resend"),
                   "case_no": case.get("case_no")},
     )
 
@@ -648,8 +759,9 @@ async def send_verification(
                                 "previous client answer"},
         )
 
-    return {"sent_at": sent_at, "to": sent.get("to") or recipient,
+    return {"sent_at": sent_at, "to": delivered, "intended_to": intended,
             "redirected": bool(sent.get("redirected")),
+            "transport": sent.get("transport", "resend"),
             "message_id": sent.get("id")}
 
 

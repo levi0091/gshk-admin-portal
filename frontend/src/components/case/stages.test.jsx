@@ -63,11 +63,30 @@ const FILING_SUMMARY = {
   signed_at: '2026-08-27T06:00:00Z',
 }
 
+//: GET /cases/{id}/verification/recipients — the board. Three directors, one of
+//: whom cannot be written to, because that is the case the send screen has to
+//: get visibly right: a chip row of two for a board of three.
+const RECIPIENTS = {
+  recipients: [
+    { person_id: 'p1', name: 'AH CHAN', email: 'chan@example.com',
+      role: 'director', party_type: 'individual', reason: null },
+    { person_id: 'p2', name: 'BO LEE', email: 'lee@example.com',
+      role: 'director', party_type: 'individual', reason: null },
+    { person_id: null, name: 'HOLDCO LIMITED', email: null, role: 'director',
+      party_type: 'corporate',
+      reason: 'a corporate director has no address on record' },
+  ],
+  company_email: 'office@example.com',
+  default_to: ['chan@example.com', 'lee@example.com'],
+  max_recipients: 20,
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   get.mockImplementation(url => {
     const u = String(url)
     if (u.includes('/return-data')) return Promise.resolve(RETURN_DATA)
+    if (u.includes('/verification/recipients')) return Promise.resolve(RECIPIENTS)
     if (u.includes('/summary')) return Promise.resolve(FILING_SUMMARY)
     return Promise.resolve({ fee: '105.00', max_fee: '3480.00',
                              fee_is_certain: false,
@@ -213,22 +232,97 @@ describe('Client Verification', () => {
     expect(screen.getByRole('button', { name: /Send to client/ })).toBeEnabled()
   })
 
-  it('sends with no override when the address on record should be used', async () => {
-    const user = userEvent.setup()
-    renderIt()
+  const reviewAndSend = async user => {
+    // The chips must be on screen first — the send button is gated on them.
+    await screen.findByText('chan@example.com')
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/cases/c1/verification/send', {}))
+  }
+
+  it('seeds the recipients with every director who has an address', async () => {
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText('lee@example.com')).toBeInTheDocument()
+    expect(screen.getByText('AH CHAN')).toBeInTheDocument()
   })
 
-  it('passes an override address when one is typed', async () => {
+  it('shows the director it cannot write to rather than dropping them', async () => {
+    // A board of three rendering two chips looks exactly like a board of two.
+    renderIt()
+    expect(await screen.findByText(/HOLDCO LIMITED/)).toBeInTheDocument()
+    expect(screen.getByText(/no address on record/)).toBeInTheDocument()
+  })
+
+  it('sends to every seeded director, not just the first', async () => {
     const user = userEvent.setup()
     renderIt()
+    await reviewAndSend(user)
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/cases/c1/verification/send',
+      { to: ['chan@example.com', 'lee@example.com'] }))
+  })
+
+  it('sends the list on screen, so a removed director is not mailed', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
-    await user.type(screen.getByLabelText('Send to'), 'client@example.com')
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
     await waitFor(() => expect(post).toHaveBeenCalledWith(
-      '/cases/c1/verification/send', { to: 'client@example.com' }))
+      '/cases/c1/verification/send', { to: ['lee@example.com'] }))
+  })
+
+  it('adds an extra recipient who is not on the board', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.type(screen.getByLabelText('Add a recipient'), 'levi@zenexflow.com')
+    await user.click(screen.getByRole('button', { name: 'Add recipient' }))
+    await reviewAndSend(user)
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/cases/c1/verification/send',
+      { to: ['chan@example.com', 'lee@example.com', 'levi@zenexflow.com'] }))
+  })
+
+  it('refuses to add something that is not an address', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.type(screen.getByLabelText('Add a recipient'), 'not-an-address')
+    await user.click(screen.getByRole('button', { name: 'Add recipient' }))
+    expect(screen.getByText(/is not an email address/)).toBeInTheDocument()
+  })
+
+  it('will not send with an empty recipient list', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
+    await user.click(screen.getByRole('button', { name: 'Remove lee@example.com' }))
+    expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('says so when the deployment delivered nothing', async () => {
+    // Otherwise an operator believes two directors were emailed when mail is
+    // stubbed out and nobody received anything.
+    const user = userEvent.setup()
+    post.mockResolvedValue({ transport: 'console' })
+    renderIt()
+    await reviewAndSend(user)
+    expect(await screen.findByText(/Nothing was actually delivered/))
+      .toBeInTheDocument()
+  })
+
+  it('does not cry stub on a real send', async () => {
+    const user = userEvent.setup()
+    post.mockResolvedValue({ transport: 'resend' })
+    renderIt()
+    await reviewAndSend(user)
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(screen.queryByText(/Nothing was actually delivered/)).toBeNull()
   })
 
   it('cannot record an answer before the return was sent', () => {

@@ -68,6 +68,9 @@ const COLUMNS = [
   ['workflow_status', 'Workflow'],
   ['days_to_anniversary', 'Days to anniversary'],
   ['created_at', 'Create Date'],
+  // Sorts on `created_by_name`, not the uuid — ordering the dashboard by a
+  // value nobody can read off the screen is not a sort.
+  ['created_by_name', 'Created By'],
 ]
 
 export default function DashboardPage() {
@@ -307,6 +310,12 @@ export default function DashboardPage() {
                         <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>
                       </td>
                       <td data-label="Create Date"><span className="td-muted">{formatDate(c.created_at)}</span></td>
+                      {/* Cases opened before migration 021 added the column carry
+                          no author. An em dash says "not recorded"; the user's
+                          own name would be a lie about who opened it. */}
+                      <td data-label="Created By">
+                        <span className="td-muted">{c.created_by_name || '—'}</span>
+                      </td>
                     </tr>
                   )
                 })}

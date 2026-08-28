@@ -355,3 +355,45 @@ def test_a_submitted_filing_cannot_be_walked_back_by_revalidating(monkeypatch):
         )
         with pytest.raises(ValueError):
             filings.validate(MagicMock(), "f1")
+
+
+# ---------------------------------------------------------------------------
+# supersede — retiring an attempt CR has not filed
+# ---------------------------------------------------------------------------
+
+
+def _supersede_chain():
+    """The PostgREST chain supersede() builds, with the filters recorded."""
+    sb = MagicMock()
+    chain = sb.table.return_value.update.return_value.eq.return_value.not_.in_
+    return sb, chain
+
+
+def test_supersede_sets_the_stage_nothing_else_ever_wrote():
+    sb, chain = _supersede_chain()
+    chain.return_value.execute.return_value.data = [{"id": "f1"}]
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.supersede("f1") is True
+    sb.table.return_value.update.assert_called_once_with(
+        {"stage": filings.STAGE_SUPERSEDED})
+    sb.table.return_value.update.return_value.eq.assert_called_once_with("id", "f1")
+
+
+def test_supersede_refuses_a_filing_cr_already_holds_IN_THE_UPDATE():
+    """Not read-then-write. A submit landing between a read and a write would
+    otherwise retire a filing CR had just registered, and the case would show
+    no filing at all while the return sat in the register."""
+    sb, chain = _supersede_chain()
+    chain.return_value.execute.return_value.data = []
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.supersede("f1") is False
+    column, stages = chain.call_args.args
+    assert column == "stage"
+    # Every terminal stage, so the guard cannot be widened in one place only.
+    assert set(stages) == set(filings.TERMINAL_STAGES)
+
+
+def test_a_superseded_filing_is_already_excluded_from_the_current_one():
+    """The stage was defined and filtered on from the start; only the WRITE was
+    missing. This pins the other half so neither can be removed alone."""
+    assert filings.STAGE_SUPERSEDED in filings.TERMINAL_STAGES

@@ -121,6 +121,8 @@ def test_restart_verification_clears_the_client_response(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case",
                return_value={"id": "c1", "client_approved": True}), \
+         patch("routers.cases.nar1_cases.current_filing", return_value=None), \
+         patch("routers.cases.tpsi_filings.supersede", return_value=False), \
          patch("routers.cases.nar1_cases.update_case", return_value={"id": "c1"}) as spy, \
          patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
          patch("routers.cases.log_event", new=AsyncMock()):
@@ -144,6 +146,8 @@ def test_restart_verification_on_a_never_sent_case_writes_no_audit_row(client):
                              "verification_sent_at": None,
                              "client_approved": None,
                              "client_response_at": None}), \
+         patch("routers.cases.nar1_cases.current_filing", return_value=None), \
+         patch("routers.cases.tpsi_filings.supersede", return_value=False), \
          patch("routers.cases.nar1_cases.update_case") as spy, \
          patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
          patch("routers.cases.log_event",
@@ -153,6 +157,84 @@ def test_restart_verification_on_a_never_sent_case_writes_no_audit_row(client):
     assert response.status_code == 200
     spy.assert_not_called()
     assert logged == []
+
+
+def test_restart_verification_discards_the_cr_signed_snapshot(client):
+    """THE DEFECT THIS EXISTS TO CLOSE.
+
+    The confirmation the operator clicks through says "The case goes back to
+    Data Verification. The CR-signed snapshot is discarded." Until this was
+    wired, only the client-side fields were cleared: the filing stayed at
+    'validated', so a case whose company details had just been corrected landed
+    back on CLIENT Verification still holding CR's OLD signed XML — and the next
+    send mailed the client a return that no longer matched the record.
+    """
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value={"id": "c1", "entity_id": "e1",
+                             "verification_sent_at": "2026-08-01T00:00:00Z",
+                             "client_approved": True,
+                             "client_response_at": "2026-08-02T00:00:00Z"}), \
+         patch("routers.cases.nar1_cases.current_filing",
+               return_value={"id": "f1", "stage": "validated"}), \
+         patch("routers.cases.tpsi_filings.supersede", return_value=True) as sup, \
+         patch("routers.cases.nar1_cases.update_case", return_value={"id": "c1"}), \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"restart_verification": True})
+    assert response.status_code == 200
+    sup.assert_called_once_with("f1")
+
+
+def test_restarting_a_case_cr_already_holds_does_not_retire_the_filing(client):
+    """A restart cannot un-file a return. `supersede()` filters on the stage
+    inside the UPDATE and answers False; the case must not then record a
+    superseded filing that never moved."""
+    logged = []
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value={"id": "c1", "entity_id": "e1",
+                             "verification_sent_at": None,
+                             "client_approved": None,
+                             "client_response_at": None}), \
+         patch("routers.cases.nar1_cases.current_filing",
+               return_value={"id": "f1", "stage": "submitted"}), \
+         patch("routers.cases.tpsi_filings.supersede", return_value=False), \
+         patch("routers.cases.nar1_cases.update_case") as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event",
+               new=AsyncMock(side_effect=lambda **kw: logged.append(kw))):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"restart_verification": True})
+    assert response.status_code == 200
+    spy.assert_not_called()
+    assert logged == []
+
+
+def test_a_restart_that_only_retires_the_snapshot_still_records_it(client):
+    """A case validated but never sent has nothing to clear on the case row —
+    and a restart there DOES discard a CR-signed snapshot. Returning early on
+    "no patch" would have made that change invisible in the trail."""
+    logged = []
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value={"id": "c1", "entity_id": "e1",
+                             "verification_sent_at": None,
+                             "client_approved": None,
+                             "client_response_at": None}), \
+         patch("routers.cases.nar1_cases.current_filing",
+               return_value={"id": "f1", "stage": "validated"}), \
+         patch("routers.cases.tpsi_filings.supersede", return_value=True), \
+         patch("routers.cases.nar1_cases.update_case") as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event",
+               new=AsyncMock(side_effect=lambda **kw: logged.append(kw))):
+        client.patch("/cases/c1", headers=H, json={"restart_verification": True})
+    # Nothing on the case row changed, so no UPDATE — but the trail must say
+    # the snapshot went.
+    spy.assert_not_called()
+    assert [e["new_value"] for e in logged] == ["superseded"]
 
 
 def test_patch_ignores_fields_it_does_not_own(client):

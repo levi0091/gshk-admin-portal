@@ -42,12 +42,34 @@ VALIDATED = {"id": "f1", "form_code": "Nar1", "stage": "validated",
 ENTITY = {"id": "e1", "company_name": "ACME LIMITED", "br_number": "00000001"}
 
 
-def _sendable(case=None, filing=None, recipient="client@example.com"):
-    """Every collaborator of a successful send, patched at the module boundary."""
+#: A board, as `nar1_cases.default_recipients` returns one. Two directors who
+#: can be written to and one who cannot — the shape the send route has to get
+#: right, and the shape the picker renders.
+BOARD = [
+    {"person_id": "p1", "name": "AH CHAN", "email": "chan@example.com",
+     "role": "director", "party_type": "individual", "reason": None},
+    {"person_id": "p2", "name": "BO LEE", "email": "lee@example.com",
+     "role": "director", "party_type": "individual", "reason": None},
+    {"person_id": None, "name": "HOLDCO LIMITED", "email": None,
+     "role": "director", "party_type": "corporate",
+     "reason": "a corporate director has no address on record"},
+]
+
+
+def _sendable(case=None, filing=None, recipient="client@example.com",
+              directors=()):
+    """Every collaborator of a successful send, patched at the module boundary.
+
+    `directors` defaults to EMPTY, not to BOARD: most of these tests are about
+    the company-contact fallback, and a default board would silently take that
+    path away from every one of them.
+    """
     return [
         patch("routers.cases.nar1_cases.get_case", return_value=case or CASE),
         patch("routers.cases.nar1_cases.current_filing",
               return_value=filing if filing is not None else VALIDATED),
+        patch("routers.cases.nar1_cases.default_recipients",
+              return_value=list(directors)),
         patch("routers.cases.nar1_cases.recipient_email", return_value=recipient),
         patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY),
         patch("routers.cases.nar1_pdf.render", return_value=b"%PDF-1.4"),
@@ -79,15 +101,15 @@ def test_send_attaches_the_pdf_rendered_from_the_validated_xml(client):
     """The client approves what CR is holding, not what the profile says today."""
     with _super(), _Stack(*_sendable()), \
          patch("routers.cases.email_service.send",
-               return_value={"id": "m1", "to": "client@example.com",
-                             "intended_to": "client@example.com",
+               return_value={"id": "m1", "to": ["client@example.com"],
+                             "intended_to": ["client@example.com"],
                              "redirected": False}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H, json={})
     assert response.status_code == 200
     assert send.call_args.kwargs["attachments"][0][1] == b"%PDF-1.4"
-    assert send.call_args.kwargs["to"] == "client@example.com"
+    assert send.call_args.kwargs["to"] == ["client@example.com"]
 
 
 def test_send_renders_the_snapshot_with_its_own_date_and_stage(client):
@@ -96,6 +118,7 @@ def test_send_renders_the_snapshot_with_its_own_date_and_stage(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=VALIDATED), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=[]), \
          patch("routers.cases.nar1_cases.recipient_email",
                return_value="client@example.com"), \
          patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \
@@ -184,6 +207,7 @@ def test_send_is_refused_when_no_recipient_is_on_record(client):
 
 
 def test_an_explicit_recipient_overrides_the_address_on_record(client):
+    """A bare string is still accepted — it is what this route shipped with."""
     with _super(), _Stack(*_sendable()), \
          patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
@@ -191,7 +215,7 @@ def test_an_explicit_recipient_overrides_the_address_on_record(client):
         response = client.post("/cases/c1/verification/send", headers=H,
                                json={"to": "other@example.com"})
     assert response.status_code == 200
-    assert send.call_args.kwargs["to"] == "other@example.com"
+    assert send.call_args.kwargs["to"] == ["other@example.com"]
 
 
 def test_a_recipient_override_that_is_not_an_address_is_refused(client):
@@ -201,6 +225,232 @@ def test_a_recipient_override_that_is_not_an_address_is_refused(client):
         response = client.post("/cases/c1/verification/send", headers=H,
                                json={"to": "not-an-address"})
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Multiple recipients — a board is one message with three addresses on it
+# ---------------------------------------------------------------------------
+
+
+def _ok_send(**extra):
+    return patch("routers.cases.email_service.send",
+                 return_value={"id": "m1", "redirected": False, **extra})
+
+
+def test_every_director_with_an_address_is_mailed_by_default(client):
+    """Three directors, two reachable — BOTH are written to.
+
+    A send that reached only the first director would look identical on screen
+    to one that reached all of them, which is why this is asserted on the list
+    the transport was handed rather than on the response.
+    """
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json={})
+    assert response.status_code == 200
+    assert send.call_args.kwargs["to"] == ["chan@example.com", "lee@example.com"]
+
+
+def test_the_company_address_is_used_only_when_no_director_has_one(client):
+    """The fallback must not FIRE alongside the directors — the company contact
+    is a substitute for a board with no addresses, not an extra copy."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H, json={})
+    assert "client@example.com" not in send.call_args.kwargs["to"]
+
+
+def test_an_explicit_list_is_sent_verbatim(client):
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={"to": ["a@example.com", "b@example.com", "c@example.com"]})
+    assert response.status_code == 200
+    assert send.call_args.kwargs["to"] == [
+        "a@example.com", "b@example.com", "c@example.com"]
+
+
+def test_an_explicit_list_is_not_topped_up_with_the_directors(client):
+    """THE REASON THE FRONTEND ALWAYS POSTS A LIST. An operator who removed a
+    director from the chips must not have them added back by the server."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={"to": ["chan@example.com"]})
+    assert send.call_args.kwargs["to"] == ["chan@example.com"]
+
+
+def test_an_empty_list_is_refused_rather_than_treated_as_absent(client):
+    """`[]` says the operator cleared every chip. Falling back to the directors
+    would mail the people they had just removed."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send") as send, \
+         patch("routers.cases.nar1_cases.update_case") as update:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={"to": []})
+    assert response.status_code == 422
+    send.assert_not_called()
+    update.assert_not_called()
+
+
+def test_one_bad_address_in_a_list_refuses_the_whole_send(client):
+    """Not "send to the good ones": the operator asked for a set, and a partial
+    send that reports success is indistinguishable from a complete one."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send") as send:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={"to": ["good@example.com", "nope"]})
+    assert response.status_code == 422
+    assert "nope" in response.json()["detail"]
+    send.assert_not_called()
+
+
+def test_addresses_differing_only_in_case_are_one_recipient(client):
+    """Resend would otherwise deliver the statutory return to one mailbox
+    twice."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={"to": ["Chan@Example.com", "chan@example.com"]})
+    assert send.call_args.kwargs["to"] == ["Chan@Example.com"]
+
+
+def test_too_many_recipients_is_refused(client):
+    from routers.cases import MAX_RECIPIENTS
+    many = [f"d{i}@example.com" for i in range(MAX_RECIPIENTS + 1)]
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send") as send:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={"to": many})
+    assert response.status_code == 422
+    send.assert_not_called()
+
+
+def test_the_refusal_names_directors_as_well_as_the_company(client):
+    """The operator's next move is to find an address. A message that mentions
+    only the company sends them to the wrong screen."""
+    with _super(), _Stack(*_sendable(recipient=None, directors=[BOARD[2]])):
+        response = client.post("/cases/c1/verification/send", headers=H, json={})
+    assert response.status_code == 409
+    assert "director" in response.json()["detail"].lower()
+
+
+def test_the_trail_names_every_recipient_not_just_the_first(client):
+    """`new_value` is what the audit screen renders. A row naming one of three
+    directors is worse than one naming none — it looks complete."""
+    logged = []
+
+    async def fake_log(**kwargs):
+        logged.append(kwargs)
+
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1",
+                             "to": ["chan@example.com", "lee@example.com"],
+                             "intended_to": ["chan@example.com", "lee@example.com"],
+                             "redirected": False}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", side_effect=fake_log):
+        client.post("/cases/c1/verification/send", headers=H, json={})
+    assert logged[0]["new_value"] == "chan@example.com, lee@example.com"
+    assert logged[0]["metadata"]["recipient_count"] == 2
+
+
+def test_a_stubbed_send_is_audited_as_one(client):
+    """EMAIL_TRANSPORT=console delivers NOTHING. An EMAIL_SENT row that did not
+    say so would be a record of a client being told when nobody was."""
+    logged = []
+
+    async def fake_log(**kwargs):
+        logged.append(kwargs)
+
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _ok_send(transport="console", id=None), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", side_effect=fake_log):
+        response = client.post("/cases/c1/verification/send", headers=H, json={})
+    assert response.json()["transport"] == "console"
+    assert logged[0]["metadata"]["transport"] == "console"
+
+
+def test_a_real_send_is_not_labelled_as_stubbed(client):
+    """The mutation that would make the flag useless: defaulting it to
+    'console'. Every real send has to come back saying 'resend'."""
+    logged = []
+
+    async def fake_log(**kwargs):
+        logged.append(kwargs)
+
+    with _super(), _Stack(*_sendable(directors=BOARD)), _ok_send(), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", side_effect=fake_log):
+        response = client.post("/cases/c1/verification/send", headers=H, json={})
+    assert response.json()["transport"] == "resend"
+    assert logged[0]["metadata"]["transport"] == "resend"
+
+
+# ---------------------------------------------------------------------------
+# GET /verification/recipients — who the screen offers
+# ---------------------------------------------------------------------------
+
+
+def test_recipients_lists_the_whole_board_including_the_unreachable(client):
+    """A three-director board that renders two chips looks like a two-director
+    board, and nothing on screen would say otherwise."""
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=BOARD), \
+         patch("routers.cases.nar1_cases.recipient_email", return_value=None):
+        response = client.get("/cases/c1/verification/recipients", headers=H)
+    body = response.json()
+    assert response.status_code == 200
+    assert [r["name"] for r in body["recipients"]] == [
+        "AH CHAN", "BO LEE", "HOLDCO LIMITED"]
+    assert body["default_to"] == ["chan@example.com", "lee@example.com"]
+
+
+def test_recipients_falls_back_to_the_company_exactly_as_the_send_does(client):
+    """Two implementations of "who by default" would let the screen promise one
+    set of addresses and the send use another."""
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=[]), \
+         patch("routers.cases.nar1_cases.recipient_email",
+               return_value="office@example.com"):
+        response = client.get("/cases/c1/verification/recipients", headers=H)
+    assert response.json()["default_to"] == ["office@example.com"]
+
+
+def test_recipients_needs_only_read_permission(client):
+    """It says who WOULD be mailed. Gating it on `write` would blank the screen
+    for a reviewer who is allowed to look at the case."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for", return_value={"read"}), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=BOARD), \
+         patch("routers.cases.nar1_cases.recipient_email", return_value=None):
+        response = client.get("/cases/c1/verification/recipients", headers=H)
+    assert response.status_code == 200
+
+
+def test_recipients_404s_for_a_case_that_does_not_exist(client):
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               side_effect=LookupError("no NAR1 case c9")):
+        response = client.get("/cases/c9/verification/recipients", headers=H)
+    assert response.status_code == 404
 
 
 def test_send_records_the_timestamp_and_audits(client):
@@ -272,6 +522,7 @@ def test_an_unrenderable_snapshot_is_422_not_500(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=VALIDATED), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=[]), \
          patch("routers.cases.nar1_cases.recipient_email",
                return_value="client@example.com"), \
          patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \
@@ -469,6 +720,10 @@ def test_send_drives_the_real_renderer_and_the_real_transport(client, monkeypatc
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
     monkeypatch.delenv("VERIFICATION_FROM", raising=False)
+    # Without this the whole point of the test evaporates on any machine whose
+    # .env stubs mail out: the console transport returns before httpx is ever
+    # reached, and `post` would simply never be called.
+    monkeypatch.delenv("EMAIL_TRANSPORT", raising=False)
     email_service.get_email_config.cache_clear()
 
     posted = MagicMock(status_code=200)
@@ -479,6 +734,7 @@ def test_send_drives_the_real_renderer_and_the_real_transport(client, monkeypatc
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=filing), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=[]), \
          patch("routers.cases.nar1_cases.recipient_email",
                return_value="client@example.com"), \
          patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \

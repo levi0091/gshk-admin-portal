@@ -297,6 +297,9 @@ _ANNIV_OPS = {"lte", "gte", "eq"}
 _SORTABLE = {
     "case_no", "company_name", "br_number", "case_status", "filing_stage",
     "workflow_status", "days_to_anniversary", "created_at", "updated_at",
+    # The display name, not the uuid: sorting by `created_by` would order the
+    # dashboard by a value nobody can read off the screen.
+    "created_by_name",
 }
 
 #: The deadline is the reason this screen exists, so it is the default order:
@@ -308,6 +311,7 @@ _MAX_PAGE_SIZE = 200
 _LIST_COLS = (
     "id, case_no, entity_id, company_name, company_name_zh, br_number, "
     "cr_number, case_type, nar1_type, case_status, signing_method, assigned_to, "
+    "created_by, created_by_name, "
     "filing_id, filing_stage, verification_sent_at, client_response_at, "
     "client_approved, manual_receipt_present, manual_submitted_at, created_at, "
     "updated_at, days_to_anniversary, workflow_status, workflow_off_portal, "
@@ -538,6 +542,131 @@ def recipient_email(entity_id: str) -> str | None:
     if not candidates:
         return None
     return sorted(candidates, key=_email_rank)[0]["contact_value"].strip()
+
+
+#: Who is asked to approve the return, by default. Directors only -- they are
+#: the officers whose particulars the NAR1 declares and who carry the
+#: consequence of filing it. The secretary prepares the return; a reserve
+#: director has no appointment to confirm until the sole director dies. Either
+#: can still be added by hand on the send screen, which is what "add a
+#: recipient" is for.
+_VERIFICATION_ROLES = ("director",)
+
+
+def _person_emails(person_ids: list[str]) -> dict[str, str]:
+    """One address per person, best-first, from BOTH places one can live.
+
+    `persons.email` is the populated column (measured on DEV: 4,398 of 6,853
+    persons carry one, against 9 person-scoped `contacts` rows in the entire
+    database). But `contacts` is where the portal writes a corrected address, so
+    a contact row WINS over the ETL'd column -- otherwise fixing a bounced
+    address in the UI would change nothing about where the mail goes.
+    """
+    if not person_ids:
+        return {}
+    sb = get_supabase()
+
+    found: dict[str, str] = {}
+    rows = (
+        sb.table("persons")
+        .select("id,email")
+        .in_("id", person_ids)
+        .execute()
+        .data
+        or []
+    )
+    for row in rows:
+        if _looks_like_an_address(row.get("email")):
+            found[row["id"]] = row["email"].strip()
+
+    contacts = (
+        sb.table("contacts")
+        .select("person_id,contact_type,contact_value,is_preferred,created_at")
+        .in_("person_id", person_ids)
+        .execute()
+        .data
+        or []
+    )
+    by_person: dict[str, list[dict]] = {}
+    for row in contacts:
+        if _looks_like_an_address(row.get("contact_value")):
+            by_person.setdefault(row["person_id"], []).append(row)
+    for person_id, rows in by_person.items():
+        found[person_id] = sorted(rows, key=_email_rank)[0]["contact_value"].strip()
+
+    return found
+
+
+def default_recipients(entity_id: str) -> list[dict]:
+    """Every current director of this company, and where to write to them.
+
+    Returns one entry PER DIRECTOR -- including the ones with no address, whose
+    `email` is None and whose `reason` says why. A director silently dropped
+    from the list is the failure this shape exists to prevent: the operator
+    would see two chips for a three-director board and have nothing telling them
+    a third person was never asked.
+
+    Ordering is stable (appointment date, then name) so the same board produces
+    the same list on every load; the send screen shows these as removable chips,
+    so an unstable order would move the chip under the operator's cursor.
+    """
+    officers = (
+        get_supabase()
+        .table("entity_officers")
+        .select("person_id,party_type,corporate_name,role,appointed_date,created_at")
+        .eq("entity_id", entity_id)
+        .eq("is_current", True)
+        .in_("role", list(_VERIFICATION_ROLES))
+        .execute()
+        .data
+        or []
+    )
+    if not officers:
+        return []
+
+    person_ids = [o["person_id"] for o in officers if o.get("person_id")]
+    names: dict[str, str] = {}
+    if person_ids:
+        for row in (
+            get_supabase()
+            .table("persons")
+            .select("id,full_name")
+            .in_("id", person_ids)
+            .execute()
+            .data
+            or []
+        ):
+            names[row["id"]] = row.get("full_name") or ""
+    emails = _person_emails(person_ids)
+
+    out = []
+    for officer in officers:
+        person_id = officer.get("person_id")
+        corporate = (officer.get("party_type") or "individual") != "individual"
+        name = (officer.get("corporate_name") if corporate
+                else names.get(person_id or "")) or "(unnamed officer)"
+        email = emails.get(person_id or "")
+        if corporate:
+            # A body corporate has no mailbox of its own in this schema, and
+            # inventing one from its own officer list would mail a client's
+            # statutory return to a third company's staff.
+            reason = ("a corporate director has no address on record; add the "
+                      "person who acts for it")
+        elif not email:
+            reason = "no email address is on record for this director"
+        else:
+            reason = None
+        out.append({
+            "person_id": person_id,
+            "name": name,
+            "email": email,
+            "role": officer.get("role") or "director",
+            "party_type": "corporate" if corporate else "individual",
+            "reason": reason,
+        })
+
+    out.sort(key=lambda r: (r.get("name") or "").lower())
+    return out
 
 
 def entity_for(entity_id: str) -> dict:

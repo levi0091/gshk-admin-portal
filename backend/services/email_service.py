@@ -32,6 +32,7 @@ message that can reach a log is scrubbed of the key as a second guard.
 import base64
 import html as _html
 import os
+import sys
 from functools import lru_cache
 
 import httpx
@@ -56,14 +57,32 @@ class EmailError(RuntimeError):
     """
 
 
-class EmailConfig:
-    __slots__ = ("api_key", "sender", "is_production", "redirect_to")
+#: `EMAIL_TRANSPORT=console` writes the message to stderr and delivers nothing.
+#: It exists because Resend is not usable yet on this project (the key in
+#: `.env` is rejected by Resend with "API key is invalid"), and without it the
+#: entire client-verification half of the NAR1 workflow is unreachable on DEV --
+#: `verification_sent_at` is only stamped after a successful send, so nothing
+#: can be driven to Awaiting Client, Signing or Submission.
+#:
+#: IT IS A LIE ABOUT DELIVERY, AND IS TREATED AS ONE. It is refused outright on
+#: production (below), it must be asked for by name -- no default, no inference
+#: from a missing key -- and every result it returns carries
+#: `transport="console"`, which the router writes into the audit trail. A row
+#: saying a client was told, when nobody was, is the single worst thing this
+#: module can produce; the flag is what stops that row existing.
+CONSOLE_TRANSPORT = "console"
 
-    def __init__(self, api_key, sender, is_production, redirect_to):
+
+class EmailConfig:
+    __slots__ = ("api_key", "sender", "is_production", "redirect_to", "transport")
+
+    def __init__(self, api_key, sender, is_production, redirect_to,
+                 transport="resend"):
         self.api_key = api_key
         self.sender = sender
         self.is_production = is_production
         self.redirect_to = redirect_to
+        self.transport = transport
 
 
 @lru_cache(maxsize=1)
@@ -74,6 +93,27 @@ def get_email_config() -> EmailConfig:
     exactly that). Every refusal below happens here, which is what keeps them
     ahead of the HTTP call rather than beside it.
     """
+    # Unset APP_ENV is non-production ON PURPOSE. See the module docstring.
+    is_production = (os.environ.get("APP_ENV") or "").strip().lower() == "prod"
+    transport = (os.environ.get("EMAIL_TRANSPORT") or "").strip().lower() or "resend"
+
+    if transport == CONSOLE_TRANSPORT:
+        if is_production:
+            raise RuntimeError(
+                "EMAIL_TRANSPORT=console while APP_ENV=prod. Every client would "
+                "silently receive nothing while the portal reported each send "
+                "as successful. Unset EMAIL_TRANSPORT on production."
+            )
+        # No API key and no redirect mailbox are required: nothing leaves the
+        # process, so there is no key to protect and nowhere to redirect to.
+        sender = (os.environ.get("VERIFICATION_FROM") or "").strip() or DEFAULT_FROM
+        return EmailConfig("", sender, False, None, CONSOLE_TRANSPORT)
+    if transport != "resend":
+        raise RuntimeError(
+            f"EMAIL_TRANSPORT={transport!r} is not a transport this build "
+            f"knows; use 'resend', or 'console' on a non-production deployment"
+        )
+
     api_key = (os.environ.get("RESEND_API_KEY") or "").strip()
     if not api_key:
         # Name only, never the value — this message reaches logs.
@@ -81,8 +121,6 @@ def get_email_config() -> EmailConfig:
             "RESEND_API_KEY is not set; refusing to send mail without it"
         )
 
-    # Unset APP_ENV is non-production ON PURPOSE. See the module docstring.
-    is_production = (os.environ.get("APP_ENV") or "").strip().lower() == "prod"
     redirect_to = (os.environ.get("EMAIL_REDIRECT_TO") or "").strip() or None
 
     if not is_production and not redirect_to:
@@ -109,35 +147,72 @@ def _scrub(text: str, api_key: str) -> str:
     return text.replace(api_key, "***") if api_key else text
 
 
-def send(*, to: str, subject: str, html: str, attachments=None) -> dict:
-    """Send one message. Returns what was actually delivered, and to whom.
+def send(*, to, subject: str, html: str, attachments=None) -> dict:
+    """Send one message to one or more recipients. Returns who actually got it.
+
+    `to` is an address or a sequence of them — a board of three directors is one
+    message with three recipients, not three messages: the client sees the same
+    thread, and one Resend failure cannot leave two directors informed and the
+    third not.
 
     `attachments` is a list of (filename, bytes). The caller keeps hold of the
     bytes; nothing here writes them anywhere.
 
-    The result distinguishes `to` (where it went) from `intended_to` (who it was
-    for) so a redirected non-production send can never be mistaken for a real
-    one by whatever records it.
+    `to` and `intended_to` come back as LISTS, always — a caller must not have
+    to guess the shape from the count. They differ when a non-production send is
+    redirected, so a redirect can never be mistaken for a real delivery by
+    whatever records it.
     """
     config = get_email_config()
 
-    intended_to = to
+    recipients = [to] if isinstance(to, str) else [str(a) for a in to]
+    recipients = [a.strip() for a in recipients if (a or "").strip()]
+    if not recipients:
+        # An empty list would otherwise become a 422 from Resend, spending a
+        # round trip to learn something already knowable here.
+        raise EmailError("no recipient was given for this message")
+
+    intended_to = list(recipients)
     redirected = False
+
+    if config.transport == CONSOLE_TRANSPORT:
+        # Ahead of the redirect block: there is no mailbox to redirect to, and
+        # ahead of any HTTP call, because there is not going to be one.
+        print(
+            f"[email_service] NOT SENT (EMAIL_TRANSPORT=console) — "
+            f"to={intended_to} subject={subject!r} "
+            f"attachments={[name for name, _ in (attachments or [])]}",
+            file=sys.stderr, flush=True,
+        )
+        return {
+            "id": None,
+            "to": intended_to,
+            "intended_to": intended_to,
+            "redirected": False,
+            # The whole point. A caller that records this as a delivery has to
+            # ignore a key that is right there saying it was not one.
+            "transport": CONSOLE_TRANSPORT,
+        }
+
     if config.redirect_to:
         # Say who it was for, in both the subject and the body: a redirected
         # mailbox fills up with messages that are otherwise indistinguishable.
-        subject = f"[DEV -> {intended_to}] {subject}"
+        # ALL of them — a redirected copy that names only the first recipient
+        # hides exactly the fan-out being tested.
+        joined = ", ".join(intended_to)
+        subject = f"[DEV -> {joined}] {subject}"
         html = (
             f'<p style="background:#FEF0EB;padding:8px;border-radius:4px">'
-            f"Non-production send. Intended recipient: "
-            f"<strong>{_html.escape(intended_to)}</strong></p>{html}"
+            f"Non-production send. Intended recipient"
+            f"{'s' if len(intended_to) > 1 else ''}: "
+            f"<strong>{_html.escape(joined)}</strong></p>{html}"
         )
-        to = config.redirect_to
+        recipients = [config.redirect_to]
         redirected = True
 
     payload = {
         "from": config.sender,
-        "to": [to],
+        "to": recipients,
         "subject": subject,
         "html": html,
     }
@@ -188,7 +263,7 @@ def send(*, to: str, subject: str, html: str, attachments=None) -> dict:
 
     return {
         "id": message_id,
-        "to": to,
+        "to": recipients,
         "intended_to": intended_to,
         "redirected": redirected,
     }
