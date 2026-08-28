@@ -124,11 +124,19 @@ def get_email_config() -> EmailConfig:
     redirect_to = (os.environ.get("EMAIL_REDIRECT_TO") or "").strip() or None
 
     if not is_production and not redirect_to:
+        # Both remedies, named. This message is what an admin sees on the
+        # Client Verification screen when a send fails, and it is the only
+        # instruction they get — one that offered EMAIL_REDIRECT_TO alone would
+        # point at the option that cannot work while the Resend key is being
+        # rejected, and leave the workflow stuck with no way forward.
         raise RuntimeError(
-            "EMAIL_REDIRECT_TO must name a mailbox on a non-production "
-            "deployment: APP_ENV is not 'prod', and this database carries real "
-            "client addresses. Set EMAIL_REDIRECT_TO, or set APP_ENV=prod if "
-            "this really is production."
+            "This deployment cannot send mail. APP_ENV is not 'prod' and this "
+            "database carries real client addresses, so either "
+            "EMAIL_REDIRECT_TO must name the mailbox everything goes to "
+            "instead, or EMAIL_TRANSPORT=console must stub sending out "
+            "entirely (nothing is delivered, and every send is recorded as "
+            "not delivered). Set APP_ENV=prod only if this really is "
+            "production."
         )
     if is_production and redirect_to:
         raise RuntimeError(

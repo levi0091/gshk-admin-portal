@@ -393,3 +393,17 @@ def test_an_unknown_transport_is_refused_rather_than_assumed(monkeypatch):
     email_service.get_email_config.cache_clear()
     with pytest.raises(RuntimeError, match="EMAIL_TRANSPORT"):
         email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
+
+
+def test_the_refusal_names_BOTH_ways_out(monkeypatch):
+    """This message is what an admin reads on the Client Verification screen
+    when a send fails, and it is the only instruction they get. Naming
+    EMAIL_REDIRECT_TO alone points at the option that cannot work while Resend
+    is rejecting the key, and leaves the workflow stuck."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
+    email_service.get_email_config.cache_clear()
+    with pytest.raises(RuntimeError) as exc:
+        email_service.send(to="realclient@example.com", subject="S", html="<p>H</p>")
+    assert "EMAIL_REDIRECT_TO" in str(exc.value)
+    assert "EMAIL_TRANSPORT=console" in str(exc.value)
