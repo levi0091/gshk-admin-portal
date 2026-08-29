@@ -122,25 +122,17 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     expect(navigate).toHaveBeenCalledWith('/cases/c1')
   })
 
-  it('shows the workflow status and the CR form status as SEPARATE badges', async () => {
-    // D-6: two vocabularies answering different questions. A case can be at
-    // "Data Verification" with us while CR holds nothing at all — merging them
-    // would lose that, in both directions.
+  it('shows ONLY the workflow status in the Workflow column', async () => {
+    // Levi 2026-08-30. The CR form status used to stack under the workflow
+    // status in this cell; it now lives on the case detail only. The fixtures
+    // still carry filing_stage 'draft' and 'validated', so if FormBadge ever
+    // comes back to this table these assertions fail rather than pass quietly.
     renderPage()
     await screen.findByText('NAR-2025-0028')
     const table = within(screen.getByRole('table'))
     expect(table.getAllByText('Data Verification').length).toBeGreaterThan(0)
-    expect(table.getByText('Not yet sent to CR')).toBeInTheDocument()
-    expect(table.getByText('Validated by CR')).toBeInTheDocument()
-  })
-
-  it('reads an em dash for a case with no filing yet, never a fake draft', async () => {
-    renderPage()
-    await screen.findByText('NAR-2026-0028')
-    // c2 has filing_stage: null. "Not yet sent to CR" belongs to c1's real
-    // draft filing and must not be borrowed for a case with no filing at all.
-    expect(within(screen.getByRole('table')).getAllByText('Not yet sent to CR'))
-      .toHaveLength(1)
+    expect(table.queryByText('Not yet sent to CR')).not.toBeInTheDocument()
+    expect(table.queryByText('Validated by CR')).not.toBeInTheDocument()
   })
 
   it('counts the two stat tiles from the per-status counts', async () => {

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
+import { useAuth } from '../../context/AuthContext.jsx'
 import { formatDateTime } from '../../lib/format.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
@@ -18,6 +19,7 @@ import { describeError } from './workflow.js'
  * admin presses, and why it is audited as CLIENT_APPROVAL_RECEIVED.
  */
 export default function StageClientVerification({ caseRow, canWrite, onChanged, onError }) {
+  const { isTestEnv } = useAuth()
   const [reviewed, setReviewed] = useState(false)
   const [busy, setBusy] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
@@ -208,6 +210,20 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
         disabled={!canWrite || busy !== null || to === null}
         maxRecipients={maxRecipients}
       />
+
+      {/* Levi 2026-08-30. The picker above deliberately still shows and still
+          sends the REAL director addresses — selecting them is the thing being
+          tested. The backend substitutes a fixed internal list before anything
+          leaves the process (email_service.TEST_RECIPIENTS), which no
+          environment variable can override. This note is the only place the
+          operator is told that, so it sits directly under the addresses it is
+          about rather than in a page-level banner they would scroll past. */}
+      {isTestEnv && (
+        <div className="f-hint" style={{ margin: '-6px 0 16px 2px', lineHeight: 1.5 }}>
+          This is a test environment, so email will not actually be sent to the
+          client.
+        </div>
+      )}
 
       <div className="card mb-16">
         <div className="card-hdr">

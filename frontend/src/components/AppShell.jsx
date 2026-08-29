@@ -8,7 +8,7 @@ function initials(name) {
 }
 
 export default function AppShell() {
-  const { profile } = useAuth()
+  const { profile, isTestEnv } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
 
@@ -38,6 +38,17 @@ export default function AppShell() {
         <span className="hdr-app-name">G-FlowDesk</span>
 
         <div className="hdr-spacer" />
+
+        {/* Non-production marker. Levi 2026-08-30: the CR credentials screen
+            used to carry a paragraph explaining that its account was a test
+            account; this replaces it, in the one place that is true of the
+            whole portal rather than of one screen. Driven by APP_ENV via
+            /auth/me — during the planned PROD-on-TPSI-test pilot this will
+            read as production while filings still go to CR test, which is the
+            decision Levi made, not an oversight. */}
+        {isTestEnv && (
+          <span className="env-pill" title="Non-production deployment">TEST</span>
+        )}
 
         {/* User chip — name hidden on mobile, avatar only */}
         <div className="user-chip hdr-chip">

@@ -13,14 +13,23 @@ same shape as the TPSI env interlock applies here:
 
   - APP_ENV decides, and an UNSET APP_ENV is treated as non-production. A
     missing variable is not a licence to mail strangers.
-  - Non-production REFUSES to send unless EMAIL_REDIRECT_TO names the mailbox
-    everything goes to instead.
-  - Production REFUSES to send when EMAIL_REDIRECT_TO is set, because the
-    alternative is every client silently receiving nothing while the portal
-    reports each send as successful.
+  - Non-production mail goes to TEST_RECIPIENTS and NOWHERE ELSE. That list is
+    a constant in this module, not configuration: Levi 2026-08-30 asked that it
+    be "programatically impossible for a client to receive an email from a test
+    account", and a setting that can be unset, misspelt, or pointed at a client
+    by an accident of deployment is not that. `EMAIL_REDIRECT_TO` used to serve
+    this purpose and has been REMOVED; setting it again does nothing at all.
+  - Production is unaffected and still reaches the real client. The interlock
+    leaking into production would mean every client silently receiving nothing
+    while the portal reported each send as successful.
 
-Both crossings are refused outright rather than warned about, and both are
-refused BEFORE any HTTP call.
+The substitution happens inside `send()`, below every caller, and a second
+assertion re-checks the outgoing list immediately before the HTTP call. The
+first is the mechanism; the second catches a future edit that reorders it.
+
+The Client Verification screen still shows, and still lets an operator pick,
+the REAL director addresses -- that fan-out is the thing being tested. Only the
+destination changes, and the screen says so in as many words.
 
 *** THE KEY MUST NOT LEAK ***
 httpx exceptions carry the request, and the request carries the Authorization
@@ -37,8 +46,24 @@ from functools import lru_cache
 
 import httpx
 
+from services import app_env
+
 #: Resend's send endpoint.
 RESEND_ENDPOINT = "https://api.resend.com/emails"
+
+#: WHERE ALL NON-PRODUCTION MAIL GOES. Levi 2026-08-30.
+#:
+#: Hardcoded, and deliberately not readable from the environment. DEV's Supabase
+#: is a copy of Viewpoint and carries 4,398 real director addresses; the ask was
+#: that it be *impossible*, not merely configured, for one of them to be mailed
+#: from a test deployment. A tuple rather than a list so it cannot be mutated in
+#: place by a caller that got hold of it.
+TEST_RECIPIENTS = (
+    "levi@zenexflow.com",
+    "roy@zenexflow.com",
+    "brian@getstarted.hk",
+    "vanis@getstarted.hk",
+)
 
 #: A hung Resend must not hang the request thread holding the case open — the
 #: admin would never learn whether the client was mailed.
@@ -74,15 +99,26 @@ CONSOLE_TRANSPORT = "console"
 
 
 class EmailConfig:
-    __slots__ = ("api_key", "sender", "is_production", "redirect_to", "transport")
+    __slots__ = ("api_key", "sender", "is_production", "transport")
 
-    def __init__(self, api_key, sender, is_production, redirect_to,
-                 transport="resend"):
+    def __init__(self, api_key, sender, is_production, transport="resend"):
         self.api_key = api_key
         self.sender = sender
         self.is_production = is_production
-        self.redirect_to = redirect_to
         self.transport = transport
+
+
+def _apply_test_recipient_lock(recipients, is_production):
+    """Substitute the fixed test list on any non-production deployment.
+
+    Returns `(recipients, redirected)`. Factored out of `send()` so the guard
+    that follows it there can be tested independently of the mechanism -- see
+    tests/test_email_test_recipients.py, which stubs this out to prove the
+    guard fires on its own.
+    """
+    if is_production:
+        return recipients, False
+    return list(TEST_RECIPIENTS), True
 
 
 @lru_cache(maxsize=1)
@@ -94,7 +130,9 @@ def get_email_config() -> EmailConfig:
     ahead of the HTTP call rather than beside it.
     """
     # Unset APP_ENV is non-production ON PURPOSE. See the module docstring.
-    is_production = (os.environ.get("APP_ENV") or "").strip().lower() == "prod"
+    # One shared reading of APP_ENV, so this can never disagree with the TEST
+    # badge in the header or with the TPSI environment interlock.
+    is_production = app_env.is_production()
     transport = (os.environ.get("EMAIL_TRANSPORT") or "").strip().lower() or "resend"
 
     if transport == CONSOLE_TRANSPORT:
@@ -107,7 +145,7 @@ def get_email_config() -> EmailConfig:
         # No API key and no redirect mailbox are required: nothing leaves the
         # process, so there is no key to protect and nowhere to redirect to.
         sender = (os.environ.get("VERIFICATION_FROM") or "").strip() or DEFAULT_FROM
-        return EmailConfig("", sender, False, None, CONSOLE_TRANSPORT)
+        return EmailConfig("", sender, False, CONSOLE_TRANSPORT)
     if transport != "resend":
         raise RuntimeError(
             f"EMAIL_TRANSPORT={transport!r} is not a transport this build "
@@ -121,32 +159,10 @@ def get_email_config() -> EmailConfig:
             "RESEND_API_KEY is not set; refusing to send mail without it"
         )
 
-    redirect_to = (os.environ.get("EMAIL_REDIRECT_TO") or "").strip() or None
-
-    if not is_production and not redirect_to:
-        # Both remedies, named. This message is what an admin sees on the
-        # Client Verification screen when a send fails, and it is the only
-        # instruction they get — one that offered EMAIL_REDIRECT_TO alone would
-        # point at the option that cannot work while the Resend key is being
-        # rejected, and leave the workflow stuck with no way forward.
-        raise RuntimeError(
-            "This deployment cannot send mail. APP_ENV is not 'prod' and this "
-            "database carries real client addresses, so either "
-            "EMAIL_REDIRECT_TO must name the mailbox everything goes to "
-            "instead, or EMAIL_TRANSPORT=console must stub sending out "
-            "entirely (nothing is delivered, and every send is recorded as "
-            "not delivered). Set APP_ENV=prod only if this really is "
-            "production."
-        )
-    if is_production and redirect_to:
-        raise RuntimeError(
-            "EMAIL_REDIRECT_TO is set while APP_ENV=prod. Every client would "
-            "silently receive nothing while the portal reported each send as "
-            "successful. Unset EMAIL_REDIRECT_TO on production."
-        )
-
+    # There is no non-production refusal any more. A safe destination is
+    # compiled in, so a dev deployment needs nothing configured to send mail.
     sender = (os.environ.get("VERIFICATION_FROM") or "").strip() or DEFAULT_FROM
-    return EmailConfig(api_key, sender, is_production, redirect_to)
+    return EmailConfig(api_key, sender, is_production)
 
 
 def _scrub(text: str, api_key: str) -> str:
@@ -202,21 +218,34 @@ def send(*, to, subject: str, html: str, attachments=None) -> dict:
             "transport": CONSOLE_TRANSPORT,
         }
 
-    if config.redirect_to:
-        # Say who it was for, in both the subject and the body: a redirected
-        # mailbox fills up with messages that are otherwise indistinguishable.
-        # ALL of them — a redirected copy that names only the first recipient
-        # hides exactly the fan-out being tested.
+    recipients, redirected = _apply_test_recipient_lock(
+        recipients, config.is_production
+    )
+    if redirected:
+        # Say who it was really for, in both the subject and the body: four
+        # people share these mailboxes across every test case, and a message
+        # that does not name the directors it stood in for is untestable noise.
+        # ALL of them — naming only the first hides the fan-out being tested.
         joined = ", ".join(intended_to)
-        subject = f"[DEV -> {joined}] {subject}"
+        subject = f"[TEST -> {joined}] {subject}"
         html = (
             f'<p style="background:#FEF0EB;padding:8px;border-radius:4px">'
-            f"Non-production send. Intended recipient"
-            f"{'s' if len(intended_to) > 1 else ''}: "
+            f"Test-environment send. NOT delivered to the client. Intended "
+            f"recipient{'s' if len(intended_to) > 1 else ''}: "
             f"<strong>{_html.escape(joined)}</strong></p>{html}"
         )
-        recipients = [config.redirect_to]
-        redirected = True
+
+    # Defence in depth, immediately before the only call that can deliver
+    # anything. The substitution above is the mechanism; this is the assertion
+    # that the mechanism ran. If a later edit reorders send() so a client
+    # address survives to here on a non-production deployment, this raises
+    # rather than mailing them.
+    if not config.is_production and set(recipients) - set(TEST_RECIPIENTS):
+        raise EmailError(
+            "refusing to send: this is not a production deployment and the "
+            "recipient list is not the fixed test list. That is a bug in "
+            "email_service.send(), not a configuration problem."
+        )
 
     payload = {
         "from": config.sender,

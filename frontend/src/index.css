@@ -269,6 +269,18 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 }
 .user-name { font-size: 12px; font-weight: 600; color: var(--t-head); }
 
+/* Non-production marker, immediately left of the user chip. Carrot, because
+   this is the "look before you act" colour everywhere else in the portal, and
+   the whole job of this pill is to be noticed in peripheral vision. It is
+   rendered only when the API says the deployment is not production, so its
+   absence is as meaningful as its presence. */
+.env-pill {
+  font-size: 10px; font-weight: 800; letter-spacing: .10em;
+  color: var(--carrot); background: var(--carrot-10);
+  border: 1px solid var(--carrot); border-radius: 5px;
+  padding: 3px 8px; flex-shrink: 0; white-space: nowrap;
+}
+
 /* ── SIDEBAR COLLAPSE (wireframe_v7) ─────────────────────── */
 .sidebar-wrap { position: relative; flex-shrink: 0; display: flex; }
 .app-sidebar { transition: width .2s ease; overflow-x: hidden; }

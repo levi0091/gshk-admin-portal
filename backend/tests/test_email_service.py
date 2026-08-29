@@ -185,62 +185,12 @@ def test_a_missing_api_key_fails_before_any_http_call(monkeypatch):
 # ---------------------------------------------------------------------------
 # The non-production interlock
 #
-# DEV's Supabase is a copy of Viewpoint carrying REAL client and director email
-# addresses. A DEV deployment holding the live Resend key must not be one button
-# away from mailing them a statutory form. Same shape as the TPSI interlock:
-# APP_ENV decides, and the dangerous crossing is refused outright.
+# Levi 2026-08-30 replaced the EMAIL_REDIRECT_TO variable with the hardcoded
+# TEST_RECIPIENTS list, so a non-production deployment can no longer be
+# configured to mail a client at all. The six tests that used to live here
+# described that variable's contract and went with it; the replacement contract
+# is covered in full by tests/test_email_test_recipients.py.
 # ---------------------------------------------------------------------------
-
-
-def test_a_non_production_deployment_refuses_to_mail_a_real_address(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
-    email_service.get_email_config.cache_clear()
-    with patch("services.email_service.httpx.post") as post:
-        with pytest.raises(RuntimeError, match="EMAIL_REDIRECT_TO"):
-            email_service.send(to="realclient@example.com", subject="S",
-                               html="<p>H</p>")
-    post.assert_not_called()
-
-
-def test_an_unset_app_env_is_treated_as_non_production(monkeypatch):
-    """The default must be the safe one. An unset variable is not a licence."""
-    monkeypatch.delenv("APP_ENV", raising=False)
-    monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
-    email_service.get_email_config.cache_clear()
-    with patch("services.email_service.httpx.post") as post:
-        with pytest.raises(RuntimeError, match="EMAIL_REDIRECT_TO"):
-            email_service.send(to="realclient@example.com", subject="S",
-                               html="<p>H</p>")
-    post.assert_not_called()
-
-
-def test_the_redirect_replaces_the_recipient_and_says_who_it_was_for(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.setenv("EMAIL_REDIRECT_TO", "levi@zenexflow.com")
-    email_service.get_email_config.cache_clear()
-    with _post() as post:
-        result = email_service.send(to="realclient@example.com", subject="Confirm",
-                                    html="<p>H</p>")
-    payload = post.call_args.kwargs["json"]
-    assert payload["to"] == ["levi@zenexflow.com"]
-    assert "realclient@example.com" in payload["subject"]
-    assert "realclient@example.com" in payload["html"]
-    assert result["to"] == ["levi@zenexflow.com"]
-    assert result["intended_to"] == ["realclient@example.com"]
-    assert result["redirected"] is True
-
-
-def test_production_refuses_a_redirect(monkeypatch):
-    """On PROD every client would silently receive nothing while the portal
-    reported every send as successful."""
-    monkeypatch.setenv("APP_ENV", "prod")
-    monkeypatch.setenv("EMAIL_REDIRECT_TO", "levi@zenexflow.com")
-    email_service.get_email_config.cache_clear()
-    with patch("services.email_service.httpx.post") as post:
-        with pytest.raises(RuntimeError, match="EMAIL_REDIRECT_TO"):
-            email_service.send(to="c@example.com", subject="S", html="<p>H</p>")
-    post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -319,24 +269,6 @@ def test_an_empty_recipient_list_is_refused_before_the_http_call():
     post.assert_not_called()
 
 
-def test_a_redirect_names_every_intended_recipient(monkeypatch):
-    """A redirected copy that named only the first recipient would hide exactly
-    the fan-out being tested."""
-    monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.setenv("EMAIL_REDIRECT_TO", "levi@zenexflow.com")
-    email_service.get_email_config.cache_clear()
-    with _post() as post:
-        result = email_service.send(to=["one@example.com", "two@example.com"],
-                                    subject="Confirm", html="<p>H</p>")
-    payload = post.call_args.kwargs["json"]
-    assert payload["to"] == ["levi@zenexflow.com"]
-    assert "one@example.com" in payload["subject"]
-    assert "two@example.com" in payload["subject"]
-    assert "two@example.com" in payload["html"]
-    assert result["intended_to"] == ["one@example.com", "two@example.com"]
-    assert result["redirected"] is True
-
-
 # ---------------------------------------------------------------------------
 # EMAIL_TRANSPORT=console — the stub, and the guards that keep it off PROD
 # ---------------------------------------------------------------------------
@@ -395,15 +327,3 @@ def test_an_unknown_transport_is_refused_rather_than_assumed(monkeypatch):
         email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
 
 
-def test_the_refusal_names_BOTH_ways_out(monkeypatch):
-    """This message is what an admin reads on the Client Verification screen
-    when a send fails, and it is the only instruction they get. Naming
-    EMAIL_REDIRECT_TO alone points at the option that cannot work while Resend
-    is rejecting the key, and leaves the workflow stuck."""
-    monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
-    email_service.get_email_config.cache_clear()
-    with pytest.raises(RuntimeError) as exc:
-        email_service.send(to="realclient@example.com", subject="S", html="<p>H</p>")
-    assert "EMAIL_REDIRECT_TO" in str(exc.value)
-    assert "EMAIL_TRANSPORT=console" in str(exc.value)

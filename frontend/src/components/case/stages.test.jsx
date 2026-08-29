@@ -17,6 +17,13 @@ vi.mock('../../lib/api.js', () => ({
   },
 }))
 
+// These stages render outside a router and outside an AuthProvider, so the
+// context would otherwise be null. Reassigned per-test where the environment
+// matters; production is the default so the test-environment note has to be
+// asked for explicitly rather than appearing everywhere by accident.
+let auth = { isTestEnv: false }
+vi.mock('../../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
+
 const onChanged = vi.fn()
 const onError = vi.fn()
 
@@ -83,6 +90,7 @@ const RECIPIENTS = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  auth = { isTestEnv: false }
   get.mockImplementation(url => {
     const u = String(url)
     if (u.includes('/return-data')) return Promise.resolve(RETURN_DATA)
@@ -208,6 +216,31 @@ describe('Client Verification', () => {
   it('renders the PDF from the CR-validated snapshot', async () => {
     renderIt()
     await waitFor(() => expect(blob).toHaveBeenCalledWith('/tpsi/filings/f1/pdf'))
+  })
+
+  // Levi 2026-08-30. The interlock itself is enforced in the backend
+  // (email_service.TEST_RECIPIENTS); these cover only the operator being told.
+  it('says nothing is really sent to the client, in a test environment', async () => {
+    auth = { isTestEnv: true }
+    renderIt()
+    expect(await screen.findByText(/will not actually be sent to the client/i))
+      .toBeInTheDocument()
+  })
+
+  it('still shows the real director addresses in a test environment', async () => {
+    // The point of the note is that the picker keeps behaving normally — the
+    // fan-out is the thing under test, so the chips must stay real.
+    auth = { isTestEnv: true }
+    renderIt()
+    expect(await screen.findByText('chan@example.com')).toBeInTheDocument()
+  })
+
+  it('does NOT show that note on production', async () => {
+    auth = { isTestEnv: false }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.queryByText(/will not actually be sent to the client/i))
+      .not.toBeInTheDocument()
   })
 
   it('fetches the PDF as a blob so the token never lands in a URL', async () => {

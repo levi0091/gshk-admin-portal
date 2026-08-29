@@ -96,7 +96,7 @@ describe('CrCredentialsPage — the shared account is admin-only', () => {
   it('lands an ordinary user straight on their own signing credentials', async () => {
     await renderPage()
     expect(await screen.findByLabelText('e-Service (e-Reg) user ID')).toBeInTheDocument()
-    expect(screen.getByText(/Yours alone/)).toBeInTheDocument()
+    expect(screen.getByLabelText('e-Service signing password')).toBeInTheDocument()
   })
 
   it('gives a Super Admin both tabs, opening on the shared account', async () => {
@@ -239,10 +239,21 @@ describe('CrCredentialsPage — shared pane', () => {
     expect(put.mock.calls[0][1].rotated).toBe(false)
   })
 
-  it('warns which CR environment the credential belongs to', async () => {
+  it('does not repeat the environment on this screen — the header pill owns it', async () => {
     await renderPage()
-    expect(await screen.findByText(/Connected to the CR TEST environment/))
-      .toBeInTheDocument()
+    await screen.findByLabelText('Presenter account ID')
+    expect(screen.queryByText(/Connected to the CR/)).not.toBeInTheDocument()
+    // The Status table still names it, which is where a Super Admin looks to
+    // confirm what they are about to change.
+    expect(screen.getByText('Environment')).toBeInTheDocument()
+  })
+
+  it('drops the password-expiry banner but keeps the date in Status', async () => {
+    await renderPage()
+    await screen.findByLabelText('Presenter account ID')
+    expect(screen.queryByText(/password expires in/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/has expired/i)).not.toBeInTheDocument()
+    expect(screen.getByText('Password expires')).toBeInTheDocument()
   })
 
   it('surfaces a server refusal instead of reporting success', async () => {
@@ -367,8 +378,11 @@ describe('CrCredentialsPage — my e-Service signing', () => {
     expect(screen.queryByRole('button', { name: /Update credentials/ })).not.toBeInTheDocument()
   })
 
-  it('states that the credential is personal and never shared', async () => {
+  it('carries no explanatory banners — Levi 2026-08-30', async () => {
     await renderPage()
-    expect(await screen.findByText(/Yours alone/)).toBeInTheDocument()
+    await screen.findByLabelText('e-Service (e-Reg) user ID')
+    for (const gone of [/Yours alone/, /Two passwords/, /encrypted at rest/]) {
+      expect(screen.queryByText(gone)).not.toBeInTheDocument()
+    }
   })
 })

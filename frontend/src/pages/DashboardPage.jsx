@@ -6,7 +6,7 @@ import useAbortableGet from '../lib/useAbortableGet.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import SortableTh from '../components/SortableTh.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
-import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
+import { WorkflowBadge } from '../components/CaseStatusBadge.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 
 /**
@@ -299,12 +299,13 @@ export default function DashboardPage() {
                       <td data-label="BRN"><span className="td-muted">{c.br_number || '—'}</span></td>
                       <td data-label="Status"><StatusBadge status={c.case_status} /></td>
                       <td data-label="Workflow">
-                        {/* Both vocabularies, side by side and never merged: where
-                            the case is with us, and what CR has done with the form. */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
-                          <WorkflowBadge status={c.workflow_status} />
-                          <FormBadge stage={c.filing_stage} />
-                        </div>
+                        {/* Levi 2026-08-30: one badge, the case's own workflow
+                            status. The CR form status (FormBadge) used to stack
+                            underneath; it still answers a real question, but it
+                            answers it on the case detail, where there is room to
+                            act on it. A list scanned for "what needs me next"
+                            reads better with one word per row than two. */}
+                        <WorkflowBadge status={c.workflow_status} />
                       </td>
                       <td data-label="Days to anniversary" aria-label="Days to anniversary">
                         <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>

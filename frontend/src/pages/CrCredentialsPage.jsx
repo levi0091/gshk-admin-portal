@@ -92,58 +92,6 @@ function Meta({ label, children }) {
   )
 }
 
-function daysUntil(iso) {
-  if (!iso) return null
-  const ms = new Date(iso).getTime() - Date.now()
-  if (Number.isNaN(ms)) return null
-  return Math.ceil(ms / 86400000)
-}
-
-function EnvBanner({ isTest }) {
-  if (isTest === undefined || isTest === null) return null
-  // The backend refuses a credential whose is_test disagrees with TPSI_ENV,
-  // and that refusal is otherwise a baffling 502 — so say which it is.
-  return (
-    <div
-      className="alert"
-      style={{
-        marginBottom: 16,
-        background: isTest ? 'var(--carrot-10)' : 'var(--bang-10)',
-        borderColor: isTest ? 'var(--carrot)' : 'var(--bang)',
-      }}
-    >
-      <span className="al-icon">{isTest ? '⚠' : '✓'}</span>
-      <div className="al-body">
-        <b>Connected to the CR {isTest ? 'TEST' : 'PRODUCTION'} environment.</b>{' '}
-        {isTest
-          ? 'These are test credentials and can only file against the CR test service. Production filing needs a separate set.'
-          : 'Filings made with these credentials are real and chargeable.'}
-      </div>
-    </div>
-  )
-}
-
-function ExpiryCard({ meta }) {
-  const days = daysUntil(meta.tpsi_password_expires_at)
-  if (days === null) return null
-  const soon = days <= 30
-  return (
-    <div
-      className="card mb-16"
-      style={soon ? { borderColor: 'var(--carrot)', background: 'var(--carrot-10)' } : undefined}
-    >
-      <div className="card-title" style={soon ? { color: 'var(--carrot)' } : undefined}>
-        {days <= 0
-          ? 'TPSI password has expired'
-          : `TPSI password expires in ${days} day${days === 1 ? '' : 's'}`}
-      </div>
-      <div className="f-hint" style={{ marginTop: 6, lineHeight: 1.5 }}>
-        CR forces a change every 180 days. Change it before it stops a filing
-        mid-submission.
-      </div>
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // The shared GSHK presenter account — Super Admin only
@@ -216,8 +164,6 @@ function SharedPane({ onNotice, onError }) {
 
   return (
     <>
-      <EnvBanner isTest={meta.is_test} />
-
       <div className="cr-scope shared">
         <div>
           <b>One presenter identity for the whole of GSHK.</b> Every G-FlowDesk
@@ -284,7 +230,6 @@ function SharedPane({ onNotice, onError }) {
         </div>
 
         <div>
-          <ExpiryCard meta={meta} />
           <div className="card mb-16">
             <div className="card-hdr"><div><div className="card-title">Status</div></div></div>
             <Meta label="Environment">
@@ -308,12 +253,6 @@ function SharedPane({ onNotice, onError }) {
                 ? formatDate(meta.last_rotated_at)
                 : <span className="td-muted">Never</span>}
             </Meta>
-          </div>
-
-          <div className="reveal-note" style={{ lineHeight: 1.55 }}>
-            Only a Super Admin can see or change this account. Holding{' '}
-            <b>tpsi:write</b> lets a user file under it — it does not let them
-            point every future filing at a different CR account.
           </div>
         </div>
       </div>
@@ -416,14 +355,6 @@ function MinePane({ canWrite, onNotice, onError }) {
 
   return (
     <>
-      <div className="cr-scope mine">
-        <div>
-          <b>Yours alone.</b> Signing is a personal act and CR rejects a
-          signature from a corporate account, so this credential is never shared
-          — not with another user, and not with a Super Admin.
-        </div>
-      </div>
-
       <div className="detail-grid client-off">
         <div>
           <form onSubmit={handleSave}>
@@ -433,12 +364,6 @@ function MinePane({ canWrite, onNotice, onError }) {
                   <div className="card-title">Signing identity</div>
                   <div className="card-sub">Used when you sign a form yourself</div>
                 </div>
-              </div>
-
-              <div className="reveal-note" style={{ color: 'var(--indigo)', background: 'var(--indigo-10)', marginBottom: 14 }}>
-                <b>Two passwords, two jobs.</b> The shared TPSI password
-                authenticates the portal. The e-Service password below signs.
-                CR treats them differently.
               </div>
 
               <div className="f-group">
@@ -502,13 +427,6 @@ function MinePane({ canWrite, onNotice, onError }) {
                 ? formatDate(meta.last_rotated_at)
                 : <span className="td-muted">Never</span>}
             </Meta>
-          </div>
-
-          <div className="reveal-note" style={{ lineHeight: 1.55 }}>
-            Passwords are encrypted at rest. A stored password is shown{' '}
-            <b>masked except its last 4 characters</b>, so you can tell which one
-            is saved without it being readable. Only you see your own — never
-            another user, never a Super Admin.
           </div>
         </div>
       </div>

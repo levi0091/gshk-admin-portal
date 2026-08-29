@@ -57,13 +57,19 @@ export function AuthProvider({ children }) {
 
   const isSuperAdmin = profile?.role_name === 'super_admin'
 
+  // Strict `=== true`, so a profile that has not loaded yet, or a backend too
+  // old to send the field, does NOT light the TEST badge. A missing badge on a
+  // test deployment is a smaller lie than a TEST badge on production, which
+  // would tell an operator their real filing was a rehearsal.
+  const isTestEnv = profile?.is_test_env === true
+
   function hasPermission(module, permission) {
     if (isSuperAdmin) return true
     return (profile?.permissions || []).includes(`${module}:${permission}`)
   }
 
   return (
-    <AuthContext.Provider value={{ session, profile, isSuperAdmin, hasPermission, profileLoading, signIn, signOut }}>
+    <AuthContext.Provider value={{ session, profile, isSuperAdmin, isTestEnv, hasPermission, profileLoading, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )
