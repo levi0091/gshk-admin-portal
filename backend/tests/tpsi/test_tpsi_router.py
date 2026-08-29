@@ -1034,7 +1034,7 @@ def test_pdf_refuses_a_form_code_it_has_no_renderer_for(client):
            "validated_xml": "<x/>", "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
-         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.nar1_form_fill.render", return_value=b"%PDF-x") as spy, \
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 409
@@ -1048,7 +1048,7 @@ def test_pdf_refuses_a_filing_whose_form_code_is_missing(client):
     row = {"stage": "validated", "validated_xml": "<x/>", "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
-         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.nar1_form_fill.render", return_value=b"%PDF-x") as spy, \
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 409
@@ -1065,7 +1065,7 @@ def test_pdf_returns_pdf_bytes_and_audits_generation(client):
            "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
-         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-1.4 fake"), \
+         patch("routers.tpsi.nar1_form_fill.render", return_value=b"%PDF-1.4 fake"), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 200
@@ -1088,14 +1088,14 @@ def test_pdf_renders_the_validated_snapshot_not_the_request_xml(client):
     }
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
-         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.nar1_form_fill.render", return_value=b"%PDF-x") as spy, \
          patch("routers.tpsi.log_event", new=AsyncMock()):
         client.get("/tpsi/filings/f1/pdf", headers=H)
     assert spy.call_args.args[0] == "<what-cr-actually-holds/>"
 
 
 def test_pdf_drives_the_real_renderer_not_just_a_mock(client):
-    """Every other test here patches nar1_pdf.render, so none of them would
+    """Every other test here patches the NAR1 form renderer, so none of them would
     notice the router handing the renderer something it cannot parse.
 
     The stored value is deliberately produced by `soap.extract_submission`, the
@@ -1125,23 +1125,27 @@ def test_pdf_drives_the_real_renderer_not_just_a_mock(client):
     assert len(response.content) > 2000
 
 
-def test_pdf_stamps_the_snapshot_age_onto_the_document(client):
+def test_pdf_still_renders_a_superseded_snapshot(client):
     """`filings.validate` leaves `validated_xml` in place when CR rejects a
     re-validation, so a filing at validation_failed still has a renderable —
-    but superseded — snapshot. The row knows both facts; the document has to
-    carry them, or the reviewer has no way to tell a fresh preview from a stale
-    one."""
+    but superseded — snapshot, and the preview must still produce it.
+
+    It no longer STAMPS the age onto the page. The old review layout had a
+    footer for that; CR's printed form does not, and Levi chose the real form
+    (2026-08-30). The Submission screen carries `validated_at` and the CR form
+    badge, so the reviewer still has both facts where they are acting.
+    """
     row = {"stage": "validation_failed", "form_code": "Nar1",
            "validated_xml": "<x/>", "validated_at": "2026-08-16T09:30:00+00:00",
            "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
-         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-x") as spy, \
+         patch("routers.tpsi.nar1_form_fill.render", return_value=b"%PDF-x") as spy, \
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 200
-    assert spy.call_args.kwargs["validated_at"] == "2026-08-16T09:30:00+00:00"
-    assert spy.call_args.kwargs["stage"] == "validation_failed"
+    assert spy.call_args.args[0] == "<x/>"
+    assert "validated_at" not in spy.call_args.kwargs
 
 
 def test_pdf_is_a_clean_422_when_the_stored_payload_has_no_form_model(client):
@@ -1208,7 +1212,7 @@ def test_pdf_survives_an_audit_failure(client):
            "nar1_case_id": "c1"}
     with _super(), \
          patch("routers.tpsi.filings.get_filing", return_value=row), \
-         patch("routers.tpsi.nar1_pdf.render", return_value=b"%PDF-1.4 fake"), \
+         patch("routers.tpsi.nar1_form_fill.render", return_value=b"%PDF-1.4 fake"), \
          patch("services.audit_service.get_supabase",
                side_effect=RuntimeError("audit down")):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)

@@ -72,7 +72,7 @@ def _sendable(case=None, filing=None, recipient="client@example.com",
               return_value=list(directors)),
         patch("routers.cases.nar1_cases.recipient_email", return_value=recipient),
         patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY),
-        patch("routers.cases.nar1_pdf.render", return_value=b"%PDF-1.4"),
+        patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF-1.4"),
     ]
 
 
@@ -112,9 +112,16 @@ def test_send_attaches_the_pdf_rendered_from_the_validated_xml(client):
     assert send.call_args.kwargs["to"] == ["client@example.com"]
 
 
-def test_send_renders_the_snapshot_with_its_own_date_and_stage(client):
-    """Without them a snapshot CR has since rejected is indistinguishable from a
-    fresh one — the same reason GET /filings/{id}/pdf passes them."""
+def test_send_renders_the_CR_validated_snapshot_on_CRs_own_form(client):
+    """Levi 2026-08-30: the client is emailed Form NAR1 itself, not a summary.
+
+    THIS DROPPED A PROVENANCE FOOTER. The old renderer stamped `validated_at`
+    and `stage` on the page so a snapshot CR had since rejected could be told
+    from a fresh one. CR's printed form has nowhere to put that, and an
+    internal workflow stage is not something to print on a client's statutory
+    return anyway. The facts did not disappear — the Submission stage shows
+    them on screen, where the admin who needs them is looking.
+    """
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=VALIDATED), \
@@ -122,14 +129,16 @@ def test_send_renders_the_snapshot_with_its_own_date_and_stage(client):
          patch("routers.cases.nar1_cases.recipient_email",
                return_value="client@example.com"), \
          patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \
-         patch("routers.cases.nar1_pdf.render", return_value=b"%PDF") as render, \
+         patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF") as render, \
          patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         client.post("/cases/c1/verification/send", headers=H, json={})
+    # The CR-validated snapshot, never the live profile: showing a client one
+    # document and filing another is the failure this guards.
     assert render.call_args.args[0] == "<x/>"
-    assert render.call_args.kwargs["validated_at"] == "2026-08-16T00:00:00Z"
-    assert render.call_args.kwargs["stage"] == "validated"
+    assert "validated_at" not in render.call_args.kwargs
+    assert "stage" not in render.call_args.kwargs
 
 
 def test_send_is_refused_before_cr_validation(client):
@@ -526,7 +535,7 @@ def test_an_unrenderable_snapshot_is_422_not_500(client):
          patch("routers.cases.nar1_cases.recipient_email",
                return_value="client@example.com"), \
          patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \
-         patch("routers.cases.nar1_pdf.render",
+         patch("routers.cases.nar1_form_fill.render",
                side_effect=ValueError("no <formModel> in the payload")), \
          patch("routers.cases.email_service.send") as send:
         response = client.post("/cases/c1/verification/send", headers=H, json={})
@@ -705,7 +714,7 @@ def test_verification_endpoints_reject_an_invalid_token(client):
 #
 # Every test above patches email_service.send, so none of them proves the router
 # reaches the real transport, or that the real renderer produces something
-# mailable. This one patches ONE thing — httpx.post — and lets nar1_pdf.render
+# mailable. This one patches ONE thing — httpx.post — and lets the NAR1 form renderer
 # and email_service.send run for real against CR's own shipped example.
 # ---------------------------------------------------------------------------
 

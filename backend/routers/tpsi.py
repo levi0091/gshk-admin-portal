@@ -15,7 +15,8 @@ from pydantic import BaseModel
 
 from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
-from services import nar1_cases, nar1_pdf
+from services import nar1_cases
+from services.nar1_form import fill as nar1_form_fill
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
@@ -705,11 +706,11 @@ async def filing_pdf(
 
     # Checked BEFORE the validated_xml gate: the form code never changes, so
     # "validate it first" would send the caller round a loop that still ends
-    # here. POST /filings accepts every code in FORM_FEES, and nar1_pdf renders
-    # NAR1 only -- fed an Nd2a it would not fail, it would emit a document
-    # headed "Form NAR1 - Annual Return" carrying the few tags whose names
-    # coincide and dropping every ND2A particular. A missing code is refused
-    # too: assuming NAR1 is the same mistake, made silently.
+    # here. POST /filings accepts every code in FORM_FEES, and the renderer
+    # fills CR's NAR1 form only -- fed an Nd2a it would not fail, it would emit
+    # a document headed "Form NAR1 / Annual Return" carrying the few tags whose
+    # names coincide and dropping every ND2A particular. A missing code is
+    # refused too: assuming NAR1 is the same mistake, made silently.
     form_code = (row.get("form_code") or "").strip()
     if form_code.lower() != "nar1":
         raise HTTPException(
@@ -729,16 +730,26 @@ async def filing_pdf(
         # validated_xml, never request_xml and never the live profile: the admin
         # double-confirms an irreversible, chargeable submit off this document,
         # so it has to be the one CR is actually holding.
-        # validated_at and stage go into the footer. A filing CR rejected at a
-        # LATER validation keeps its earlier validated_xml (filings.validate
-        # only sets stage=validation_failed), so the snapshot can outlive its
-        # own validation and the page must say when it was taken.
-        pdf = nar1_pdf.render(
+        # CR's OWN FORM, not a summary of it (Levi 2026-08-30). This is what
+        # the Client Verification screen shows and what the Submission stage's
+        # "Download NAR1" hands over, so it has to be the document the client
+        # and CR would both recognise.
+        # The company type is not in the validated XML — `coyStatus` comes back
+        # ABSENT from a real validateForm — so it is read off the profile. A
+        # missing entity is not a reason to fail the preview: the resolver
+        # defaults to "private", which is what 5,987 of DEV's 5,998 companies
+        # are.
+        try:
+            entity = nar1_cases.entity_for(row.get("entity_id")) or {}
+        except Exception:  # noqa: BLE001
+            entity = {}
+        pdf = nar1_form_fill.render(
             row["validated_xml"],
-            validated_at=row.get("validated_at"),
-            stage=row.get("stage"),
+            company_type=nar1_form_fill.company_type_from_profile(
+                entity.get("company_type")
+            ),
         )
-    except ValueError as exc:
+    except (ValueError, nar1_form_fill.FormFillError) as exc:
         # A stored payload CR accepted but we cannot parse is a data problem,
         # not an unhandled 500 that reads like a crash in the renderer.
         raise HTTPException(422, str(exc))

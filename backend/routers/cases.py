@@ -14,8 +14,9 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from services import (
     audit_events as ev, document_service, email_service, nar1_case_status,
-    nar1_cases, nar1_pdf, nar1_return_data,
+    nar1_cases, nar1_return_data,
 )
+from services.nar1_form import fill as nar1_form_fill
 from services.audit_service import log_event
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms import nar1_source
@@ -703,19 +704,22 @@ async def send_verification(
     entity = nar1_cases.entity_for(case["entity_id"])
 
     try:
-        # validated_at and stage are stamped into the footer: without them a
-        # snapshot CR has since rejected is indistinguishable from a fresh one.
+        # CR's OWN FORM, not a summary of it (Levi 2026-08-30). This PDF is
+        # attached to an email asking a director to approve their company's
+        # statutory return. A director knows what Form NAR1 looks like; they
+        # cannot check our field table against anything.
         #
-        # Off the event loop: reportlab is CPU-bound and this handler is
-        # `async def`, so rendering inline blocks every other request this
-        # worker is serving, not just this one.
+        # Off the event loop: filling and compressing a 15-page AcroForm is
+        # CPU-bound and this handler is `async def`, so rendering inline would
+        # block every other request this worker is serving.
         pdf = await asyncio.to_thread(
-            nar1_pdf.render,
+            nar1_form_fill.render,
             filing["validated_xml"],
-            validated_at=filing.get("validated_at"),
-            stage=filing.get("stage"),
+            company_type=nar1_form_fill.company_type_from_profile(
+                entity.get("company_type")
+            ),
         )
-    except ValueError as exc:
+    except (ValueError, nar1_form_fill.FormFillError) as exc:
         raise HTTPException(
             422, f"the validated snapshot could not be rendered: {exc}")
 
