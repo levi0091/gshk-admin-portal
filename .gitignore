@@ -13,6 +13,34 @@ PRD/
 Wireframe/
 docs/
 
+# ...except a few things under the TOP-LEVEL docs/ that are INPUTS, not
+# documentation. The leading slashes matter: `docs/` above matches at any
+# depth, and backend/docs/ must STAY ignored — it holds the CR public key PEM,
+# which is deliberately env-var-only in deployment (services/tpsi/config.py).
+#
+# CR's two worked specimens are the ground truth tests/test_nar1_field_map.py
+# checks the NAR1 field map against. Without them in the repo those tests skip
+# themselves in CI, and a silently-skipped verification is worse than none —
+# the map would be unguarded while looking guarded.
+#
+# CR's blank form is NOT here: it is a RUNTIME asset and lives with the code
+# that fills it, at backend/services/nar1_form/form/NAR1_fillable.pdf.
+!/docs/
+/docs/*
+!/docs/NAR1(private)_Specimen-e.pdf
+!/docs/NAR1(public)_Specimen-e.pdf
+!/docs/QUEUED.md
+# The design spec for the NAR1 facsimile, because the code refers to it for
+# WHY the field map looks the way it does. Deliberately this one file and not
+# `!/docs/superpowers/` — that would sweep in every historical plan and spec
+# under it (~12k lines of execution logs), which is a decision for Levi to
+# make on purpose rather than a side effect of this one.
+!/docs/superpowers/
+/docs/superpowers/*
+!/docs/superpowers/specs/
+/docs/superpowers/specs/*
+!/docs/superpowers/specs/2026-08-30-nar1-form-facsimile-design.md
+
 # Python
 __pycache__/
 *.py[cod]

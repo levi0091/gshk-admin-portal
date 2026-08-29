@@ -62,8 +62,12 @@ from services.nar1_form import field_map as fm
 # The warning is therefore noise, and one line per field drowns real logs.
 logging.getLogger("pypdf.generic._appearance_stream").setLevel(logging.ERROR)
 
-#: CR's blank form, shipped in the repo. Read-only; never modified in place.
-TEMPLATE = Path(__file__).resolve().parents[3] / "docs" / "NAR1_fillable.pdf"
+#: CR's blank form, COMMITTED BESIDE THIS MODULE rather than read from
+#: `docs/`. It is a runtime dependency, not documentation: without it every
+#: client-verification email fails. `docs/` is in .gitignore, so a copy living
+#: there is on one laptop — absent from CI, absent from Railway, and absent
+#: from any fresh clone. Read-only; never modified in place.
+TEMPLATE = Path(__file__).resolve().parent / "form" / "NAR1_fillable.pdf"
 
 #: Who CR contacts about the filing. GSHK, not the client.
 DEFAULT_PRESENTER = {
