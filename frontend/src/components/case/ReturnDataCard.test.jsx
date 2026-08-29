@@ -1,10 +1,13 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import ReturnDataCard from './ReturnDataCard.jsx'
 
-const get = vi.fn()
-vi.mock('../../lib/api.js', () => ({ api: { get: (...a) => get(...a) } }))
+const get = vi.fn(); const patch = vi.fn()
+vi.mock('../../lib/api.js', () => ({
+  api: { get: (...a) => get(...a), patch: (...a) => patch(...a) },
+}))
 
 const DATA = {
   year: 2026,
@@ -15,7 +18,12 @@ const DATA = {
   directors: ['Chan Tai Man', 'Nominee Holdings Ltd.'],
   secretaries: ['Get Started HK Limited'],
   signatory: { name: 'Wong Mei Ling', capacity: 'Company Secretary',
-               person_id: 'T2607S' },
+               person_id: 'T2607S', is_corporate: false },
+  signatory_capacity: null,
+  signatory_capacity_options: [
+    'Authorized Person', 'Authorized Representative', 'Company Secretary',
+    'Director', 'Reserve Director',
+  ],
   member_count: 2,
   share_classes: [{ name: 'Ordinary', total_issued: 100, currency: 'HKD' }],
   problems: [],
@@ -24,6 +32,7 @@ const DATA = {
 beforeEach(() => {
   vi.clearAllMocks()
   get.mockResolvedValue(DATA)
+  patch.mockResolvedValue({})
 })
 
 describe('ReturnDataCard', () => {
@@ -48,14 +57,13 @@ describe('ReturnDataCard', () => {
 
   it('names the signatory — the commonest reason a NAR1 cannot be filed', async () => {
     render(<ReturnDataCard caseId="c1" />)
-    expect(await screen.findByText('Wong Mei Ling (Company Secretary)'))
-      .toBeInTheDocument()
+    expect(await screen.findByText('Wong Mei Ling')).toBeInTheDocument()
   })
 
   it('says so plainly when there is no eligible signatory', async () => {
     get.mockResolvedValue({ ...DATA, signatory: null })
     render(<ReturnDataCard caseId="c1" />)
-    expect(await screen.findByText('No eligible signatory — see below'))
+    expect(await screen.findByText('No eligible signatory on record'))
       .toBeInTheDocument()
   })
 
@@ -67,32 +75,90 @@ describe('ReturnDataCard', () => {
     expect(screen.getAllByText('Not on record').length).toBeGreaterThanOrEqual(2)
   })
 
-  it('lists every mapper problem as a readable sentence', async () => {
+  // Levi 2026-08-30. This card no longer pre-judges the company: `problems`
+  // used to render as a red "This company cannot be filed as a NAR1 yet" panel
+  // before anyone had pressed anything, and every real GSHK client tripped it.
+  // Faults now come from CR, when CR is actually asked.
+  it('does NOT block the company before CR has been asked', async () => {
     get.mockResolvedValue({
       ...DATA,
       problems: ['registered office: no address on record',
                  'signatory: Get Started HK Limited is a body corporate'],
     })
     render(<ReturnDataCard caseId="c1" />)
+    await screen.findByText('NAR1 return data')
 
-    expect(await screen.findByText('registered office: no address on record'))
-      .toBeInTheDocument()
-    expect(screen.getByText(/is a body corporate/)).toBeInTheDocument()
-    // The card still shows the DATA — this is the case it is most needed in.
+    expect(screen.queryByText(/cannot be filed as a NAR1/)).not.toBeInTheDocument()
+    expect(screen.queryByText('registered office: no address on record'))
+      .not.toBeInTheDocument()
+    // The data is still all there — that never depended on the verdict.
     expect(screen.getByText('2100028')).toBeInTheDocument()
   })
 
-  it('never renders an object as text', async () => {
-    // React error #31 blanks the whole tree, and a CR fault arrives as a
-    // [severity, message] PAIR rather than a string.
+  // ---- the signing capacity picker ----------------------------------------
+  //
+  // The one field the portal cannot derive: a body-corporate secretary signs
+  // through a natural person and CR's vocabulary says which one.
+
+  it('offers CR\'s capacity vocabulary for this signatory', async () => {
+    render(<ReturnDataCard caseId="c1" />)
+    const select = await screen.findByLabelText('Signing capacity')
+    const values = [...select.options].map(o => o.value)
+    expect(values).toEqual(
+      ['', 'Authorized Person', 'Authorized Representative', 'Company Secretary',
+       'Director', 'Reserve Director'])
+  })
+
+  it('starts unchosen rather than defaulting to a capacity nobody picked', async () => {
+    // A wrong capacity is accepted by CR's schema and rejected server-side
+    // AFTER the fee, so a plausible-looking default is worse than a blank.
+    render(<ReturnDataCard caseId="c1" />)
+    expect(await screen.findByLabelText('Signing capacity')).toHaveValue('')
+  })
+
+  it('saves the chosen capacity to the case', async () => {
+    const user = userEvent.setup()
+    render(<ReturnDataCard caseId="c1" />)
+    const select = await screen.findByLabelText('Signing capacity')
+    await user.selectOptions(select, 'Director')
+    await waitFor(() => expect(patch).toHaveBeenCalledWith(
+      '/cases/c1', { signatory_capacity: 'Director' }))
+  })
+
+  it('re-reads the return after saving, because the capacity feeds the mapper', async () => {
+    const user = userEvent.setup()
+    render(<ReturnDataCard caseId="c1" />)
+    const select = await screen.findByLabelText('Signing capacity')
+    get.mockClear()
+    await user.selectOptions(select, 'Director')
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/cases/c1/return-data'))
+  })
+
+  it('shows a stored capacity rather than asking again', async () => {
+    get.mockResolvedValue({ ...DATA, signatory_capacity: 'Company Secretary' })
+    render(<ReturnDataCard caseId="c1" />)
+    expect(await screen.findByLabelText('Signing capacity'))
+      .toHaveValue('Company Secretary')
+  })
+
+  it('keeps the card standing when the save fails', async () => {
+    // A failed save must not replace the return the operator was reading.
+    const user = userEvent.setup()
+    patch.mockRejectedValue(new Error('nope'))
+    render(<ReturnDataCard caseId="c1" />)
+    const select = await screen.findByLabelText('Signing capacity')
+    await user.selectOptions(select, 'Director')
+    await waitFor(() => expect(screen.getByText(/nope/)).toBeInTheDocument())
+    expect(screen.getByText('2100028')).toBeInTheDocument()
+  })
+
+  it('offers no picker at all when there is no signatory to describe', async () => {
     get.mockResolvedValue({
-      ...DATA,
-      problems: [['E', 'Please input valid District.']],
+      ...DATA, signatory: null, signatory_capacity_options: [],
     })
     render(<ReturnDataCard caseId="c1" />)
     await screen.findByText('NAR1 return data')
-    expect(screen.getByText(/Please input valid District/)).toBeInTheDocument()
-    expect(document.body.textContent).not.toContain('[object Object]')
+    expect(screen.queryByLabelText('Signing capacity')).not.toBeInTheDocument()
   })
 
   it('reports a failed read instead of rendering an empty return', async () => {

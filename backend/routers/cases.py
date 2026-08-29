@@ -19,6 +19,9 @@ from services import (
 from services.audit_service import log_event
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms import nar1_source
+from services.tpsi.forms.cr_vocabularies import (
+    CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL,
+)
 
 router = APIRouter()
 
@@ -78,6 +81,11 @@ class CasePatch(BaseModel):
     signing_method: str | None = None
     assigned_to: str | None = None
     restart_verification: bool = False
+    #: CR's selectCapacityDesc for whoever signs this return. Empty string
+    #: clears it back to "not yet chosen"; None (absent) leaves it alone. That
+    #: distinction matters — a picker reset to its blank option must be able to
+    #: say so, and `None` already means "field not in this PATCH".
+    signatory_capacity: str | None = None
 
 
 @router.post("", status_code=201)
@@ -190,7 +198,9 @@ async def get_return_data(
     except LookupError as exc:
         raise HTTPException(404, str(exc))
 
-    return nar1_return_data.summarise(graph)
+    return nar1_return_data.summarise(
+        graph, signatory_capacity=case.get("signatory_capacity")
+    )
 
 
 @router.patch("/{case_id}")
@@ -229,6 +239,29 @@ async def patch_case(
             patch["signing_method"] = body.signing_method
             events.append((ev.CASE_FIELD_UPDATED, "signing_method",
                            before.get("signing_method"), body.signing_method))
+
+    if body.signatory_capacity is not None:
+        capacity = body.signatory_capacity.strip()
+        # Validated against cr_vocabularies — the same table the mapper checks,
+        # so there is one vocabulary and not two that can drift. Both lists are
+        # accepted here rather than only the body-corporate one: this endpoint
+        # does not know whether the resolved signatory is a person or a company,
+        # and the mapper checks the value against the RIGHT list for the actual
+        # signatory anyway. Rejecting a valid Individual value here would block
+        # a natural-person signer for no reason.
+        if capacity and capacity not in (
+            CAPACITY_BODY_CORPORATE | CAPACITY_INDIVIDUAL
+        ):
+            raise HTTPException(
+                400,
+                f"signatory_capacity {capacity!r} is not in CR's capacity "
+                f"vocabulary. CR accepts any string here and rejects it "
+                f"server-side, after the fee has been taken.",
+            )
+        if capacity != (before.get("signatory_capacity") or ""):
+            patch["signatory_capacity"] = capacity or None
+            events.append((ev.CASE_FIELD_UPDATED, "signatory_capacity",
+                           before.get("signatory_capacity"), capacity or None))
 
     if body.assigned_to is not None and body.assigned_to != before.get("assigned_to"):
         patch["assigned_to"] = body.assigned_to

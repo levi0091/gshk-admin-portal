@@ -556,13 +556,30 @@ async def prepare_filing(
     except Exception as exc:
         raise _loader_failed(body.entity_id, exc)
 
+    # selectCapacityDesc for a body-corporate secretary cannot be derived from
+    # the company profile — it depends on who at GSHK signs. It used to be a
+    # refusal; Levi 2026-08-30 made it an operator choice, stored on the case by
+    # PATCH /cases/{id}. Read from there rather than accepted as a request
+    # field, so the value that gets filed is the one the operator saw on screen
+    # and the audit trail recorded, not one this call could differ on.
+    #
+    # This router still invents NO default. An unchosen capacity stays None and
+    # the mapper still refuses — the refusal simply now has a remedy on screen.
+    capacity = None
+    if body.nar1_case_id:
+        try:
+            capacity = (nar1_cases.get_case(body.nar1_case_id)
+                        or {}).get("signatory_capacity")
+        except LookupError:
+            # A bad case id is the /cases endpoints' error to raise, not this
+            # one's; prepare must not 404 on a field it merely consults.
+            capacity = None
+
     try:
-        # signatory passed straight through: this router invents NO capacity
-        # default. selectCapacityDesc for a body-corporate secretary is an
-        # undecided business question, and map_entity refuses rather than
-        # guessing a value CR's schema would accept and the filing would
-        # misstate. Pre-empting that here would put the guess back.
-        data = nar1_mapper.map_entity(graph, year=year, signatory=body.signatory)
+        # `signatory` is still passed straight through: an explicit override
+        # replaces the whole signer, capacity included.
+        data = nar1_mapper.map_entity(graph, year=year, signatory=body.signatory,
+                                      signatory_capacity=capacity)
         form_xml = nar1.build_nar1_xml(data)
     except nar1_mapper.MappingError as exc:
         # The whole list, in a structured field the UI can render as CR's own

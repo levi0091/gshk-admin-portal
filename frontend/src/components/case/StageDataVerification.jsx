@@ -84,7 +84,8 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
     <>
       {/* The return itself, first — the wireframe opens this stage with the
           data, and everything below it is a decision about that data. */}
-      <ReturnDataCard caseId={caseRow.id} reloadKey={caseRow.updated_at} />
+      <ReturnDataCard caseId={caseRow.id} reloadKey={caseRow.updated_at}
+                      onChanged={onChanged} />
 
       <div className="card mb-16">
         <div className="card-hdr">

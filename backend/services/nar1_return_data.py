@@ -28,6 +28,9 @@ Read-only. Opens no filing, calls no CR endpoint, writes nothing.
 from datetime import datetime, timedelta, timezone
 
 from services.tpsi.forms import nar1_mapper
+from services.tpsi.forms.cr_vocabularies import (
+    CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL,
+)
 
 
 def _hk_year() -> int:
@@ -61,8 +64,16 @@ def _party_name(row: dict, persons: dict, entities: dict) -> str | None:
     return row.get("corporate_name") or None
 
 
-def summarise(graph: dict, *, year: int | None = None) -> dict:
-    """The card's rows, plus whether this company can be filed at all."""
+def summarise(graph: dict, *, year: int | None = None,
+              signatory_capacity: str | None = None) -> dict:
+    """The card's rows, plus whether this company can be filed at all.
+
+    `signatory_capacity` is the operator's stored choice on the case. It is fed
+    to the mapper so the verdict below reflects the return as it would actually
+    be prepared — without it, every GSHK-managed company reports the "no
+    capacity chosen" problem forever, including the ones where the operator has
+    already chosen one.
+    """
     year = year or _hk_year()
     entity = graph.get("entity") or {}
     persons = graph.get("persons") or {}
@@ -97,7 +108,8 @@ def summarise(graph: dict, *, year: int | None = None) -> dict:
 
     problems: list[str] = []
     try:
-        nar1_mapper.map_entity(graph, year=year)
+        nar1_mapper.map_entity(graph, year=year,
+                               signatory_capacity=signatory_capacity)
     except nar1_mapper.MappingError as exc:
         problems = list(exc.problems)
     except Exception as exc:  # noqa: BLE001
@@ -117,10 +129,23 @@ def summarise(graph: dict, *, year: int | None = None) -> dict:
         "directors": directors,
         "secretaries": secretaries,
         "signatory": (
-            {"name": signatory.get("name"), "capacity": signatory.get("capacity"),
-             "person_id": signatory.get("person_id")}
+            {"name": signatory.get("name"),
+             # The operator's stored choice wins over the derived one, because
+             # it is the value that will actually be filed.
+             "capacity": signatory_capacity or signatory.get("capacity"),
+             "person_id": signatory.get("person_id"),
+             "is_corporate": signatory.get("is_corporate") is True}
             if signatory else None
         ),
+        # Which of CR's two vocabularies applies to THIS signatory. The screen
+        # renders a picker from this rather than holding its own copy of a CR
+        # list that would drift the first time CR revised it.
+        "signatory_capacity": signatory_capacity,
+        "signatory_capacity_options": sorted(
+            CAPACITY_BODY_CORPORATE
+            if (signatory or {}).get("is_corporate") is True
+            else CAPACITY_INDIVIDUAL
+        ) if signatory else [],
         "member_count": len({h.get("holder_person_id") or h.get("holder_entity_id")
                              or h.get("id") for h in holdings}),
         "share_classes": [

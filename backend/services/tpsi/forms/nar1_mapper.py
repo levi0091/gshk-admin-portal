@@ -496,14 +496,33 @@ def _check_capacity(name: str, capacity: str, is_corporate: bool,
 
 
 def _signatory_block(graph: dict, signatory: dict | None,
-                     problems: list[str]) -> dict:
+                     problems: list[str],
+                     capacity_override: str | None = None) -> dict:
     """The statutory declaration: who signed, in what capacity, when.
 
     An absent block is not a smaller filing, it is an UNSIGNED filing -- and
     nar1.validate() would wave it through, because it checks max_length and
     never `mandatory`. So a signatory that cannot be resolved is a MappingError.
+
+    `capacity_override` sets selectCapacityDesc on whoever is resolved, and
+    changes nothing else. It is a SEPARATE argument from `signatory` on purpose.
+    Merging a partial dict into the derived signatory would have been the
+    obvious alternative and is quietly unsafe: `signatory` is documented so that
+    an ABSENT key means something -- no `is_corporate` means a natural person,
+    and a natural person with no `person_id` is a MappingError rather than a
+    statutory field that vanishes. A merge would let those absent keys be
+    filled in from the derived signer, so a caller who meant to override the
+    whole signer would silently inherit half of another one.
+
+    This exists because the capacity is the ONE thing about a GSHK-signed
+    return that the portal cannot derive: the company secretary is a body
+    corporate, and which of CR's 15 Body Corporate values applies depends on
+    who at GSHK signs on its behalf. That is now an operator choice on the Data
+    Verification stage rather than a refusal (Levi 2026-08-30).
     """
     resolved = signatory if signatory is not None else _derive_signatory(graph)
+    if capacity_override and resolved:
+        resolved = {**resolved, "capacity": capacity_override}
     if not resolved or not str(resolved.get("name") or "").strip():
         problems.append(
             "signatory: no current company secretary on record to sign the "
@@ -866,7 +885,8 @@ def _schedule_1(graph: dict, problems: list[str]) -> dict:
     return {"shares": shares}
 
 
-def map_entity(graph: dict, *, year: int, signatory: dict | None = None) -> dict:
+def map_entity(graph: dict, *, year: int, signatory: dict | None = None,
+               signatory_capacity: str | None = None) -> dict:
     """The CR-schema dict for one entity's annual return.
 
     `graph` is what nar1_source.load_entity_graph() returns.
@@ -883,8 +903,15 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None) -> dict
         `capacity` must come from CR's vocabulary for that kind of signatory
         (cr_vocabularies.CAPACITY_INDIVIDUAL / CAPACITY_BODY_CORPORATE); it
         defaults to "Company Secretary" for a natural person and has NO default
-        for a body corporate, which is why a GSHK-signed return currently
-        requires this argument.
+        for a body corporate.
+    `signatory_capacity`, when given, sets selectCapacityDesc on whoever is
+        resolved and changes nothing else — the operator's choice from CR's
+        vocabulary, made on the Data Verification stage. It is the answer to the
+        one thing about a GSHK-signed return the portal cannot derive: the
+        secretary is a body corporate, and which of CR's 15 Body Corporate
+        values applies depends on who at GSHK signs on its behalf. Deliberately
+        NOT folded into `signatory` — see `_signatory_block` for why a partial
+        merge there would be unsafe.
     """
     problems: list[str] = []
     entity = graph["entity"]
@@ -975,7 +1002,7 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None) -> dict
     data["shareholderListedInSch2"] = "N"
     data["shareholderListedInCdrom"] = "N"
     data["schedule1"] = _schedule_1(graph, problems)
-    data.update(_signatory_block(graph, signatory, problems))
+    data.update(_signatory_block(graph, signatory, problems, signatory_capacity))
 
     if problems:
         raise MappingError(problems)
