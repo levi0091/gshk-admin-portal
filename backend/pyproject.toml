@@ -17,6 +17,13 @@ dependencies = [
     "python-multipart>=0.0.32",
     "cryptography>=50.0.0",
     "reportlab>=5.0.0",
+    # RUNTIME, not a test tool: services/nar1_form/fill.py fills CR's blank
+    # Form NAR1 with pypdf, and routers/cases.py imports it to render the PDF
+    # the client is sent. It sat in the dev group and worked only because
+    # `uv sync` installs dev groups by DEFAULT -- any build that passed
+    # --no-dev would have shipped an image whose client-verification send
+    # raised ImportError on the first real use.
+    "pypdf>=6.16.1",
 ]
 
 [dependency-groups]
@@ -27,7 +34,8 @@ dev = [
     "httpx>=0.26,<0.28",
     "xlrd>=2.0.2",
     "openpyxl>=3.1.5",
-    "pypdf>=6.16.1",
+    # Test-only: the field-map tests read CR's specimens with it. Nothing the
+    # server does at runtime touches pymupdf.
     "pymupdf>=1.28.2",
 ]
 
