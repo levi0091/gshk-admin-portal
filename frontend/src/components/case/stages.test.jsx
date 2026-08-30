@@ -28,6 +28,9 @@ vi.mock('../../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 const onChanged = vi.fn()
 const onError = vi.fn()
 
+/** Render inside a router, for stages that link or navigate. */
+const renderRouted = ui => render(<MemoryRouter>{ui}</MemoryRouter>)
+
 const CASE = {
   id: 'c1', entity_id: 'e7', case_no: 'NAR-2026-0041', filing_id: 'f1',
   company_name: 'Harbour Tech Ltd.', signing_method: 'esign',
@@ -194,28 +197,41 @@ describe('Data Verification', () => {
     expect(await screen.findByText(/10:00–16:00 Hong Kong time/)).toBeInTheDocument()
   })
 
-  it('restarts verification through the case, discarding the snapshot', async () => {
-    const user = userEvent.setup()
+  it('points at the header for Restart rather than owning the button', () => {
+    // Restart moved to the page header (Q3/v11) so it is reachable from Client
+    // Verification and Signing — the stages you are on when you discover the
+    // snapshot is wrong. Its behaviour is covered in CaseWorkflowPage.test.jsx.
     renderIt()
-    await user.click(screen.getByRole('button', { name: /Restart verification/ }))
-    await user.click(screen.getByRole('button', { name: /Restart — back to Data Verification/ }))
-    await waitFor(() => expect(patch).toHaveBeenCalledWith('/cases/c1', { restart_verification: true }))
+    expect(screen.queryByRole('button', { name: /Restart verification/ })).toBeNull()
+    expect(screen.getByText(/at the top of the page/)).toBeInTheDocument()
   })
 
-  it('asks before discarding a CR-signed snapshot', async () => {
-    // One click used to discard the snapshot, the client's approval and any
-    // signature taken since. The wireframe puts it behind a confirmation.
-    const user = userEvent.setup()
-    renderIt()
-    await user.click(screen.getByRole('button', { name: /Restart verification/ }))
+  it('says CR reports every problem at once, and that nothing was charged', () => {
+    renderIt({
+      form_status: { code: 'validation_failed', failed: true,
+                     faults: [['ERROR', 'Please check selectPersonId field.']] },
+    })
+    expect(screen.getByText(/fix them all before/)).toBeInTheDocument()
+    expect(screen.getByText(/Nothing was charged/)).toBeInTheDocument()
+  })
 
-    expect(screen.getByRole('alertdialog', { name: 'Restart verification' }))
-      .toBeInTheDocument()
-    expect(patch).not.toHaveBeenCalled()
+  it('explains that validating freezes an immutable snapshot', () => {
+    renderIt({ form_status: { code: 'draft' }, filing_id: null })
+    expect(screen.getByText(/freezes an immutable snapshot/)).toBeInTheDocument()
+    expect(screen.getByText(/validateFormNar1/)).toBeInTheDocument()
+  })
 
-    await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(patch).not.toHaveBeenCalled()
-    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  it('names the permission validation needs, and that it is free', () => {
+    renderIt({ form_status: { code: 'draft' }, filing_id: null })
+    expect(screen.getByText(/validation is free/)).toBeInTheDocument()
+  })
+
+  it('offers Continue to Client Verification once the snapshot exists', async () => {
+    const onGo = vi.fn()
+    renderIt({}, { onGo })
+    await userEvent.setup().click(
+      screen.getByRole('button', { name: /Continue to Client Verification/ }))
+    expect(onGo).toHaveBeenCalledWith(2)
   })
 })
 
@@ -227,6 +243,59 @@ describe('Client Verification', () => {
   const renderIt = (over = {}) => render(
     <StageClientVerification caseRow={at(over)} canWrite
                              onChanged={onChanged} onError={onError} />)
+
+  // ── v11 restorations (Q3, Block C) ──────────────────────────────────────
+
+  it('leads with the frozen snapshot, so a moved profile is not a mystery', () => {
+    renderIt()
+    expect(screen.getByText(/Snapshot frozen at validation/)).toBeInTheDocument()
+    expect(screen.getByText(/not the live profile/)).toBeInTheDocument()
+  })
+
+  it('labels the preview with what it is and where it came from', async () => {
+    renderIt()
+    expect(await screen.findByText('Form NAR1 + Schedule 1')).toBeInTheDocument()
+    expect(screen.getByText('Rendered from the CR-validated XML')).toBeInTheDocument()
+    expect(screen.getByText(/NAR1_Harbour_Tech_Ltd_\.pdf/)).toBeInTheDocument()
+  })
+
+  it('zooms the preview, within bounds', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('100%')
+    await user.click(screen.getByRole('button', { name: 'Zoom in' }))
+    expect(screen.getByText('120%')).toBeInTheDocument()
+    // Bounded: past 200% the viewport is taller than any screen.
+    for (let i = 0; i < 10; i += 1) {
+      await user.click(screen.getByRole('button', { name: 'Zoom in' }))
+    }
+    expect(screen.getByText('200%')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
+  })
+
+  it('downloads the return rather than only embedding it', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await user.click(await screen.findByRole('button', { name: /Download PDF/ }))
+    // Two reads of the same endpoint: one for the embed, one for the save.
+    await waitFor(() => expect(blob).toHaveBeenCalledTimes(2))
+    expect(blob.mock.calls[1][0]).toBe('/tpsi/filings/f1/pdf')
+  })
+
+  it('opens the return full screen — 460px cannot show a nine-page form', async () => {
+    const open = vi.fn()
+    vi.stubGlobal('open', open)
+    const user = userEvent.setup()
+    renderIt()
+    await user.click(await screen.findByRole('button', { name: /Open full screen/ }))
+    expect(open).toHaveBeenCalledWith('blob:preview', '_blank', 'noopener')
+    vi.unstubAllGlobals()
+  })
+
+  it('names the permission sending needs', () => {
+    renderIt()
+    expect(screen.getByText(/nar1:write/)).toBeInTheDocument()
+  })
 
   it('renders the PDF from the CR-validated snapshot', async () => {
     renderIt()
@@ -417,27 +486,32 @@ describe('Signing', () => {
 
   it('defaults to e-Sign — nothing switches to manual by itself', () => {
     renderIt({ signing_method: null })
-    expect(screen.getByRole('tab', { name: /e-Sign via CR/ }))
-      .toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('radio', { name: /e-Sign/ }))
+      .toHaveAttribute('aria-checked', 'true')
   })
 
-  it('warns that choosing manual takes the filing off the portal', async () => {
-    renderIt({ signing_method: 'manual' })
-    expect(screen.getByText(/This filing leaves G-FlowDesk/)).toBeInTheDocument()
-    expect(screen.getByText(/refuse to e-file this case afterwards/)).toBeInTheDocument()
+  it('states the consequence of each method on the card itself', () => {
+    // v11 draws these as cards precisely so the consequence has somewhere to
+    // live. A toggle with the warning in a separate alert is what this
+    // replaced, and the alert only appeared AFTER choosing.
+    renderIt({ signing_method: null })
+    expect(screen.getByText(/drawn from the GSHK deposit account when you submit/))
+      .toBeInTheDocument()
+    expect(screen.getByText(/Filed off-portal: no CR API call and no fee deducted here/))
+      .toBeInTheDocument()
   })
 
   it('records the chosen method on the case', async () => {
     const user = userEvent.setup()
     renderIt()
-    await user.click(screen.getByRole('tab', { name: /Manual/ }))
+    await user.click(screen.getByRole('radio', { name: /Manual/ }))
     await waitFor(() => expect(patch).toHaveBeenCalledWith('/cases/c1', { signing_method: 'manual' }))
   })
 
   it('signs as the logged-in user, sending nothing about who signs', async () => {
     const user = userEvent.setup()
     renderIt()
-    await user.click(await screen.findByRole('button', { name: /Sign the return/ }))
+    await user.click(await screen.findByRole('button', { name: /Apply signature/ }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/tpsi/filings/f1/sign', {}))
   })
 
@@ -460,7 +534,7 @@ describe('Signing', () => {
     renderIt()
     expect(await screen.findByText(/no e-Service signing password stored/i))
       .toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Sign the return/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Apply signature/ })).toBeDisabled()
     // A refusal with no remedy is just an obstacle.
     expect(screen.getByRole('link', { name: /CR Credentials/ }))
       .toHaveAttribute('href', '/cr-credentials')
@@ -472,7 +546,7 @@ describe('Signing', () => {
     CREDENTIALS = { eservice_user_id: null, has_eservice_password: true }
     renderIt()
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Sign the return/ })).toBeEnabled())
+      expect(screen.getByRole('button', { name: /Apply signature/ })).toBeEnabled())
   })
 
   it('does not hide the manual route when the credential lookup fails', async () => {
@@ -480,14 +554,14 @@ describe('Signing', () => {
       ? Promise.reject(new Error('offline'))
       : Promise.resolve(RETURN_DATA))
     renderIt()
-    expect(await screen.findByRole('tab', { name: /Manual/ })).toBeEnabled()
+    expect(await screen.findByRole('radio', { name: /Manual/ })).toBeEnabled()
   })
 
   it('never offers to retry a CR rejection', async () => {
     const user = userEvent.setup()
     post.mockRejectedValue(Object.assign(new Error('tampered'), { status: 502 }))
     renderIt()
-    await user.click(screen.getByRole('button', { name: /Sign the return/ }))
+    await user.click(screen.getByRole('button', { name: /Apply signature/ }))
     expect(await screen.findByText(/do not simply retry/i)).toBeInTheDocument()
   })
 
@@ -499,6 +573,83 @@ describe('Signing', () => {
     await waitFor(() => expect(upload).toHaveBeenCalled())
     expect(upload.mock.calls[0][0]).toBe('/cases/c1/manual-sign')
     expect(upload.mock.calls[0][1].get('file')).toBe(file)
+  })
+
+  // ── v11 restorations (Q3, Block A) ──────────────────────────────────────
+
+  it('states the balance and the fee it covers before signing', async () => {
+    renderIt()
+    expect(await screen.findByText(/Deposit balance/)).toBeInTheDocument()
+    expect(screen.getByText(/covers the HK\$ 105.00 fee/)).toBeInTheDocument()
+    expect(screen.getByText(/enquireDepositAccount/)).toBeInTheDocument()
+  })
+
+  it('says plainly when the balance will not cover the fee', async () => {
+    get.mockImplementation(url => String(url).includes('/tpsi/credentials')
+      ? Promise.resolve(CREDENTIALS)
+      : Promise.resolve({ fee: '3480.00', balance: '90', sufficient: false }))
+    renderIt()
+    expect(await screen.findByText(/below the HK\$ 3,480.00 fee/)).toBeInTheDocument()
+    // "Checked just now" is reassurance, and reassurance next to a blocking
+    // problem reads as though the problem is handled.
+    expect(screen.queryByText(/enquireDepositAccount/)).toBeNull()
+  })
+
+  it('warns about an expiring TPSI password without hiding the balance', async () => {
+    const soon = new Date(Date.now() + 5 * 86400000).toISOString()
+    CREDENTIALS = { ...CREDENTIALS, tpsi_password_expires_at: soon }
+    renderIt()
+    expect(await screen.findByText(/expires in 5 days/)).toBeInTheDocument()
+    expect(screen.getByText(/Deposit balance/)).toBeInTheDocument()
+  })
+
+  it('shows no deposit pre-flight on the manual route', async () => {
+    // Nothing is drawn from the deposit account there, so a balance gate is
+    // one the operator can neither act on nor need.
+    renderIt({ signing_method: 'manual' })
+    await screen.findByText(/Choose the signed PDF/)
+    expect(screen.queryByText(/Deposit balance/)).toBeNull()
+  })
+
+  it('says signing is free and nothing is charged until Submission', () => {
+    renderIt()
+    expect(screen.getByText(/verifyPinSigningNar1/)).toBeInTheDocument()
+    expect(screen.getByText(/nothing is charged until Submission/)).toBeInTheDocument()
+  })
+
+  it('names the permission the sign button needs', () => {
+    renderIt()
+    expect(screen.getByText(/tpsi:write/)).toBeInTheDocument()
+  })
+
+  it('keeps the upload card, with a Replace, once a scan is attached', async () => {
+    // Replacing the card with a generic success alert left an operator who had
+    // attached the wrong scan with no way back.
+    renderIt({ signing_method: 'manual', manual_signed_document_id: 'd1',
+               manual_signed_document_version: 3 })
+    expect(await screen.findByText(/Signed NAR1 attached/)).toBeInTheDocument()
+    expect(screen.getByText(/Version 3/)).toBeInTheDocument()
+    expect(screen.getByText(/NAR1_MANUAL_SIGN_UPLOADED/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Replace/ })).toBeEnabled()
+  })
+
+  it('offers Continue to Submission only once the return is signed', async () => {
+    const onGo = vi.fn()
+    const { rerender } = render(
+      <MemoryRouter>
+        <StageSigning caseRow={at()} canWrite onChanged={onChanged}
+                      onError={onError} onGo={onGo} />
+      </MemoryRouter>)
+    expect(screen.queryByRole('button', { name: /Continue to Submission/ })).toBeNull()
+
+    rerender(
+      <MemoryRouter>
+        <StageSigning caseRow={at({ form_status: { code: 'signed' } })} canWrite
+                      onChanged={onChanged} onError={onError} onGo={onGo} />
+      </MemoryRouter>)
+    await userEvent.setup().click(
+      screen.getByRole('button', { name: /Continue to Submission/ }))
+    expect(onGo).toHaveBeenCalledWith(4)
   })
 
   it('does not offer the e-Sign form on the manual route', () => {
@@ -520,7 +671,7 @@ describe('Submission — e-Sign', () => {
   it('pre-flights the fee and balance before offering to file', async () => {
     renderIt()
     await waitFor(() => expect(get).toHaveBeenCalledWith('/tpsi/filings/f1/preview'))
-    expect(await screen.findByText(/Fee HK\$105/)).toBeInTheDocument()
+    expect(await screen.findByText(/Fee HK\$ 105/)).toBeInTheDocument()
   })
 
   const withPreflight = over => {
@@ -549,7 +700,7 @@ describe('Submission — e-Sign', () => {
       },
     })
     renderIt()
-    expect(await screen.findByText(/Fee HK\$2610.00/)).toBeInTheDocument()
+    expect(await screen.findByText(/Fee HK\$ 2,610\.00/)).toBeInTheDocument()
     expect(screen.getByText(/within 9 months of the return date/)).toBeInTheDocument()
     expect(screen.getByText(/2026-01-01/)).toBeInTheDocument()
     // "late" sits in its own <b>, so the sentence is split across elements —
@@ -564,13 +715,13 @@ describe('Submission — e-Sign', () => {
     withPreflight({ fee: '2610.00' })
     renderIt()
     expect(await screen.findByRole('button',
-      { name: /charges HK\$2610\.00/ })).toBeInTheDocument()
+      { name: /deducts HK\$ 2,610\.00/ })).toBeInTheDocument()
   })
 
   it('does not call an on-time return late', async () => {
     withPreflight()
     renderIt()
-    await screen.findByText(/Fee HK\$105.00/)
+    await screen.findByText(/Fee HK\$ 105\.00/)
     expect(document.querySelector('.alert').textContent).not.toMatch(/is\s*late/)
     expect(screen.getByText(/within 42 days of the return date/)).toBeInTheDocument()
   })
@@ -607,9 +758,9 @@ describe('Submission — e-Sign', () => {
     renderIt()
     await screen.findByText(/does not cover this filing/)
     // The acknowledgement itself is disabled, so the gate cannot be ticked past.
-    expect(screen.getByRole('button', { name: /I understand this files the return/ })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /File the return/ })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: /File the return/ }))
+    expect(screen.getByRole('button', { name: /I understand this submits NAR1 to CR/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
     expect(post).not.toHaveBeenCalled()
   })
 
@@ -617,28 +768,86 @@ describe('Submission — e-Sign', () => {
     get.mockRejectedValue(Object.assign(new Error('CR down'), { status: 503 }))
     renderIt()
     await screen.findByText(/Could not reach CR for the fee and balance/)
-    expect(screen.getByRole('button', { name: /File the return/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
   })
 
   it('requires an explicit acknowledgement even when the balance is fine', async () => {
     renderIt()
-    await screen.findByText(/Fee HK\$105/)
-    expect(screen.getByRole('button', { name: /File the return/ })).toBeDisabled()
+    await screen.findByText(/Fee HK\$ 105/)
+    expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
   })
 
   it('files only after the charge is acknowledged, and sends confirm', async () => {
     const user = userEvent.setup()
     renderIt()
-    await screen.findByText(/Fee HK\$105/)
-    await user.click(screen.getByRole('button', { name: /I understand this files the return/ }))
-    await user.click(screen.getByRole('button', { name: /File the return/ }))
+    await screen.findByText(/Fee HK\$ 105/)
+    await user.click(screen.getByRole('button', { name: /I understand this submits NAR1 to CR/ }))
+    await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/tpsi/filings/f1/submit', { confirm: true }))
   })
 
   it('hides filing entirely from someone without tpsi:submit', () => {
     renderIt({}, { canSubmit: false })
-    expect(screen.queryByRole('button', { name: /File the return/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Submit NAR1 to Companies Registry/ })).not.toBeInTheDocument()
     expect(screen.getByText(/tpsi:submit/)).toBeInTheDocument()
+  })
+
+  // ── v11 restorations (Q3, Block B) ──────────────────────────────────────
+
+  it('does the arithmetic — what the balance will be afterwards', async () => {
+    get.mockImplementation(url => String(url).includes('/summary')
+      ? Promise.resolve(FILING_SUMMARY)
+      : Promise.resolve({ fee: '2610.00', max_fee: '3480.00', fee_is_certain: true,
+                          on_time_fee: '105.00', balance: '12480', sufficient: true }))
+    renderIt()
+    // The balance now appears twice on purpose — once in the sentence above,
+    // once in the box. Scoped, so this asserts the BOX did the arithmetic.
+    await screen.findByText(/Balance after/)
+    const box = document.querySelector('.deposit-box')
+    expect(within(box).getByText('HK$ 12,480.00')).toBeInTheDocument()
+    expect(within(box).getByText(/− HK\$ 2,610\.00/)).toBeInTheDocument()
+    expect(within(box).getByText(/Balance after ≈ HK\$ 9,870\.00/)).toBeInTheDocument()
+  })
+
+  it('subtracts the CEILING when the fee is not computable', async () => {
+    // Being optimistic here means telling the operator they will have money
+    // left that they may not. The blanket mock is fee_is_certain: false.
+    renderIt()
+    expect(await screen.findByText(/− HK\$ 3,480\.00/)).toBeInTheDocument()
+    expect(screen.getByText(/at most/)).toBeInTheDocument()
+    expect(screen.getByText(/Balance after ≈ HK\$ 9,000\.00/)).toBeInTheDocument()
+  })
+
+  it('boxes the irreversible step and names its permission', async () => {
+    renderIt()
+    expect(await screen.findByText(/Irreversible action — two-step confirmation/))
+      .toBeInTheDocument()
+    expect(screen.getByText(/a separate permission from tpsi:write/)).toBeInTheDocument()
+  })
+
+  it('offers a way back to signing rather than only forwards', async () => {
+    const onGo = vi.fn()
+    renderIt({}, { onGo })
+    await userEvent.setup().click(
+      await screen.findByRole('button', { name: /Cancel — back to signing/ }))
+    expect(onGo).toHaveBeenCalledWith(3)
+  })
+
+  it('downloads the filled Form NAR1, not a rendering of the summary', async () => {
+    // Levi 2026-08-30, asked for by name. The endpoint served the facsimile
+    // and nothing on this screen called it.
+    const user = userEvent.setup()
+    renderIt()
+    await user.click(await screen.findByRole('button', { name: /Download NAR1 PDF/ }))
+    await waitFor(() => expect(blob).toHaveBeenCalledWith('/tpsi/filings/f1/pdf'))
+  })
+
+  it('says so when the NAR1 PDF cannot be produced', async () => {
+    blob.mockRejectedValue(Object.assign(new Error('template missing'), { status: 500 }))
+    const user = userEvent.setup()
+    renderIt()
+    await user.click(await screen.findByRole('button', { name: /Download NAR1 PDF/ }))
+    expect(await screen.findByText(/Could not produce the NAR1 PDF/)).toBeInTheDocument()
   })
 })
 
@@ -708,8 +917,30 @@ describe('Confirmation', () => {
     totalAmount: '105.00',
     paymentRcptList: [{ rcptNo: 'D77000418931', revCode: 'R1', docShtFrm: 'NAR1', amtChrg: '105.00' }],
   }
-  const renderIt = (over = {}) => render(
+  // Inside a router: the stage no longer dead-ends — it offers a way back to
+  // the company and to the case list, both of which navigate.
+  const renderIt = (over = {}) => renderRouted(
     <StageConfirmation caseRow={at({ receipt, ...over })} canRead onError={onError} />)
+
+  it('opens with a hero saying the statutory job is done', () => {
+    renderIt({ form_status: { code: 'registered', label: 'Registered' } })
+    expect(screen.getByText('NAR1 filed & confirmed by CR')).toBeInTheDocument()
+    expect(screen.getByText(/marked/)).toBeInTheDocument()
+  })
+
+  it('does not claim CR confirmed a filing CR has not confirmed', () => {
+    // Delivered is not registered. Saying "confirmed by CR" before CR has said
+    // so is the one claim this screen must not make.
+    renderIt({ form_status: { code: 'submitted', label: 'Submitted' } })
+    expect(screen.queryByText('NAR1 filed & confirmed by CR')).toBeNull()
+    expect(screen.getByText(/has been delivered/)).toBeInTheDocument()
+  })
+
+  it('does not dead-end — it offers a way back to the work', () => {
+    renderIt()
+    expect(screen.getByRole('button', { name: /View company profile/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Back to Post-incorporation/ })).toBeInTheDocument()
+  })
 
   it('renders the receipt CR issued', () => {
     renderIt()

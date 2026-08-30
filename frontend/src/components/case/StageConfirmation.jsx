@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
 import { describeError } from './workflow.js'
@@ -28,12 +29,14 @@ const RECEIPT_ROWS = [
  * so it is safe to press whenever, which is why the Confirmation stage does not
  * dead-end at the receipt.
  */
-export default function StageConfirmation({ caseRow, canRead, onError }) {
+export default function StageConfirmation({ caseRow, canRead, onError, onGo }) {
   const [rows, setRows] = useState(null)
   const [busy, setBusy] = useState(false)
+  const navigate = useNavigate()
 
   const receipt = caseRow.receipt || null
   const caseNo = receipt?.caseNo
+  const registered = caseRow.form_status?.code === 'registered'
 
   async function checkStatus() {
     onError(null); setBusy(true)
@@ -50,6 +53,34 @@ export default function StageConfirmation({ caseRow, canRead, onError }) {
 
   return (
     <>
+      {/* v11's `confirm-hero`. The stage that says the statutory job is done
+          should look done — the shipped screen opened straight into a receipt
+          table, which reads like another form to fill in. */}
+      {receipt && (
+        <div className="card mb-16">
+          <div className="confirm-hero">
+            <div className="confirm-ring" aria-hidden="true">✓</div>
+            <div className="confirm-h1">
+              {registered
+                ? 'NAR1 filed & confirmed by CR'
+                : caseRow.manual_submitted_at
+                  ? 'NAR1 filed off-portal & recorded'
+                  : 'NAR1 filed with the Companies Registry'}
+            </div>
+            <div className="confirm-p">
+              {registered
+                ? <>The Companies Registry accepted the Annual Return
+                    {caseRow.company_name ? <> for <b>{caseRow.company_name}</b></> : null}.
+                    The case is now marked <b>Completed</b>.</>
+                : <>The return
+                    {caseRow.company_name ? <> for <b>{caseRow.company_name}</b></> : null}
+                    {' '}has been delivered. Check the CR document status below to
+                    confirm the Registry has registered it.</>}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="card mb-16">
         <div className="card-hdr">
           <div>
@@ -154,14 +185,38 @@ export default function StageConfirmation({ caseRow, canRead, onError }) {
 
         {canRead && caseNo && (
           <div className="action-bar">
-            <div className="ab-note">Queries CR by the receipt's case number.</div>
+            <div className="ab-note">
+              Queries CR by the receipt's case number. A read — free, and it
+              works outside the Mon–Fri 10:00–16:00 filing window.
+            </div>
             <div className="ab-actions">
+              <span className="perm-tag">Requires <b>tpsi:read</b></span>
               <button className="btn btn-outline" disabled={busy} onClick={checkStatus}>
                 {busy ? 'Asking CR…' : 'Check CR status'}
               </button>
             </div>
           </div>
         )}
+      </div>
+
+      {/* The last stage must not dead-end. v11 sends the operator back to the
+          work rather than leaving them on a finished case with nowhere to go. */}
+      <div className="action-bar">
+        <div className="ab-note">
+          Case {caseRow.case_no || '—'}
+          {registered ? ' · Completed' : ''}
+        </div>
+        <div className="ab-actions">
+          {caseRow.entity_id && (
+            <button className="btn btn-outline"
+                    onClick={() => navigate(`/companies/${caseRow.entity_id}`)}>
+              View company profile
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>
+            Back to Post-incorporation
+          </button>
+        </div>
       </div>
     </>
   )

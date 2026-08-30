@@ -73,3 +73,6 @@ yarn-error.log
 *.swp
 .superpowers/
 backend/etl/reports/
+
+# Visual harness output (scripts/shoot-stages.mjs) — regenerated, never reviewed.
+/frontend/.visual/

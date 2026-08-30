@@ -45,14 +45,14 @@ const emptyLine = () => ({ rcptNo: '', revCode: '', docShtFrm: '', amtChrg: '' }
  * they are transcribing from paper and should not discover the fields one round
  * trip at a time.
  */
-export default function StageSubmission({ caseRow, canSubmit, onChanged, onError }) {
+export default function StageSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const manual = caseRow.signing_method === 'manual'
   return manual
     ? <ManualSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} />
-    : <ESignSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} />
+    : <ESignSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />
 }
 
-function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
+function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const [preflight, setPreflight] = useState(undefined)
   const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -131,8 +131,8 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
                 HK$2,610; quoting HK$105 for it told the operator something
                 that was not true and let the balance check pass a filing the
                 account could not cover. */}
-            <b>Fee HK${preflight.fee}</b>, against a deposit balance of{' '}
-            <b>HK${preflight.balance}</b>.{' '}
+            <b>Fee HK$ {money(preflight.fee)}</b>, against a deposit balance of{' '}
+            <b>HK$ {money(preflight.balance)}</b>.{' '}
             {sufficient
               ? 'The balance covers this filing.'
               : 'The balance does not cover this filing — top up the deposit account before filing.'}
@@ -158,9 +158,39 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
                 The exact fee could not be worked out
                 {preflight.fee_detail?.reason ? ` — ${preflight.fee_detail.reason}` : ''}.
                 The balance is checked against the highest it could be
-                (HK${preflight.max_fee}); the real charge appears on the receipt.
+                (HK$ {money(preflight.max_fee)}); the real charge appears on the receipt.
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* The arithmetic, not just the two numbers. "Balance HK$12,480, fee
+          HK$2,610" leaves the operator to subtract; v11's deposit box does it,
+          because what they actually need to know is what is left afterwards. */}
+      {preflight && (
+        <div className="deposit-box">
+          <div>
+            <div className="deposit-l">
+              Presenter deposit account · balance (<code>enquireDepositAccount</code>)
+            </div>
+            <div className="deposit-v">HK$ {money(preflight.balance)}</div>
+          </div>
+          <div className="deposit-r">
+            <div className="fee-line">
+              NAR1 registration fee
+              {preflight.fee_is_certain === false ? ' (at most)' : ''}
+            </div>
+            <div className="fee-line fee-amt">
+              − HK$ {money(preflight.fee_is_certain === false
+                ? preflight.max_fee : preflight.fee)}
+            </div>
+            <div className="fee-after">
+              Balance after ≈ HK$ {money(
+                Number(preflight.balance)
+                - Number(preflight.fee_is_certain === false
+                  ? preflight.max_fee : preflight.fee))}
+            </div>
           </div>
         </div>
       )}
@@ -172,36 +202,56 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
       )}
       <FaultPanel faults={faults} title="The Companies Registry refused the submission" />
 
-      <div style={{ marginTop: faults?.length ? 16 : 0 }}>
-        <CheckRow
-          checked={acknowledged}
-          disabled={!canSubmit || blocked || busy}
-          onToggle={setAcknowledged}
-          // Names the ACTUAL amount. "charges the fee" let someone acknowledge
-          // a HK$2,610 charge believing it was HK$105 — the tick is the record
-          // that they knew what was being spent.
-          title={preflight?.fee_is_certain
-            ? `I understand this files the return and charges HK$${preflight.fee}`
-            : 'I understand this files the return and charges the fee'}
-          sub="The filing is made with the Companies Registry immediately and cannot be reversed."
-        />
-      </div>
-
+      {/* v11's `danger-gate`. The tick and the button used to sit in an
+          ordinary action bar, which made the irreversible step look like every
+          other step on the screen. Boxing it is the point: it is the one
+          control here that spends money and cannot be undone. */}
       {canSubmit ? (
-        <div className="action-bar">
-          <div className="ab-note">
-            {blocked
-              ? 'Filing is blocked until CR confirms the balance covers the fee.'
-              : acknowledged
-                ? 'This is the irreversible step.'
-                : 'Confirm you understand the charge to enable filing.'}
+        <div className="danger-gate" style={{ marginTop: faults?.length ? 16 : 0 }}>
+          <div className="dg-hd">Irreversible action — two-step confirmation</div>
+          <div className="dg-warn">
+            Submitting files the Annual Return with the Companies Registry and{' '}
+            <b>
+              deducts {preflight?.fee_is_certain
+                ? `HK$ ${money(preflight.fee)}`
+                : 'the fee'} from the deposit account
+            </b>. This cannot be reversed. Tick to confirm, then press Submit.
           </div>
-          <div className="ab-actions">
-            <button className="btn btn-danger" disabled={blocked || !acknowledged || busy}
-                    onClick={submit}>
-              {busy ? 'Filing with CR…' : 'File the return'}
+
+          <CheckRow
+            checked={acknowledged}
+            disabled={blocked || busy}
+            onToggle={setAcknowledged}
+            // Names the ACTUAL amount. "charges the fee" let someone acknowledge
+            // a HK$2,610 charge believing it was HK$105 — the tick is the record
+            // that they knew what was being spent.
+            title={preflight?.fee_is_certain
+              ? `I understand this submits NAR1 to CR and deducts HK$ ${money(preflight.fee)} — this is irreversible`
+              : 'I understand this submits NAR1 to CR and deducts the fee — this is irreversible'}
+            sub="The filing is made with the Companies Registry immediately and cannot be reversed."
+          />
+
+          <div className="dg-actions">
+            <button className="btn btn-danger btn-lg"
+                    disabled={blocked || !acknowledged || busy} onClick={submit}>
+              {busy ? 'Filing with CR…' : 'Submit NAR1 to Companies Registry'}
             </button>
+            {onGo && (
+              <button type="button" className="dg-cancel" disabled={busy}
+                      onClick={() => onGo(3)}>
+                Cancel — back to signing
+              </button>
+            )}
+            <span className="perm-tag" style={{ marginLeft: 'auto' }}>
+              Gated to <b>tpsi:submit</b> — a separate permission from tpsi:write
+            </span>
           </div>
+
+          {blocked && (
+            <div className="ab-note" style={{ marginTop: 10 }}>
+              Filing is blocked until CR confirms the balance covers the fee.
+            </div>
+          )}
         </div>
       ) : (
         <div className="f-hint" style={{ marginTop: 12 }}>
@@ -212,6 +262,14 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError }) {
     </div>
     </>
   )
+}
+
+/** HK dollars, grouped. A bare "12480" beside "3480.00" is unreadable. */
+function money(value) {
+  const n = Number(value)
+  return Number.isFinite(n)
+    ? n.toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : String(value ?? '—')
 }
 
 function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {

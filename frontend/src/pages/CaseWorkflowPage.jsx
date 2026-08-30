@@ -12,7 +12,7 @@ import StageClientVerification from '../components/case/StageClientVerification.
 import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
-import { STAGE_LABELS, reachedStage } from '../components/case/workflow.js'
+import { STAGE_LABELS, reachedStage, isValidated, describeError } from '../components/case/workflow.js'
 
 /**
  * The NAR1 case workflow (wireframe_v11 `s20`).
@@ -48,6 +48,8 @@ export default function CaseWorkflowPage() {
   const [failure, setFailure] = useState(null)
   const [notice, setNotice] = useState(null)
   const [step, setStep] = useState(null)
+  const [confirmRestart, setConfirmRestart] = useState(false)
+  const [restarting, setRestarting] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -98,7 +100,28 @@ export default function CaseWorkflowPage() {
   const { text: annivText, due } = labelForDays(c.days_to_anniversary)
   const current = step ?? 1
 
-  const stageProps = { caseRow: c, onChanged, onError: setFailure }
+  // `onGo` is the stage's own "Continue to X →" button (v11 gives every panel
+  // one). Separate from `onChanged`, which advances only when an action
+  // genuinely unlocked the next stage — this is the operator saying they are
+  // finished reading, which is a different event and must not be inferred.
+  const goTo = n => { setStep(n); setNotice(null) }
+  const stageProps = { caseRow: c, onChanged, onError: setFailure, onGo: goTo }
+
+  async function restart() {
+    setFailure(null); setConfirmRestart(false); setRestarting(true)
+    try {
+      await api.patch(`/cases/${c.id}`, { restart_verification: true })
+      // Back to stage 1 explicitly. `onChanged` only ever moves FORWARD, so
+      // without this the operator is left on Signing looking at a case that no
+      // longer has a snapshot to sign.
+      await load()
+      setStep(1)
+    } catch (e) {
+      setFailure(describeError(e))
+    } finally {
+      setRestarting(false)
+    }
+  }
 
   return (
     <>
@@ -138,6 +161,27 @@ export default function CaseWorkflowPage() {
           </div>
         </div>
         <div className="pg-actions">
+          {/* v11 states the module a screen belongs to, because permissions are
+              granted per module and "why can't I press this" is otherwise
+              unanswerable without opening the role. */}
+          <span className="perm-tag">Module: <b>case_management</b></span>
+          {/* In the HEADER, not inside stage 1 (v11). Restart is what you reach
+              for when something is wrong at Client Verification or Signing —
+              which is exactly where the button used to be unreachable, because
+              it lived in a card two stages back. */}
+          {canWrite && isValidated(c) && (
+            <button className="btn btn-outline" disabled={restarting}
+                    onClick={() => setConfirmRestart(true)}>
+              {restarting ? 'Restarting…' : 'Restart verification'}
+            </button>
+          )}
+          {/* NO Save button, though v11 draws one beside Restart. Every stage
+              here writes immediately — a tick PATCHes, a capacity choice
+              PATCHes, a method change PATCHes — so there is nothing pending
+              for Save to flush. A button that saves nothing is worse than no
+              button: it teaches an operator that their edits are unsaved until
+              they press it, which is false, and one day they will leave a
+              screen believing they had not committed something they had. */}
           <button className="btn btn-outline" onClick={() => navigate('/dashboard')}>
             Back to cases
           </button>
@@ -245,6 +289,36 @@ export default function CaseWorkflowPage() {
         Created {formatDate(c.created_at)}
         {c.updated_at ? ` · last updated ${formatDateTime(c.updated_at)}` : ''}
       </div>
+
+      {/* Restart discards a CR-SIGNED snapshot and clears every step taken
+          since — client verification and signature included. Behind a
+          confirmation for that reason; the first shipped version did it on one
+          click. */}
+      {confirmRestart && (
+        <div className="modal-confirm" role="alertdialog"
+             aria-label="Restart verification">
+          <div className="modal-confirm-card">
+            <div className="modal-confirm-title">
+              Restart verification for {c.case_no || 'this case'}?
+            </div>
+            <div className="modal-confirm-text">
+              The case goes back to Data Verification. The CR-signed snapshot is
+              discarded, and the client verification and any signature recorded
+              against it are cleared. The client will have to approve the return
+              again.
+            </div>
+            <div className="modal-confirm-actions">
+              <button className="btn btn-outline"
+                      onClick={() => setConfirmRestart(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-danger" onClick={restart}>
+                Restart — back to Data Verification
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -18,10 +18,9 @@ import { describeError, isValidated } from './workflow.js'
  * actually answers. Splitting them means a mapping failure reads as a mapping
  * failure instead of arriving disguised as a CR rejection.
  */
-export default function StageDataVerification({ caseRow, canWrite, canValidate, onChanged, onError }) {
+export default function StageDataVerification({ caseRow, canWrite, canValidate, onChanged, onError, onGo }) {
   const [busy, setBusy] = useState(null)
   const [failure, setFailure] = useState(null)
-  const [confirmRestart, setConfirmRestart] = useState(false)
 
   const validated = isValidated(caseRow)
   const faults = caseRow.form_status?.failed ? caseRow.form_status.faults : null
@@ -68,20 +67,25 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
     }
   }
 
-  async function restart() {
-    onError(null); setConfirmRestart(false); setBusy('restart')
-    try {
-      await api.patch(`/cases/${caseRow.id}`, { restart_verification: true })
-      onChanged()
-    } catch (e) {
-      onError(describeError(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
   return (
     <>
+      {/* v11 opens this stage by saying what validation DOES, because the
+          frozen snapshot is the one concept the rest of the workflow rests on
+          and nothing later explains it. Shown before validation only — once
+          the snapshot exists, the success alert below says the same thing in
+          the past tense and two copies read as two different snapshots. */}
+      {!validated && (
+        <div className="alert al-info" role="note" style={{ marginBottom: 16 }}>
+          <span className="al-icon">ℹ</span>
+          <div className="al-body">
+            <b>Review the return data, then validate with the CR Portal.</b>{' '}
+            Validation calls TPSI <code>validateFormNar1</code> and{' '}
+            <b>freezes an immutable snapshot</b> — from here the case reads its
+            own snapshot, not the live profile.
+          </div>
+        </div>
+      )}
+
       {/* The return itself, first — the wireframe opens this stage with the
           data, and everything below it is a decision about that data. */}
       <ReturnDataCard caseId={caseRow.id} reloadKey={caseRow.updated_at}
@@ -148,50 +152,15 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
                 company record.
               </div>
             </div>
-            {canValidate && (
-              <div className="action-bar">
-                <div className="ab-note">
-                  Changed the company details since? Restart to discard the
-                  snapshot and validate again.
-                </div>
-                <div className="ab-actions">
-                  <button className="btn btn-outline" disabled={!canWrite || busy !== null}
-                          onClick={() => setConfirmRestart(true)}>
-                    {busy === 'restart' ? 'Restarting…' : 'Restart verification'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Restart discards a CR-SIGNED snapshot and clears every step
-                taken since — client verification and signatures included. On
-                the wireframe it is behind a confirmation for that reason, and
-                the shipped button did it on one click. */}
-            {confirmRestart && (
-              <div className="modal-confirm" role="alertdialog"
-                   aria-label="Restart verification">
-                <div className="modal-confirm-card">
-                  <div className="modal-confirm-title">
-                    Restart verification for {caseRow.case_no || 'this case'}?
-                  </div>
-                  <div className="modal-confirm-text">
-                    The case goes back to Data Verification. The CR-signed
-                    snapshot is discarded, and the client verification and any
-                    signature recorded against it are cleared. The client will
-                    have to approve the return again.
-                  </div>
-                  <div className="modal-confirm-actions">
-                    <button className="btn btn-outline"
-                            onClick={() => setConfirmRestart(false)}>
-                      Cancel
-                    </button>
-                    <button className="btn btn-danger" onClick={restart}>
-                      Restart — back to Data Verification
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* "Restart verification" is NOT here any more — it moved to the
+                page header (v11), where it is reachable from Client
+                Verification and Signing too. Those are the stages you are
+                standing on when you discover the snapshot is wrong, and the
+                button used to be two stages behind you. */}
+            <div className="ab-note" style={{ marginTop: 12 }}>
+              Changed the company details since? Use <b>Restart verification</b>{' '}
+              at the top of the page to discard the snapshot and validate again.
+            </div>
           </>
         ) : (
           <>
@@ -214,6 +183,16 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
               </div>
             )}
             <FaultPanel faults={faults} />
+            {/* CR answers with EVERY problem at once. Saying so is what turns
+                five round trips into one — and saying nothing was charged
+                stops a rejected validation reading like a wasted fee. */}
+            {faults?.length > 0 && (
+              <div className="ab-note" style={{ marginTop: 10 }}>
+                CR returns every problem at once, so fix them all before
+                re-validating. Nothing was charged — <code>validateFormNar1</code>{' '}
+                is free.
+              </div>
+            )}
             <div className="action-bar" style={{ marginTop: faults?.length ? 16 : 0 }}>
               <div className="ab-note">
                 {!prechecksDone
@@ -223,6 +202,9 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
                     : 'Builds the return and asks CR to check it.'}
               </div>
               <div className="ab-actions">
+                <span className="perm-tag">
+                  Requires <b>tpsi:read</b> — validation is free
+                </span>
                 <button className="btn btn-action"
                         disabled={!canValidate || !prechecksDone || busy !== null}
                         onClick={runValidation}>
@@ -233,6 +215,19 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           </>
         )}
       </div>
+
+      {validated && onGo && (
+        <div className="action-bar">
+          <div className="ab-note">
+            The client sees this return next, as a PDF built from the snapshot.
+          </div>
+          <div className="ab-actions">
+            <button className="btn btn-primary" onClick={() => onGo(2)}>
+              Continue to Client Verification →
+            </button>
+          </div>
+        </div>
+      )}
     </>
   )
 }

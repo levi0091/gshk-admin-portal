@@ -211,12 +211,12 @@ describe('CaseWorkflowPage — permissions gate the consequential controls', () 
     }
     await renderPage()
     expect(await screen.findByText(/Filing requires the/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /File the return/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Submit NAR1 to Companies Registry/ })).not.toBeInTheDocument()
   })
 
   it('offers filing to someone who holds tpsi:submit', async () => {
     await renderPage()
-    expect(await screen.findByRole('button', { name: /File the return/ })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Submit NAR1 to Companies Registry/ })).toBeInTheDocument()
   })
 })
 
@@ -274,5 +274,71 @@ describe('CaseWorkflowPage — CR refusals', () => {
 
     expect(await screen.findByText(/Editing the return will not fix this/i))
       .toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Restart verification — moved from stage 1 to the page header (Q3 / v11)
+// ---------------------------------------------------------------------------
+
+describe('CaseWorkflowPage — restart verification', () => {
+  it('offers Restart from the header, not only from Data Verification', async () => {
+    // The case fixture opens on SUBMISSION. That is the point: this is where an
+    // operator discovers the snapshot is wrong, and the button used to live two
+    // stages behind them.
+    await renderPage()
+    expect(screen.getByRole('button', { name: /Restart verification/ }))
+      .toBeInTheDocument()
+  })
+
+  it('asks before discarding a CR-signed snapshot', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await user.click(screen.getByRole('button', { name: /Restart verification/ }))
+
+    expect(screen.getByRole('alertdialog', { name: 'Restart verification' }))
+      .toBeInTheDocument()
+    expect(patch).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(patch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('discards the snapshot and returns the operator to stage 1', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await user.click(screen.getByRole('button', { name: /Restart verification/ }))
+    await user.click(screen.getByRole('button', { name: /Restart — back to Data Verification/ }))
+
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/cases/c1', { restart_verification: true }))
+    // onChanged only ever moves FORWARD, so without an explicit step reset the
+    // operator is left on Submission looking at a case with nothing to submit.
+    await waitFor(() =>
+      expect(screen.getByText('Data Verification', { selector: '.pg-title' }))
+        .toBeInTheDocument())
+  })
+
+  it('hides Restart before there is a snapshot to discard', async () => {
+    routeGet(caseAt({ form_status: { code: 'draft', label: 'Draft', failed: false },
+                      filing_id: null,
+                      workflow_status: { code: 'data_verification',
+                                         label: 'Data Verification',
+                                         off_portal: false, overdue: false } }))
+    await renderPage()
+    expect(screen.queryByRole('button', { name: /Restart verification/ })).toBeNull()
+  })
+
+  it('hides Restart from someone without nar1:write', async () => {
+    auth = { hasPermission: (m, p) => !(m === 'nar1' && p === 'write'),
+             isSuperAdmin: false }
+    await renderPage()
+    expect(screen.queryByRole('button', { name: /Restart verification/ })).toBeNull()
+  })
+
+  it('names the module the screen belongs to', async () => {
+    await renderPage()
+    expect(screen.getByText(/case_management/)).toBeInTheDocument()
   })
 })

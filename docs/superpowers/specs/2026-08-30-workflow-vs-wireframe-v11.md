@@ -1,6 +1,6 @@
 # Workflow screens vs wireframe_v11 — comparison and restoration plan
 
-**Status:** comparison done, implementation NOT started — awaiting Levi's go-ahead
+**Status:** BUILT. All four blocks shipped 2026-08-30 (Levi: "start all blocks").
 **Date:** 2026-08-30
 **Item:** Q3 — *"the workflow pages are quite different from wireframe_v11… unless
 there is a good reason the design interface should be similar."*
@@ -108,11 +108,43 @@ Four blocks, each shippable and testable on its own.
 
 Every block ships with Vitest coverage, per the repo's cross-cutting rule.
 
-## Open question
+## H2 — resolved: no Save button
 
-**H2 — what does the header's Save button save?** v11 puts `Save` beside
-`Restart verification`, but the built workflow has no pending edits at the page
-level: each stage writes immediately (`PATCH /cases/{id}` on toggle, on capacity
-choice, on method change). A Save that saves nothing is worse than no Save.
-Either it goes, or the stages become dirty-tracked forms. **Needs Levi's call
-before Block D.**
+v11 puts `Save` beside `Restart verification`, but the built workflow has no
+pending edits at the page level: each stage writes immediately (`PATCH
+/cases/{id}` on toggle, on capacity choice, on method change). Levi asked for
+all four blocks without a further decision point, so this was settled the way
+the comparison recommended: **the Save button is not built**, and the reason is
+recorded in `CaseWorkflowPage.jsx`.
+
+A button that saves nothing is worse than no button — it teaches an operator
+that their edits are unsaved until they press it, which is false, and one day
+they leave a screen believing they had not committed something they had.
+
+## What the build changed about this comparison
+
+- **1.3 stays as built.** v11 names GSHK's presenter account (`GETSTA`, deposit
+  `ERG-2026-4521`) on the pre-checks card. The built copy makes the same point
+  without the identifiers, because the presenter id and deposit account are a
+  super-admin-only field (`routers/tpsi.py::_deposit_account`) and printing them
+  on a screen every case manager sees would leak one.
+- **4.2 was already right.** `FilingSummaryCard` carries "Fee paid from"; only
+  the Download button was missing. The presenter row v11 shows is deliberately
+  absent for the same reason as 1.3.
+- **Restart moved, and gained a reset.** `onChanged` only ever advances, so
+  restarting from Submission left the operator on Submission looking at a case
+  with nothing to submit. The header handler sets the step back to 1.
+- **The manual upload card keeps its done state** rather than being replaced by
+  a success alert — otherwise an operator who attached the wrong scan had no
+  Replace to reach.
+- **Money is formatted once.** The fee alert and the deposit box sat side by
+  side rendering `HK$2610.00` and `HK$ 2,610.00`. Caught by screenshotting, not
+  by reading the JSX.
+
+## Verified visually
+
+`frontend/src/components/case/__visual__.test.jsx` (SHOOT=1) renders each stage
+with the real components and dumps its markup;
+`frontend/scripts/shoot-stages.mjs` shoots it against the real `index.css`.
+Neither runs in CI. All five stages plus the manual signing variant were read
+back as images, which is how the money-formatting mismatch was found.

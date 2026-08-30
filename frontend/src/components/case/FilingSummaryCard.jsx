@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
+import { downloadFilingPdf } from '../../lib/download.js'
 import { describeError } from './workflow.js'
 
 /**
@@ -33,6 +34,21 @@ function Row({ label, children }) {
 export default function FilingSummaryCard({ filingId }) {
   const [data, setData] = useState(undefined)
   const [error, setError] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState(null)
+
+  async function download() {
+    setSaveError(null); setSaving(true)
+    try {
+      await downloadFilingPdf(
+        filingId,
+        `NAR1_${(data?.company_name || 'return').replace(/[^\w]+/g, '_')}_${data?.year || ''}.pdf`)
+    } catch (e) {
+      setSaveError(describeError(e))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   useEffect(() => {
     if (!filingId) { setData(null); return }
@@ -85,7 +101,24 @@ export default function FilingSummaryCard({ filingId }) {
             filing.
           </div>
         </div>
+        {/* Levi 2026-08-30: this serves the real Form NAR1, filled — the same
+            facsimile the client was emailed, not a rendering of the table
+            below it. The table is a summary for the person about to spend
+            money; the PDF is the statutory document. */}
+        <button type="button" className="btn btn-outline btn-sm"
+                disabled={saving} onClick={download}>
+          {saving ? 'Preparing…' : 'Download NAR1 PDF'}
+        </button>
       </div>
+
+      {saveError && (
+        <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
+          <span className="al-icon">⚠</span>
+          <div className="al-body">
+            Could not produce the NAR1 PDF: {saveError.message}
+          </div>
+        </div>
+      )}
 
       <div className="kv-list">
         <Row label="Form">
