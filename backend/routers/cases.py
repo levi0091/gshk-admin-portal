@@ -723,24 +723,43 @@ async def send_verification(
         raise HTTPException(
             422, f"the validated snapshot could not be rendered: {exc}")
 
-    subject, html = email_service.verification_email(case, entity)
+    attachment_name = f"NAR1-{case.get('case_no') or case_id}.pdf"
+    subject, html = email_service.verification_email(
+        case, entity, attachment_name=attachment_name)
+
+    # The person sending this gets a copy, and the client's reply is pointed at
+    # them (Levi 2026-08-30: "whoever is logged in should be in the cc as well
+    # ... so that the person who is working on the case can get an email").
+    #
+    # reply_to matters more than the copy does. The message ASKS the client to
+    # reply, and it is sent from no-reply@getstarted.hk -- without this, the one
+    # action the email requests would go to a mailbox nobody reads.
+    #
+    # `.get`, not `[...]`: the key is new on the auth dict, and a send must not
+    # start failing because an identity was resolved from a cache written
+    # before it existed.
+    operator = (user.get("email") or "").strip() or None
+
     try:
         # Same reason, and worse: email_service.send is a synchronous
         # httpx.post with a 15-second timeout, so a hung Resend would stall
         # the whole worker for 15 seconds rather than this one request.
         sent = await asyncio.to_thread(
             email_service.send,
-            to=recipients, subject=subject, html=html,
-            attachments=[(f"NAR1-{case.get('case_no') or case_id}.pdf", pdf)],
+            to=recipients, cc=[operator] if operator else None,
+            reply_to=operator,
+            subject=subject, html=html,
+            attachments=[(attachment_name, pdf)],
         )
     except email_service.EmailError as exc:
         # 502, and NOTHING is written: a case marked sent on a mail that never
         # left sits in Awaiting Client forever, waiting on a reply to nothing.
         raise HTTPException(502, f"the verification email was not sent: {exc}")
     except RuntimeError as exc:
-        # Unset RESEND_API_KEY, or a DEV service with no EMAIL_REDIRECT_TO. A
-        # deployment fault, not a crash -- a 500 tells the admin the portal
-        # broke, when the truth is that it is misconfigured.
+        # Unset RESEND_API_KEY, or an EMAIL_TRANSPORT left over from before the
+        # console stub was removed. A deployment fault, not a crash -- a 500
+        # tells the admin the portal broke, when the truth is that it is
+        # misconfigured and that someone with Railway access can fix it.
         raise HTTPException(503, str(exc))
 
     sent_at = datetime.now(timezone.utc).isoformat()
@@ -759,6 +778,8 @@ async def send_verification(
 
     delivered = sent.get("to") or recipients
     intended = sent.get("intended_to") or recipients
+    copied = sent.get("cc") or []
+    intended_cc = sent.get("intended_cc") or []
 
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
@@ -775,6 +796,12 @@ async def send_verification(
         metadata={"message_id": sent.get("id"),
                   "intended_to": intended,
                   "recipient_count": len(intended),
+                  # Both, for the same reason `to` and `intended_to` are both
+                  # here: on a test deployment the copy is dropped rather than
+                  # delivered, and a trail that recorded only the intention
+                  # would claim the case worker was copied when they were not.
+                  "cc": copied,
+                  "intended_cc": intended_cc,
                   "redirected": bool(sent.get("redirected")),
                   # Always 'resend' now that the console stub is gone, and kept
                   # so the trail stays self-describing: existing rows say
@@ -799,6 +826,7 @@ async def send_verification(
         )
 
     return {"sent_at": sent_at, "to": delivered, "intended_to": intended,
+            "cc": copied, "intended_cc": intended_cc,
             "redirected": bool(sent.get("redirected")),
             "transport": sent.get("transport", "resend"),
             "message_id": sent.get("id")}

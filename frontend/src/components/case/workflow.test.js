@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   STAGE_LABELS, reachedStage, stageDone, signedOff, isValidated, isSubmitted,
-  describeError,
+  describeError, verificationBlock,
 } from './workflow.js'
 
 // A case at the very start: nothing validated, nothing sent, nothing signed.
@@ -251,5 +251,51 @@ describe('describeError — CR refusals', () => {
     const d = describeError(Object.assign(new Error('unavailable'), { status: 503 }))
     expect(d.hint).toMatch(/10:00–16:00/)
     expect(d.retry).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// verificationBlock — why a send would be refused, worked out before the click
+//
+// This exists because of a real report (Levi 2026-08-30): "I clicked on the
+// send to client button. nothing happened." The backend HAD refused it, with a
+// 409 rendered at the top of a page whose Send button sits below a 460px PDF
+// frame. Deciding it here means the button explains itself instead.
+// ---------------------------------------------------------------------------
+
+describe('verificationBlock', () => {
+  const validated = (over = {}) => ({
+    filing_id: 'f1', form_status: { code: 'validated' },
+    manual_submitted_at: null, ...over,
+  })
+
+  it('allows a validated case with a filing', () => {
+    expect(verificationBlock(validated())).toBeNull()
+  })
+
+  it('refuses a case that was completed off-portal', () => {
+    expect(verificationBlock(validated({ manual_submitted_at: '2026-08-28T00:00:00Z' })))
+      .toMatch(/off-portal/)
+  })
+
+  it('refuses a return CR is already holding', () => {
+    // Checked BEFORE "not validated yet" on purpose: a submitted filing
+    // satisfies isValidated too, and that message would be a lie about it.
+    expect(verificationBlock(validated({ form_status: { code: 'submitted' } })))
+      .toMatch(/already holds this return/)
+  })
+
+  it('refuses after a failed validation rather than mailing a stale snapshot', () => {
+    expect(verificationBlock(validated({ form_status: { code: 'validation_failed' } })))
+      .toMatch(/Re-validate/)
+  })
+
+  it('refuses a case with no filing prepared', () => {
+    expect(verificationBlock(validated({ filing_id: null, form_status: null })))
+      .toMatch(/has not been validated/)
+  })
+
+  it('says nothing about a case it was given nothing for', () => {
+    expect(verificationBlock(null)).toBeNull()
   })
 })

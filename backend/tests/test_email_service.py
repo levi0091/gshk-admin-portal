@@ -233,6 +233,98 @@ def test_a_missing_company_name_does_not_render_the_word_none():
     assert "None" not in html
 
 
+# --- the redesign (Levi 2026-08-30: "make sure the email looks professional") -
+
+CASE = {"case_no": "NAR-2026-0041", "ar_period_year": 2026}
+ENTITY = {"company_name": "ACME LIMITED", "br_number": "00000001"}
+
+
+def test_the_message_survives_outlook_which_has_no_flexbox_or_grid():
+    """Outlook renders mail through Word. A layout built on flex or grid
+    collapses into a single unstyled column there, which is most of GSHK's
+    clients."""
+    _, html = email_service.verification_email(CASE, ENTITY)
+    assert "display:flex" not in html
+    assert "display:grid" not in html
+    assert "<table" in html
+
+
+def test_every_style_is_inline_because_a_style_block_gets_stripped():
+    _, html = email_service.verification_email(CASE, ENTITY)
+    assert "<style" not in html
+    assert "class=" not in html
+
+
+def test_the_masthead_names_the_form_and_the_company_it_concerns():
+    """How the document itself announces what it is — and the first thing a
+    director needs to know is that this is about THEIR company."""
+    _, html = email_service.verification_email(CASE, ENTITY)
+    assert "Form NAR1" in html
+    assert html.index("Form NAR1") < html.index("ACME LIMITED")
+
+
+def test_the_particulars_are_labelled_rather_than_run_together():
+    _, html = email_service.verification_email(CASE, ENTITY)
+    for label in ("Business Registration No.", "Return period", "Our reference"):
+        assert label in html
+
+
+def test_a_particular_with_no_value_omits_its_row_entirely():
+    """Rather than rendering an empty box the reader has to interpret."""
+    _, html = email_service.verification_email({"case_no": "NAR-2026-0041"},
+                                               {"company_name": "ACME LIMITED"})
+    assert "Business Registration No." not in html
+    assert "Our reference" in html
+
+
+def test_the_message_carries_no_link_at_all():
+    """Nothing here is clickable, and that is a security property as much as a
+    design one: a mail about someone's company filings that contains a link is
+    the exact shape of the phishing it would train them to trust."""
+    _, html = email_service.verification_email(CASE, ENTITY)
+    assert "<a " not in html
+    assert "http://" not in html and "https://" not in html
+
+
+def test_the_message_says_what_the_reader_has_to_do():
+    _, html = email_service.verification_email(CASE, ENTITY)
+    assert "What we need from you" in html
+    assert "Reply to this email" in html
+
+
+def test_the_attachment_is_named_in_the_body_when_there_is_one():
+    _, html = email_service.verification_email(
+        CASE, ENTITY, attachment_name="NAR1-NAR-2026-0041.pdf")
+    assert "NAR1-NAR-2026-0041.pdf" in html
+
+
+def test_no_attachment_line_is_rendered_when_nothing_is_attached():
+    _, html = email_service.verification_email(CASE, ENTITY)
+    assert "Attached" not in html
+
+
+def test_an_attachment_name_carrying_markup_is_escaped():
+    _, html = email_service.verification_email(
+        CASE, ENTITY, attachment_name="<script>x</script>.pdf")
+    assert "<script>" not in html
+
+
+def test_the_company_appears_once_and_is_not_repeated_in_the_ledger():
+    """One element, one job. The masthead names the company; a ledger row
+    repeating it would be decoration."""
+    _, html = email_service.verification_email(CASE, ENTITY)
+    assert html.count("ACME LIMITED") == 1
+
+
+def test_a_company_with_no_name_falls_back_to_the_ledger_for_identity():
+    """Degenerate, but it must not leave the reader with nothing telling them
+    which company the return concerns."""
+    _, html = email_service.verification_email(
+        CASE, {"br_number": "00000001"})
+    assert "Annual Return" in html
+    assert "00000001" in html
+
+
 # ---------------------------------------------------------------------------
 # Several recipients on one message
 # ---------------------------------------------------------------------------
@@ -250,6 +342,54 @@ def test_a_list_of_recipients_becomes_one_message_not_several():
     assert post.call_args.kwargs["json"]["to"] == [
         "a@example.com", "b@example.com", "c@example.com"]
     assert result["to"] == ["a@example.com", "b@example.com", "c@example.com"]
+
+
+def test_the_case_worker_is_copied_openly(monkeypatch):
+    """CC, not BCC. The client should be able to see who at GSHK is handling
+    their return, and reply to all."""
+    with _post() as post:
+        email_service.send(to="client@example.com", cc="levi@zenexflow.com",
+                           subject="S", html="<p>H</p>")
+    assert post.call_args.kwargs["json"]["cc"] == ["levi@zenexflow.com"]
+
+
+def test_no_cc_key_is_sent_when_nobody_is_copied():
+    with _post() as post:
+        email_service.send(to="client@example.com", subject="S", html="<p>H</p>")
+    assert "cc" not in post.call_args.kwargs["json"]
+
+
+def test_an_address_already_on_to_is_not_also_copied():
+    """Some clients render the same message twice, and every reply-all after
+    that carries a duplicate."""
+    with _post() as post:
+        email_service.send(to=["Levi@Zenexflow.com", "client@example.com"],
+                           cc="levi@zenexflow.com", subject="S", html="<p>H</p>")
+    assert "cc" not in post.call_args.kwargs["json"]
+
+
+def test_the_reply_goes_to_a_mailbox_a_human_reads():
+    """The body asks the client to reply, and the sender is no-reply@. Without
+    reply_to the one action the message requests reaches nobody."""
+    with _post() as post:
+        email_service.send(to="client@example.com", reply_to="levi@zenexflow.com",
+                           subject="S", html="<p>H</p>")
+    assert post.call_args.kwargs["json"]["reply_to"] == ["levi@zenexflow.com"]
+
+
+def test_no_reply_to_key_is_sent_when_there_is_nobody_to_reply_to():
+    with _post() as post:
+        email_service.send(to="client@example.com", subject="S", html="<p>H</p>")
+    assert "reply_to" not in post.call_args.kwargs["json"]
+
+
+def test_the_result_reports_who_was_copied():
+    with _post():
+        result = email_service.send(to="client@example.com",
+                                    cc="levi@zenexflow.com",
+                                    subject="S", html="<p>H</p>")
+    assert result["cc"] == ["levi@zenexflow.com"]
+    assert result["intended_cc"] == ["levi@zenexflow.com"]
 
 
 def test_a_bare_string_recipient_still_works():

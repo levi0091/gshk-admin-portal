@@ -1083,6 +1083,33 @@ tbody tr.clickable { cursor: pointer; }
 .recip-add { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; }
 .recip-add .f-input { flex: 1; min-width: 0; }
 
+/* The recipient list, embedded in the send card rather than standing as its
+   own panel below it. The hairline above is what keeps two decisions —
+   "the return is correct" and "these are the people" — legible as two, now
+   that they share one card. */
+.recip-block {
+  margin-top: 16px; padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.recip-hdr {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px;
+}
+.sect-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--t-muted);
+}
+.recip-count { font-size: 11px; color: var(--t-muted); }
+
+/* Who else is on the message. Quiet by design: it reports a thing that is
+   already true rather than asking for a decision. */
+.cc-note {
+  display: flex; gap: 9px; align-items: flex-start; margin-top: 14px;
+  padding: 10px 12px; border-radius: 8px; background: var(--bg-page);
+  font-size: 12px; line-height: 1.55; color: var(--t-body);
+}
+.cc-note b { color: var(--t-head); font-weight: 600; word-break: break-all; }
+.cc-icon { color: var(--t-muted); font-size: 13px; line-height: 1.35; }
+
 @media (max-width: 720px) {
   .stepper { grid-template-columns: repeat(5, 1fr); padding: 14px 6px 12px; }
   .step-lbl { font-size: 10px; }

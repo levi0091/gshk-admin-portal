@@ -12,6 +12,12 @@ import { useState } from 'react'
  * the reason beside them. Omitting them would make a three-director board look
  * like a two-director board, which is the one thing an operator cannot notice
  * by looking.
+ *
+ * Renders as a BLOCK, not a card (Levi 2026-08-30). It used to be its own panel
+ * below the send button, which put the addresses after the control that mails
+ * them — an operator reviewed, pressed Send, and only then met the list of who
+ * it went to. It now sits inside the send card between the review tick and the
+ * button, in the order the decision is actually made.
  */
 
 //: Deliberately the same shape the backend enforces (routers/cases._ADDRESS).
@@ -66,15 +72,17 @@ export default function RecipientPicker({
   }
 
   return (
-    <div className="card mb-16">
-      <div className="card-hdr">
-        <div>
-          <div className="card-title">Recipients</div>
-          <div className="card-sub">
-            Every current director is added automatically. Remove anyone who
-            should not receive it, or add someone else.
-          </div>
-        </div>
+    <div className="recip-block">
+      <div className="recip-hdr">
+        <span className="sect-label">Recipients</span>
+        <span className="recip-count">
+          {to.length === 0 ? 'none yet'
+            : `${to.length} address${to.length === 1 ? '' : 'es'}`}
+        </span>
+      </div>
+      <div className="f-hint" style={{ marginBottom: 10 }}>
+        Every current director is added automatically. Remove anyone who should
+        not receive it, or add someone else.
       </div>
 
       {to.length === 0 ? (

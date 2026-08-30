@@ -307,7 +307,7 @@ describe('Client Verification', () => {
   it('says nothing is really sent to the client, in a test environment', async () => {
     auth = { isTestEnv: true }
     renderIt()
-    expect(await screen.findByText(/will not actually be sent to the client/i))
+    expect(await screen.findByText(/nothing is delivered to the client/i))
       .toBeInTheDocument()
   })
 
@@ -323,7 +323,7 @@ describe('Client Verification', () => {
     auth = { isTestEnv: false }
     renderIt()
     await screen.findByText('chan@example.com')
-    expect(screen.queryByText(/will not actually be sent to the client/i))
+    expect(screen.queryByText(/nothing is delivered to the client/i))
       .not.toBeInTheDocument()
   })
 
@@ -361,6 +361,74 @@ describe('Client Verification', () => {
     await screen.findByText('chan@example.com')
     expect(screen.getByText('lee@example.com')).toBeInTheDocument()
     expect(screen.getByText('AH CHAN')).toBeInTheDocument()
+  })
+
+  // ── Levi 2026-08-30: one section, in the order the decision is made ──────
+
+  it('puts the recipients between the review tick and the send button', async () => {
+    // Not decoration. They used to be a separate card BELOW the button, so an
+    // operator met the list of who was mailed only after mailing them.
+    renderIt()
+    await screen.findByText('chan@example.com')
+    const card = screen.getByText('Send for verification').closest('.card')
+    const tick = within(card).getByRole('button', { name: /I have reviewed this return/ })
+    const chips = within(card).getByTestId('recipient-chips')
+    const send = within(card).getByRole('button', { name: /Send to client/ })
+    // DOCUMENT_POSITION_FOLLOWING === 4. Asserting order, not merely presence.
+    expect(tick.compareDocumentPosition(chips) & 4).toBeTruthy()
+    expect(chips.compareDocumentPosition(send) & 4).toBeTruthy()
+  })
+
+  it('names the address the copy goes to, rather than promising "you"', async () => {
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText('levi@zenexflow.com')).toBeInTheDocument()
+    expect(screen.getByText(/reply comes back to you/)).toBeInTheDocument()
+  })
+
+  it('still explains the copy when the profile has no address to name', async () => {
+    auth = { isTestEnv: false, profile: {} }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/A copy goes to you/)).toBeInTheDocument()
+  })
+
+  // ── The failure Levi hit: a refused send that looked like a dead button ──
+
+  it('reports a refused send AT the button, not only through onError', async () => {
+    // The page-level banner `onError` drives sits above a 460px PDF frame —
+    // about a screen and a half from the button that was just pressed.
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('this case was completed off-portal'), { status: 409 }))
+    const user = userEvent.setup()
+    renderIt()
+    await reviewAndSend(user)
+    const card = screen.getByText('Send for verification').closest('.card')
+    expect(await within(card).findByRole('alert')).toHaveTextContent(
+      /completed off-portal/)
+    expect(onError).not.toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringMatching(/off-portal/) }))
+  })
+
+  it('does not send the CR office-hours hint when the mail config is missing', async () => {
+    // describeError's 503 hint points at CR's Mon–Fri window. Nothing on this
+    // path touches CR, and waiting for Hong Kong office hours fixes nothing.
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('RESEND_API_KEY is not set'), { status: 503 }))
+    const user = userEvent.setup()
+    renderIt()
+    await reviewAndSend(user)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/missing its email configuration/)
+    expect(alert).not.toHaveTextContent(/10:00/)
+  })
+
+  it('refuses to offer a send the backend would reject as already filed', async () => {
+    renderIt({ manual_submitted_at: '2026-08-28T03:32:06Z' })
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/completed off-portal/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
   })
 
   it('shows the director it cannot write to rather than dropping them', async () => {

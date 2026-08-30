@@ -59,6 +59,39 @@ export function reachedStage(c) {
   return 5
 }
 
+/**
+ * Why this case cannot be sent for client verification, or null.
+ *
+ * Mirrors `routers/cases._verification_gate` for the reasons the browser can
+ * see. The backend still decides — this only stops the screen from offering a
+ * button whose one outcome is a 409, which is what an operator experiences as
+ * "I pressed Send and nothing happened".
+ *
+ * Order matters: a filed return satisfies `isValidated` too, and "not validated
+ * yet" would be a lie about a return CR is already holding.
+ */
+export function verificationBlock(c) {
+  if (!c) return null
+  if (c.manual_submitted_at || c.manual_receipt) {
+    return 'This case was completed off-portal, so there is nothing left for '
+      + 'the client to approve.'
+  }
+  if (CR_HOLDS.has(c.form_status?.code)) {
+    return 'The Companies Registry already holds this return. Asking the '
+      + 'client to approve it now is a request their answer cannot change.'
+  }
+  if (c.form_status?.code === 'validation_failed') {
+    return 'The last validation of this return failed. Re-validate it on Data '
+      + 'Verification before sending it to the client.'
+  }
+  if (!c.filing_id || !isValidated(c)) {
+    return 'This return has not been validated by the Companies Registry yet. '
+      + 'Validate it on Data Verification first — otherwise the client would '
+      + 'be approving a form that may be rejected minutes later.'
+  }
+  return null
+}
+
 /** Is this stage's own work finished? Drives the green ticks. */
 export function stageDone(c, i) {
   if (!c) return false

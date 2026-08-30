@@ -5,7 +5,7 @@ import { formatDateTime } from '../../lib/format.js'
 import { downloadFilingPdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
-import { describeError } from './workflow.js'
+import { describeError, verificationBlock } from './workflow.js'
 
 // Zoom bounds for the embedded preview. 60% still shows a full A4 page on a
 // laptop; past 200% the object viewport is taller than any screen and the
@@ -13,6 +13,43 @@ import { describeError } from './workflow.js'
 const ZOOM_MIN = 60
 const ZOOM_MAX = 200
 const ZOOM_STEP = 20
+
+/**
+ * What a failed SEND means — which is not what a failed CR call means.
+ *
+ * `describeError` answers for the TPSI chain: its 502 hint talks about the
+ * Companies Registry refusing a filing, and its 503 hint sends the reader to
+ * CR's Monday-to-Friday service window. Both are wrong here. Nothing on this
+ * path touches CR — a 502 is Resend rejecting the message, and a 503 is the
+ * deployment missing its mail configuration, which no amount of waiting for
+ * Hong Kong office hours will fix.
+ */
+export function describeSendError(err) {
+  const message = err?.message || 'The verification email was not sent.'
+  switch (err?.status) {
+    case 403:
+      return { message, hint: 'Your role does not allow sending client verification for this case.' }
+    case 409:
+      return { message, hint: 'The case is not in a state that allows this. Nothing was sent.' }
+    case 422:
+      return { message, hint: 'Fix the recipient list or re-validate the return, then try again.' }
+    case 502:
+      return {
+        message,
+        hint: 'The mail provider refused the message. Nothing was sent and the '
+          + 'case is unchanged, so it is safe to try again.',
+      }
+    case 503:
+      return {
+        message,
+        hint: 'This deployment is missing its email configuration — someone '
+          + 'with access to the backend environment needs to set it. Nothing '
+          + 'was sent.',
+      }
+    default:
+      return { message, hint: 'Nothing was sent and the case is unchanged.' }
+  }
+}
 
 /**
  * Stage 2 — Client Verification (FE-3).
@@ -27,9 +64,10 @@ const ZOOM_STEP = 20
  * admin presses, and why it is audited as CLIENT_APPROVAL_RECEIVED.
  */
 export default function StageClientVerification({ caseRow, canWrite, onChanged, onError }) {
-  const { isTestEnv } = useAuth()
+  const { isTestEnv, profile } = useAuth()
   const [reviewed, setReviewed] = useState(false)
   const [busy, setBusy] = useState(null)
+  const [sendError, setSendError] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
   const [pdfError, setPdfError] = useState(null)
   const [recipients, setRecipients] = useState([])
@@ -42,6 +80,9 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   const sent = Boolean(caseRow.verification_sent_at)
   const answered = Boolean(caseRow.client_response_at)
   const caseId = caseRow.id
+  // Why the backend would refuse this send, worked out before the operator
+  // presses anything. See workflow.verificationBlock.
+  const blocked = verificationBlock(caseRow)
   const pdfName =
     `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}.pdf`
 
@@ -96,7 +137,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   }, [filingId])
 
   async function send() {
-    onError(null); setBusy('send')
+    onError(null); setSendError(null); setBusy('send')
     try {
       // Always explicit, never `{}`. The chips on screen are what the operator
       // agreed to send to; letting the server re-derive the list would mail a
@@ -105,7 +146,11 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       await api.post(`/cases/${caseRow.id}/verification/send`, { to })
       onChanged()
     } catch (e) {
-      onError(describeError(e))
+      // Reported HERE, next to the button, and NOT bubbled to `onError`. The
+      // page-level banner sits above a 460px PDF frame, so a failure raised
+      // there is off-screen at the moment the operator is looking at the
+      // button they just pressed.
+      setSendError(describeSendError(e))
     } finally {
       setBusy(null)
     }
@@ -201,6 +246,10 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
         )}
       </div>
 
+      {/* ONE section, in the order the decision is made (Levi 2026-08-30):
+          confirm the return is right, then confirm who gets it, then send.
+          Recipients used to be a separate card BELOW this one, which put the
+          list of addresses after the button that mails them. */}
       <div className="card mb-16">
         <div className="card-hdr">
           <div>
@@ -219,37 +268,95 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
 
-        {/* The "nothing was actually delivered" warning that stood here is
-            gone with EMAIL_TRANSPORT=console (2026-08-30). Mail now really
-            sends; on a test deployment it reaches the four fixed recipients,
-            which the test-environment note above already says. */}
-
         {/* The tick gates the send (R-5): an unread return going to a client
             over GSHK's name is the mistake this exists to slow down. */}
         <CheckRow
           checked={reviewed}
-          disabled={!canWrite || busy !== null}
+          disabled={!canWrite || busy !== null || Boolean(blocked)}
           onToggle={setReviewed}
           title="I have reviewed this return and it is correct"
           sub="Check the particulars above before it goes to the client."
         />
 
+        <RecipientPicker
+          recipients={recipients}
+          to={to || []}
+          onChange={setTo}
+          disabled={!canWrite || busy !== null || to === null || Boolean(blocked)}
+          maxRecipients={maxRecipients}
+        />
+
+        {/* Named, not implied. "A copy goes to you" is unverifiable; the
+            address is the whole assurance. Both facts are stated because they
+            are different promises — one is a copy, the other is where the
+            client's answer lands. */}
+        <div className="cc-note">
+          <span className="cc-icon" aria-hidden="true">↩</span>
+          <div>
+            {profile?.email
+              ? <>A copy goes to <b>{profile.email}</b>, and the client's reply
+                  comes back to you rather than to the no-reply address.</>
+              : <>A copy goes to you, and the client's reply comes back to you
+                  rather than to the no-reply address.</>}
+          </div>
+        </div>
+
+        {/* Levi 2026-08-30. The picker above deliberately still shows and still
+            sends the REAL director addresses — selecting them is the thing
+            being tested. The backend substitutes a fixed internal list before
+            anything leaves the process (email_service.TEST_RECIPIENTS), which
+            no environment variable can override. */}
+        {isTestEnv && (
+          <div className="f-hint" style={{ marginTop: 10, lineHeight: 1.5 }}>
+            This is a test environment, so nothing is delivered to the client —
+            the message goes to the fixed internal test recipients instead, and
+            the copy to you is dropped because you are already on that list.
+          </div>
+        )}
+
+        {/* THE ERROR LIVES HERE, beside the button that caused it. It used to
+            be reported only through `onError`, which renders at the top of the
+            page — roughly a screen and a half above this button, past a 460px
+            PDF frame. A refused send therefore looked exactly like a dead
+            button, which is how it was reported on 2026-08-30. */}
+        {sendError && (
+          <div className="alert al-danger" role="alert" style={{ marginTop: 14 }}>
+            <span className="al-icon">⚠</span>
+            <div className="al-body">
+              <b>{sendError.message}</b>
+              {sendError.hint && (
+                <div style={{ marginTop: 4 }}>{sendError.hint}</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {blocked && (
+          <div className="alert al-warn" role="status" style={{ marginTop: 14 }}>
+            <span className="al-icon">⚠</span>
+            <div className="al-body">{blocked}</div>
+          </div>
+        )}
+
         {canWrite && (
           <div className="action-bar">
             <div className="ab-note">
-              {!reviewed
-                ? 'Confirm you have reviewed the return to enable sending.'
-                : to === null
-                  ? 'Loading the recipients…'
-                  : to.length === 0
-                    ? 'Add at least one recipient below.'
-                    : `The return will be attached as a PDF, to ${to.length} `
-                      + `recipient${to.length === 1 ? '' : 's'}.`}
+              {blocked
+                ? 'Sending is not available for this case.'
+                : !reviewed
+                  ? 'Confirm you have reviewed the return to enable sending.'
+                  : to === null
+                    ? 'Loading the recipients…'
+                    : to.length === 0
+                      ? 'Add at least one recipient above.'
+                      : `The return will be attached as a PDF, to ${to.length} `
+                        + `recipient${to.length === 1 ? '' : 's'}.`}
             </div>
             <div className="ab-actions">
               <span className="perm-tag">Requires <b>nar1:write</b></span>
               <button className="btn btn-action"
-                      disabled={!reviewed || busy !== null || !to || to.length === 0}
+                      disabled={!reviewed || busy !== null || !to
+                                || to.length === 0 || Boolean(blocked)}
                       onClick={send}>
                 {busy === 'send' ? 'Sending…' : sent ? 'Send again' : 'Send to client'}
               </button>
@@ -257,31 +364,6 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
       </div>
-
-      {/* Below the send card on purpose: the tick above is about the RETURN,
-          this is about the ADDRESSES, and merging them into one control would
-          let a single click assert both. */}
-      <RecipientPicker
-        recipients={recipients}
-        to={to || []}
-        onChange={setTo}
-        disabled={!canWrite || busy !== null || to === null}
-        maxRecipients={maxRecipients}
-      />
-
-      {/* Levi 2026-08-30. The picker above deliberately still shows and still
-          sends the REAL director addresses — selecting them is the thing being
-          tested. The backend substitutes a fixed internal list before anything
-          leaves the process (email_service.TEST_RECIPIENTS), which no
-          environment variable can override. This note is the only place the
-          operator is told that, so it sits directly under the addresses it is
-          about rather than in a page-level banner they would scroll past. */}
-      {isTestEnv && (
-        <div className="f-hint" style={{ margin: '-6px 0 16px 2px', lineHeight: 1.5 }}>
-          This is a test environment, so email will not actually be sent to the
-          client.
-        </div>
-      )}
 
       <div className="card mb-16">
         <div className="card-hdr">

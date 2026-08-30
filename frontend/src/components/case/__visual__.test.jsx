@@ -26,7 +26,9 @@ vi.mock('../../lib/api.js', () => ({
     blob: (...a) => blob(...a), upload: (...a) => upload(...a), put: vi.fn(),
   },
 }))
-vi.mock('../../context/AuthContext.jsx', () => ({ useAuth: () => ({ isTestEnv: true }) }))
+vi.mock('../../context/AuthContext.jsx', () => ({
+  useAuth: () => ({ isTestEnv: true, profile: { email: 'levi@zenexflow.com' } }),
+}))
 
 const OUT = path.resolve(process.cwd(), '.visual')
 

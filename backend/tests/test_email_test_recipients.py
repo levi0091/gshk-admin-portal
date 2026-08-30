@@ -159,6 +159,63 @@ def test_the_console_transport_is_gone_and_asking_for_it_fails():
             email_service.send(to=[CLIENT], subject="s", html="<p>h</p>")
 
 
+# ---------------------------------------------------------------------------
+# A CC is a recipient, so the same rule binds it
+# ---------------------------------------------------------------------------
+
+def _send_with_cc(**env):
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured.update(json)
+        return _Response()
+
+    with _env(**env), patch("httpx.post", side_effect=fake_post):
+        result = email_service.send(
+            to=[CLIENT], cc=["case.worker@zenexflow.com"],
+            subject="Annual Return", html="<p>hi</p>",
+        )
+    return result, captured
+
+
+def test_a_non_production_send_drops_the_cc_rather_than_delivering_it():
+    """Dropped, not redirected: the four addresses are already receiving the
+    message as `to`, so copying them again would put one mailbox on both lines.
+    A case worker who is not one of the four was never going to receive a test
+    send, which is the interlock working rather than a gap in it."""
+    result, payload = _send_with_cc(APP_ENV="dev", RESEND_API_KEY="re_x")
+    assert "cc" not in payload
+    assert result["cc"] == []
+    assert result["intended_cc"] == ["case.worker@zenexflow.com"]
+
+
+def test_production_still_copies_the_case_worker():
+    _, payload = _send_with_cc(APP_ENV="prod", RESEND_API_KEY="re_x")
+    assert payload["cc"] == ["case.worker@zenexflow.com"]
+
+
+def test_a_client_address_on_the_cc_line_cannot_survive_either():
+    """The `to` lock was the whole interlock before CC existed. A copied
+    address is a delivered address, and a guard that checked only `to` would
+    leave exactly one line of the message uncovered."""
+    with _env(APP_ENV="dev", RESEND_API_KEY="re_x"), \
+            patch.object(email_service, "_apply_test_cc_lock",
+                         side_effect=lambda cc, *_: (cc, False)), \
+            patch("httpx.post", side_effect=AssertionError("must not be called")):
+        with pytest.raises(email_service.EmailError, match="refusing to send"):
+            email_service.send(to=[CLIENT], cc=[OTHER_CLIENT],
+                               subject="s", html="<p>h</p>")
+
+
+def test_the_test_banner_names_who_would_have_been_copied():
+    """Four people share these mailboxes. A banner that says who the message
+    was for but not who it would have copied hides half of what is being
+    tested."""
+    _, payload = _send_with_cc(APP_ENV="dev", RESEND_API_KEY="re_x")
+    assert "case.worker@zenexflow.com" in payload["html"]
+    assert CLIENT in payload["html"]
+
+
 def test_the_guard_fires_even_if_the_redirect_is_somehow_bypassed():
     """Defence in depth. The redirect above is the mechanism; this is the
     assertion that the mechanism ran. If a future edit reorders `send()` so a

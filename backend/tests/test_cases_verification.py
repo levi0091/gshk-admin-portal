@@ -299,6 +299,89 @@ def test_an_explicit_list_is_not_topped_up_with_the_directors(client):
     assert send.call_args.kwargs["to"] == ["chan@example.com"]
 
 
+# ---------------------------------------------------------------------------
+# The case worker is copied, and the client's reply is aimed at them
+#
+# Levi 2026-08-30: "whoever is logged in should be in the cc as well.. so that
+# the person who is working on the case can get an email."
+# ---------------------------------------------------------------------------
+
+#: The same super admin, but resolved with the address they signed in with.
+#: `middleware.auth._resolve_user` grew that key on 2026-08-30.
+SUPER_MAILED = {**SUPER, "email": "levi@zenexflow.com"}
+
+
+def _super_mailed():
+    return patch("middleware.auth._resolve_user", return_value=SUPER_MAILED)
+
+
+def _send_as_operator(client, json=None, user=None):
+    """POST the send as a signed-in operator; return the mocked transport."""
+    with patch("middleware.auth._resolve_user", return_value=user or SUPER_MAILED), \
+         _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "cc": ["levi@zenexflow.com"],
+                             "intended_cc": ["levi@zenexflow.com"]}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json=json if json is not None else {})
+    return send, response
+
+
+def test_the_logged_in_user_is_copied_on_the_clients_email(client):
+    send, response = _send_as_operator(client)
+    assert response.status_code == 200
+    assert send.call_args.kwargs["cc"] == ["levi@zenexflow.com"]
+
+
+def test_the_clients_reply_is_aimed_at_the_person_who_sent_it(client):
+    """The message ASKS for a reply and is sent from no-reply@getstarted.hk.
+    Without reply_to, the one action it requests goes nowhere."""
+    send, _ = _send_as_operator(client)
+    assert send.call_args.kwargs["reply_to"] == "levi@zenexflow.com"
+
+
+def test_a_send_still_works_for_an_identity_carrying_no_address(client):
+    """`email` is new on the auth dict, and identities are CACHED for 30s. A
+    send must not start failing because it resolved from a cache written
+    before the key existed."""
+    send, response = _send_as_operator(client, user=SUPER)
+    assert response.status_code == 200
+    assert send.call_args.kwargs["cc"] is None
+    assert send.call_args.kwargs["reply_to"] is None
+
+
+def test_the_copy_is_recorded_in_the_audit_row(client):
+    """Both `cc` and `intended_cc`: on a test deployment the copy is DROPPED,
+    and a trail recording only the intention would claim the case worker was
+    copied when nothing reached them."""
+    with _super_mailed(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "cc": [],
+                             "intended_cc": ["levi@zenexflow.com"],
+                             "redirected": True}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()) as log:
+        client.post("/cases/c1/verification/send", headers=H, json={})
+    meta = log.await_args_list[0].kwargs["metadata"]
+    assert meta["cc"] == []
+    assert meta["intended_cc"] == ["levi@zenexflow.com"]
+
+
+def test_the_attachment_name_is_the_one_the_email_announces(client):
+    """The body names the attached file. If the two were built separately they
+    would drift, and the message would point at a filename that is not there."""
+    with _super_mailed(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H, json={})
+    name = send.call_args.kwargs["attachments"][0][0]
+    assert name == "NAR1-NAR-2026-0041.pdf"
+    assert name in send.call_args.kwargs["html"]
+
+
 def test_an_empty_list_is_refused_rather_than_treated_as_absent(client):
     """`[]` says the operator cleared every chip. Falling back to the directors
     would mail the people they had just removed."""

@@ -21,6 +21,10 @@ async def get_me(user=Depends(require_user)):
     ]
     return {
         "id": user["id"],
+        # Shown on Client Verification, which tells the operator that a copy of
+        # the client's email is coming to this address. Naming it is the point:
+        # "a copy goes to you" is unverifiable, "a copy goes to levi@…" is not.
+        "email": user.get("email"),
         "display_name": user["display_name"],
         "role_name": user["role_name"],
         "role_id": user["role_id"],
