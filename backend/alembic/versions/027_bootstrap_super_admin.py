@@ -87,16 +87,41 @@ def upgrade() -> None:
     # ON CONFLICT (id) DO NOTHING, so this never overwrites a display name, a
     # role, or an is_active=false someone set deliberately. Deactivating an
     # account must not be undone by re-running a migration.
+    #
+    # Wrapped in a column-existence guard, and run as DYNAMIC sql, because CI
+    # applies these migrations to vanilla Postgres with a hand-built stand-in:
+    #
+    #     CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY);
+    #
+    # That is enough for migration 001's foreign key but has no `email`, and a
+    # static reference to it is a hard parse error rather than a no-op. EXECUTE
+    # defers parsing to the branch actually being taken, so on CI this compiles
+    # and skips, and on any real Supabase project it runs.
     op.execute(
         f"""
-        INSERT INTO public.users (id, display_name, email, role_id, is_active)
-        SELECT au.id, f.display_name, au.email, r.id, true
-        FROM auth.users au
-        JOIN (VALUES {_values(FOUNDERS)}) AS f(email, display_name)
-          ON lower(au.email) = f.email
-        CROSS JOIN public.roles r
-        WHERE r.name = 'super_admin'
-        ON CONFLICT (id) DO NOTHING
+        DO $do$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'auth'
+                  AND table_name = 'users'
+                  AND column_name = 'email'
+            ) THEN
+                EXECUTE $sql$
+                    INSERT INTO public.users
+                        (id, display_name, email, role_id, is_active)
+                    SELECT au.id, f.display_name, au.email, r.id, true
+                    FROM auth.users au
+                    JOIN (VALUES {_values(FOUNDERS)})
+                         AS f(email, display_name)
+                      ON lower(au.email) = f.email
+                    CROSS JOIN public.roles r
+                    WHERE r.name = 'super_admin'
+                    ON CONFLICT (id) DO NOTHING
+                $sql$;
+            END IF;
+        END
+        $do$
         """
     )
 
