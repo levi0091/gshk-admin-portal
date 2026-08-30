@@ -378,8 +378,12 @@ def test_the_trail_names_every_recipient_not_just_the_first(client):
 
 
 def test_a_stubbed_send_is_audited_as_one(client):
-    """EMAIL_TRANSPORT=console delivers NOTHING. An EMAIL_SENT row that did not
-    say so would be a record of a client being told when nobody was."""
+    """The console transport is gone (2026-08-30), but rows written while it
+    existed still say transport='console', meaning NOTHING WAS DELIVERED. The
+    router must keep passing that through rather than normalising it away —
+    an EMAIL_SENT row that lost the flag becomes a record of a client being
+    told when nobody was. The service is stubbed here precisely because it can
+    no longer produce this value on its own."""
     logged = []
 
     async def fake_log(**kwargs):
@@ -729,9 +733,9 @@ def test_send_drives_the_real_renderer_and_the_real_transport(client, monkeypatc
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.delenv("EMAIL_REDIRECT_TO", raising=False)
     monkeypatch.delenv("VERIFICATION_FROM", raising=False)
-    # Without this the whole point of the test evaporates on any machine whose
-    # .env stubs mail out: the console transport returns before httpx is ever
-    # reached, and `post` would simply never be called.
+    # Kept after the console transport was removed: EMAIL_TRANSPORT set to
+    # anything now RAISES, so a stale value in a developer's .env would fail
+    # this test with a config error rather than the assertion it is about.
     monkeypatch.delenv("EMAIL_TRANSPORT", raising=False)
     email_service.get_email_config.cache_clear()
 

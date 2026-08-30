@@ -776,9 +776,11 @@ async def send_verification(
                   "intended_to": intended,
                   "recipient_count": len(intended),
                   "redirected": bool(sent.get("redirected")),
-                  # 'console' means NOTHING WAS DELIVERED — the send was stubbed
-                  # because Resend is not usable yet. Recorded so an EMAIL_SENT
-                  # row can never be read as proof a client was told.
+                  # Always 'resend' now that the console stub is gone, and kept
+                  # so the trail stays self-describing: existing rows say
+                  # 'console', meaning NOTHING WAS DELIVERED, and a reader must
+                  # be able to tell those apart from a real send without
+                  # knowing the date the stub was removed.
                   "transport": sent.get("transport", "resend"),
                   "case_no": case.get("case_no")},
     )

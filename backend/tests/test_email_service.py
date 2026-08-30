@@ -270,39 +270,22 @@ def test_an_empty_recipient_list_is_refused_before_the_http_call():
 
 
 # ---------------------------------------------------------------------------
-# EMAIL_TRANSPORT=console — the stub, and the guards that keep it off PROD
+# EMAIL_TRANSPORT — 'resend' is the only one. 'console' was REMOVED 2026-08-30.
 # ---------------------------------------------------------------------------
+# The stub wrote to stderr, delivered nothing and returned success. It existed
+# because RESEND_API_KEY was a placeholder; a real key is now in place and
+# getstarted.hk is verified, so it is gone. These tests hold the removal down:
+# a deployment that still asks for it must FAIL, not silently start sending.
 
 
-def test_the_console_transport_delivers_nothing(monkeypatch, capsys):
+@pytest.mark.parametrize("value", ["console", "smtp", "CONSOLE"])
+def test_every_transport_but_resend_is_refused(monkeypatch, value):
+    """Both halves of the same rule. A typo must not quietly fall back to
+    sending; and 'console' — a value that used to WORK — must not quietly
+    start sending either, which is the dangerous half of this removal. A
+    deployment asking for silence and getting real mail is the mistake."""
     monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.setenv("EMAIL_TRANSPORT", "console")
-    email_service.get_email_config.cache_clear()
-    with patch("services.email_service.httpx.post") as post:
-        result = email_service.send(to=["a@example.com", "b@example.com"],
-                                    subject="Confirm", html="<p>H</p>")
-    post.assert_not_called()
-    assert result["transport"] == "console"
-    assert result["to"] == ["a@example.com", "b@example.com"]
-    assert "NOT SENT" in capsys.readouterr().err
-
-
-def test_the_console_transport_needs_no_api_key(monkeypatch):
-    """It is the configuration this exists FOR: Resend unusable, and the
-    workflow still has to be drivable."""
-    monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.setenv("EMAIL_TRANSPORT", "console")
-    monkeypatch.delenv("RESEND_API_KEY", raising=False)
-    email_service.get_email_config.cache_clear()
-    result = email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
-    assert result["transport"] == "console"
-
-
-def test_production_refuses_the_console_transport(monkeypatch):
-    """The worst outcome this module can produce: every client silently
-    receiving nothing while the portal reports each send as successful."""
-    monkeypatch.setenv("APP_ENV", "prod")
-    monkeypatch.setenv("EMAIL_TRANSPORT", "console")
+    monkeypatch.setenv("EMAIL_TRANSPORT", value)
     email_service.get_email_config.cache_clear()
     with patch("services.email_service.httpx.post") as post:
         with pytest.raises(RuntimeError, match="EMAIL_TRANSPORT"):
@@ -310,20 +293,34 @@ def test_production_refuses_the_console_transport(monkeypatch):
     post.assert_not_called()
 
 
+def test_the_console_refusal_says_it_was_removed_and_what_to_do(monkeypatch):
+    """A bare "unknown transport" would send whoever hits this hunting for a
+    typo in a value that was correct last week."""
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.setenv("EMAIL_TRANSPORT", "console")
+    email_service.get_email_config.cache_clear()
+    with pytest.raises(RuntimeError) as exc:
+        email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
+    assert "removed" in str(exc.value)
+    assert "unset" in str(exc.value).lower()
+
+
 def test_a_real_send_is_never_labelled_as_stubbed():
-    """The mutation that would make the flag meaningless."""
+    """Existing audit rows still say transport='console', meaning nothing was
+    delivered. A real send must stay distinguishable from those forever."""
     with _post():
         result = email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
     assert result.get("transport", "resend") != "console"
 
 
-def test_an_unknown_transport_is_refused_rather_than_assumed(monkeypatch):
-    """A typo'd EMAIL_TRANSPORT must not quietly fall back to sending, nor to
-    not sending. Either guess is wrong in a way nobody would notice."""
-    monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.setenv("EMAIL_TRANSPORT", "smtp")
+def test_an_unset_transport_sends_for_real(monkeypatch):
+    """The default, and now the only working configuration."""
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.delenv("EMAIL_TRANSPORT", raising=False)
     email_service.get_email_config.cache_clear()
-    with pytest.raises(RuntimeError, match="EMAIL_TRANSPORT"):
-        email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
+    with _post() as post:
+        result = email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
+    post.assert_called_once()
+    assert result.get("transport", "resend") == "resend"
 
 

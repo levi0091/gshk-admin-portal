@@ -43,24 +43,3 @@ signatory list any more, because who signs is the session's and not a choice.
 v11's "Choose the signatory" radio list must be read in that light — what
 survives of it is a single row naming the logged-in user's e-Service account.
 The rest of the list stands.
-
----
-
-## Q2 · Resend API key has been replaced — 2026-08-30
-
-Levi: *"I have updated the resend api key you can now give it a try."*
-
-The old value was the literal placeholder `your-resend-api-key`. Verify the new
-one against `GET https://api.resend.com/domains`, confirm `getstarted.hk` is
-verified for SPF/DKIM, then send a real client-verification mail on DEV — it
-will land on the four `TEST_RECIPIENTS`, never a client.
-
-If it works: **retire `EMAIL_TRANSPORT=console`.** Its only remaining reason to
-exist is that there was no key. Protecting clients is no longer its job —
-`email_service.TEST_RECIPIENTS` does that unconditionally. Removing it means
-deleting the branch, its guards, its tests, and the notes in `CLAUDE.md` and
-`.env.example`.
-
-Also still outstanding from before: Railway DEV needs `EMAIL_TRANSPORT=console`
-set, or a working `RESEND_API_KEY` — `POST /verification/send` answers 503
-there today.

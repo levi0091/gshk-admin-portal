@@ -41,7 +41,6 @@ message that can reach a log is scrubbed of the key as a second guard.
 import base64
 import html as _html
 import os
-import sys
 from functools import lru_cache
 
 import httpx
@@ -82,20 +81,21 @@ class EmailError(RuntimeError):
     """
 
 
-#: `EMAIL_TRANSPORT=console` writes the message to stderr and delivers nothing.
-#: It exists because Resend is not usable yet on this project (the key in
-#: `.env` is rejected by Resend with "API key is invalid"), and without it the
-#: entire client-verification half of the NAR1 workflow is unreachable on DEV --
-#: `verification_sent_at` is only stamped after a successful send, so nothing
-#: can be driven to Awaiting Client, Signing or Submission.
-#:
-#: IT IS A LIE ABOUT DELIVERY, AND IS TREATED AS ONE. It is refused outright on
-#: production (below), it must be asked for by name -- no default, no inference
-#: from a missing key -- and every result it returns carries
-#: `transport="console"`, which the router writes into the audit trail. A row
-#: saying a client was told, when nobody was, is the single worst thing this
-#: module can produce; the flag is what stops that row existing.
-CONSOLE_TRANSPORT = "console"
+# EMAIL_TRANSPORT=console is GONE (Levi 2026-08-30). It wrote the message to
+# stderr, delivered nothing, and reported success -- a lie about delivery,
+# carried the whole way to the audit trail as `transport="console"` so nothing
+# could mistake it for one. It existed for exactly one reason: RESEND_API_KEY
+# held the literal placeholder `your-resend-api-key`, so no send could succeed
+# and the entire client-facing half of the NAR1 workflow was unreachable
+# (`verification_sent_at` is only stamped after a successful send).
+#
+# A real key is now in place and `getstarted.hk` is verified at Resend, so that
+# reason is spent. Protecting clients was never this flag's job -- the
+# TEST_RECIPIENTS lock above does that unconditionally, on every non-production
+# deployment, whether or not anything is configured.
+#
+# Do not reintroduce it. If mail must be suppressed in some future environment,
+# suppress it somewhere that cannot report a delivery that did not happen.
 
 
 class EmailConfig:
@@ -135,21 +135,17 @@ def get_email_config() -> EmailConfig:
     is_production = app_env.is_production()
     transport = (os.environ.get("EMAIL_TRANSPORT") or "").strip().lower() or "resend"
 
-    if transport == CONSOLE_TRANSPORT:
-        if is_production:
-            raise RuntimeError(
-                "EMAIL_TRANSPORT=console while APP_ENV=prod. Every client would "
-                "silently receive nothing while the portal reported each send "
-                "as successful. Unset EMAIL_TRANSPORT on production."
-            )
-        # No API key and no redirect mailbox are required: nothing leaves the
-        # process, so there is no key to protect and nowhere to redirect to.
-        sender = (os.environ.get("VERIFICATION_FROM") or "").strip() or DEFAULT_FROM
-        return EmailConfig("", sender, False, CONSOLE_TRANSPORT)
     if transport != "resend":
+        # 'console' lands here deliberately. A deployment that still sets it is
+        # asking for mail to be silently swallowed, and the one thing that must
+        # not happen is for that request to be quietly ignored while sends go
+        # out for real -- so it stops here and names what changed.
         raise RuntimeError(
             f"EMAIL_TRANSPORT={transport!r} is not a transport this build "
-            f"knows; use 'resend', or 'console' on a non-production deployment"
+            "knows; 'resend' is the only one. EMAIL_TRANSPORT=console was "
+            "removed on 2026-08-30 once a working Resend key was in place — "
+            "unset the variable. Mail from a non-production deployment is "
+            "already confined to the fixed test recipients."
         )
 
     api_key = (os.environ.get("RESEND_API_KEY") or "").strip()
@@ -198,25 +194,6 @@ def send(*, to, subject: str, html: str, attachments=None) -> dict:
 
     intended_to = list(recipients)
     redirected = False
-
-    if config.transport == CONSOLE_TRANSPORT:
-        # Ahead of the redirect block: there is no mailbox to redirect to, and
-        # ahead of any HTTP call, because there is not going to be one.
-        print(
-            f"[email_service] NOT SENT (EMAIL_TRANSPORT=console) — "
-            f"to={intended_to} subject={subject!r} "
-            f"attachments={[name for name, _ in (attachments or [])]}",
-            file=sys.stderr, flush=True,
-        )
-        return {
-            "id": None,
-            "to": intended_to,
-            "intended_to": intended_to,
-            "redirected": False,
-            # The whole point. A caller that records this as a delivery has to
-            # ignore a key that is right there saying it was not one.
-            "transport": CONSOLE_TRANSPORT,
-        }
 
     recipients, redirected = _apply_test_recipient_lock(
         recipients, config.is_production

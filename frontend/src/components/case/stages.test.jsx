@@ -353,15 +353,16 @@ describe('Client Verification', () => {
     expect(post).not.toHaveBeenCalled()
   })
 
-  it('says so when the deployment delivered nothing', async () => {
-    // Otherwise an operator believes two directors were emailed when mail is
-    // stubbed out and nobody received anything.
+  it('no longer claims a send was stubbed — mail really sends now', async () => {
+    // EMAIL_TRANSPORT=console was removed on 2026-08-30, so the backend cannot
+    // return this any more and the warning would be a false alarm. What the
+    // operator needs to know on a test deployment is the recipient
+    // substitution, which the test-environment note covers.
     const user = userEvent.setup()
     post.mockResolvedValue({ transport: 'console' })
     renderIt()
     await reviewAndSend(user)
-    expect(await screen.findByText(/Nothing was actually delivered/))
-      .toBeInTheDocument()
+    expect(screen.queryByText(/Nothing was actually delivered/)).toBeNull()
   })
 
   it('does not cry stub on a real send', async () => {

@@ -148,15 +148,15 @@ def test_the_redirected_message_names_who_it_was_really_for():
     assert CLIENT in payload["html"]
 
 
-def test_console_transport_delivers_to_nobody_at_all():
-    """Still the strongest guarantee available, and still supported: it makes
-    no HTTP call, so there is no address for anything to go wrong with."""
-    with _env(APP_ENV="dev", EMAIL_TRANSPORT="console"), \
+def test_the_console_transport_is_gone_and_asking_for_it_fails():
+    """It used to be the strongest guarantee here — no HTTP call, so no address
+    to get wrong. It was removed once Resend worked, and the risk of removing it
+    is that a deployment still asking for silence starts mailing for real. It
+    raises instead."""
+    with _env(APP_ENV="dev", EMAIL_TRANSPORT="console", RESEND_API_KEY="re_x"), \
             patch("httpx.post", side_effect=AssertionError("must not be called")):
-        result = email_service.send(to=[CLIENT], subject="s", html="<p>h</p>")
-    assert result["transport"] == "console"
-    assert result["id"] is None
-    assert result["intended_to"] == [CLIENT]
+        with pytest.raises(RuntimeError, match="EMAIL_TRANSPORT"):
+            email_service.send(to=[CLIENT], subject="s", html="<p>h</p>")
 
 
 def test_the_guard_fires_even_if_the_redirect_is_somehow_bypassed():

@@ -27,7 +27,6 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   const [recipients, setRecipients] = useState([])
   const [to, setTo] = useState(null)
   const [maxRecipients, setMaxRecipients] = useState(20)
-  const [stubbed, setStubbed] = useState(false)
 
   const filingId = caseRow.filing_id
   const sent = Boolean(caseRow.verification_sent_at)
@@ -80,11 +79,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       // agreed to send to; letting the server re-derive the list would mail a
       // director they had just removed, and the two answers can differ the
       // moment someone edits the company in another tab.
-      const result = await api.post(`/cases/${caseRow.id}/verification/send`, { to })
-      // The case is now marked sent either way, so the ONE place this can be
-      // said is here. Saying nothing would leave an operator believing three
-      // directors were emailed when the deployment delivered nothing.
-      setStubbed(result?.transport === 'console')
+      await api.post(`/cases/${caseRow.id}/verification/send`, { to })
       onChanged()
     } catch (e) {
       onError(describeError(e))
@@ -155,17 +150,10 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
 
-        {stubbed && (
-          <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-            <span className="al-icon">⚠</span>
-            <div className="al-body">
-              <b>Nothing was actually delivered.</b> This deployment has mail
-              stubbed out (<code>EMAIL_TRANSPORT=console</code>), so the case is
-              marked sent but no recipient received the return. Tell the client
-              another way, or configure Resend.
-            </div>
-          </div>
-        )}
+        {/* The "nothing was actually delivered" warning that stood here is
+            gone with EMAIL_TRANSPORT=console (2026-08-30). Mail now really
+            sends; on a test deployment it reaches the four fixed recipients,
+            which the test-environment note above already says. */}
 
         {/* The tick gates the send (R-5): an unread return going to a client
             over GSHK's name is the mistake this exists to slow down. */}
