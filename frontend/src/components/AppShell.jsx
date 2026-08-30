@@ -8,7 +8,7 @@ function initials(name) {
 }
 
 export default function AppShell() {
-  const { profile, isTestEnv } = useAuth()
+  const { profile, isTestEnv, envUnknown } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
 
@@ -48,6 +48,19 @@ export default function AppShell() {
             decision Levi made, not an oversight. */}
         {isTestEnv && (
           <span className="env-pill" title="Non-production deployment">TEST</span>
+        )}
+
+        {/* The backend answered but did not say which environment it is. That
+            is NOT "production" — it is a question nobody has answered, and
+            leaving it blank makes it indistinguishable from a live deployment.
+            Levi 2026-08-30: a DEV backend with APP_ENV=prod showed no badge at
+            all, and the missing badge was the only visible symptom of a mail
+            interlock that had quietly disarmed. */}
+        {envUnknown && (
+          <span className="env-pill env-pill-unknown"
+                title="This backend did not report its environment. Check APP_ENV on the service, and GET /health.">
+            ENV&nbsp;?
+          </span>
         )}
 
         {/* User chip — name hidden on mobile, avatar only */}

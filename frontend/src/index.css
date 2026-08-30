@@ -296,6 +296,14 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   border: 1px solid var(--carrot); border-radius: 5px;
   padding: 3px 8px; flex-shrink: 0; white-space: nowrap;
 }
+/* "The backend did not say." Dashed, because it is an unanswered question
+   rather than a state — and muted rather than louder than TEST, since it
+   reports a gap in information, not a hazard in the deployment. */
+.env-pill.env-pill-unknown {
+  color: var(--t-muted); background: transparent;
+  border-color: var(--border); border-style: dashed;
+  cursor: help;
+}
 
 /* ── SIDEBAR COLLAPSE (wireframe_v7) ─────────────────────── */
 .sidebar-wrap { position: relative; flex-shrink: 0; display: flex; }
