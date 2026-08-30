@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../lib/api.js'
+import useAbortableGet from '../lib/useAbortableGet.js'
+import { formatDateTime } from '../lib/format.js'
 import SortableTh from '../components/SortableTh.jsx'
 
 const PAGE_SIZE = 100
@@ -14,6 +15,17 @@ const ACTION_LABELS = {
   DOCUMENT_VERSION_ADDED: 'New document version',
   DOCUMENT_DELETED: 'Document deleted',
   EMAIL_SENT: 'Email sent',
+  TPSI_AUTH: 'CR session opened',
+  TPSI_FILING_CREATED: 'CR filing prepared',
+  TPSI_VALIDATE: 'CR form validated',
+  TPSI_SIGN: 'CR form signed',
+  TPSI_EDRIVE: 'CR form sent to e-Drive',
+  TPSI_PREVIEWED: 'CR submission previewed',
+  TPSI_BALANCE_CHECK: 'CR deposit balance checked',
+  TPSI_STATUS: 'CR case status enquired',
+  TPSI_CRED_SET: 'CR credential set',
+  TPSI_CRED_ROTATE: 'CR credential rotated',
+  TPSI_PW_CHANGE: 'CR password changed',
   TPSI_SUBMISSION_ATTEMPTED: 'TPSI submission attempted',
   TPSI_SUBMISSION_SUCCESS: 'TPSI submission succeeded',
   TPSI_SUBMISSION_FAILED: 'TPSI submission failed',
@@ -34,13 +46,7 @@ const SOURCES = [
   { key: 'viewpoint_import', label: 'Viewpoint (imported)' },
 ]
 
-function formatTs(iso) {
-  return new Date(iso).toLocaleString('en-HK', {
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-    timeZone: 'Asia/Hong_Kong',
-  })
-}
+const formatTs = formatDateTime
 
 /**
  * What actually happened.
@@ -109,9 +115,6 @@ function Change({ e }) {
 
 export default function AuditLogPage() {
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [source, setSource] = useState(null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
@@ -130,19 +133,13 @@ export default function AuditLogPage() {
     return () => clearTimeout(t)
   }, [search])
 
-  useEffect(() => {
-    setLoading(true)
-    setError('')
-    const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
-    if (source) params.set('source', source)
-    if (query) params.set('search', query)
-    if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
+  if (source) params.set('source', source)
+  if (query) params.set('search', query)
+  if (sort) { params.set('sort', sort); params.set('dir', dir) }
 
-    api.get(`/audit/?${params}`)
-      .then(setData)
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [source, query, page, sort, dir])
+  // Cancels the previous request on every toggle — UAT W-8. See the hook.
+  const { data, loading, error } = useAbortableGet(`/audit/?${params}`)
 
   const entries = data?.entries || []
   const total = data?.total || 0

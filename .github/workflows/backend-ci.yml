@@ -67,10 +67,18 @@ jobs:
         run: uv run alembic upgrade head
 
       - name: seed + greenfield assertions
-        run: >-
-          uv run pytest -q
-          tests/test_documents_migration_seed.py
-          tests/test_module_permissions_seed.py
+        # Globbed (not a hand-maintained list) so a new migration-assertion
+        # file — e.g. tests/tpsi/test_migration_016.py, test_migration_020.py —
+        # is picked up automatically as it lands. `shopt -s nullglob` makes an
+        # empty match vanish from the argument list instead of being passed to
+        # pytest as a literal, unmatched "tests/test_migration_*.py" string.
+        run: |
+          shopt -s nullglob
+          uv run pytest -q \
+            tests/test_documents_migration_seed.py \
+            tests/test_module_permissions_seed.py \
+            tests/test_migration_*.py \
+            tests/tpsi/test_migration_*.py
 
       - name: alembic downgrade (reversibility)
         run: uv run alembic downgrade base

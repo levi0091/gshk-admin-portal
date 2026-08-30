@@ -1,0 +1,204 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+	<soap:Body>
+		<cr:submitForm xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/">
+			<cr:submission>
+				<cr:EForm id="eForm">
+					<cr:formModel id="formData">
+						<cr:selectCapacityDesc>Founder Member</cr:selectCapacityDesc>
+						<cr:selectPersonId>TEST1234</cr:selectPersonId>
+						<cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+						<cr:signatoryDate>23/05/2022</cr:signatoryDate>
+						<cr:formCode>NNC1</cr:formCode>
+						<cr:language>E</cr:language>
+						<cr:intendedEngName>TEST COMPANY LIMITED</cr:intendedEngName>
+						<cr:coyStatus>P</cr:coyStatus>
+						<cr:bnCode>019</cr:bnCode>
+						<cr:bnDesc>Manufacture of coke and refined petroleum products</cr:bnDesc>
+						<cr:stdAddress>
+							<cr:bldg>Building</cr:bldg>
+							<cr:ctryRegion>HKG</cr:ctryRegion>
+							<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+							<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+							<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+						</cr:stdAddress>
+						<cr:email>test@cr.gov.hk</cr:email>
+						<cr:telNo>99999999</cr:telNo>
+						<cr:aaLang>M</cr:aaLang>
+						<cr:sampleAA>B</cr:sampleAA>
+						<cr:proposedCoySecure>false</cr:proposedCoySecure>
+						<cr:shareCapitals>
+							<cr:shareCapital>
+								<cr:classOfShare>Ordinary</cr:classOfShare>
+								<cr:amt>1000</cr:amt>
+								<cr:currCode>HKD</cr:currCode>
+								<cr:issuedShareCapital>1000</cr:issuedShareCapital>
+								<cr:paidUpShareCapital>1000</cr:paidUpShareCapital>
+								<cr:remainUnpaid>0</cr:remainUnpaid>
+								<cr:particluarOfRights>Ordinary</cr:particluarOfRights>
+							</cr:shareCapital>
+							<cr:shareCapital>
+								<cr:classOfShare>Preference</cr:classOfShare>
+								<cr:amt>500</cr:amt>
+								<cr:currCode>CAD</cr:currCode>
+								<cr:issuedShareCapital>500</cr:issuedShareCapital>
+								<cr:paidUpShareCapital>500</cr:paidUpShareCapital>
+								<cr:remainUnpaid>0</cr:remainUnpaid>
+								<cr:particluarOfRights>Preference</cr:particluarOfRights>
+							</cr:shareCapital>
+						</cr:shareCapitals>
+						<cr:shareHolderList>
+							<cr:shareHolder>
+								<cr:personType>P</cr:personType>
+								<cr:engSurName>CHAN</cr:engSurName>
+								<cr:engOtherName>TAI MAN</cr:engOtherName>
+								<cr:stdAddress>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:stdAddress>
+								<cr:shareCapitalList>
+									<cr:shareCapital>
+										<cr:classOfShare>Ordinary</cr:classOfShare>
+										<cr:totalNo>1000</cr:totalNo>
+										<cr:currCode>HKD</cr:currCode>
+										<cr:amt>1000</cr:amt>
+									</cr:shareCapital>
+									<cr:shareCapital>
+										<cr:classOfShare>Preference</cr:classOfShare>
+										<cr:totalNo>500</cr:totalNo>
+										<cr:currCode>CAD</cr:currCode>
+										<cr:amt>500</cr:amt>
+									</cr:shareCapital>
+								</cr:shareCapitalList>
+							</cr:shareHolder>
+						</cr:shareHolderList>
+						<cr:indSecList>
+							<cr:indSec>
+								<cr:surNameEng>CHAN</cr:surNameEng>
+								<cr:otherNameEng>TAI MAN</cr:otherNameEng>
+								<cr:correspondingAddress>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:correspondingAddress>
+								<cr:email>test@cr.gov.hk</cr:email>
+								<cr:hkid>NIL</cr:hkid>
+								<cr:passportNo>NIL</cr:passportNo>
+							</cr:indSec>
+						</cr:indSecList>
+						<cr:corpSecList>
+							<cr:corpSec>
+								<cr:chiName>測試有限公司</cr:chiName>
+								<cr:engName>TEST COMPANY LIMITED</cr:engName>
+								<cr:correspondingAddress>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:correspondingAddress>
+								<cr:email>test@cr.gov.hk</cr:email>
+								<cr:ubino>00000001</cr:ubino>
+							</cr:corpSec>
+						</cr:corpSecList>
+						<cr:indDirList>
+							<cr:indDir id="S1">
+								<cr:chiName>陳大文</cr:chiName>
+								<cr:surNameEng>CHAN</cr:surNameEng>
+								<cr:otherNameEng>TAI MAN</cr:otherNameEng>
+								<cr:correspondingAddress>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:correspondingAddress>
+								<cr:stdAddress>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:stdAddress>
+								<cr:email>test@cr.gov.hk</cr:email>
+								<cr:passportCtry>IND</cr:passportCtry>
+								<cr:passportNo>AB12345678</cr:passportNo>
+								<cr:consentSigned>Y</cr:consentSigned>
+								<cr:selectPersonId>TEST1234</cr:selectPersonId>
+								<cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+								<cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+							</cr:indDir>
+						</cr:indDirList>
+						<cr:corpDirList>
+							<cr:corpDir id="S2">
+								<cr:chiName>測試有限公司</cr:chiName>
+								<cr:engName>TEST COMPANY LIMITED</cr:engName>
+								<cr:correspondingAddress>
+									<cr:bldg>Building</cr:bldg>
+									<cr:ctryRegion>HKG</cr:ctryRegion>
+									<cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+									<cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+									<cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+								</cr:correspondingAddress>
+								<cr:email>test@cr.gov.hk</cr:email>
+								<cr:ubino>00000001</cr:ubino>
+								<cr:consentSigned>Y</cr:consentSigned>
+								<cr:associatedPersonId>TEST1234</cr:associatedPersonId>
+								<cr:associatedPersonName>CHAN, TAI MAN</cr:associatedPersonName>
+								<cr:associatedCapacityDesc>Director</cr:associatedCapacityDesc>
+								<cr:selectAssoBrNo>00000001</cr:selectAssoBrNo>
+								<cr:selectPersonName>TEST COMPANY LIMITED</cr:selectPersonName>
+								<cr:selectCapacityDesc>Director of the Director (Body Corporate)</cr:selectCapacityDesc>
+							</cr:corpDir>
+						</cr:corpDirList>
+						<cr:brcYear>1</cr:brcYear>
+					</cr:formModel>
+					<cr:formDataSignatures>
+						<cr:PinSign URI="#S1">
+							<cr:UserCredentialHash>NmJpTlgxeVFiUE9YNGlVWGNGOXdCaktoVS9LVVg5cWxPL3RTZVIzZlpiYkdTUDBrajE0TzJUNDBUd1VtUVRoUDZTaFZrU0w5MGJlV04vSDRXTlNuQTJGVW9oV3JRRnBxTllXSjJJc05JaXFZdnhYNmlpdG94cHRvVXA0anp3bEc5TGpzNmM4VGFDdUUxWWY1ZnVvNTRsWjN2TWFOcVpPWDN3UTlJdFp6c2h6L0lxV2JDSEtsYTlyRUJ4Wk91ZkNXOFl4VlBaMHhzVk5VUjQ2QTNtaGp0eFdMbVFWd3I0VFJEdWdEMlIwY3djcz0=</cr:UserCredentialHash>
+							<cr:UserSignature>NFE4UWNiTG9uOVdwa3lGelNOOUdhS2VwQkZOUkVnRE5yOHRCKzg0aVN3K21GQ3E2c25vLzVFMDZaSHYvQktyTTBuOEpMbGxqRy92SmwyZjBZTysvMkJJdHlYY2MybHUwNEU3YXZmeGpNZWs9</cr:UserSignature>
+							<cr:EncryptionKey>av+9HgizG3z97MwBeScoze8hL7bHOhY0wWOfTKkdut1AcZMiFGm6wsPu7IouYh+IuLyy0QyAy6B1mGBAjtWNdYEPELJEgrXE1nmqKrMYw/Wpq7IH3Ax2Kig66tsNfANfqunkGnmISz/xFuc0urIxdVVbtebAnU0IfHLZ7hZ15cil/9nyaVJNQK/dtAfPr8iExICHuxOljBSVNm5GPYSErN/5x6GNNUzEHnUOSyILQnyrl9IWFCHv3sq1XZBt4/0Zo45ja/cdkFf3WmMdxP5rTwLYizBMG/jxW1eWaGKp6dgbr47xmUcNBBh2qaP5plYZxo3AEZ2ld0iQ6/R6Fpi6nQ==</cr:EncryptionKey>
+						</cr:PinSign>
+						<cr:PinSign URI="#S2">
+							<cr:UserCredentialHash>T2p1U2xYYzdiVjdXa3VWbnpIUnBqRGJic1RQOEN6cE4rbllyM0xnNjRiMTBmZFV2d2g1QWNsQkxFMTJnbWhGNlVEblROalgwajZnUStGd2JBM3NqYmMyc0UrTnB1UitSQ2w4bWtTanhOZHY5Z2paK2QxUlFNSzRZaVJiMStiWUt4cmpvUUxiRXV1UDJWUUxZemVtL2pwcm5XdDQxTmlYUERpdmJPZytIRFV5VTRHcVpDY29NZ1FEUEFMbzF5QjYyQjNkQnRneFRBLzJEaWszblByY2tKNGZpd2JXN0FINzVFZVppU3VoRmNHcz0=</cr:UserCredentialHash>
+							<cr:UserSignature>c2I3ZkgzWm5WcUsyWXNqenZ5andOdWxyRkhWRWlsOU1uY0ZuNE9Ob3MvR1hMTFRKV1YwdSt0TTJjaEJ5cXNGTWJqZkxDSFlvcXQwYWpFNEExRFVXZlkxSDhQVkVSS3MraENVN25uZTh4VWM9</cr:UserSignature>
+							<cr:EncryptionKey>DrSOYKLFxq7j6sl6oNgg6JDi0pG8XseoUlZYr2WLcNI6JILMAaIhmZ7zT78TJr1j/KbrkwkB+ACREkxcvtXZurAp2sbY9KsPCqQ9EwEocxMF+Qrn2JBP4eaNf5akuW2Dp6Vf3099Y/BmsCt0bDblrZRJWZfP8o2g41Z3i/P4xrJjalojMY4v+sHI4WADZQ5Zi/eMwkm1s1xAAod9zY2kR8M0x6JGDiYfYNH/D5FC1sAXA//Ycyj6WZ5U1Ygx9qZQ8RGb803hM2ZWABkXb4JvcU+dp6qHEx9ZPW9wJem1+HlyS7K0u88H9VNU8d/s+usxJwWs9Vw9ENN6eyZE1ey4jg==</cr:EncryptionKey>
+						</cr:PinSign>
+					</cr:formDataSignatures>
+				</cr:EForm>
+				<cr:EFormSignatures>
+					<ds:Signature id="CR">
+						<ds:SignedInfo>
+							<ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+							<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+							<ds:Reference URI="#formData">
+								<ds:Transforms>
+									<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+								</ds:Transforms>
+								<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+								<ds:DigestValue>iYIJsSo+I8jge/hVSiw9EYpfxtVNrVWLK0mrM150cxk=</ds:DigestValue>
+							</ds:Reference>
+						</ds:SignedInfo>
+						<ds:SignatureValue>t25orRUVwGzQ2huzDs9ggX5uO8JBPsXChb1P3B5e8qVHwiBX4v3GOqB0uBDj+KM2nzwxBEqdLzwY0cWjcIS9qOmJsE41UrYZ35aQ3u0bUq1lH5P43dMetRW2tJHwPzGci0YyoDDcvDxIFfF1TG1Ox2ZDBWgBr9TQ2K7mx2tXkCGNY5DPRgqwiJ3ykoW5XwLOEZyvTiJ+xwBFLTTwNLJ99F7VnPq1Wizw4gsmvc1IaWVMnuXenoLPgAHBqjr6npF5A4NJsreaZxEwRVPXQL2XwzL+BYi1jap2GsXXcTr69WVYlUti59XTPS9iwiG3MTpyjVilitMtog83/3WL4Ss6Zg==</ds:SignatureValue>
+						<ds:KeyInfo>
+							<ds:X509Data>
+								<ds:X509Certificate>MIIFujCCBKKgAwIBAgIUc0gKK4jvCCe3ApSoTTSeGJ1eCHowDQYJKoZIhvcNAQELBQAwfDELMAkGA1UEBhMCSEsxEjAQBgNVBAgTCUhvbmcgS29uZzESMBAGA1UEBxMJSG9uZyBLb25nMRYwFAYDVQQKEw1Ib25na29uZyBQb3N0MS0wKwYDVQQDEyRIb25na29uZyBQb3N0IFRyaWFsIGUtQ2VydCBDQSAyIC0gMTcwHhcNMjEwNDI4MTAyMDA0WhcNMjIwNDI4MTAyMDA0WjCCAQIxCzAJBgNVBAYTAkhLMTQwMgYDVQQKEytIb25na29uZyBQb3N0IFRyaWFsIGUtQ2VydCAoT3JnYW5pc2F0aW9uYWwpMRMwEQYDVQQLEwowMDAxODQ0NTMyMSMwIQYDVQQLExowMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDBDUjEhMB8GA1UECxMYSG9uZyBLb25nIFNBUiBHb3Zlcm5tZW50MRswGQYDVQQLExJDb21wYW5pZXMgUmVnaXN0cnkxJDAiBgkqhkiG9w0BCQEWFWljcmlzcmV2YW1wQGdtYWlsLmNvbTEdMBsGA1UEAxMUSUNSSVMgUkVWQU1QIFVBVCBPbmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDEBoWyHAhuy+6Hw5ajS8u0qoOOcflezLylUWJA1o8ZMbMWHIAd+DvuYeHi2P34CrVUPP7rnxS/N7melfbePpuuieMOCn7yy/35h5T/eOJUuX4z8+fg2W/d6uFDlEga+lKAEDGCo1yz0UtAz2CGfDJUOCpPjZttZrowoKS+mWOmvrwooAFDDEtBWzqR7/WYlvfmbUnx4aMJneRBmDAn4nnGm1p/t8M6ijE2H5AnbRi87398yUxyJv4QFluCq6ghB9X9Gm27GfCuewPviG2oHs20EPGWSOxoKn4tqsINNkrUX4YQ8f7bMmIX5BrWXkSE9NGKaMPxlxfSfWA67ZnMb70vAgMBAAGjggGqMIIBpjA3BgNVHSAEMDAuMCwGCisGAQQB/R4BAS4wHjAcBggrBgEFBQcCARYQd3d3LmVDZXJ0Lmdvdi5oazBKBgNVHREEQzBBpCgwJjEkMCIGA1UECwwb6aaZ5riv54m55Yil6KGM5pS/5Y2A5pS/5bqcgRVpY3Jpc3JldmFtcEBnbWFpbC5jb20wCQYDVR0TBAIwADAOBgNVHQ8BAf8EBAMCBeAwHQYDVR0lBBYwFAYIKwYBBQUHAwIGCCsGAQUFBwMEMIGcBgNVHSMEgZQwgZGheaR3MHUxCzAJBgNVBAYTAkhLMRIwEAYDVQQIEwlIb25nIEtvbmcxEjAQBgNVBAcTCUhvbmcgS29uZzEWMBQGA1UEChMNSG9uZ2tvbmcgUG9zdDEmMCQGA1UEAxMdSG9uZ2tvbmcgUG9zdCBUcmlhbCBSb290IENBIDKCFDifvqm0pPyahQl2CWRpGWbs+Tr+MEYGA1UdHwQ/MD0wO6A5oDeGNWh0dHA6Ly90cmlhbGNybDEuZUNlcnQuZ292LmhrL2NybC9lQ2VydENBMi0xN0NSTDIuY3JsMA0GCSqGSIb3DQEBCwUAA4IBAQChFhdrTJMt4Z8BQrcgSPWwMh2vSePV78AXW3f7djGzR0AdPj7JyV+07K6laaFF7i1Z8v87GaCSeUEd6vc7p3rDbq2sZ1U4qfRfNTnbcCZ5aN9OZSu0yWvriEgKJVWC7o5UruRKUX/Kqo0QFjY3O9Q1mn+Jt0q4OG66JJRCdzxxFUcYZmeP3bQH/MMJyEAQDqnCnF1XLgECefjjgjqr3hCn+qBxOdNL6Jbut1LYOFpKBohLZX0ysMdiyfo8SHKfKVcGWtEGKlyYbU1olBElhXoan9OKszD+1i75PJwmuaCINQ8ItYhkyprI6Ua/239jgOA3P3A++kRiECWnLvYFV6e3</ds:X509Certificate>
+								<ds:X509SubjectName>CN=ICRIS REVAMP UAT One,1.2.840.113549.1.9.1=#16156963726973726576616d7040676d61696c2e636f6d,OU=Companies Registry,OU=Hong Kong SAR Government,OU=000000000000000000000000CR,OU=0001844532,O=Hongkong Post Trial e-Cert (Organisational),C=HK</ds:X509SubjectName>
+							</ds:X509Data>
+						</ds:KeyInfo>
+					</ds:Signature>
+					<cr:PinSign URI="#eForm">
+						<cr:UserCredentialHash>ZGxHbDA1UUIxNmhsNTlVaHhHUDhwbEVhNlljcThDZytFVWdobkkwRWNOK2hjbHA0d2xOdDAzQTJoc3dEbFhQK2FKbEk1bGpJSjQyKzNjSjZpQkxIcjExdVowT3hvcHJsNGd6OS9HTlJ4WXppYlRJQWJTSE5UY3JydDRCMzB6R3JPRnBpRlZmdnVFekhqL1RWYmRhQ3JkMUl4UEd1SnVvWmMxbFY1T1RaV2NGeTlnS2JCWG1NMk9jQ2RTa2c3bFdMS3RIeWVhZE9odXBiR0Nrd3cxT09tdWhCU2xmaWd1eW5ybkNNTjYrTytZOD0=</cr:UserCredentialHash>
+						<cr:UserSignature>Um8vS25Ydm5XQ1lidVBIZTNNaXdWbzJySVB3RmhUNkc2Uks5SzY3enNqUkNmWWxoVXNCUGZhYXR6Q25KM3FRN1ZPNGRPSWJucHNOdlJSUkk3dUxXTHcxdWpRc1pvdnRHaVZPK2RnUXlnb0U9</cr:UserSignature>
+						<cr:EncryptionKey>OkmAB4sMgA0N4p2yeDMjFV222i/6aNYBHfotf6bNMSjJpMwbrVoNJPm/gSclsfFyB1JEpSEXRK7t2qIHuWSZE6RBPSZkhqAUNGxqbS/9+B+ExSB4cGkaObsyXDpoCV/lzgTA2fZYpNEutmtO6hO/liops0WBr+ntgXLwOH7OtGihyFmz45Yewfz2SGd6ZS8PynZxgkM6biFr/BvLpd2hrNxJJe2UxDbd+pk5Yr9/IceXk0kpf+9PDYOKRReT6QuY2SOoWejRkb/ZDkVPDF7UKCQ2w7IjAh0tas+P2F3XsD+G2+Lyzm2aBofav7VSQeISYzad3/iFJwgUSs5mFOVD4w==</cr:EncryptionKey>
+					</cr:PinSign>
+				</cr:EFormSignatures>
+				<cr:depositAccountNo>N00061980009</cr:depositAccountNo>
+			</cr:submission>
+		</cr:submitForm>
+	</soap:Body>
+</soap:Envelope>

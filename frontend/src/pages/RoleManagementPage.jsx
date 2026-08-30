@@ -9,11 +9,40 @@ import { api } from '../lib/api.js'
 // differ where "Edit" reads better than the literal 'write'.
 const READ = { value: 'read', label: 'Read' }
 const EDIT = { value: 'write', label: 'Edit' }
+const DELETE = { value: 'delete', label: 'Delete' }
+const SUBMIT = { value: 'submit', label: 'File with CR' }
 
+/**
+ * Every module the backend actually gates on, with the levels it accepts.
+ *
+ * This list was three modules long while the database had six — so `nar1`,
+ * `tpsi` and `documents` could not be granted through the UI at all, and
+ * nobody but a Super Admin could ever see a NAR1 case, let alone file one.
+ *
+ * `hint` says what the level MEANS for the work, because "write" on its own
+ * does not tell an admin that it is the difference between watching a
+ * statutory filing and driving it.
+ */
 const MODULES = [
-  { id: 'companies',    label: 'Companies',    permissions: [READ, EDIT] },
-  { id: 'persons',      label: 'Persons',      permissions: [READ, EDIT] },
-  { id: 'audit_trail',  label: 'Audit Trail',  permissions: [READ] },
+  { id: 'companies', label: 'Companies', permissions: [READ, EDIT] },
+  { id: 'persons', label: 'Persons', permissions: [READ, EDIT] },
+  {
+    id: 'nar1',
+    label: 'NAR1 cases',
+    permissions: [READ, EDIT],
+    hint: 'Read shows NAR1 cases on the Post-incorporation dashboard. '
+        + 'Edit is needed to open a case and to move one forward.',
+  },
+  {
+    id: 'tpsi',
+    label: 'Companies Registry filing',
+    permissions: [READ, EDIT, SUBMIT],
+    hint: 'Read sees the fee and balance. Edit validates and signs. '
+        + 'File with CR spends from the deposit account and cannot be undone — '
+        + 'grant it deliberately.',
+  },
+  { id: 'documents', label: 'Documents', permissions: [READ, EDIT, DELETE] },
+  { id: 'audit_trail', label: 'Audit Trail', permissions: [READ] },
 ]
 
 function permSet(role) {
@@ -85,8 +114,13 @@ function RoleModal({ role, onClose, onSaved }) {
               </div>
               {MODULES.map(mod => (
                 <div key={mod.id} style={{ background: 'var(--indigo-5)', borderRadius: 8, padding: 14, marginBottom: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-head)', marginBottom: 10 }}>{mod.label}</div>
-                  <div style={{ display: 'flex', gap: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t-head)', marginBottom: mod.hint ? 4 : 10 }}>{mod.label}</div>
+                  {mod.hint && (
+                    <div style={{ fontSize: 11, color: 'var(--t-muted)', lineHeight: 1.5, marginBottom: 10 }}>
+                      {mod.hint}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                     {mod.permissions.map(perm => {
                       const key = `${mod.id}:${perm.value}`
                       return (

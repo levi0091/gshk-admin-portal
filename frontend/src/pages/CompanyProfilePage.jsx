@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
+import { liveCaseWarning } from '../lib/liveCase.js'
 import { formatDate } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 import StatusBadge from '../components/StatusBadge.jsx'
@@ -8,6 +9,8 @@ import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import { useLookups } from '../lib/lookups.js'
+import NewCaseModal from '../components/NewCaseModal.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
 
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
@@ -91,7 +94,14 @@ export default function CompanyProfilePage() {
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
   const [busy, setBusy] = useState(false)
+  //: The live-case warning, held until the operator decides. null = no
+  //: conflict, or already acknowledged.
+  const [conflict, setConflict] = useState(null)
   const [showUpload, setShowUpload] = useState(false)
+  const [newCase, setNewCase] = useState(false)
+  const { hasPermission, isSuperAdmin } = useAuth()
+  // nar1:read shows cases; nar1:write is what opens one.
+  const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
   const [linkModal, setLinkModal] = useState(null)
 
@@ -135,13 +145,29 @@ export default function CompanyProfilePage() {
     }
   }
 
-  async function saveEdit() {
-    setBusy(true)
-    // Send only fields that actually changed — the backend writes one audit
-    // entry per changed field, so sending untouched fields would be noise.
-    const changed = Object.fromEntries(
+  // Send only fields that actually changed — the backend writes one audit
+  // entry per changed field, so sending untouched fields would be noise.
+  function changedFields() {
+    return Object.fromEntries(
       Object.entries(draft).filter(([k, v]) => (company[k] ?? '') !== v && v !== '')
     )
+  }
+
+  //` force` is a PARAMETER, not a state flag: the override arrives by the
+  // operator pressing a button, and routing that through setState would have
+  // saveEdit re-enter before React had applied it.
+  async function saveEdit(force = false) {
+    // A case past Data Verification is holding a FROZEN snapshot of this data.
+    // The edit is allowed — the wireframe is explicit that it is — but the
+    // operator has to be told that the return already validated, sent to the
+    // client or filed with CR will no longer match this record.
+    const changed = changedFields()
+    if (!force && Object.keys(changed).length) {
+      const warning = liveCaseWarning(company)
+      if (warning) { setConflict(warning); return }
+    }
+    setConflict(null)
+    setBusy(true)
     try {
       if (Object.keys(changed).length) {
         await api.patch(`/companies/${companyId}`, changed)
@@ -202,6 +228,14 @@ export default function CompanyProfilePage() {
         </div>
       </div>
 
+      {newCase && (
+        <NewCaseModal
+          entity={company}
+          onClose={() => setNewCase(false)}
+          onCreated={c => navigate(`/cases/${c.id}`)}
+        />
+      )}
+
       {showUpload && (
         <UploadDocumentModal
           ownerKind="entity"
@@ -235,7 +269,7 @@ export default function CompanyProfilePage() {
               {editing ? (
                 <div className="hdr-actions">
                   <button className="btn-edit" onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
-                  <button className="btn btn-primary btn-sm" onClick={saveEdit} disabled={busy}>
+                  <button className="btn btn-primary btn-sm" onClick={() => saveEdit()} disabled={busy}>
                     {busy ? 'Saving…' : 'Save'}
                   </button>
                 </div>
@@ -265,6 +299,9 @@ export default function CompanyProfilePage() {
                 <Kv label="CR No.">{company.cr_number}</Kv>
                 <Kv label="Status"><StatusBadge status={company.status} /></Kv>
                 <Kv label="Company Type">{company.company_type}</Kv>
+                <Kv label="Country of Incorporation">
+                  {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
+                </Kv>
                 <Kv label="Registered Address">{addressText(company.registered_address)}</Kv>
                 <Kv label="Company Phone">
                   {company.contacts?.find(c => c.contact_type === 'phone')?.contact_value}
@@ -292,9 +329,6 @@ export default function CompanyProfilePage() {
               </div>
               <div className="kv-list">
                 <Kv label="Company Type">{company.company_type}</Kv>
-                <Kv label="Country of Incorporation">
-                  {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
-                </Kv>
                 <Kv label="TCSP Licence">{company.tcsp_licence_no}</Kv>
                 <Kv label="TCSP Exemption">{company.tcsp_exemption_reason}</Kv>
               </div>
@@ -371,12 +405,42 @@ export default function CompanyProfilePage() {
                   <div className="card-title">Cases</div>
                   <div className="card-sub">NAR1 &amp; NNC1 workflow cases</div>
                 </div>
+                {/* The annual return is started from the company it is for.
+                    Without this the only route was the dashboard, where you
+                    then had to search back to the company you were already on. */}
+                {canOpenCase && (
+                  <button className="btn btn-outline btn-sm"
+                          onClick={() => setNewCase(true)}>
+                    + New case
+                  </button>
+                )}
               </div>
-              <CasesPane cases={company.cases} />
+              <CasesPane cases={company.cases} onOpen={id => navigate(`/cases/${id}`)} />
             </div>
           </div>
         )}
       </div>
+
+      {/* The edit is NOT blocked — the wireframe is explicit that the profile
+          changes and the case snapshot does not. What is required is that the
+          operator be told which return will stop matching this record. */}
+      {conflict && (
+        <div className="modal-confirm" role="alertdialog"
+             aria-label="Edit conflicts with a live case">
+          <div className="modal-confirm-card">
+            <div className="modal-confirm-title">{conflict.title}</div>
+            <div className="modal-confirm-text">{conflict.body}</div>
+            <div className="modal-confirm-actions">
+              <button className="btn btn-outline" onClick={() => setConflict(null)}>
+                Cancel edit
+              </button>
+              <button className="btn btn-danger" onClick={() => saveEdit(true)}>
+                Save anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
@@ -422,7 +486,7 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
   )
 }
 
-function CasesPane({ cases }) {
+function CasesPane({ cases, onOpen }) {
   const all = [
     ...(cases?.nar1 || []).map(c => ({ ...c, kind: 'NAR1 — Annual Return' })),
     ...(cases?.nnc1 || []).map(c => ({ ...c, kind: 'NNC1 — Incorporation' })),
@@ -434,7 +498,8 @@ function CasesPane({ cases }) {
   }
   return all.map(c => (
     <div className={`case-acc${open === c.id ? ' open' : ''}`} key={c.id}>
-      <div className="case-acc-hdr" onClick={() => setOpen(open === c.id ? null : c.id)}>
+      <div className="case-acc-hdr"
+           onClick={() => (onOpen ? onOpen(c.id) : setOpen(open === c.id ? null : c.id))}>
         <span className="case-chevron">❯</span>
         <div className="case-acc-titles">
           <div className="case-acc-type">{c.kind}</div>

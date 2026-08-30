@@ -8,7 +8,7 @@ function initials(name) {
 }
 
 export default function AppShell() {
-  const { profile } = useAuth()
+  const { profile, isTestEnv, envUnknown } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
 
@@ -38,6 +38,30 @@ export default function AppShell() {
         <span className="hdr-app-name">G-FlowDesk</span>
 
         <div className="hdr-spacer" />
+
+        {/* Non-production marker. Levi 2026-08-30: the CR credentials screen
+            used to carry a paragraph explaining that its account was a test
+            account; this replaces it, in the one place that is true of the
+            whole portal rather than of one screen. Driven by APP_ENV via
+            /auth/me — during the planned PROD-on-TPSI-test pilot this will
+            read as production while filings still go to CR test, which is the
+            decision Levi made, not an oversight. */}
+        {isTestEnv && (
+          <span className="env-pill" title="Non-production deployment">TEST</span>
+        )}
+
+        {/* The backend answered but did not say which environment it is. That
+            is NOT "production" — it is a question nobody has answered, and
+            leaving it blank makes it indistinguishable from a live deployment.
+            Levi 2026-08-30: a DEV backend with APP_ENV=prod showed no badge at
+            all, and the missing badge was the only visible symptom of a mail
+            interlock that had quietly disarmed. */}
+        {envUnknown && (
+          <span className="env-pill env-pill-unknown"
+                title="This backend did not report its environment. Check APP_ENV on the service, and GET /health.">
+            ENV&nbsp;?
+          </span>
+        )}
 
         {/* User chip — name hidden on mobile, avatar only */}
         <div className="user-chip hdr-chip">

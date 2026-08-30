@@ -66,6 +66,12 @@ def _resolve_user(token: str) -> dict:
 
     user = {
         "id": auth_user.id,
+        # The address they signed in with, taken from Supabase Auth rather than
+        # the `users` row: Auth owns it, and it is the mailbox that actually
+        # reaches this person. Read by the verification send, which copies the
+        # case worker on the client's email and points the client's reply at
+        # them (routers/cases.send_verification).
+        "email": getattr(auth_user, "email", None),
         "display_name": profile["display_name"],
         "role_name": profile["roles"]["name"] if profile.get("roles") else None,
         "role_id": profile.get("role_id"),

@@ -1,0 +1,54 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <cr:validateForm xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <cr:submission>
+            <cr:EForm id="eForm">
+                <cr:formModel id="formData">
+                    <cr:language>E</cr:language>
+                    <cr:brNo>00000001</cr:brNo>
+                    <cr:nomBeans>
+                        <cr:nomBean id="S1">
+                            <cr:offrChiName>陳大文</cr:offrChiName>
+                            <cr:offrEngSname>CHAN</cr:offrEngSname>
+                            <cr:offrEngOname>TAI MAN</cr:offrEngOname>
+                            <cr:offrPrevChiName>陳大文</cr:offrPrevChiName>
+                            <cr:offrPrevEngName>CHAN TAI MAN</cr:offrPrevEngName>
+                            <cr:offrAlsChiName>陳大文</cr:offrAlsChiName>
+                            <cr:offrAlsEngName>CHAN TAI MAN</cr:offrAlsEngName>
+                            <cr:indvCorrAddr>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:indvCorrAddr>
+                            <cr:offrEmailAddr>test@cr.gov.hk</cr:offrEmailAddr>
+                            <cr:offrHkidNo>A123456</cr:offrHkidNo>
+                            <cr:offrHkidChkDgt>2</cr:offrHkidChkDgt>
+                            <cr:indvResAddr>
+                                <cr:flatFlrBlk>Flat / Floor / Block etc.</cr:flatFlrBlk>
+                                <cr:bldg>Building</cr:bldg>
+                                <cr:stEstLotVlg>Street / Estate / Lot / Village etc.</cr:stEstLotVlg>
+                                <cr:dstCtyStatePostal>CENTRAL</cr:dstCtyStatePostal>
+                                <cr:ctryRegion>HKG</cr:ctryRegion>
+                            </cr:indvResAddr>	
+                            <cr:offrDtNom>01/06/2022</cr:offrDtNom>
+                            <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                            <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                            <cr:solDirChiName>陳大文</cr:solDirChiName>
+                            <cr:solDirEngSname>CHAN</cr:solDirEngSname>
+                            <cr:solDirEngOname>TAI MAN</cr:solDirEngOname>
+                        </cr:nomBean>	
+                    </cr:nomBeans>
+                    <cr:selectPersonId>TEST1234</cr:selectPersonId>
+                    <cr:selectPersonName>CHAN, TAI MAN</cr:selectPersonName>
+                    <cr:selectCapacityDesc>Director</cr:selectCapacityDesc>
+                    <cr:signatoryDate>21/06/2022</cr:signatoryDate>
+                </cr:formModel>
+            </cr:EForm>
+            <cr:EFormSignatures>
+            </cr:EFormSignatures>
+        </cr:submission>
+    </cr:validateForm>
+  </soap:Body>
+</soap:Envelope>

@@ -42,6 +42,65 @@ GF_DOC_UPLOADED = "GF_DOC_UPLOADED"
 GF_DOC_VERSION = "GF_DOC_VERSION"
 GF_DOC_DELETED = "GF_DOC_DELETED"
 
+# ---- TPSI codes (CR e-Filing transport) ------------------------------------
+#   Their own family rather than the GF_ prefix: TPSI is a distinct source
+#   system, and that should read at a glance in the audit UI.
+TPSI_AUTH = "TPSI_AUTH"
+TPSI_FILING_CREATED = "TPSI_FILING_CREATED"
+TPSI_VALIDATE = "TPSI_VALIDATE"
+TPSI_SIGN = "TPSI_SIGN"
+TPSI_EDRIVE = "TPSI_EDRIVE"
+TPSI_PREVIEWED = "TPSI_PREVIEWED"
+# Submit-lifecycle events reuse the TPSI_SUBMISSION_* codes migration 012
+# already seeded — that family is CLAUDE.md-mandated (PBI-11 audit event
+# table) and wired into the frontend label maps (AuditTrailTab.jsx,
+# AuditLogPage.jsx). Exposed here under the same names, not a TPSI_SUBMIT_*
+# near-duplicate, so later tasks import one canonical constant.
+TPSI_SUBMISSION_ATTEMPTED = "TPSI_SUBMISSION_ATTEMPTED"
+TPSI_SUBMISSION_SUCCESS = "TPSI_SUBMISSION_SUCCESS"
+TPSI_SUBMISSION_FAILED = "TPSI_SUBMISSION_FAILED"
+TPSI_BALANCE_CHECK = "TPSI_BALANCE_CHECK"
+TPSI_STATUS = "TPSI_STATUS"
+TPSI_CRED_SET = "TPSI_CRED_SET"
+TPSI_CRED_ROTATE = "TPSI_CRED_ROTATE"
+TPSI_PW_CHANGE = "TPSI_PW_CHANGE"
+TPSI_CRED_CONFIG = "TPSI_CRED_CONFIG"
+
+# ---- NAR1 case-workflow codes (BE-4) ---------------------------------------
+#   Named, not invented: CASE_STATUS_CHANGED, CASE_FIELD_UPDATED and
+#   AML_STATUS_CHANGED are the action_type values CLAUDE.md's PBI-11 audit
+#   table already mandates, and all three are seeded in audit_event_types --
+#   confirmed live against DEV (2026-08-16) via a direct REST query, which
+#   also returned the other three PBI-11 codes (DOCUMENT_GENERATED,
+#   EMAIL_SENT, CLIENT_APPROVAL_RECEIVED). NOTE: this repo's checked-in copy
+#   of alembic/versions/012_pbi39_audit_event_types.py does NOT contain
+#   CASE_STATUS_CHANGED or CASE_FIELD_UPDATED in its _NATIVE list, and no
+#   other migration file inserts them either -- DEV has rows no migration in
+#   this checkout accounts for. Flagged to Levi as a migration-history/DEV
+#   drift question; not a blocker for this task, since the values only need
+#   to match what is live.
+CASE_STATUS_CHANGED = "CASE_STATUS_CHANGED"
+CASE_FIELD_UPDATED = "CASE_FIELD_UPDATED"
+AML_STATUS_CHANGED = "AML_STATUS_CHANGED"
+
+# ---- Document generation (BE-2) --------------------------------------------
+#   CLAUDE.md's PBI-11 table mandates this action_type for "any document (AoA,
+#   FWR, NNC1, CoI, NAR1) generated". Already seeded in audit_event_types by
+#   migration 012 (_NATIVE list, "Document Generated"/document), so exposing it
+#   here needs no new migration -- it only gives callers one canonical constant
+#   instead of a string literal per call site.
+DOCUMENT_GENERATED = "DOCUMENT_GENERATED"
+
+# ---- NAR1 manual (off-portal) path (BE-6) ----------------------------------
+#   Already seeded in audit_event_types by migration 021 (AUDIT_CODES), so no
+#   new migration is needed -- these constants only give callers one canonical
+#   name instead of a string literal per call site. Deliberately NOT the
+#   TPSI_SUBMISSION_* family: nothing here goes near CR, and an off-portal
+#   submission must never be mistaken in the trail for one we transmitted.
+NAR1_MANUAL_SIGN_UPLOADED = "NAR1_MANUAL_SIGN_UPLOADED"
+NAR1_MANUAL_SUBMISSION_RECORDED = "NAR1_MANUAL_SUBMISSION_RECORDED"
+NAR1_MANUAL_RECEIPT_ENTERED = "NAR1_MANUAL_RECEIPT_ENTERED"
+
 # Company field -> the Viewpoint folder that owns it.
 _COMPANY_FIELD_CODES = {
     # Master file (names)
@@ -127,3 +186,19 @@ def person_field_code(field: str) -> str:
 
 def party_code(relation: str, operation: str) -> Optional[str]:
     return _PARTY_CODES.get((relation, operation))
+
+
+# ---- Client verification (BE-3) --------------------------------------------
+#   Both already seeded in audit_event_types by migration 012 (_NATIVE list:
+#   "Email Sent"/email and "Client Approval Received"/client), so no new
+#   migration is needed -- these constants only give callers one canonical name
+#   instead of a string literal per call site, the same reason
+#   DOCUMENT_GENERATED above exists.
+#
+#   EMAIL_SENT is CLAUDE.md's mandated action_type for "any workflow email sent
+#   via Resend". CLIENT_APPROVAL_RECEIVED is its mandated type for the client's
+#   Yes/No -- note the PBI-11 table scopes that one to NNC1, but the NAR1
+#   verification loop records exactly the same fact and inventing a parallel
+#   NAR1-only code would split one concept across two vocabularies.
+EMAIL_SENT = "EMAIL_SENT"
+CLIENT_APPROVAL_RECEIVED = "CLIENT_APPROVAL_RECEIVED"

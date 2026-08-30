@@ -46,8 +46,19 @@ _TAB_STATUSES = ["pending_aml", "to_verify", "client_rejected",
 _LIST_COLS = (
     "id, vp_source_key, company_name, company_name_zh, br_number, cr_number, "
     "status, active_workflow, company_type, is_client, is_corporate_party, "
-    "incorporation_date, created_at, updated_at"
+    "incorporation_date, created_at, updated_at, days_to_anniversary"
 )
+
+# The list reads the `company_registry` VIEW, not `entities` — it is entities
+# plus days_to_anniversary, computed on read and stored nowhere (migration 019).
+# It has to be server-side: the registry paginates over ~5,930 rows, so sorting
+# the 50 rows a page happens to hold answers the wrong question. Writes still go
+# to `entities`; a view is not an update target.
+_LIST_RELATION = "company_registry"
+
+# Signed: negative means the anniversary has passed and the return is still
+# inside the 42-day statutory window. See migration 019 and PRD §6 W-3.
+_ANNIV_OPS = {"lte", "gte", "eq"}
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
 
@@ -57,6 +68,7 @@ _SORTABLE = {
     "vp_source_key", "company_name", "br_number", "cr_number", "status",
     "active_workflow", "company_type", "created_at", "updated_at",
     "incorporation_date", "is_client", "is_corporate_party",
+    "days_to_anniversary",
 }
 
 _SECRETARY_ROLE = "company_secretary"
@@ -182,6 +194,8 @@ async def list_companies(
     status: Optional[str] = Query(None),
     sort: Optional[str] = Query(None),
     dir: str = Query("asc"),
+    anniv_op: Optional[str] = Query(None, description="lte | gte | eq"),
+    anniv_days: Optional[int] = Query(None, description="signed day count"),
     page: int = Query(1, ge=1),
     page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     user=Depends(require_permission("companies", "read")),
@@ -203,9 +217,19 @@ async def list_companies(
             return q.eq("is_client", False)
         return q
 
+    if anniv_op is not None and anniv_op not in _ANNIV_OPS:
+        raise HTTPException(status_code=422, detail=f"Unknown comparison '{anniv_op}'")
+    # Both halves or neither — a comparison with nothing to compare against, or a
+    # number with no comparison, is a caller bug worth surfacing.
+    if (anniv_op is None) != (anniv_days is None):
+        raise HTTPException(
+            status_code=422,
+            detail="anniv_op and anniv_days must be supplied together",
+        )
+
     def base(cols: str, count: Optional[str] = None, f: Optional[str] = ...):
-        q = (sb.table("entities").select(cols, count=count) if count
-             else sb.table("entities").select(cols))
+        q = (sb.table(_LIST_RELATION).select(cols, count=count) if count
+             else sb.table(_LIST_RELATION).select(cols))
         q = apply_flag(q, flag if f is ... else f)
         if search:
             q = q.or_(
@@ -213,6 +237,16 @@ async def list_companies(
                 f"br_number.ilike.%{search}%,"
                 f"cr_number.ilike.%{search}%"
             )
+        # Applied inside base() so it reaches the COUNT queries too. Filtering
+        # only the page query would leave the pager and the tab counts quoting
+        # totals for a set the user is not looking at.
+        if anniv_op:
+            col = "days_to_anniversary"
+            q = getattr(q, anniv_op)(col, anniv_days)
+            # A company with no incorporation_date has a NULL day count and
+            # cannot answer a numeric question. PostgREST would drop it anyway;
+            # being explicit means the intent survives the next edit.
+            q = q.not_.is_(col, "null")
         return q
 
     def count_of(**eq) -> int:
@@ -251,8 +285,11 @@ async def list_companies(
         q = base(_LIST_COLS)
         if status:
             q = q.eq("status", status)
+        # nullsfirst=False explicitly: Postgres puts NULLs FIRST on a DESC sort,
+        # which would open "furthest from anniversary" with the 473 companies
+        # that have no incorporation date and therefore no answer.
         rows = (
-            q.order(sort, desc=(dir == "desc"))
+            q.order(sort, desc=(dir == "desc"), nullsfirst=False)
             .range(offset, offset + page_size - 1).execute().data
         ) or []
     elif status:
@@ -383,8 +420,14 @@ async def get_company(
     }
     # Cases pane only for client entities (§6 visibility).
     if entity.get("is_client"):
+        # `nar1_case_registry` (024) rather than the raw table: it carries
+        # `workflow_status` and `filing_stage`, so the profile can tell whether
+        # a case has FROZEN A SNAPSHOT of this company's data. Editing under a
+        # live case leaves the profile and the validated return disagreeing,
+        # and the raw rows cannot see that — they know nothing about filings.
         nar1, nnc1 = await asyncio.gather(
-            q(lambda: (sb.table("nar1_cases").select("*").eq("entity_id", company_id).execute().data) or []),
+            q(lambda: (sb.table("nar1_case_registry").select("*")
+                       .eq("entity_id", company_id).execute().data) or []),
             q(lambda: (sb.table("nnc1_cases").select("*").eq("entity_id", company_id).execute().data) or []),
         )
         result["cases"] = {"nar1": nar1, "nnc1": nnc1}

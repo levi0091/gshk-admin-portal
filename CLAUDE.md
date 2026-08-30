@@ -35,7 +35,23 @@ The G-FlowDesk Admin Portal — a ZenexFlow-built internal tool for GSHK's data 
 | Frontend testing | Vitest + React Testing Library | Every React component/hook ships with tests |
 | Database | Supabase (PostgreSQL) | Auth via Supabase Auth (email/password) |
 | DB Migrations | Alembic | All schema changes via Alembic migrations — never edit schema manually |
-| Email | Resend | Transactional emails — client verification, notifications |
+| Email | **Resend** | Transactional emails — client verification, notifications. Sends from **`no-reply@getstarted.hk`** via the client's Resend account. **Working as of 2026-08-30:** Levi supplied a real `RESEND_API_KEY`, `getstarted.hk` is **verified** at Resend (`sending: enabled`, region `ap-northeast-1`), and a live send has been made end to end. |
+
+> **`APP_ENV` is the single switch, and it is invisible from outside Railway.** Set it to exactly `prod` only on the PROD services. Anything else — including unset — is non-production, which is the safe direction. **`GET /health` reports the derived answer** (`"environment": "production" | "non-production"`), unauthenticated, so this is checkable in one request without a token or Railway access. Check it after every deploy: on 2026-08-30 the **DEV** service was running `APP_ENV=prod`, which disarmed the recipient lock below while sitting on 4,398 real director addresses, and the only visible symptom was a TEST badge that never appeared in the header.
+
+> **The test-environment recipient lock (Levi 2026-08-30).** Whenever `APP_ENV` is not exactly `prod`, every message is delivered to a **hardcoded list** — `levi@zenexflow.com`, `roy@zenexflow.com`, `brian@getstarted.hk`, `vanis@getstarted.hk` (`services/email_service.py`, `TEST_RECIPIENTS`) — and to nobody else. It is a module constant, not configuration: the requirement was that it be *impossible*, not merely configured, for a client to be mailed from a test deployment, and DEV's Supabase carries 4,398 real director addresses. **`EMAIL_REDIRECT_TO` has been removed**; setting it again does nothing. The substitution happens inside `send()`, below every caller, and a second assertion re-checks the outgoing list immediately before the HTTP call.
+>
+> The Client Verification screen still shows and still selects the **real** director addresses — that fan-out is the thing being tested — and carries a note saying nothing will reach the client. The audit row records `intended_to` (the directors) and `to` (the four) separately, so the trail never claims a client was told.
+
+> **`EMAIL_TRANSPORT` was REMOVED on 2026-08-30.** Its only value, `console`, stubbed mail out — stderr, nothing delivered, success reported — and existed solely because `RESEND_API_KEY` was a placeholder. With a real key in place that reason is spent, and protecting clients was never its job (the recipient lock above does that unconditionally). **`resend` is now the only transport, and setting `EMAIL_TRANSPORT` to anything raises at config time** rather than silently sending; the refusal names the removal so nobody hunts for a typo in a value that was correct last week. Audit rows written while it existed still read `transport: "console"`, meaning nothing was delivered, and the router still passes that through — do not normalise it away. **Do not reintroduce it:** if some future environment must suppress mail, suppress it somewhere that cannot report a delivery that did not happen.
+>
+> One verification email goes to **every current director** with an address on record (`nar1_cases.default_recipients`), not to a single contact. Directors with no address are still returned, carrying the reason, so a three-director board can never render as a two-director board.
+
+> **The case worker is CC'd, and the client's reply is aimed at them** (Levi, 2026-08-30). `POST /cases/{id}/verification/send` copies `user["email"]` — the address from Supabase Auth, added to the resolved identity in `middleware/auth.py` — and sets `reply_to` to the same. **`reply_to` is the load-bearing half:** the message asks the client to reply and is sent from `no-reply@getstarted.hk`, so without it the one action the email requests reaches nobody. Read `user.get("email")`, never `user["email"]` — identities are cached for 30s and one written before the key existed must not break a send.
+>
+> **A CC is a recipient, so the non-production lock binds it too**: `_apply_test_cc_lock` **drops** it outside prod rather than redirecting (the four `TEST_RECIPIENTS` are already on `to`, and copying them again puts one mailbox on both lines). The guard before the HTTP call checks `to` **and** `cc`. The audit row records `cc` and `intended_cc` separately, so a dropped copy is never logged as a delivered one.
+
+> **The client-facing email is table-based with inline styles, on purpose** (`email_service.verification_email`). Outlook renders mail through Word: no flexbox, no grid, and no `<style>` block you can rely on. Outfit does not load in most clients, so the fallback stack *is* the typography. The message carries **no link at all** — the client confirms by replying, and a mail about someone's company filings that contains a link is the exact shape of the phishing it would train them to trust. Tests in `test_email_service.py` assert each of these; do not "modernise" the markup.
 | AI | Claude API | Called from Railway backend only — never from frontend |
 
 ### URLs
@@ -174,10 +190,22 @@ async def submit_company(user=Depends(require_permission("companies", "write")))
 | Companies | `companies` | `read`, `write` |
 | Persons | `persons` | `read`, `write` |
 | Documents | `documents` | `read`, `write`, `delete` |
+| NAR1 | `nar1` | `read`, `write` |
 | NNC1 Data | `nnc1_data` *(future)* | `read`, `write` |
+| TPSI | `tpsi` | `read`, `write`, `submit` |
 | Audit Trail | `audit_trail` | `read` **only** — no write or admin level exists |
 
 > The old `nar1_data` module was removed (migration 015) — the portal manages companies through their full lifecycle, and a distinct "NAR1 data" surface was never built. `/auth/me` is gated on authentication only (`require_user`), not a business module, so a role can hold any subset of modules and still log in.
+
+> **`nar1` (migration 021)** gates the NAR1 *case* surface — the case record, its workflow status, client verification, and the manual signing flow. It is deliberately not `companies:*`: a role that may edit a company profile is not thereby entitled to drive a statutory filing. It is **not** a revival of `nar1_data` above, which was a data-entry surface that never existed.
+>
+> Two NAR1 writes sit on a **different** module on purpose, because they spend money or commit a filing: `POST /cases/{id}/manual-submit` requires `tpsi:submit`, as the e-Sign submit does. See the audit codes below.
+
+> **The shared CR presenter credential is `super_admin` only** (migration 020, decision OQ-C 2026-08-16). One CR filing identity is shared by the whole portal — `GET`/`PUT /tpsi/shared-credential` are gated on the `super_admin` role itself, not on a `tpsi` permission level, so holding `tpsi:write` does not let a user repoint every future filing at another CR account. **This reverses PBI-44's per-user presenter model** (see `PRD/Done/prd-tpsi-integration-nnc1-nar1-2026-07-31.md` §7.3). The **e-Service signing** credential remains per-user — signing is a personal act.
+
+> **A NAR1 is signed with the logged-in user's own e-Service credential and no other** (Levi, Q1 2026-08-30). `POST /tpsi/filings/{id}/sign` takes an **empty body**; `signatory_user_id` and `eservice_password` are declared on `SignIn` only so they can be **refused with a 400** — `extra="forbid"` alone leaks, because FastAPI's 422 echoes the rejected input and would return the signing password. A user with no stored e-Service password cannot sign at all and is sent to CR Credentials. **This withdraws spec D4**, under which a client director supplied their password live at signing.
+>
+> `filings.sign()` also refuses when the return *names* someone else (`SignatoryMismatch` → 409). That only fires on the natural-person path: CR's worksheet says `selectPersonId` is *"Empty if sign by Body Corporate"*, so for every real GSHK client — whose secretary is GSHK Ltd — the return names the corporate secretary, carries no person id, and the e-Service credential in the `PinSign` block is the only record of which human signed. **Untested against live CR:** this assumes GSHK staff accounts are authorised by CR because GSHK Ltd is the appointed secretary. If CR requires the signing account to be personally appointed (`ERR_MSG_SIGNATORY_NOT_AUTH`), this makes NAR1 unsignable rather than safer.
 
 > `audit_trail` is intentionally read-only at the permission level. Do not add a `write` permission for this module under any circumstances.
 
@@ -223,11 +251,23 @@ await log_event(
 | `CASE_FIELD_UPDATED` | Entity | Any edit to a case data field — one entry per changed field |
 | `AML_STATUS_CHANGED` | NAR1 / NNC1 | Admin updates AML screening status |
 | `DOCUMENT_GENERATED` | NAR1 / NNC1 | Any document (AoA, FWR, NNC1, CoI, NAR1) generated |
-| `EMAIL_SENT` | NAR1 / NNC1 | Any workflow email sent via Resend |
+| `EMAIL_SENT` | NAR1 / NNC1 | Any workflow email sent — **Resend**, via `services/email_service.py` |
 | `TPSI_SUBMISSION_ATTEMPTED` | NAR1 / NNC1 | Before calling any TPSI submit endpoint |
 | `TPSI_SUBMISSION_SUCCESS` | NAR1 / NNC1 | On successful TPSI response |
 | `TPSI_SUBMISSION_FAILED` | NAR1 / NNC1 | On TPSI error |
-| `CLIENT_APPROVAL_RECEIVED` | NNC1 | Client Yes/No response recorded |
+| `CLIENT_APPROVAL_RECEIVED` | NAR1 / NNC1 | Client Yes/No response recorded |
+| `TPSI_CRED_SET` | TPSI | A user's own CR credential first stored (migration 016) |
+| `TPSI_CRED_ROTATE` | TPSI | A user's own CR credential replaced (migration 016) |
+| `TPSI_CRED_CONFIG` | TPSI | The **shared** presenter credential set or rotated (migration 020) |
+| `NAR1_MANUAL_SIGN_UPLOADED` | NAR1 | A wet-signed NAR1 scan uploaded against a case (migration 021) |
+| `NAR1_MANUAL_RECEIPT_ENTERED` | NAR1 | An off-portal CR receipt recorded on a case (migration 021) |
+| `NAR1_MANUAL_SUBMISSION_RECORDED` | NAR1 | A filing made off-portal declared complete (migration 021) |
+
+> `CLIENT_APPROVAL_RECEIVED` was scoped NNC1-only in the original PBI-11 table. BE-3 fires it for **NAR1** too: an admin records the client's Yes/No against the case. The event predates any inbound-mail handling — R1 has none, so a human relays the reply and records it under `nar1:write`.
+>
+> The three `NAR1_MANUAL_*` codes describe the **off-portal** path, where the return is signed on paper and filed outside the portal. `NAR1_MANUAL_SUBMISSION_RECORDED` is the declaring act and is gated on `tpsi:submit`, because it closes the case as filed exactly as a real CR submission does — and because it makes the e-Sign chain refuse afterwards, so it must not be reachable by a role that could not have submitted in the first place.
+
+> **New audit codes must be seeded into `audit_event_types` by a migration**, with `origin='g_flowdesk'` and `category` set **explicitly** — the column default is `origin='viewpoint'`, which would mislabel every G-FlowDesk code as inherited Viewpoint history. There is **no FK** from the audit rows to this table, so an unseeded code does not fail loudly: it writes fine and then renders unlabelled in the trail. Migration 022 exists because exactly that happened to `CASE_STATUS_CHANGED` and `CASE_FIELD_UPDATED`.
 
 **Rules:**
 - `audit_service.log_event()` failures must NOT block the primary operation — wrap in try/except and log to stderr

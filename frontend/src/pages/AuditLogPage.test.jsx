@@ -141,3 +141,50 @@ describe('AuditLogPage', () => {
     expect(await screen.findByText(/Failed to load audit log: boom/)).toBeInTheDocument()
   })
 })
+
+// Same race as the dashboard (UAT W-8). This page pages through 226k rows, so
+// a slow response landing after a newer one is more likely here, not less.
+describe('AuditLogPage — overlapping requests (UAT W-8)', () => {
+  function deferred() {
+    let resolve, reject
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  async function toggleTo(tabName) {
+    const user = userEvent.setup()
+    const first = deferred()
+    const second = deferred()
+    api.get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    renderPage()
+    await user.click(screen.getByRole('tab', { name: tabName }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+    return { first, second }
+  }
+
+  it('does not report a failure from a request the user has already moved past', async () => {
+    const { first, second } = await toggleTo(/G-FlowDesk/)
+    first.reject(new Error('boom'))
+    second.resolve(PAYLOAD)
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(screen.queryByText(/Failed to load audit log/)).not.toBeInTheDocument()
+  })
+
+  it('aborts the superseded request rather than leaving it in flight', async () => {
+    await toggleTo(/G-FlowDesk/)
+    const signal = api.get.mock.calls[0][1]?.signal
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
+    expect(api.get.mock.calls[1][1].signal.aborted).toBe(false)
+  })
+
+  it('aborts the in-flight request when the page unmounts', async () => {
+    api.get.mockReturnValue(new Promise(() => {}))
+    const { unmount } = renderPage()
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    const { signal } = api.get.mock.calls[0][1]
+    expect(signal.aborted).toBe(false)
+    unmount()
+    expect(signal.aborted).toBe(true)
+  })
+})

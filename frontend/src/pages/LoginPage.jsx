@@ -65,10 +65,16 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-head)', display: 'block', marginBottom: 5 }}>
+            {/* htmlFor/id, not a bare <label>: an unassociated label is not a
+                label to a screen reader, and clicking it does not focus the
+                field. autoComplete lets a password manager fill the form. */}
+            <label htmlFor="login-email" style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-head)', display: 'block', marginBottom: 5 }}>
               Email address
             </label>
             <input
+              id="login-email"
+              name="email"
+              autoComplete="username"
               className="f-input"
               style={{ width: '100%', height: 42, fontSize: 14 }}
               type="email"
@@ -79,10 +85,13 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-head)', display: 'block', marginBottom: 5 }}>
+            <label htmlFor="login-password" style={{ fontSize: 11, fontWeight: 600, color: 'var(--t-head)', display: 'block', marginBottom: 5 }}>
               Password
             </label>
             <input
+              id="login-password"
+              name="password"
+              autoComplete="current-password"
               className="f-input"
               style={{ width: '100%', height: 42, fontSize: 14 }}
               type="password"

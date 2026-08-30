@@ -4,9 +4,11 @@ import LoginPage from './pages/LoginPage.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
 import CompanyRegistryPage from './pages/CompanyRegistryPage.jsx'
 import CompanyProfilePage from './pages/CompanyProfilePage.jsx'
+import CaseWorkflowPage from './pages/CaseWorkflowPage.jsx'
 import PersonsRegistryPage from './pages/PersonsRegistryPage.jsx'
 import PersonProfilePage from './pages/PersonProfilePage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
+import CrCredentialsPage from './pages/CrCredentialsPage.jsx'
 import UserManagementPage from './pages/UserManagementPage.jsx'
 import RoleManagementPage from './pages/RoleManagementPage.jsx'
 import AuditLogPage from './pages/AuditLogPage.jsx'
@@ -44,6 +46,8 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="registry" element={<CompanyRegistryPage />} />
           <Route path="companies/:companyId" element={<CompanyProfilePage />} />
+          {/* The case dashboard opens a case directly, not the company. */}
+          <Route path="cases/:caseId" element={<CaseWorkflowPage />} />
           <Route path="persons" element={<PersonsRegistryPage />} />
           <Route path="persons/:personId" element={<PersonProfilePage />} />
           <Route
@@ -64,6 +68,7 @@ export default function App() {
           />
           <Route path="audit-log" element={<AuditLogPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="cr-credentials" element={<CrCredentialsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

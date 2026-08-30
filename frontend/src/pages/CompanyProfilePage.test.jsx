@@ -11,14 +11,21 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate, useParams: () => ({ companyId: 'e1' }) }
 })
 
-vi.mock('../lib/api.js', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() } }))
+vi.mock('../lib/api.js', () => ({
+  api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), del: vi.fn() },
+}))
 import { api } from '../lib/api.js'
+
+// The Cases pane gates "+ New case" on nar1:write, so this needs an identity.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { _resetLookups } from '../lib/lookups.js'
 
 const CLIENT = {
   id: 'e1', company_name: 'Skyline Capital', vp_source_key: 'SKYLINE01',
   br_number: '2100031', cr_number: '2100031', status: 'live',
   company_type: 'Private company limited by shares',
+  incorporation_place: 'HK',
   incorporation_date: '2024-05-20', created_at: '2024-05-02',
   is_client: true, is_corporate_party: false,
   registered_address: { line1: 'Unit 12A', city: 'Central', country: 'HK' },
@@ -63,6 +70,7 @@ beforeEach(() => {
   _resetLookups()
   mockGet(CLIENT)
   api.patch.mockResolvedValue({})
+  auth = { hasPermission: () => true, isSuperAdmin: true }
 })
 
 describe('CompanyProfilePage', () => {
@@ -78,6 +86,19 @@ describe('CompanyProfilePage', () => {
     expect(screen.getByText('SKYLINE01')).toBeInTheDocument()
     expect(screen.getByText('+852 3500 1234')).toBeInTheDocument()
     expect(screen.getByText('Unit 12A, Central, HK')).toBeInTheDocument()
+  })
+
+  it('shows Country of Incorporation in read-only info even when not a corporate party', async () => {
+    // Regression: incorporation_place is editable for every company but was only
+    // displayed inside the corporate-party tile, so a plain client could save it
+    // and never see it again.
+    renderPage()
+    await screen.findByText('Company Information')
+    expect(screen.getByText('Country of Incorporation')).toBeInTheDocument()
+    // 'HK' resolves to its country label via the /lookups vocabulary
+    expect(screen.getByText('Hong Kong')).toBeInTheDocument()
+    // and the corporate-party tile is hidden for a client (field not duplicated)
+    expect(screen.queryByText('Corporate Party Details')).not.toBeInTheDocument()
   })
 
   it('shows client-only tiles and the Cases pane when is_client', async () => {
@@ -142,6 +163,86 @@ describe('CompanyProfilePage', () => {
     await screen.findByText('Certificate of Incorporation')
     expect(screen.getByText(/brand-guideline-v3\.pdf/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument()
+  })
+
+  // -- Editing under a live case (wireframe_v11 "Edit conflicts with a live
+  // case"). Validation freezes a snapshot; an edit after it changes the
+  // profile ONLY, and the two then disagree silently.
+
+  const withLiveCase = (code = 'signing') => ({
+    ...CLIENT,
+    cases: {
+      nar1: [{ id: 'c1', case_no: 'NAR-2026-0041',
+               workflow_status: { code, label: 'Signing' } }],
+      nnc1: [],
+    },
+  })
+
+  const editName = async (user, value = 'Skyline Capital Management') => {
+    const infoCard = (await screen.findByText('Company Information')).closest('.card')
+    await user.click(within(infoCard).getByRole('button', { name: 'Edit' }))
+    const nameInput = screen.getByLabelText('Company Name')
+    await user.clear(nameInput)
+    await user.type(nameInput, value)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+  }
+
+  it('warns before saving an edit that a live case would stop matching', async () => {
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+
+    expect(screen.getByRole('alertdialog',
+      { name: 'Edit conflicts with a live case' })).toBeInTheDocument()
+    expect(screen.getByText(/NAR-2026-0041/)).toBeInTheDocument()
+    // and NOTHING has been written yet
+    expect(api.patch).not.toHaveBeenCalled()
+  })
+
+  it('cancelling the warning leaves the record untouched', async () => {
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+    await user.click(screen.getByRole('button', { name: 'Cancel edit' }))
+
+    expect(api.patch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('saves anyway when the operator overrides — the edit is allowed', async () => {
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+    await user.click(screen.getByRole('button', { name: 'Save anyway' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/companies/e1',
+      { company_name: 'Skyline Capital Management' }))
+  })
+
+  it('does NOT warn when the only case is still at Data Verification', async () => {
+    // Nothing is frozen yet, so there is nothing to disagree with. Warning
+    // here would fire on every edit and stop being read.
+    const user = userEvent.setup()
+    mockGet(withLiveCase('data_verification'))
+    renderPage()
+    await editName(user)
+
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+  })
+
+  it('the Save button does not smuggle the click event in as an override', async () => {
+    // `onClick={saveEdit}` hands React's event object to the first parameter.
+    // With `saveEdit(force = false)` that event is truthy, so the guard would
+    // be bypassed on every save and never fire once.
+    const user = userEvent.setup()
+    mockGet(withLiveCase())
+    renderPage()
+    await editName(user)
+    expect(api.patch).not.toHaveBeenCalled()
   })
 
   it('renders an error state when the fetch fails', async () => {

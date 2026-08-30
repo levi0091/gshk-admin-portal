@@ -69,6 +69,12 @@ const AuditIcon = () => (
     <polyline points="8 4.5 8 8 10.5 9.5"/>
   </svg>
 )
+const KeyIcon = () => (
+  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 16 16">
+    <rect x="3" y="7" width="10" height="7" rx="1.5"/>
+    <path d="M5 7V5a3 3 0 0 1 6 0v2"/>
+  </svg>
+)
 const SignOutIcon = () => (
   <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 16 16">
     <path d="M10 3h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-3"/>
@@ -104,11 +110,15 @@ export default function Sidebar({ isOpen, collapsed, onClose }) {
         <div className="nav-section-lbl" style={sectionLbl}>
           Main
         </div>
+        {/* Two different modules on purpose. The dashboard is now the NAR1 CASE
+            list (GET /cases, `nar1:read`); the registry is companies
+            (`companies:read`). A role may hold one without the other, and
+            showing a nav item that answers 403 is worse than not showing it. */}
+        {hasPermission('nar1', 'read') && (
+          <NavItem to="/dashboard" icon={<DashIcon />}>Post-incorporation</NavItem>
+        )}
         {hasPermission('companies', 'read') && (
-          <>
-            <NavItem to="/dashboard" icon={<DashIcon />}>Dashboard</NavItem>
-            <NavItem to="/registry" icon={<RegistryIcon />}>Company Registry</NavItem>
-          </>
+          <NavItem to="/registry" icon={<RegistryIcon />}>Company Registry</NavItem>
         )}
         {hasPermission('persons', 'read') && (
           <NavItem to="/persons" icon={<PersonsIcon />}>Persons Registry</NavItem>
@@ -133,6 +143,12 @@ export default function Sidebar({ isOpen, collapsed, onClose }) {
           System
         </div>
         <NavItem to="/settings" icon={<SettingsIcon />} title="Settings">Settings</NavItem>
+        {/* tpsi:read is enough to VIEW the credential metadata; the page itself
+            gates saving on tpsi:write. Hiding it from users with neither keeps
+            the nav honest about what they can actually open. */}
+        {hasPermission('tpsi', 'read') && (
+          <NavItem to="/cr-credentials" icon={<KeyIcon />} title="CR Credentials">CR Credentials</NavItem>
+        )}
         <button
           className="nav-item"
           onClick={handleSignOut}
