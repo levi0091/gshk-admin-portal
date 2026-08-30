@@ -79,6 +79,17 @@ a { text-decoration: none; color: inherit; }
   border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
 }
 .f-hint { font-size: 11px; color: var(--t-muted); }
+/* A settled value shown where an input used to be — the signatory on the
+   Signing stage, which is the session's and is not editable (Q1). Sized like
+   .f-input so the row keeps its rhythm, but plainly not a control. */
+.f-static {
+  min-height: 36px; display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--t-body);
+}
+.f-static code {
+  font-size: 12px; padding: 2px 7px; border-radius: var(--r-sm);
+  background: var(--carrot-10); color: var(--t-head);
+}
 .f-legend { margin-top: 16px; font-size: 11px; color: var(--t-muted); }
 /* dialling code + number read as one control (UAT F-3) */
 .f-phone { display: flex; gap: 8px; }

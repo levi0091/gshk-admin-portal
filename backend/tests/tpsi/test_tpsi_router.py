@@ -629,12 +629,11 @@ def test_edrive_filing_wrong_stage_is_a_clean_400(client):
 # ---- filings: POST /tpsi/filings/{id}/sign ----------------------------------
 
 def test_sign_filing_with_stored_credential_and_audits(client):
-    """No body (or an empty one) falls back to the logged-in user's own
-    stored e-Service password (spec D4). Since BE-5 that lookup is
-    credentials.load_eservice, not load_for_use — the CR login is the shared
-    presenter now; this table holds only the personal signing credential.
-    Also proves the signing password never reaches the response body or the
-    audit metadata."""
+    """The logged-in user's own stored e-Service password is the ONLY source of
+    a signature (Q1). Since BE-5 that lookup is credentials.load_eservice, not
+    load_for_use — the CR login is the shared presenter now; this table holds
+    only the personal signing credential. Also proves the signing password
+    never reaches the response body or the audit metadata."""
     logged = {}
 
     async def fake_log(**kwargs):
@@ -661,32 +660,54 @@ def test_sign_filing_with_stored_credential_and_audits(client):
     assert "es3cret" not in str(logged)
 
 
-def test_sign_filing_with_live_supplied_director_credentials(client):
-    """A named director's own User ID + e-Service password, supplied live in
-    the request body, bypasses the stored credential entirely and is never
-    persisted (spec D4)."""
-    logged = {}
+def test_sign_filing_refuses_a_signatory_named_in_the_request(client):
+    """Q1: the live-supplied director credentials path is GONE, and its fields
+    are refused rather than ignored.
 
-    async def fake_log(**kwargs):
-        logged.update(kwargs)
+    Ignoring them would be the dangerous outcome: a stale client that still
+    posts a director's id and password would get a 200 and a signature applied
+    under the LOGGED-IN user's account instead — a different person's statutory
+    declaration, reported as success.
 
+    AND the refusal must not echo the password. A bare extra="forbid" 422 does
+    exactly that — FastAPI's validation body carries the rejected input — which
+    is why both fields are declared on SignIn and refused in the handler."""
     with _super(), \
          patch("routers.tpsi.credentials.load_eservice") as load_spy, \
-         patch("routers.tpsi.client_for", return_value=MagicMock()), \
-         patch("routers.tpsi.filings.sign",
-               return_value={"filing_id": "f1", "result": "Pin Signature(s) Verified Successfully."}) as spy, \
-         patch("routers.tpsi.log_event", side_effect=fake_log):
+         patch("routers.tpsi.filings.sign") as sign_spy:
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={
             "signatory_user_id": "DIRECTOR2",
             "eservice_password": "liveSecret",
         })
 
-    assert response.status_code == 200
-    assert spy.call_args[0][1:] == ("f1", "DIRECTOR2", "liveSecret")
-    load_spy.assert_not_called()   # the stored credential is never consulted
-    assert logged["metadata"]["signatory"] == "DIRECTOR2"
+    assert response.status_code == 400
+    sign_spy.assert_not_called()
+    load_spy.assert_not_called()
     assert "liveSecret" not in response.text
-    assert "liveSecret" not in str(logged)
+
+
+def test_sign_filing_refusal_never_echoes_the_password(client):
+    """Regression on the leak the first cut of Q1 shipped: with only
+    extra='forbid', the 422 body contained the signing password verbatim,
+    and would have reached any log that records response bodies."""
+    with _super(), \
+         patch("routers.tpsi.credentials.load_eservice") as load_spy:
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={
+            "eservice_password": "unique-p4ssw0rd-value",
+        })
+
+    assert response.status_code == 400
+    assert "unique-p4ssw0rd-value" not in response.text
+    load_spy.assert_not_called()
+
+
+def test_sign_filing_rejects_an_unknown_field(client):
+    """extra='forbid' still guards everything that is not those two: a typo'd
+    field name stops rather than being silently dropped."""
+    with _super(), patch("routers.tpsi.credentials.load_eservice"):
+        response = client.post("/tpsi/filings/f1/sign", headers=H,
+                               json={"signatoryUserId": "DIRECTOR2"})
+    assert response.status_code == 422
 
 
 def test_sign_filing_requires_write_permission(client):
@@ -707,6 +728,11 @@ def test_sign_filing_missing_credential_is_a_clean_400_not_a_500(client):
          patch("routers.tpsi.credentials.load_eservice", return_value=None):
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
     assert response.status_code == 400
+    # Since Q1 there is no other way to sign, so the refusal has to carry the
+    # remedy — "supply signatory_user_id" was the old advice and is now wrong.
+    detail = response.json()["detail"]
+    assert "CR Credentials" in detail
+    assert "signatory_user_id" not in detail
 
 
 def test_sign_filing_no_stored_eservice_password_is_a_clean_400(client):
@@ -721,18 +747,33 @@ def test_sign_filing_no_stored_eservice_password_is_a_clean_400(client):
     assert response.status_code == 400
 
 
+def test_sign_filing_signatory_mismatch_is_a_409(client):
+    """The return names someone else. 409 like the off-portal interlock: the
+    request is fine, the filing is simply not this user's to sign."""
+    from services.tpsi import filings
+
+    with _super(), \
+         patch("routers.tpsi.credentials.load_eservice",
+               return_value=("EUSER-ME", "pw")), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.sign",
+               side_effect=filings.SignatoryMismatch(
+                   "this return names e-Service account 'EUSER-THEM'")):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+    assert response.status_code == 409
+    assert "EUSER-THEM" in response.json()["detail"]
+
+
 def test_sign_filing_cr_fault_is_handled_not_a_500(client):
     from services.tpsi.errors import TpsiSignatureError
 
     with _super(), \
          patch("routers.tpsi.credentials.load_eservice",
-               side_effect=AssertionError("should not be called")), \
+               return_value=("DIRECTOR2", "pw")), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
          patch("routers.tpsi.filings.sign",
                side_effect=TpsiSignatureError([("ERR_MSG_SIGNATORY_NOT_AUTH", "not authorised")])):
-        response = client.post("/tpsi/filings/f1/sign", headers=H, json={
-            "signatory_user_id": "DIRECTOR2", "eservice_password": "pw",
-        })
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
     assert response.status_code == 502
 
 
@@ -1466,16 +1507,16 @@ def test_sign_surfaces_CRs_faults_through_the_route(client):
     """End of the path, not just the mapper: the route must return the list."""
     exc = TpsiSignatureError([("ERR_MSG_NO_ASSOCIATION",
                                "Signatory not associated with this company.")])
-    # Signatory and password IN THE BODY: with an empty body the route falls
-    # through to credentials.load_eservice(), which is a live Supabase read and
-    # turns this into a database test with a PostgREST error for an assertion.
+    # load_eservice MUST be patched. It is the route's only source of a
+    # signatory since Q1, and unpatched it is a live Supabase read that turns
+    # this into a database test with a PostgREST error for an assertion.
     with _super(), \
+         patch("routers.tpsi.credentials.load_eservice",
+               return_value=("T260727100116S", "x")), \
          patch("routers.tpsi.filings.sign", side_effect=exc), \
          patch("routers.tpsi.client_for", MagicMock()), \
          patch("routers.tpsi.log_event", new=AsyncMock()):
-        response = client.post("/tpsi/filings/f1/sign", headers=H, json={
-            "signatory_user_id": "T260727100116S", "eservice_password": "x",
-        })
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
 
     assert response.status_code == 502
     body = response.json()["detail"]

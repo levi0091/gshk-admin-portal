@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
@@ -797,8 +797,28 @@ async def validate_filing(
 
 
 class SignIn(BaseModel):
-    """Either sign as the logged-in user (stored e-Service password), or name a
-    director who supplies their own credentials live — never stored (spec D4)."""
+    """Deliberately empty. A NAR1 is signed with the logged-in user's OWN
+    e-Service credential and nothing else (Levi, Q1 2026-08-30).
+
+    It used to accept `signatory_user_id` + `eservice_password` so a client
+    director could supply their credentials live (spec D4). That is gone: it
+    made the signing account a free-text field on a statutory declaration, and
+    for the body-corporate secretary that every real GSHK client has, the
+    e-Service credential is the ONLY record of who actually signed — the return
+    itself names the corporate secretary and carries no person id.
+
+    The two withdrawn fields are still DECLARED, and refused in the handler
+    with a 400. `extra="forbid"` alone was the obvious way to do this and leaks:
+    FastAPI's 422 body echoes the rejected input, so a stale client posting
+    `eservice_password` would get the signing password back in the response —
+    and into any log that records response bodies. Declaring them keeps the
+    value inside the model, where nothing renders it.
+
+    `extra="forbid"` still applies to everything else, so a typo'd field name
+    stops rather than being ignored.
+    """
+    model_config = ConfigDict(extra="forbid")
+
     signatory_user_id: str | None = None
     eservice_password: str | None = None
 
@@ -807,23 +827,39 @@ class SignIn(BaseModel):
 async def sign_filing(
     filing_id: str, body: SignIn, user=Depends(require_permission("tpsi", "write"))
 ):
+    # Refused, never ignored. Ignoring would be the dangerous outcome: a stale
+    # client posting a director's credentials would get a 200 and a signature
+    # applied under the LOGGED-IN user's account instead — a different person's
+    # statutory declaration, reported as success. The message names the fields
+    # and never echoes their values.
+    if body.signatory_user_id is not None or body.eservice_password is not None:
+        raise HTTPException(
+            400,
+            "a NAR1 is signed with your own e-Service account and no other; "
+            "signatory_user_id and eservice_password are no longer accepted. "
+            "Send an empty body. If you meant to sign as someone else, they "
+            "must sign in themselves.",
+        )
+
     # credentials.load_eservice lives INSIDE the try now, not before it: a
     # None it returns must map to a clean 400 via _handle like every other
     # TPSI endpoint (see /balance), not surface as an unhandled 500.
     try:
-        if body.signatory_user_id and body.eservice_password:
-            signatory, password = body.signatory_user_id, body.eservice_password
-        else:
-            pair = credentials.load_eservice(user["id"])
-            if pair is None:
-                raise HTTPException(
-                    400,
-                    "no stored e-Service password; supply signatory_user_id and "
-                    "eservice_password for this signature",
-                )
-            signatory, password = pair
+        pair = credentials.load_eservice(user["id"])
+        if pair is None:
+            raise HTTPException(
+                400,
+                "you have no e-Service signing password stored, so you cannot "
+                "sign this return. Add one under CR Credentials. A NAR1 is "
+                "signed with your own e-Service account and no other.",
+            )
+        signatory, password = pair
 
         result = filings.sign(client_for(user), filing_id, signatory, password)
+    except filings.SignatoryMismatch as exc:
+        # 409, like the off-portal interlock below: the request is well formed,
+        # the filing is simply not one this user may sign.
+        raise HTTPException(409, str(exc))
     except filings.ManualCompletionInterlock as exc:
         # 409, not 400: nothing about the request is malformed — the case was
         # filed off-portal and this filing must not go any further towards the

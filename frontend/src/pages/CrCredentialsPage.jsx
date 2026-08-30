@@ -384,7 +384,7 @@ function MinePane({ canWrite, onNotice, onError }) {
                 hint={meta.eservice_password_hint}
                 value={password}
                 onChange={setPassword}
-                help="Stored so you can sign as company secretary without re-typing it. A client director's password is never stored — they enter it at the moment of signing."
+                help="Required to sign a NAR1. A return is signed with the e-Service account of whoever is signed in, so without this password stored you cannot sign at all."
               />
             </div>
 

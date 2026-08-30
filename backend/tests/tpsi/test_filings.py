@@ -295,6 +295,78 @@ def test_sign_never_stores_the_password():
     assert "sup3rs3cret" not in str(saved)
 
 
+# ── The declared signatory must be the one signing (Q1) ─────────────────────
+# CR's worksheet: selectPersonId is "Empty if sign by Body Corporate". So for
+# every real GSHK client — whose secretary is GSHK Ltd, a body corporate — the
+# return names no person and these guards never fire. Where a return DOES name
+# one, a signature from another account makes it a false declaration.
+
+_NAMED = VALIDATED_XML.replace(
+    "<cr:formCode>NAR1</cr:formCode>",
+    "<cr:formCode>NAR1</cr:formCode><cr:selectPersonId>EUSER-THEM</cr:selectPersonId>",
+)
+
+
+def test_declared_signatory_id_reads_the_named_person():
+    assert filings.declared_signatory_id(_NAMED) == "EUSER-THEM"
+
+
+@pytest.mark.parametrize("xml", [
+    None,
+    "",
+    VALIDATED_XML,                                     # body corporate: no tag
+    VALIDATED_XML.replace("<cr:formCode>NAR1</cr:formCode>",
+                          "<cr:selectPersonId></cr:selectPersonId>"),  # empty
+    VALIDATED_XML.replace("<cr:formCode>NAR1</cr:formCode>",
+                          "<cr:selectPersonId>   </cr:selectPersonId>"),
+])
+def test_declared_signatory_id_is_none_when_no_person_is_named(xml):
+    """An absent OR empty tag both mean "signed by a body corporate", which is
+    the normal GSHK case — neither may be read as a signatory called "" that
+    then mismatches every real account."""
+    assert filings.declared_signatory_id(xml) is None
+
+
+def test_sign_refuses_when_the_return_names_a_different_person():
+    client = MagicMock()
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml=_NAMED)), \
+         patch.object(filings, "_update") as update:
+        with pytest.raises(filings.SignatoryMismatch) as exc:
+            filings.sign(client, "f1", "EUSER-ME", "pw")
+
+    # Refused BEFORE CR is contacted, and without marking the filing failed —
+    # nothing is wrong with the filing, it is simply not this user's to sign.
+    client.post_form.assert_not_called()
+    update.assert_not_called()
+    assert "EUSER-THEM" in str(exc.value) and "EUSER-ME" in str(exc.value)
+
+
+def test_sign_allows_the_person_the_return_actually_names():
+    client = MagicMock()
+    client.post_form.return_value = SIGN_OK
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml=_NAMED)), \
+         patch.object(filings, "_update"):
+        filings.sign(client, "f1", "euser-them", "pw")   # case-insensitive
+    client.post_form.assert_called_once()
+
+
+def test_sign_is_unaffected_when_a_body_corporate_signs():
+    """The dominant real path: GSHK Ltd is the named signatory, the return
+    carries no selectPersonId, and the staff member's own account signs it."""
+    client = MagicMock()
+    client.post_form.return_value = SIGN_OK
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml=VALIDATED_XML)), \
+         patch.object(filings, "_update"):
+        filings.sign(client, "f1", "ANY-STAFF-ACCOUNT", "pw")
+    client.post_form.assert_called_once()
+
+
 # ── Form status vocabulary (migration 018) ──────────────────────────────────
 # The point of splitting `failed` is that a caller can tell a FREE, retryable
 # validation failure from a rejected CHARGEABLE submission without opening

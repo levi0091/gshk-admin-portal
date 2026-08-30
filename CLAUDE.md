@@ -195,6 +195,10 @@ async def submit_company(user=Depends(require_permission("companies", "write")))
 
 > **The shared CR presenter credential is `super_admin` only** (migration 020, decision OQ-C 2026-08-16). One CR filing identity is shared by the whole portal — `GET`/`PUT /tpsi/shared-credential` are gated on the `super_admin` role itself, not on a `tpsi` permission level, so holding `tpsi:write` does not let a user repoint every future filing at another CR account. **This reverses PBI-44's per-user presenter model** (see `PRD/Done/prd-tpsi-integration-nnc1-nar1-2026-07-31.md` §7.3). The **e-Service signing** credential remains per-user — signing is a personal act.
 
+> **A NAR1 is signed with the logged-in user's own e-Service credential and no other** (Levi, Q1 2026-08-30). `POST /tpsi/filings/{id}/sign` takes an **empty body**; `signatory_user_id` and `eservice_password` are declared on `SignIn` only so they can be **refused with a 400** — `extra="forbid"` alone leaks, because FastAPI's 422 echoes the rejected input and would return the signing password. A user with no stored e-Service password cannot sign at all and is sent to CR Credentials. **This withdraws spec D4**, under which a client director supplied their password live at signing.
+>
+> `filings.sign()` also refuses when the return *names* someone else (`SignatoryMismatch` → 409). That only fires on the natural-person path: CR's worksheet says `selectPersonId` is *"Empty if sign by Body Corporate"*, so for every real GSHK client — whose secretary is GSHK Ltd — the return names the corporate secretary, carries no person id, and the e-Service credential in the `PinSign` block is the only record of which human signed. **Untested against live CR:** this assumes GSHK staff accounts are authorised by CR because GSHK Ltd is the appointed secretary. If CR requires the signing account to be personally appointed (`ERR_MSG_SIGNATORY_NOT_AUTH`), this makes NAR1 unsignable rather than safer.
+
 > `audit_trail` is intentionally read-only at the permission level. Do not add a `write` permission for this module under any circumstances.
 
 ### 2. Audit Trail — PBI-11

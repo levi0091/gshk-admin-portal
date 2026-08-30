@@ -323,11 +323,49 @@ def _refuse_if_filed_off_portal(filing: dict, action: str) -> None:
     )
 
 
+class SignatoryMismatch(Exception):
+    """The return names one signatory and a different account is signing it.
+
+    Only reachable on the natural-person path. CR's worksheet says
+    selectPersonId is "Empty if sign by Body Corporate", so for a company whose
+    secretary is a body corporate — every real GSHK client — the return names
+    the corporate secretary and carries no person id at all, and the e-Service
+    credential in the PinSign block is the ONLY thing identifying the human who
+    signed. There is nothing to disagree with, and this never fires.
+
+    Where the return DOES name a person, the two must be the same person. A
+    NAR1 declaring that A signed it, carrying B's signature, is a false
+    statutory declaration whether or not CR's own checks happen to catch it.
+    """
+
+
+def declared_signatory_id(validated_xml: str | None) -> str | None:
+    """selectPersonId as CR holds it, or None if the return names none.
+
+    Read by regex rather than parsed: validated_xml is a bare fragment with
+    undeclared prefixes (see _extract_eform), so an XML parser needs it wrapped
+    first, and this is one optional leaf value.
+    """
+    import re as _re
+
+    if not validated_xml:
+        return None
+    found = _re.search(
+        r"<(?:\w+:)?selectPersonId>([^<]*)</(?:\w+:)?selectPersonId>", validated_xml
+    )
+    value = (found.group(1) if found else "").strip()
+    return value or None
+
+
 def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str) -> dict:
     """verifyPinSigning{Code}. No charge.
 
     NAR1 carries ONE overall signature by a single authorised individual — a
     director OR the company secretary. No consent signatures (spec D2).
+
+    `signatory_user_id` is the signer's own CR e-Service account. Since Q1
+    (Levi 2026-08-30) the only account a route may pass here is the logged-in
+    user's stored one; nothing accepts a signatory from the request any more.
     """
     from services.tpsi.crypto import build_pin_sign, signing_public_key_pem
     from services.tpsi.soap import append_to_signatures
@@ -341,6 +379,17 @@ def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str)
         raise ValueError("filing must be validated before it can be signed")
 
     validated = filing["validated_xml"]
+    # Guarded here rather than in the router so a script, a test harness or a
+    # future route cannot sign a return in someone else's name by going round
+    # the HTTP layer.
+    declared = declared_signatory_id(validated)
+    if declared and declared.casefold() != (signatory_user_id or "").casefold():
+        raise SignatoryMismatch(
+            f"this return names e-Service account '{declared}' as its "
+            f"signatory, but you are signing as '{signatory_user_id}'. A NAR1 "
+            "is a statutory declaration by the person it names — either that "
+            "person signs it, or the return is prepared again naming you"
+        )
     pin_sign = build_pin_sign(
         _extract_eform(validated),
         signatory_user_id,

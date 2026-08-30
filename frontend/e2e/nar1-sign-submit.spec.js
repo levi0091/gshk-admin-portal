@@ -49,10 +49,11 @@ test.describe('NAR1 sign + submit — live CR test environment', () => {
     await expect(page.locator('.live-strip')).toContainText('Validated by CR')
 
     // ── Sign · verifyPinSigningNar1 (free) ──────────────────────────────
-    // The signatory field takes the e-Service USER ID, never an identity
-    // document number — CR verifies the account is authorised for this BRN.
-    await page.getByLabel('Signatory e-Service user ID').fill(SIGNATORY.user_id)
-    await page.getByLabel('e-Service signing password').fill(SIGNATORY.eservice_password)
+    // Nothing is typed. Since Q1 a NAR1 is signed with the logged-in user's
+    // own stored e-Service credential and there is no field for anyone else's,
+    // so this run depends on SIGNATORY's credential being stored against the
+    // logged-in account — see prep_case_for_signing.py.
+    await expect(page.getByText(SIGNATORY.user_id)).toBeVisible()
 
     const signBtn = page.getByRole('button', { name: 'Sign the return' })
     await expect(signBtn).toBeEnabled()

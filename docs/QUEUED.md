@@ -38,9 +38,11 @@ what v11 specifies. What v11 has that the built screen does not:
 - Header: workflow badge + **CR FORM** badge side by side, `Module:
   case_management` chip, **Restart verification** and **Save** buttons.
 
-Note Q1 below overlaps this: the signatory list becomes moot if only the
-logged-in user may sign, so **do Q1 first and re-read v11's signing screen in
-that light.**
+Q1 has since shipped, which **settles the first two bullets**: there is no
+signatory list any more, because who signs is the session's and not a choice.
+v11's "Choose the signatory" radio list must be read in that light — what
+survives of it is a single row naming the logged-in user's e-Service account.
+The rest of the list stands.
 
 ---
 
@@ -62,34 +64,3 @@ deleting the branch, its guards, its tests, and the notes in `CLAUDE.md` and
 Also still outstanding from before: Railway DEV needs `EMAIL_TRANSPORT=console`
 set, or a working `RESEND_API_KEY` — `POST /verification/send` answers 503
 there today.
-
----
-
-## Q1 · A NAR1 may only be signed with the logged-in user's own e-Reg — 2026-08-30
-
-Levi: *"for NAR1 we should only sign using the e-reg of the logged in user."*
-
-Today `POST /tpsi/filings/{id}/sign` accepts `signatory_user_id` +
-`eservice_password` in the request body and signs as whoever is named
-(`routers/tpsi.py` ~786). That has to go: the signature must come from the
-signed-in user's own stored e-Service credential and nothing else.
-
-Consequences to work through:
-
-- Drop `signatory_user_id` / `eservice_password` from the request body, or
-  refuse them outright rather than ignoring them silently.
-- A user with no stored e-Service credential can no longer sign at all — the
-  screen has to say so and point at CR Credentials.
-- The **client-director signing path disappears.** The current UI copy promises
-  it ("A client director's password is never stored — they enter it at the
-  moment of signing"). That promise has to come out of the CR Credentials
-  screen and the Signing stage.
-- `signatory_capacity` (migration 026) stays, but the resolved signatory should
-  now be derived from the logged-in user rather than from the company's officer
-  list — check `nar1_mapper._derive_signatory` still tells the truth.
-- Recheck against CR: it refuses a signature from anyone not associated with the
-  company by officer appointment (`ERR_MSG_SIGNATORY_NOT_AUTH`), so restricting
-  to the logged-in user only works where that user IS an appointed officer.
-  Confirm that holds for GSHK's staff accounts before shipping.
-- Interacts with Q3 — v11's "Choose the signatory" radio list may become a
-  single fixed row.

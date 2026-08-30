@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import StageDataVerification from './StageDataVerification.jsx'
@@ -88,14 +89,28 @@ const RECIPIENTS = {
   max_recipients: 20,
 }
 
+//: GET /tpsi/credentials — the SIGNING credential of whoever is logged in. It
+//: is the only thing that can sign a NAR1 (Q1), so the Signing stage reads it
+//: to say whose signature is about to be applied, and refuses without it.
+//: Reassigned per-test where the absence is the point.
+let CREDENTIALS = {
+  eservice_user_id: 'GSHKPN02', has_eservice_password: true,
+  eservice_password_hint: '••••••••9021', is_test: true,
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   auth = { isTestEnv: false }
+  CREDENTIALS = {
+    eservice_user_id: 'GSHKPN02', has_eservice_password: true,
+    eservice_password_hint: '••••••••9021', is_test: true,
+  }
   get.mockImplementation(url => {
     const u = String(url)
     if (u.includes('/return-data')) return Promise.resolve(RETURN_DATA)
     if (u.includes('/verification/recipients')) return Promise.resolve(RECIPIENTS)
     if (u.includes('/summary')) return Promise.resolve(FILING_SUMMARY)
+    if (u.includes('/tpsi/credentials')) return Promise.resolve(CREDENTIALS)
     return Promise.resolve({ fee: '105.00', max_fee: '3480.00',
                              fee_is_certain: false,
                              balance: '12480', sufficient: true })
@@ -392,8 +407,12 @@ describe('Client Verification', () => {
 // ---------------------------------------------------------------------------
 
 describe('Signing', () => {
+  // Inside a router: the no-credential path links to CR Credentials, which is
+  // the whole remedy it offers, and a bare render would throw on the Link.
   const renderIt = (over = {}) => render(
-    <StageSigning caseRow={at(over)} canWrite onChanged={onChanged} onError={onError} />)
+    <MemoryRouter>
+      <StageSigning caseRow={at(over)} canWrite onChanged={onChanged} onError={onError} />
+    </MemoryRouter>)
 
   it('defaults to e-Sign — nothing switches to manual by itself', () => {
     renderIt({ signing_method: null })
@@ -414,32 +433,53 @@ describe('Signing', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith('/cases/c1', { signing_method: 'manual' }))
   })
 
-  it('signs with stored credentials when nothing is typed', async () => {
+  it('signs as the logged-in user, sending nothing about who signs', async () => {
     const user = userEvent.setup()
     renderIt()
-    await user.click(screen.getByRole('button', { name: /Sign the return/ }))
+    await user.click(await screen.findByRole('button', { name: /Sign the return/ }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/tpsi/filings/f1/sign', {}))
   })
 
-  it('passes a live password and signatory when supplied', async () => {
-    const user = userEvent.setup()
+  it('offers no way to sign as somebody else (Q1)', async () => {
     renderIt()
-    await user.type(screen.getByLabelText(/Signatory e-Service user ID/), 'GSHKPN02')
-    await user.type(screen.getByLabelText(/e-Service signing password/), 'Secret99')
-    await user.click(screen.getByRole('button', { name: /Sign the return/ }))
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/tpsi/filings/f1/sign', {
-      signatory_user_id: 'GSHKPN02', eservice_password: 'Secret99',
-    }))
+    await screen.findByText(/CR e-Service account/)
+    // The two boxes that used to be here are the whole point of the change:
+    // who signs is the session's, not a field on a form.
+    expect(screen.queryByLabelText(/Signatory e-Service user ID/)).toBeNull()
+    expect(screen.queryByLabelText(/e-Service signing password/)).toBeNull()
   })
 
-  it('discards the typed signing password after the call, success or failure', async () => {
-    const user = userEvent.setup()
-    post.mockRejectedValue(Object.assign(new Error('bad pin'), { status: 502 }))
+  it('names the account whose signature will be applied', async () => {
     renderIt()
-    const field = screen.getByLabelText(/e-Service signing password/)
-    await user.type(field, 'Secret99')
-    await user.click(screen.getByRole('button', { name: /Sign the return/ }))
-    await waitFor(() => expect(field).toHaveValue(''))
+    expect(await screen.findByText('GSHKPN02')).toBeInTheDocument()
+  })
+
+  it('refuses to sign when the user has no stored signing password', async () => {
+    CREDENTIALS = { eservice_user_id: 'GSHKPN02', has_eservice_password: false }
+    renderIt()
+    expect(await screen.findByText(/no e-Service signing password stored/i))
+      .toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Sign the return/ })).toBeDisabled()
+    // A refusal with no remedy is just an obstacle.
+    expect(screen.getByRole('link', { name: /CR Credentials/ }))
+      .toHaveAttribute('href', '/cr-credentials')
+  })
+
+  it('still signs when the stored account id is not readable back', async () => {
+    // load_eservice() falls back to the legacy presentor_account_id, which
+    // get_metadata deliberately never returns. The password is what decides.
+    CREDENTIALS = { eservice_user_id: null, has_eservice_password: true }
+    renderIt()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Sign the return/ })).toBeEnabled())
+  })
+
+  it('does not hide the manual route when the credential lookup fails', async () => {
+    get.mockImplementation(url => String(url).includes('/tpsi/credentials')
+      ? Promise.reject(new Error('offline'))
+      : Promise.resolve(RETURN_DATA))
+    renderIt()
+    expect(await screen.findByRole('tab', { name: /Manual/ })).toBeEnabled()
   })
 
   it('never offers to retry a CR rejection', async () => {

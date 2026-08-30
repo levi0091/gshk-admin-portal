@@ -5,9 +5,15 @@ CLIENT company's own e-Registry account.
 
 Two passwords, two jobs (spec D3):
   tpsi_password      authenticates (SHA-256 in the Basic header). Never signs.
-  eservice_password  signs. Optional here: we store a GSHK staff member's OWN
-                     signing password, but a client director's is entered live
-                     at signing and is never persisted (spec D4).
+  eservice_password  signs. This row is the ONLY source of a NAR1 signature
+                     since Q1 (Levi 2026-08-30) — no endpoint accepts a
+                     signing credential from a request any more. A user
+                     without one cannot sign, and is told to store one here.
+
+Spec D4 described the opposite arrangement, where a client director supplied
+their own password live at signing and it was never persisted. That is
+withdrawn: it made the signing account a free-text field on a statutory
+declaration.
 """
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -268,9 +274,11 @@ def load_eservice(user_id: str) -> tuple[str, str] | None:
     """This user's own e-SERVICE signing credential, or None.
 
     Since BE-5 the CR LOGIN is the shared presenter record, and this table holds
-    only the personal signing credential (W-7). Returning None is a normal
-    outcome, not an error: a director who supplies a password live at signing
-    has no stored row, and the caller falls back to the live-entered pair.
+    only the personal signing credential (W-7).
+
+    None means this user CANNOT SIGN. Since Q1 there is no fallback to fall
+    back to — the live-entered credential path is gone — so the caller's job is
+    to say so and point at CR Credentials, not to look elsewhere.
 
     Falls back to presentor_account_id when eservice_user_id is unset because
     that was the pre-BE-5 shape — a user whose CR account id doubled as their
