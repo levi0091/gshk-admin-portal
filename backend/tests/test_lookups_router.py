@@ -36,10 +36,46 @@ def test_lookups_grouped_by_category():
         _lookup_rows(msb)
         resp = client.get("/lookups", headers=H)
     assert resp.status_code == 200
-    assert resp.json() == {
-        "gender": [{"code": "M", "label": "Male"}, {"code": "F", "label": "Female"}],
-        "country": [{"code": "HK", "label": "Hong Kong"}],
-    }
+    body = resp.json()
+    # The Viewpoint-sourced categories, exactly as seeded.
+    assert body["gender"] == [{"code": "M", "label": "Male"}, {"code": "F", "label": "Female"}]
+    assert body["country"] == [{"code": "HK", "label": "Hong Kong"}]
+    # cr_district rides along so the address form costs no extra round trip;
+    # its contents are asserted below.
+    assert "cr_district" in body
+
+
+def test_cr_district_comes_from_crs_vocabulary_not_the_database():
+    """CR owns this list, not Viewpoint. Serving it from `lookup_values` would
+    make a second copy that can drift from the one `nar1_mapper` validates
+    against — so it must still be served when the lookup table is empty."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        (msb.return_value.table.return_value.select.return_value
+         .eq.return_value.order.return_value.order.return_value
+         .limit.return_value.execute.return_value.data) = []
+        resp = client.get("/lookups/cr_district", headers=H)
+    assert resp.status_code == 200
+    codes = {v["code"] for v in resp.json()}
+    assert "CENTRAL" in codes
+    assert "WANCHAI" in codes
+
+
+def test_every_cr_district_value_is_one_the_nar1_mapper_accepts():
+    """The dropdown must not be able to offer a value CR would refuse. Sending
+    the district NAME "WAN CHAI" was rejected live on 2026-08-27 while the code
+    "WANCHAI" passed, so every option has to round-trip through the same
+    resolver the mapper uses."""
+    from services.tpsi.forms.cr_vocabularies import resolve_district
+
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_district", headers=H)
+    values = resp.json()
+    assert len(values) == 125
+    for v in values:
+        assert resolve_district(v["code"]) == v["code"]
 
 
 def test_single_category():

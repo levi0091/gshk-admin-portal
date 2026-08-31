@@ -8,6 +8,8 @@ import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
+import AddressBlock from '../components/AddressBlock.jsx'
+import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -36,6 +38,7 @@ function addressText(a) {
   if (!a) return null
   return [a.line1, a.line2, a.line3, a.city, a.country].filter(Boolean).join(', ') || null
 }
+
 
 /** A linked party is either a person or a corporate entity — never both. */
 function partyName(row) {
@@ -127,8 +130,13 @@ export default function CompanyProfilePage() {
     }
   }
 
+  // The address is a SEPARATE row, not a column on the company, so it is
+  // drafted and saved separately — `registered_address_id` only ever repoints.
+  const [addrDraft, setAddrDraft] = useState(null)
+
   function startEdit() {
     setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, company[f.key] ?? ''])))
+    setAddrDraft({ ...EMPTY_ADDRESS, ...(company.registered_address || {}) })
     setEditing(true)
   }
 
@@ -171,6 +179,12 @@ export default function CompanyProfilePage() {
     try {
       if (Object.keys(changed).length) {
         await api.patch(`/companies/${companyId}`, changed)
+      }
+      // Separate request because it writes a different table, and it goes
+      // second so a rejected address (a line over CR's 60) does not silently
+      // discard the field edits that already succeeded.
+      if (addrDraft && addressChanged(addrDraft, company.registered_address)) {
+        await api.put(`/companies/${companyId}/registered-address`, addressPayload(addrDraft))
       }
       setEditing(false)
       load()
@@ -289,6 +303,14 @@ export default function CompanyProfilePage() {
                     onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
                   />
                 ))}
+                <div className="f-group full">
+                  <div className="tile-sec-lbl">Registered Office</div>
+                  <AddressBlock
+                    value={addrDraft}
+                    lookups={lookups}
+                    onChange={(k, v) => setAddrDraft(a => ({ ...a, [k]: v }))}
+                  />
+                </div>
               </div>
             ) : (
               <div className="kv-list">
@@ -302,7 +324,10 @@ export default function CompanyProfilePage() {
                 <Kv label="Country of Incorporation">
                   {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
                 </Kv>
-                <Kv label="Registered Address">{addressText(company.registered_address)}</Kv>
+                {/* The five lines CR receives, not a joined string — an
+                    address that files correctly and one that does not look
+                    identical once you comma-join them. */}
+                <AddressBlock value={company.registered_address} readOnly />
                 <Kv label="Company Phone">
                   {company.contacts?.find(c => c.contact_type === 'phone')?.contact_value}
                 </Kv>

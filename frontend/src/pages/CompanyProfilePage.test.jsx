@@ -85,7 +85,11 @@ describe('CompanyProfilePage', () => {
     await screen.findByText('Company Information')
     expect(screen.getByText('SKYLINE01')).toBeInTheDocument()
     expect(screen.getByText('+852 3500 1234')).toBeInTheDocument()
-    expect(screen.getByText('Unit 12A, Central, HK')).toBeInTheDocument()
+    // The registered office renders as the separate lines CR receives, not as
+    // one comma-joined string: a filable address and an unfilable one look
+    // identical once joined, and the joined form is what hid 874 bad rows.
+    expect(screen.getByText('Unit 12A')).toBeInTheDocument()
+    expect(screen.getByText('Central')).toBeInTheDocument()
   })
 
   it('shows Country of Incorporation in read-only info even when not a corporate party', async () => {

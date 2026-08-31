@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api.js'
+import AddressBlock from './AddressBlock.jsx'
+import { EMPTY_ADDRESS, addressPayload } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
 import useDiscardGuard from '../lib/useDiscardGuard.js'
 import DiscardConfirm from './DiscardConfirm.jsx'
@@ -34,9 +36,13 @@ const DIAL_CODES = [
 
 const EMPTY_FORM = {
   company_name: '', br_number: '', status: '', company_type: '',
-  incorporation_place: '', registered_address: '',
+  incorporation_place: '',
   phone_code: DEFAULT_DIAL_CODE, phone_number: '',
 }
+
+// Hong Kong by default: this form creates HK companies, and the district
+// dropdown only appears once a country says so.
+const EMPTY_NEW_ADDRESS = { ...EMPTY_ADDRESS, country: 'HK' }
 
 /** Hong Kong as the seeded vocabulary spells it — by code, then by label. */
 function findHongKong(countries) {
@@ -47,6 +53,8 @@ function findHongKong(countries) {
 
 export default function AddCompanyModal({ onClose, onCreated }) {
   const [form, setForm] = useState(EMPTY_FORM)
+  // The address is its own row on the server, so it is its own state here.
+  const [address, setAddress] = useState(EMPTY_NEW_ADDRESS)
   const lookups = useLookups()
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
@@ -83,7 +91,11 @@ export default function AddCompanyModal({ onClose, onCreated }) {
       next.br_number = 'BRN must be 8 digits'
     }
     if (!form.incorporation_place) next.incorporation_place = 'Country of incorporation is required'
-    if (!form.registered_address.trim()) next.registered_address = 'Registered address is required'
+    // line1 + country, not the whole address: CR needs a country to file at
+    // all, and an address with no first line is not an address. The rest can
+    // be filled in on the profile.
+    if (!(address.line1 || '').trim()) next.address = 'A registered address is required'
+    else if (!(address.country || '').trim()) next.address = 'The address needs a country'
     // A dialling code on its own is not a phone number.
     if (!form.phone_number.trim()) next.company_phone = 'Company phone is required'
     setErrors(next)
@@ -101,6 +113,10 @@ export default function AddCompanyModal({ onClose, onCreated }) {
     )
     try {
       const created = await api.post('/companies', body)
+      // The address goes through its own endpoint so it meets the same
+      // validation as every later edit — a company created here must not be
+      // able to hold an address the NAR1 mapper would refuse.
+      await api.put(`/companies/${created.id}/registered-address`, addressPayload(address))
       onCreated(created)
     } catch (err) {
       setApiError(err.message)
@@ -174,13 +190,18 @@ export default function AddCompanyModal({ onClose, onCreated }) {
             </div>
 
             <div className="f-group full">
-              <label className="f-label" htmlFor="registered_address">
+              <div className="tile-sec-lbl">
                 Registered Address <span className="f-req">*</span>
-              </label>
-              <input id="registered_address" className="f-input" type="text"
-                     placeholder="Company registered address in HK"
-                     value={form.registered_address} onChange={set('registered_address')} />
-              {errors.registered_address && <span className="f-hint" style={{ color: '#C53030' }}>{errors.registered_address}</span>}
+              </div>
+              {/* Separate lines, not one box. The single free-text field this
+                  replaced wrote everything into line1, which is the same shape
+                  of mistake the ETL made in the other direction. */}
+              <AddressBlock
+                value={address}
+                lookups={lookups}
+                onChange={(k, v) => setAddress(a => ({ ...a, [k]: v }))}
+              />
+              {errors.address && <span className="f-hint" style={{ color: '#C53030' }}>{errors.address}</span>}
             </div>
 
             <div className="f-group full">

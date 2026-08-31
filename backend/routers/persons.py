@@ -13,7 +13,8 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
-from services import audit_events, document_service
+from services import audit_events, document_service, address_service
+from routers.companies import AddressIn, _address_audit_entries
 
 router = APIRouter()
 
@@ -212,6 +213,8 @@ async def get_person(
             sb.table("addresses").select("*")
             .eq("id", person["residential_address_id"]).single().execute()
         ).data
+        if address:
+            address["shared_by"] = address_service.count_references(sb, address["id"])
     documents = document_service.list_documents(owner_kind="person", owner_id=person_id)
 
     return {
@@ -285,6 +288,55 @@ async def update_person(
         if old_val != new_val
     ])
     return updated
+
+
+@router.put("/{person_id}/residential-address")
+async def update_residential_address(
+    person_id: str,
+    body: AddressIn,
+    user=Depends(require_permission("persons", "write")),
+):
+    """Set this person's residential address.
+
+    This is the one that unblocks NAR1. A return carries every director's
+    residential address, and 815 of 6,853 people had a line over CR's 60-char
+    cap with no screen on which to fix it. Copy-on-write applies here too:
+    directors of the same family company can share an address row.
+    """
+    sb = get_supabase()
+    current = (
+        sb.table("persons").select("id, full_name, residential_address_id")
+        .eq("id", person_id).single().execute()
+    ).data
+    if not current:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    before = None
+    if current.get("residential_address_id"):
+        before = (
+            sb.table("addresses").select("*")
+            .eq("id", current["residential_address_id"]).single().execute()
+        ).data
+
+    try:
+        result = address_service.save(
+            sb,
+            owner_table="persons", owner_id=person_id,
+            owner_column="residential_address_id",
+            current_address_id=current.get("residential_address_id"),
+            payload=body.model_dump(),
+        )
+    except address_service.AddressError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    await log_events(_address_audit_entries(
+        entity_id=person_id, user=user, subject_name=current.get("full_name"),
+        event_code=audit_events.VP_MASTER_DETAILS, before=before, result=result,
+    ))
+    return {
+        **result["address"],
+        "shared_by": address_service.count_references(sb, result["address"]["id"]),
+    }
 
 
 @router.get("/{person_id}/documents")

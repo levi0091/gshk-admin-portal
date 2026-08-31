@@ -65,7 +65,11 @@ describe('PersonProfilePage', () => {
     renderPage()
     await screen.findByText('Personal Information')
     expect(screen.getByText('British (BNO)')).toBeInTheDocument()
-    expect(screen.getByText('Flat 3B, Mid-Levels, HK')).toBeInTheDocument()
+    // The residential address renders as the separate lines CR receives — this
+    // is the address a NAR1 files for the director, and a joined string hides
+    // whether any single line is over CR's 60-character limit.
+    expect(screen.getByText('Flat 3B')).toBeInTheDocument()
+    expect(screen.getByText('Mid-Levels')).toBeInTheDocument()
   })
 
   it('shows role pills counted per relation in the header', async () => {

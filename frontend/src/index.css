@@ -1123,3 +1123,21 @@ tbody tr.clickable { cursor: pointer; }
   .step-lbl { font-size: 10px; }
   .step-state { display: none; }
 }
+
+/* ---- Address block (registered office / residential address) --------------
+   The five fields CR actually receives. The character counter is the point of
+   the design, not decoration: CR caps each line at 60 and refuses the whole
+   filing over one long line, so the limit is shown where the typing happens. */
+.addr-block { display: grid; gap: 12px; }
+.addr-lbl-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.addr-count {
+  font-size: 11px; font-variant-numeric: tabular-nums; color: var(--t-muted);
+  background: var(--bg-page); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 7px;
+}
+/* Carrot, not red: an over-long line is a thing to fix before saving, not an
+   error that has already happened. */
+.addr-count[data-over="true"] { color: var(--carrot); background: var(--carrot-10); border-color: var(--carrot); }
+.addr-block .f-input[aria-invalid="true"] { border-color: var(--carrot); }
+.addr-over { color: var(--carrot); }
+.addr-block .ab-note { padding: 8px 10px; background: var(--carrot-10); border-radius: 6px; color: var(--t-body); }

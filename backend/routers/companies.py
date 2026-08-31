@@ -12,9 +12,27 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
-from services import audit_events, document_service
+from services import audit_events, document_service, address_service
 
 router = APIRouter()
+
+
+class AddressIn(BaseModel):
+    """The five fields CR accepts, and nothing else.
+
+    `extra = "forbid"` because a typo'd key that is silently ignored looks
+    exactly like a save that worked.
+    """
+    class Config:
+        extra = "forbid"
+
+    line1: Optional[str] = None
+    line2: Optional[str] = None
+    line3: Optional[str] = None
+    city: Optional[str] = None
+    state_region: Optional[str] = None
+    postal_code: Optional[str] = None
+    country: Optional[str] = None
 
 # Create-time status is restricted to pre_incorporation / live (OQ-3).
 _CREATE_STATUSES = {"pre_incorporation", "live"}
@@ -407,6 +425,14 @@ async def get_company(
             lambda: (sb.table("addresses").select("*")
                      .eq("id", entity["registered_address_id"]).single().execute()).data
         )
+        if address:
+            # How many records share this row, so the form can say what a save
+            # will and will not touch BEFORE it is pressed. 4,446 companies sit
+            # on GSHK's registered office; an edit box with no warning on it
+            # would read as "this changes my company".
+            address["shared_by"] = await asyncio.to_thread(
+                lambda: address_service.count_references(sb, address["id"])
+            )
 
     result = {
         **entity,
@@ -524,6 +550,93 @@ async def update_company(
         if old_val != new_val
     ])
     return updated
+
+
+@router.put("/{company_id}/registered-address")
+async def update_registered_address(
+    company_id: str,
+    body: AddressIn,
+    user=Depends(require_permission("companies", "write")),
+):
+    """Set this company's registered office.
+
+    COPY-ON-WRITE. 4,446 companies point at GSHK's own registered office,
+    because GSHK provides registered-office services. Editing that row to
+    correct ONE company would change the registered office of all of them, so
+    a shared row is copied and only this company is repointed. See
+    `services/address_service.py`.
+    """
+    sb = get_supabase()
+    current = (
+        sb.table("entities").select("id, company_name, registered_address_id")
+        .eq("id", company_id).single().execute()
+    ).data
+    if not current:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    before = None
+    if current.get("registered_address_id"):
+        before = (
+            sb.table("addresses").select("*")
+            .eq("id", current["registered_address_id"]).single().execute()
+        ).data
+
+    try:
+        result = address_service.save(
+            sb,
+            owner_table="entities", owner_id=company_id,
+            owner_column="registered_address_id",
+            current_address_id=current.get("registered_address_id"),
+            payload=body.model_dump(),
+        )
+    except address_service.AddressError as exc:
+        # 422, not 400: the request was well-formed, its content is what CR
+        # will not take.
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    await log_events(_address_audit_entries(
+        entity_id=company_id, user=user, subject_name=current.get("company_name"),
+        event_code=audit_events.VP_REG_OFFICE, before=before, result=result,
+    ))
+    return {**result["address"], "shared_by": _shared_by(sb, result["address"]["id"])}
+
+
+def _shared_by(sb, address_id: str) -> int:
+    return address_service.count_references(sb, address_id)
+
+
+def _address_audit_entries(*, entity_id, user, subject_name, event_code,
+                           before, result):
+    """One entry per changed line — the `CASE_FIELD_UPDATED` contract.
+
+    `copied_from` rides in the metadata because a copy-on-write save changes
+    this record's address while deliberately leaving every other referent
+    alone. Without it the trail shows an address changing and gives no account
+    of why the other 4,445 companies did not change too.
+    """
+    after = result["address"]
+    fields = address_service.LINE_FIELDS + address_service.DISTRICT_FIELDS + ("country",)
+    entries = []
+    for field in fields:
+        old_val = (before or {}).get(field)
+        new_val = after.get(field)
+        if old_val == new_val:
+            continue
+        entries.append(dict(
+            case_id=entity_id, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type="CASE_FIELD_UPDATED", event_code=event_code,
+            company_name=subject_name,
+            entity_type="address", entity_id=str(after["id"]),
+            old_value=old_val, new_value=new_val,
+            before_state={"field": field, "old": old_val},
+            after_state={"field": field, "new": new_val},
+            metadata={
+                "copied_from": result["copied_from"],
+                "shared_by": result["shared_by"],
+            },
+        ))
+    return entries
 
 
 @router.patch("/{company_id}/flags")

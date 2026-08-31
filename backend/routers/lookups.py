@@ -14,8 +14,25 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from middleware.auth import require_any_permission
 from db.supabase import get_supabase
+from services.tpsi.forms.cr_vocabularies import DISTRICT_CODES
 
 router = APIRouter()
+
+#: CR's Hong Kong District codes, served alongside Viewpoint's vocabularies but
+#: NOT stored with them.
+#:
+#: For a HK address CR reads District as a controlled code, not free text:
+#: sending "WAN CHAI" was refused live on 2026-08-27 ("Please input valid
+#: District") while "WANCHAI" passed. The address form therefore needs the same
+#: 125 values `nar1_mapper` validates against — and seeding them into
+#: `lookup_values` would create a SECOND copy that can drift from the one that
+#: decides whether a filing is accepted. One owner per vocabulary: CR owns
+#: this, so it is read from CR's own set at import time.
+#:
+#: The label is the code. CR's codes are names with the spaces removed, and
+#: "WANCHAI" cannot be turned back into "Wan Chai" reliably — inventing a
+#: prettier label risks showing an operator something CR has never heard of.
+_CR_DISTRICTS = [{"code": code, "label": code} for code in sorted(DISTRICT_CODES)]
 
 # Reference data for both the company and the person forms — a role holding
 # either one may read it.
@@ -51,6 +68,9 @@ def _all() -> dict[str, list[dict]]:
         grouped.setdefault(row["category"], []).append(
             {"code": row["code"], "label": row["label"]}
         )
+    # Rides along with the Viewpoint categories so the address form costs no
+    # extra round trip — the whole point of serving these in one response.
+    grouped["cr_district"] = _CR_DISTRICTS
     _cache = (time.monotonic(), grouped)
     return grouped
 

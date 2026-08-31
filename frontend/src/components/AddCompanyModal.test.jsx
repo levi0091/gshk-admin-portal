@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import AddCompanyModal from './AddCompanyModal.jsx'
 
-vi.mock('../lib/api.js', () => ({ api: { post: vi.fn(), get: vi.fn() } }))
+vi.mock('../lib/api.js', () => ({ api: { post: vi.fn(), get: vi.fn(), put: vi.fn() } }))
 import { api } from '../lib/api.js'
 import { _resetLookups } from '../lib/lookups.js'
 
@@ -20,13 +20,15 @@ beforeEach(() => {
     country: [{ code: 'GB', label: 'United Kingdom' }, { code: 'HK', label: 'Hong Kong' }],
   })
   api.post.mockResolvedValue({ id: 'new-1', company_name: 'NewCo' })
+  api.put.mockResolvedValue({ id: 'addr-1' })
 })
 
 async function fillRequired(user) {
   await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
   await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
   await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
-  await user.type(screen.getByLabelText(/Registered Address/), '1 Harbour View St')
+  // The address is now the separate lines CR receives, not one free-text box.
+  await user.type(screen.getByLabelText(/Flat \/ Floor \/ Block/), '1 Harbour View St')
   await user.type(screen.getByLabelText(/Company Phone/), '3500 1234')
 }
 
@@ -71,9 +73,16 @@ describe('AddCompanyModal', () => {
         status: 'pre_incorporation',
         company_type: 'Private company limited by shares',
         incorporation_place: 'HK',
-        registered_address: '1 Harbour View St',
         company_phone: '+852 3500 1234',
       })
+    })
+    // The address goes through its own endpoint, so a company created here
+    // meets the same validation as every later edit.
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        '/companies/new-1/registered-address',
+        expect.objectContaining({ line1: '1 Harbour View St', country: 'HK' }),
+      )
     })
     expect(onCreated).toHaveBeenCalledWith({ id: 'new-1', company_name: 'NewCo' })
   })
@@ -220,7 +229,7 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
     await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
     await user.type(screen.getByLabelText(/Company Phone/), '3500 1234')
     await user.click(screen.getByRole('button', { name: 'Create Company' }))
-    expect(await screen.findByText('Registered address is required')).toBeInTheDocument()
+    expect(await screen.findByText('A registered address is required')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()
   })
 
@@ -230,7 +239,7 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
     await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
     await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
     await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
-    await user.type(screen.getByLabelText(/Registered Address/), '1 Harbour View St')
+    await user.type(screen.getByLabelText(/Flat \/ Floor \/ Block/), '1 Harbour View St')
     await user.click(screen.getByRole('button', { name: 'Create Company' }))
     expect(await screen.findByText('Company phone is required')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()

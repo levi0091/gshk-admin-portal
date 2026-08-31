@@ -5,6 +5,8 @@ import { formatDate } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
+import AddressBlock from '../components/AddressBlock.jsx'
+import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
 
 // `lookup` names the controlled vocabulary a field draws from (migration 013,
@@ -101,8 +103,12 @@ export default function PersonProfilePage() {
 
   useEffect(() => { load() }, [load])
 
+  // A separate row from the person, so drafted and saved separately.
+  const [addrDraft, setAddrDraft] = useState(null)
+
   function startEdit() {
     setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, person[f.key] ?? ''])))
+    setAddrDraft({ ...EMPTY_ADDRESS, ...(person.residential_address || {}) })
     setEditing(true)
   }
 
@@ -113,6 +119,11 @@ export default function PersonProfilePage() {
     )
     try {
       if (Object.keys(changed).length) await api.patch(`/persons/${personId}`, changed)
+      // Second, and separately: a rejected address (a line over CR's 60) must
+      // not silently discard the field edits that already succeeded.
+      if (addrDraft && addressChanged(addrDraft, person.residential_address)) {
+        await api.put(`/persons/${personId}/residential-address`, addressPayload(addrDraft))
+      }
       setEditing(false)
       load()
     } catch (err) {
@@ -214,6 +225,14 @@ export default function PersonProfilePage() {
                     onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
                   />
                 ))}
+                <div className="f-group full">
+                  <div className="tile-sec-lbl">Residential Address</div>
+                  <AddressBlock
+                    value={addrDraft}
+                    lookups={lookups}
+                    onChange={(k, v) => setAddrDraft(a => ({ ...a, [k]: v }))}
+                  />
+                </div>
               </div>
             ) : (
               <div className="kv-list">
@@ -224,7 +243,8 @@ export default function PersonProfilePage() {
                       : displayValue(f, person[f.key], lookups)}
                   </Kv>
                 ))}
-                <Kv label="Residential Address">{addressText(person.residential_address)}</Kv>
+                {/* The lines CR receives, not a joined string. */}
+                <AddressBlock value={person.residential_address} readOnly />
               </div>
             )}
           </div>
