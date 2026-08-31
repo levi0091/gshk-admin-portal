@@ -11,6 +11,9 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate, useParams: () => ({ caseId: 'c1' }) }
 })
 
+const scrollToTop = vi.fn()
+vi.mock('../lib/scroll.js', () => ({ scrollToTop: (...a) => scrollToTop(...a) }))
+
 vi.mock('../components/AuditTrailTab.jsx', () => ({
   default: ({ caseId }) => <div data-testid="audit-trail">{caseId}</div>,
 }))
@@ -363,13 +366,12 @@ describe('CaseWorkflowPage — a failure must reach the viewport', () => {
     aml_cleared: true, accounts_ready: true,
   })
 
-  it('scrolls the failure banner into view when CR refuses', async () => {
+  it('scrolls the page to the top when CR refuses', async () => {
+    // To the TOP, not to the banner (Levi 2026-08-31). scrollIntoView with
+    // block:'center' centred the banner and left the crumb, the title and both
+    // status badges above the fold — and it scrolled whatever the browser chose
+    // as the scrolling box rather than the one AppShell actually scrolls.
     const user = userEvent.setup()
-    const scrollIntoView = vi.fn()
-    // jsdom does not implement it; without a stub the component would throw
-    // rather than scroll, and the test would pass for the wrong reason.
-    window.HTMLElement.prototype.scrollIntoView = scrollIntoView
-
     routeGet(dataVerificationCase())
     post.mockRejectedValue(Object.assign(
       new Error('The Companies Registry rejected this return.'),
@@ -380,15 +382,19 @@ describe('CaseWorkflowPage — a failure must reach the viewport', () => {
     await screen.findByText(/NAR-2026-0041/)
     await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
 
-    await screen.findByRole('alert')
-    expect(scrollIntoView).toHaveBeenCalled()
+    const banner = await screen.findByRole('alert')
+    await waitFor(() => expect(scrollToTop).toHaveBeenCalled())
+    // The element handed over must be the banner itself — the scroller is
+    // found by walking UP from it, so passing anything else scrolls the wrong
+    // container or nothing at all.
+    expect(scrollToTop).toHaveBeenLastCalledWith(banner)
   })
 
   it('still shows the error when the browser cannot scroll', async () => {
-    // The regression this guard exists for: scrollIntoView threw during the
-    // commit that renders the banner, so the failure vanished instead of
-    // being revealed. Scrolling is a courtesy; showing the error is not.
-    delete window.HTMLElement.prototype.scrollIntoView
+    // The regression this guard exists for: the scroll threw during the commit
+    // that renders the banner, so the failure vanished instead of being
+    // revealed. Scrolling is a courtesy; showing the error is not.
+    scrollToTop.mockImplementationOnce(() => { throw new Error('no scrolling here') })
     const user = userEvent.setup()
     routeGet(dataVerificationCase())
     post.mockRejectedValue(Object.assign(
@@ -402,11 +408,44 @@ describe('CaseWorkflowPage — a failure must reach the viewport', () => {
   })
 
   it('does not scroll when nothing has failed', async () => {
-    const scrollIntoView = vi.fn()
-    window.HTMLElement.prototype.scrollIntoView = scrollIntoView
     routeGet(dataVerificationCase())
     render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
     await screen.findByText(/NAR-2026-0041/)
-    expect(scrollIntoView).not.toHaveBeenCalled()
+    expect(scrollToTop).not.toHaveBeenCalled()
+  })
+
+  it('does not yank the page to the top for a refusal it merely read back', async () => {
+    // The banner also renders a rejection recorded EARLIER, so a reload still
+    // says why. But that one is already on screen when the page opens, and
+    // re-scrolling on every case reload would throw the operator to the top
+    // each time they ticked a checkbox with an old rejection on record.
+    routeGet({
+      ...dataVerificationCase(),
+      form_status: {
+        code: 'validation_failed', failed: true,
+        faults: [['ERROR', 'Br No does not exist.']],
+      },
+    })
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    expect(await screen.findByText(/Br No does not exist\./)).toBeInTheDocument()
+    expect(scrollToTop).not.toHaveBeenCalled()
+  })
+
+  it('shows a recorded refusal ONCE, in the banner', async () => {
+    // Levi 2026-08-31: the same faults used to appear in the page banner AND
+    // in the stage card a screen below, which reads as two problems.
+    routeGet({
+      ...dataVerificationCase(),
+      form_status: {
+        code: 'validation_failed', failed: true,
+        faults: [['efiling.eform.signatory.error',
+                  'The signatory T260727100116S is not authorized to sign.']],
+      },
+    })
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText(/NAR-2026-0041/)
+    expect(screen.getAllByText(/is not authorized to sign/)).toHaveLength(1)
+    expect(screen.getByText(/rejected this return/i)).toBeInTheDocument()
+    expect(screen.getByText(/Nothing was charged/)).toBeInTheDocument()
   })
 })

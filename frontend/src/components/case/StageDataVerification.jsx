@@ -2,9 +2,8 @@ import { useState } from 'react'
 import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
 import CheckRow from './CheckRow.jsx'
-import FaultPanel from './FaultPanel.jsx'
 import ReturnDataCard from './ReturnDataCard.jsx'
-import { describeError, isValidated } from './workflow.js'
+import { describeError, isValidated, rebuildBeforeValidate } from './workflow.js'
 
 /**
  * Stage 1 — Data Verification (FE-3).
@@ -20,7 +19,6 @@ import { describeError, isValidated } from './workflow.js'
  */
 export default function StageDataVerification({ caseRow, canWrite, canValidate, onChanged, onError, onGo }) {
   const [busy, setBusy] = useState(null)
-  const [failure, setFailure] = useState(null)
 
   const validated = isValidated(caseRow)
   const faults = caseRow.form_status?.failed ? caseRow.form_status.faults : null
@@ -44,12 +42,22 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
   }
 
   async function runValidation() {
-    onError(null); setFailure(null); setBusy('validate')
+    onError(null); setBusy('validate')
     try {
-      // Reuse the filing if the case already has one — preparing a second
-      // filing for the same case leaves an orphan draft behind.
+      // REBUILD BEFORE RE-ASKING. `validate` re-sends the filing's STORED
+      // request_xml verbatim, so skipping prepare on a retry sent CR the same
+      // bytes it had already refused — and every correction the operator had
+      // just made (an address, the signing capacity) was invisible. On case
+      // NAR-2026-0065 that showed up as CR naming a signatory in a capacity the
+      // case had not said for hours.
+      //
+      // `prepare` refreshes the case's own draft in place (REBUILDABLE_STAGES),
+      // so this no longer orphans a second filing the way it once would have.
+      // A validated filing is deliberately NOT rebuilt: its snapshot is what
+      // the client approves and what gets filed, and `Restart verification` is
+      // the sanctioned way to discard one.
       let filingId = caseRow.filing_id
-      if (!filingId) {
+      if (rebuildBeforeValidate(caseRow)) {
         const filing = await api.post('/tpsi/filings/prepare', {
           entity_id: caseRow.entity_id,
           nar1_case_id: caseRow.id,
@@ -59,9 +67,7 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
       await api.post(`/tpsi/filings/${filingId}/validate`, {})
       onChanged()
     } catch (e) {
-      const described = describeError(e)
-      setFailure(described)
-      onError(described)
+      onError(describeError(e))
     } finally {
       setBusy(null)
     }
@@ -164,35 +170,13 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           </>
         ) : (
           <>
-            {/* Two different sources of "what is wrong", shown separately
-                because they mean different things: `problems` is OUR mapper
-                saying this company cannot be turned into a NAR1 (fix the
-                company record), `faults` is CR rejecting a form we did build
-                (fix the form). Collapsing them would send the operator to the
-                wrong screen. */}
-            {/* The live failure's `problems` are NOT repeated here. The page
-                banner already lists every one of them, and rendering the same
-                faults twice on one screen makes an operator wonder whether
-                they are two different sets. What stays below is a DIFFERENT
-                source: `faults` persisted on the case's form status, which is
-                what a reload shows. */}
-            {failure?.hint && !failure.problems && (
-              <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-                <span className="al-icon">⚠</span>
-                <div className="al-body">{failure.hint}</div>
-              </div>
-            )}
-            <FaultPanel faults={faults} />
-            {/* CR answers with EVERY problem at once. Saying so is what turns
-                five round trips into one — and saying nothing was charged
-                stops a rejected validation reading like a wasted fee. */}
-            {faults?.length > 0 && (
-              <div className="ab-note" style={{ marginTop: 10 }}>
-                CR returns every problem at once, so fix them all before
-                re-validating. Nothing was charged — <code>validateFormNar1</code>{' '}
-                is free.
-              </div>
-            )}
+            {/* NO FaultPanel here. CR's refusal is drawn ONCE, in the page
+                banner at the top (Levi 2026-08-31) — it used to appear both
+                places at once and one rejection read as two problems. The
+                banner shows the live failure, and falls back to the faults
+                stored on the case (`persistedFailure`) so a reload still says
+                why. `faults` is still read below to space and caption the
+                action bar. */}
             <div className="action-bar" style={{ marginTop: faults?.length ? 16 : 0 }}>
               <div className="ab-note">
                 {!prechecksDone

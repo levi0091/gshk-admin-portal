@@ -128,6 +128,56 @@ const CR_REFUSAL_HINTS = {
     'The Companies Registry refused this. Fix what it reported — do not simply retry.',
 }
 
+/**
+ * A CR refusal recorded on the case, in `describeError`'s shape — or null.
+ *
+ * ONE ERROR SURFACE, NOT TWO (Levi 2026-08-31). A rejection used to be drawn
+ * twice on the same screen: the page banner showed the request that had just
+ * failed, and the stage's own FaultPanel showed the identical faults read back
+ * off `form_status`. Two copies of one refusal read as two different problems,
+ * and neither told you which to fix first.
+ *
+ * The banner is now the only place a CR refusal appears, which means it has to
+ * be able to show one recorded EARLIER as well as one that just happened —
+ * otherwise reloading the page leaves a "Rejected at validation" badge with no
+ * reason anywhere on screen.
+ */
+const PERSISTED_FAILURES = {
+  validation_failed: {
+    message: 'The Companies Registry rejected this return.',
+    hint: 'CR returns every problem at once, so fix them all before '
+      + 're-validating. Nothing was charged — validateFormNar1 is free.',
+  },
+  signing_failed: {
+    message: 'The Companies Registry refused the signature.',
+    hint: CR_REFUSAL_HINTS.signature,
+  },
+  submission_failed: {
+    message: 'The Companies Registry refused the submission.',
+    hint: CR_REFUSAL_HINTS.default,
+  },
+}
+
+export function persistedFailure(c) {
+  const status = c?.form_status
+  if (!status?.failed) return null
+  // A banner with an empty list under it is worse than the badge alone.
+  const problems = Array.isArray(status.faults) && status.faults.length
+    ? status.faults : null
+  if (!problems) return null
+  const known = PERSISTED_FAILURES[status.code]
+  return {
+    message: known?.message || 'The Companies Registry refused this filing.',
+    problems,
+    // No `kind`: what CR sent is stored, but the classification `_handle` made
+    // at the time is not, and inventing one here could bold "Account locked"
+    // over a refusal that was nothing of the sort.
+    kind: null,
+    hint: known?.hint || CR_REFUSAL_HINTS.default,
+    retry: false,
+  }
+}
+
 export function describeError(err) {
   const message = err?.message || 'Something went wrong.'
   // Every specific reason the backend gathered, carried through so the caller
@@ -205,4 +255,29 @@ export function describeError(err) {
     default:
       return { message, problems, hint: null, retry: true }
   }
+}
+
+/**
+ * Stages whose XML may still be rebuilt from the live company record.
+ * Mirrors `services/tpsi/filings.REBUILDABLE_STAGES` — the backend enforces it
+ * inside the UPDATE; this only decides whether asking is worthwhile.
+ */
+const REBUILDABLE_STAGES = new Set(['draft', 'validation_failed'])
+
+/**
+ * Should the return be rebuilt before CR is asked again?
+ *
+ * Yes for a case with no filing, and for one CR has not validated. `validate`
+ * re-sends the STORED request_xml, so re-validating without rebuilding sends
+ * bytes CR has already refused and reports the same answer as though nothing
+ * had been fixed.
+ *
+ * No once the snapshot is frozen: from `validated` onward the case reads its
+ * own snapshot, and rewriting it under a client who has approved it is the
+ * "show one document, file another" failure the verification gate exists to
+ * prevent. `Restart verification` is how a snapshot is discarded.
+ */
+export function rebuildBeforeValidate(c) {
+  if (!c?.filing_id) return true
+  return REBUILDABLE_STAGES.has(c.form_status?.code)
 }

@@ -163,25 +163,55 @@ describe('Data Verification', () => {
     expect(post.mock.calls[1][0]).toBe('/tpsi/filings/f9/validate')
   })
 
-  it('reuses an existing filing rather than orphaning a second draft', async () => {
+  it('rebuilds the return before re-validating, so a correction reaches CR', async () => {
+    // THE BUG THIS REPLACES. `validate` re-sends the filing's STORED xml, and
+    // this screen used to skip prepare whenever the case already had a filing.
+    // So an operator who fixed an address or changed the signing capacity and
+    // pressed Validate again sent CR the same bytes and read the identical
+    // refusal as "my correction did nothing" — observed on NAR-2026-0065, where
+    // the case said 'Company Secretary' and the stored xml still said
+    // selectCapacityDesc 'Director'.
+    //
+    // prepare now refreshes the case's own draft in place, so this does not
+    // orphan a second filing the way it once would have.
     const user = userEvent.setup()
+    post.mockResolvedValueOnce({ id: 'f1' })
     renderIt({ form_status: { code: 'validation_failed', failed: true, faults: ['x'] } })
     await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
-    await waitFor(() => expect(post).toHaveBeenCalled())
-    expect(post.mock.calls.some(c => c[0] === '/tpsi/filings/prepare')).toBe(false)
-    expect(post.mock.calls[0][0]).toBe('/tpsi/filings/f1/validate')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+    expect(post.mock.calls[0][0]).toBe('/tpsi/filings/prepare')
+    expect(post.mock.calls[1][0]).toBe('/tpsi/filings/f1/validate')
   })
 
-  it('renders EVERY CR fault, not just the first', async () => {
+  it('does NOT rebuild a snapshot CR has already validated', async () => {
+    // From `validated` onward the case reads its own frozen snapshot — the PDF
+    // the client approves and the document that gets filed. Rewriting it under
+    // them is exactly the "show one document, file another" failure the
+    // verification gate exists to prevent; Restart verification is the way.
+    const user = userEvent.setup()
+    renderIt({ form_status: { code: 'validated', failed: false, faults: [] } })
+    const btn = screen.queryByRole('button', { name: /Validate with CR/ })
+    if (btn) {
+      await user.click(btn)
+      await waitFor(() => expect(post).toHaveBeenCalled())
+      expect(post.mock.calls.some(c => c[0] === '/tpsi/filings/prepare')).toBe(false)
+    }
+  })
+
+  it('leaves the CR faults to the page banner instead of drawing them twice', async () => {
+    // ONE ERROR SURFACE (Levi 2026-08-31). The same rejection used to appear in
+    // the page banner AND in this card's own FaultPanel, a screen apart, which
+    // reads as two different problems. The banner is now the only place —
+    // covered by persistedFailure in workflow.test.js and by the rendering
+    // assertions in CaseWorkflowPage.test.jsx.
     renderIt({
       form_status: {
         code: 'validation_failed', failed: true,
         faults: ['Partial HKID is required', 'Signatory date precedes appointment'],
       },
     })
-    expect(screen.getByText('Partial HKID is required')).toBeInTheDocument()
-    expect(screen.getByText('Signatory date precedes appointment')).toBeInTheDocument()
-    expect(screen.getByText('2')).toBeInTheDocument()   // the count pill
+    expect(screen.queryByText('Partial HKID is required')).toBeNull()
+    expect(screen.queryByText(/Nothing was charged/)).toBeNull()
   })
 
   it('says the snapshot is frozen once CR has validated it', () => {
@@ -190,11 +220,17 @@ describe('Data Verification', () => {
   })
 
   it('explains a shut CR window instead of just failing', async () => {
+    // Reported UP to the page, which owns the single error banner. Asserted at
+    // the boundary rather than in this card's markup, because that is where the
+    // message now goes.
     const user = userEvent.setup()
+    const onError = vi.fn()
     post.mockRejectedValue(Object.assign(new Error('outside the window'), { status: 503 }))
-    renderIt({ form_status: { code: 'draft' }, filing_id: null })
+    renderIt({ form_status: { code: 'draft' }, filing_id: null }, { onError })
     await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
-    expect(await screen.findByText(/10:00–16:00 Hong Kong time/)).toBeInTheDocument()
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ hint: expect.stringMatching(/10:00–16:00 Hong Kong time/) }),
+    ))
   })
 
   it('points at the header for Restart rather than owning the button', () => {
@@ -206,14 +242,6 @@ describe('Data Verification', () => {
     expect(screen.getByText(/at the top of the page/)).toBeInTheDocument()
   })
 
-  it('says CR reports every problem at once, and that nothing was charged', () => {
-    renderIt({
-      form_status: { code: 'validation_failed', failed: true,
-                     faults: [['ERROR', 'Please check selectPersonId field.']] },
-    })
-    expect(screen.getByText(/fix them all before/)).toBeInTheDocument()
-    expect(screen.getByText(/Nothing was charged/)).toBeInTheDocument()
-  })
 
   it('explains that validating freezes an immutable snapshot', () => {
     renderIt({ form_status: { code: 'draft' }, filing_id: null })

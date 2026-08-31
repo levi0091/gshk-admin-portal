@@ -200,7 +200,10 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
           <span className="al-icon">⚠</span><div className="al-body">{failure.hint}</div>
         </div>
       )}
-      <FaultPanel faults={faults} title="The Companies Registry refused the submission" />
+      {/* NO FaultPanel for CR's refusal — the page banner is the single
+          error surface (Levi 2026-08-31). The receipt panel below is a
+          DIFFERENT thing: those are our own field checks, and they belong
+          beside the fields they are about. */}
 
       {/* v11's `danger-gate`. The tick and the button used to sit in an
           ordinary action bar, which made the irreversible step look like every

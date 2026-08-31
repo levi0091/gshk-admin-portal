@@ -276,6 +276,10 @@ def _prepare_patches(**overrides):
         "blocking": MagicMock(return_value=None),
         "case": MagicMock(return_value={"id": "c1", "entity_id": "e1",
                                         "manual_receipt": None}),
+        # The case's live attempt, and the rebuild that refreshes it in place.
+        # Default: the case has no filing yet, so prepare opens one.
+        "current": MagicMock(return_value=None),
+        "rebuild": MagicMock(return_value={"id": "f9", "stage": "draft"}),
     }
     defaults.update(overrides)
     return defaults
@@ -296,7 +300,72 @@ def _with_prepare(p):
         patch("routers.tpsi.nar1_cases.blocking_filing", new=p["blocking"]))
     stack.enter_context(
         patch("routers.tpsi.nar1_cases.get_case", new=p["case"]))
+    stack.enter_context(
+        patch("routers.tpsi.nar1_cases.current_filing", new=p["current"]))
+    stack.enter_context(
+        patch("routers.tpsi.filings.rebuild_draft", new=p["rebuild"]))
     return stack
+
+
+# WHY THESE EXIST. `filings.validate()` re-sends the stored request_xml
+# verbatim, so until prepare could refresh a draft in place, every correction an
+# operator made between two validation attempts was invisible to CR: the same
+# bytes went twice and CR gave the same answer twice, which reads on screen as
+# "I changed it and nothing happened".
+
+
+def test_prepare_rebuilds_a_rejected_draft_instead_of_opening_a_second_filing(client):
+    p = _prepare_patches(
+        current=MagicMock(return_value={"id": "f9", "stage": "validation_failed"}),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["rebuild"].call_args.args == ("f9", "<cr:brNo>1</cr:brNo>")
+    # A second row would sort ahead of the first and hide it -- the same defect
+    # `blocking_filing` documents for the filed stages.
+    p["create"].assert_not_called()
+    assert response.json()["id"] == "f9"
+
+
+def test_prepare_leaves_a_frozen_snapshot_alone(client):
+    """A validated filing is not rebuilt here. Discarding a CR-signed snapshot
+    is `Restart verification`'s job, which supersedes the row and says so."""
+    p = _prepare_patches(
+        current=MagicMock(return_value={"id": "f9", "stage": "validated"}),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    p["rebuild"].assert_not_called()
+    p["create"].assert_called_once()
+
+
+def test_prepare_opens_a_filing_when_the_case_has_none(client):
+    p = _prepare_patches()
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    p["rebuild"].assert_not_called()
+    p["create"].assert_called_once()
+
+
+def test_prepare_opens_a_filing_when_the_rebuild_loses_a_race(client):
+    """rebuild_draft is conditional in the UPDATE. If a validate landed first,
+    no row moves -- and prepare must not then return a filing it did not
+    actually refresh."""
+    p = _prepare_patches(
+        current=MagicMock(return_value={"id": "f9", "stage": "draft"}),
+        rebuild=MagicMock(return_value=None),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    p["create"].assert_called_once()
 
 
 def test_prepare_builds_the_xml_server_side(client):

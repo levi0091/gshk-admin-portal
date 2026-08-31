@@ -623,17 +623,45 @@ async def prepare_filing(
     except Exception as exc:
         raise _handle(exc)
 
-    try:
-        row = filings.create_filing(
-            entity_id=body.entity_id,
-            form_code="Nar1",
-            form_xml=form_xml,
-            user_id=user["id"],
-            nar1_case_id=body.nar1_case_id,
-            form_filing_id=body.form_filing_id,
-        )
-    except Exception as exc:
-        raise _handle(exc)
+    # REBUILD THE CASE'S OWN DRAFT rather than opening a second filing.
+    #
+    # `filings.validate()` re-sends the stored request_xml verbatim, so a draft
+    # built before the operator fixed an address -- or chose a different signing
+    # capacity -- would go to CR unchanged however many times they pressed
+    # Validate. On case NAR-2026-0065 the case read
+    # `signatory_capacity='Company Secretary'` while its stored XML still said
+    # selectCapacityDesc 'Director', and CR's identical refusal read as "my
+    # correction did nothing".
+    #
+    # Only draft and validation_failed move (REBUILDABLE_STAGES, enforced inside
+    # the UPDATE). A validated filing is left alone: its snapshot is what the
+    # client approves and what gets filed, and discarding one is `Restart
+    # verification`'s job. A rebuild that loses the race returns False and falls
+    # through to a new row rather than reporting a refresh that did not happen.
+    row = None
+    if body.nar1_case_id:
+        try:
+            live = nar1_cases.current_filing(body.nar1_case_id)
+        except Exception:  # noqa: BLE001 — a missing live filing is not an error
+            live = None
+        if live and live.get("stage") in filings.REBUILDABLE_STAGES:
+            try:
+                row = filings.rebuild_draft(live["id"], form_xml)
+            except Exception as exc:
+                raise _handle(exc)
+
+    if row is None:
+        try:
+            row = filings.create_filing(
+                entity_id=body.entity_id,
+                form_code="Nar1",
+                form_xml=form_xml,
+                user_id=user["id"],
+                nar1_case_id=body.nar1_case_id,
+                form_filing_id=body.form_filing_id,
+            )
+        except Exception as exc:
+            raise _handle(exc)
 
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],

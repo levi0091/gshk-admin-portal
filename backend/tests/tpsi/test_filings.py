@@ -469,3 +469,73 @@ def test_a_superseded_filing_is_already_excluded_from_the_current_one():
     """The stage was defined and filtered on from the start; only the WRITE was
     missing. This pins the other half so neither can be removed alone."""
     assert filings.STAGE_SUPERSEDED in filings.TERMINAL_STAGES
+
+
+# --- rebuild_draft ---------------------------------------------------------
+#
+# WHY THIS EXISTS. `validate()` re-sends `filing["request_xml"]` verbatim, and
+# the frontend re-validates the filing the case already has. So every correction
+# an operator makes between two validation attempts -- a fixed address, a
+# different signing capacity -- was invisible to CR: the same bytes went twice
+# and CR, correctly, gave the same answer twice.
+#
+# Observed 2026-08-31 on case NAR-2026-0065: `signatory_capacity` on the case
+# read 'Company Secretary' while the stored request_xml still carried
+# selectCapacityDesc 'Director' from the first prepare.
+
+
+def _rebuild_chain(stage=filings.STAGE_VALIDATION_FAILED):
+    sb = MagicMock()
+    table = sb.table.return_value
+    upd = table.update.return_value
+    eq = upd.eq.return_value
+    eq.in_.return_value.execute.return_value.data = (
+        [{"id": "f1", "stage": filings.STAGE_DRAFT}]
+        if stage in filings.REBUILDABLE_STAGES else []
+    )
+    return sb, table
+
+
+def test_rebuild_draft_replaces_the_xml_and_clears_the_recorded_refusal():
+    """A stale cr_error left behind would render as a fresh CR rejection of a
+    form CR has not been shown yet."""
+    sb, table = _rebuild_chain()
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.rebuild_draft("f1", "<new/>") == {"id": "f1", "stage": filings.STAGE_DRAFT}
+    payload = table.update.call_args.args[0]
+    assert payload["request_xml"] == "<new/>"
+    assert payload["stage"] == filings.STAGE_DRAFT
+    assert payload["cr_error"] is None
+    # The frozen snapshot and its signature belong to the XML being replaced.
+    assert payload["validated_xml"] is None
+    assert payload["validated_at"] is None
+
+
+def test_rebuild_draft_only_touches_stages_that_may_be_rebuilt_IN_THE_UPDATE():
+    """Conditional in the UPDATE, not read-then-write: a validate landing
+    between a read and a write would otherwise have its frozen snapshot
+    discarded by a rebuild that read the row while it was still a draft."""
+    sb, table = _rebuild_chain()
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        filings.rebuild_draft("f1", "<new/>")
+    column, stages = table.update.return_value.eq.return_value.in_.call_args.args
+    assert column == "stage"
+    assert set(stages) == set(filings.REBUILDABLE_STAGES)
+
+
+def test_rebuild_draft_reports_no_row_moved_when_the_filing_is_past_draft():
+    sb, _ = _rebuild_chain(stage=filings.STAGE_VALIDATED)
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.rebuild_draft("f1", "<new/>") is None
+
+
+def test_a_validated_filing_is_not_rebuildable():
+    """The snapshot is frozen on purpose — `Restart verification` is the only
+    sanctioned way to discard it, and it supersedes the row rather than
+    rewriting it."""
+    assert filings.STAGE_VALIDATED not in filings.REBUILDABLE_STAGES
+    for stage in filings.TERMINAL_STAGES:
+        assert stage not in filings.REBUILDABLE_STAGES
+    assert set(filings.REBUILDABLE_STAGES) == {
+        filings.STAGE_DRAFT, filings.STAGE_VALIDATION_FAILED,
+    }

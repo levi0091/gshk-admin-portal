@@ -12,7 +12,10 @@ import StageClientVerification from '../components/case/StageClientVerification.
 import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
-import { STAGE_LABELS, reachedStage, isValidated, describeError } from '../components/case/workflow.js'
+import {
+  STAGE_LABELS, reachedStage, isValidated, describeError, persistedFailure,
+} from '../components/case/workflow.js'
+import { scrollToTop } from '../lib/scroll.js'
 
 /**
  * The NAR1 case workflow (wireframe_v11 `s20`).
@@ -79,18 +82,30 @@ export default function CaseWorkflowPage() {
 
   useEffect(() => { load() }, [load])
 
-  // `block: 'center'` rather than 'start': the banner is below the sticky page
-  // header, and aligning to the top would slide it underneath.
-  // `prefers-reduced-motion` is honoured — a jump is still a scroll.
+  // TO THE TOP OF THE PAGE, not merely to the banner (Levi 2026-08-31).
+  // `scrollIntoView({block:'center'})` centred the banner and left the crumb,
+  // the title and both status badges above the fold — and it scrolled whatever
+  // the browser picked as the scrolling box, which is not necessarily the one
+  // the app shell scrolls. `scrollToTop` finds the ancestor that is actually
+  // overflowing (AppShell's <main class="app-main">) and puts it at 0.
+  //
+  // Keyed on the LIVE failure only. A refusal read back off the case renders
+  // the same banner, but it is already on screen when the page opens — and
+  // re-scrolling on every case reload would yank the operator to the top each
+  // time they ticked a checkbox with an old rejection still on record.
+  //
+  // Guarded HERE as well as inside scrollToTop, and the belt-and-braces is
+  // deliberate: this effect runs in the commit that renders the banner, so an
+  // exception blanks the very error it exists to reveal. That regression has
+  // already happened once. The guard must not depend on a collaborator keeping
+  // its own try/catch.
   useEffect(() => {
-    const el = failureRef.current
-    // Guarded, and the guard is the point: an exception thrown here happens
-    // during the commit that renders the banner, so a missing scrollIntoView
-    // would BLANK THE ERROR it exists to reveal. Scrolling is a courtesy;
-    // showing the error is not.
-    if (!failure || !el || typeof el.scrollIntoView !== 'function') return
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
-    el.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' })
+    if (!failure) return
+    try {
+      scrollToTop(failureRef.current)
+    } catch {
+      /* Scrolling is a courtesy. Showing the error is not. */
+    }
   }, [failure])
 
   const onChanged = useCallback(async () => {
@@ -130,6 +145,13 @@ export default function CaseWorkflowPage() {
   // finished reading, which is a different event and must not be inferred.
   const goTo = n => { setStep(n); setNotice(null) }
   const stageProps = { caseRow: c, onChanged, onError: setFailure, onGo: goTo }
+
+  // THE ONLY PLACE A CR REFUSAL IS DRAWN. The stages used to render the same
+  // faults again in their own FaultPanel, so one rejection appeared twice on
+  // one screen. The live failure wins when there is one; otherwise the banner
+  // shows what CR said last, read back off the case, so a reload never leaves
+  // a "Rejected at validation" badge with its reason nowhere on the page.
+  const banner = failure || persistedFailure(c)
 
   async function restart() {
     setFailure(null); setConfirmRestart(false); setRestarting(true)
@@ -238,18 +260,18 @@ export default function CaseWorkflowPage() {
         )}
       </div>
 
-      {failure && (
+      {banner && (
         <div ref={failureRef} className="alert al-danger" role="alert" style={{ marginBottom: 16 }}>
           <span className="al-icon">⚠</span>
           <div className="al-body">
-            <b>{failure.message}</b>
+            <b>{banner.message}</b>
             {/* Every reason the backend gathered — it collects them all so one
                 pass can fix them all, and showing one would waste that.
                 Rendered through readFault because CR sends (code, message)
                 PAIRS: JSON.stringify put ["ERR_MSG_...","..."] on screen. */}
-            {failure.problems && (
+            {banner.problems && (
               <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                {failure.problems.map((p, i) => {
+                {banner.problems.map((p, i) => {
                   const { field, msg } = readFault(p)
                   return (
                     <li key={i}>
@@ -260,14 +282,14 @@ export default function CaseWorkflowPage() {
                 })}
               </ul>
             )}
-            {failure.hint && (
+            {banner.hint && (
               <div style={{ marginTop: 4 }}
                    // A locked CR account is not an ordinary validation note:
                    // it stops every filing by that signatory until CR reinstates
                    // it, and further attempts keep it locked.
-                   className={failure.kind === 'account_locked' ? 'f-strong' : undefined}>
-                {failure.kind === 'account_locked' && <b>Account locked. </b>}
-                {failure.hint}
+                   className={banner.kind === 'account_locked' ? 'f-strong' : undefined}>
+                {banner.kind === 'account_locked' && <b>Account locked. </b>}
+                {banner.hint}
               </div>
             )}
           </div>

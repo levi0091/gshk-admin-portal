@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   STAGE_LABELS, reachedStage, stageDone, signedOff, isValidated, isSubmitted,
-  describeError, verificationBlock,
+  describeError, verificationBlock, persistedFailure,
 } from './workflow.js'
 
 // A case at the very start: nothing validated, nothing sent, nothing signed.
@@ -317,5 +317,51 @@ describe('verificationBlock', () => {
 
   it('says nothing about a case it was given nothing for', () => {
     expect(verificationBlock(null)).toBeNull()
+  })
+})
+
+
+describe('persistedFailure', () => {
+  // WHY THIS EXISTS. CR's refusal used to be drawn twice on one screen: once in
+  // the page banner (the live request that just failed) and once in the stage's
+  // own FaultPanel (the same faults, read back off the case). Two copies of one
+  // rejection reads as two different problems. The banner is now the only
+  // surface, so it has to be able to show a refusal recorded EARLIER too --
+  // otherwise a reload leaves a "Rejected at validation" badge with no reason.
+  const failed = (code, faults) => ({
+    form_status: { code, failed: true, faults },
+  })
+  const faults = [['efiling.eform.signatory.error', 'The signatory T1 is not authorized.']]
+
+  it('reports a validation refusal recorded on the case', () => {
+    const f = persistedFailure(failed('validation_failed', faults))
+    expect(f.message).toMatch(/rejected this return/i)
+    expect(f.problems).toEqual(faults)
+  })
+
+  it('names the step CR actually refused', () => {
+    expect(persistedFailure(failed('signing_failed', faults)).message)
+      .toMatch(/signature/i)
+    expect(persistedFailure(failed('submission_failed', faults)).message)
+      .toMatch(/submission/i)
+  })
+
+  it('tells the operator re-validating is free, and only for validation', () => {
+    expect(persistedFailure(failed('validation_failed', faults)).hint)
+      .toMatch(/nothing was charged/i)
+    expect(persistedFailure(failed('submission_failed', faults)).hint)
+      .not.toMatch(/nothing was charged/i)
+  })
+
+  it('says nothing when the case has not failed', () => {
+    expect(persistedFailure({ form_status: { code: 'validated', failed: false } }))
+      .toBeNull()
+    expect(persistedFailure(null)).toBeNull()
+  })
+
+  it('says nothing when a failure carries no reason to show', () => {
+    // A banner reading "The Companies Registry rejected this return." with an
+    // empty list underneath is worse than the badge alone.
+    expect(persistedFailure(failed('validation_failed', []))).toBeNull()
   })
 })

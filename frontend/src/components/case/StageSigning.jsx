@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
-import FaultPanel from './FaultPanel.jsx'
 import { describeError, signedOff } from './workflow.js'
 
 /**
@@ -169,7 +168,8 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
               <span className="al-icon">⚠</span><div className="al-body">{failure.hint}</div>
             </div>
           )}
-          <FaultPanel faults={faults} title="The Companies Registry refused the signature" />
+          {/* NO FaultPanel — the page banner is the single error surface
+              (Levi 2026-08-31). `faults` still spaces the group below. */}
 
           <div className="f-group" style={{ marginTop: faults?.length ? 16 : 0 }}>
             <span className="f-label">Signing as</span>

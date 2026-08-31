@@ -142,6 +142,60 @@ def supersede(filing_id: str) -> bool:
     return bool(rows)
 
 
+#: Stages whose XML may still be rebuilt from the live company record.
+#:
+#: Deliberately excludes STAGE_VALIDATED and everything after it. From
+#: `validated` onward the case reads its own frozen snapshot -- the PDF the
+#: client approves, the signature and the filing are all built from it -- and
+#: rewriting it under them is the "show one document, file another" failure the
+#: verification gate exists to prevent. `Restart verification` is the sanctioned
+#: way to discard a snapshot, and it supersedes the row rather than editing it.
+REBUILDABLE_STAGES = (STAGE_DRAFT, STAGE_VALIDATION_FAILED)
+
+
+def rebuild_draft(filing_id: str, form_xml: str) -> dict | None:
+    """Point an un-validated filing at freshly built XML. Returns the refreshed row, or None.
+
+    THE CORRECTION THAT NEVER REACHED CR. `validate()` re-sends
+    `filing["request_xml"]` verbatim, and the workflow screen re-validates the
+    filing the case already has. So an operator who fixed an address, or chose a
+    different signing capacity, and pressed Validate again sent CR the *same
+    bytes* -- and read CR's identical answer as "my correction did not work".
+
+    Observed on case NAR-2026-0065: the case carried
+    `signatory_capacity='Company Secretary'` while its stored request_xml still
+    declared `selectCapacityDesc` 'Director' from the first prepare.
+
+    Conditional on the stage IN THE UPDATE, not read-then-written: a validate
+    landing between a read and a write would otherwise have the snapshot it just
+    froze discarded by a rebuild that read the row while it was still a draft.
+
+    `cr_error` is cleared with the XML it belongs to. Leaving it would render a
+    stale refusal beside a form CR has not been shown yet.
+
+    The UPDATE already returns the row it changed, so the caller gets the fresh
+    filing without a second round trip -- and cannot be handed a row that a
+    concurrent validate moved out from under the guard.
+    """
+    rows = (
+        get_supabase().table(_TABLE)
+        .update(
+            {
+                "request_xml": form_xml,
+                "stage": STAGE_DRAFT,
+                "cr_error": None,
+                "validated_xml": None,
+                "validated_at": None,
+            }
+        )
+        .eq("id", filing_id)
+        .in_("stage", list(REBUILDABLE_STAGES))
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
 def create_filing(
     *,
     entity_id: str,
