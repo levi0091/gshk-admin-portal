@@ -76,10 +76,14 @@ export function verificationBlock(c) {
     return 'This case was completed off-portal, so there is nothing left for '
       + 'the client to approve.'
   }
-  if (CR_HOLDS.has(c.form_status?.code)) {
-    return 'The Companies Registry already holds this return. Asking the '
-      + 'client to approve it now is a request their answer cannot change.'
-  }
+  // NOT a "block" any more (Levi 2026-08-31). On a case CR already holds,
+  // Client Verification is history: the stage shows a green tick, the send
+  // happened, the client answered. Warning that asking them now would be
+  // pointless is a caution about something nobody is attempting, on a screen
+  // whose every other line says the work is done.
+  //
+  // The send is still not offered there — StageClientVerification withholds it
+  // on `isSubmitted`, so this does not put a dead button back on the screen.
   if (c.form_status?.code === 'validation_failed') {
     return 'The last validation of this return failed. Re-validate it on Data '
       + 'Verification before sending it to the client.'

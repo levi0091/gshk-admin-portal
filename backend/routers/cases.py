@@ -270,6 +270,31 @@ async def patch_case(
                        before.get("assigned_to"), body.assigned_to))
 
     if body.restart_verification:
+        # REFUSED ONCE THE RETURN IS FILED (Levi 2026-08-31).
+        #
+        # `supersede()` already declined to retire a filed filing, so the FILING
+        # was never in danger — but the handler went on to clear
+        # verification_sent_at, client_approved and client_response_at anyway.
+        # A completed case lost the client's recorded approval and dropped back
+        # to Client Verification while CR held the registered return: a case
+        # reporting it was waiting on a client whose answer had been acted on
+        # days before, and an approval erased from the record that the filing
+        # in the register was built on.
+        #
+        # Both roads to the register count. `manual_submitted_at` and
+        # `manual_receipt` mean the return was filed off-portal, which is the
+        # same fact arrived at differently — the manual gate in
+        # `blocking_filing` makes exactly this distinction.
+        filed = nar1_cases.current_filing(case_id)
+        if (before.get("manual_submitted_at") or before.get("manual_receipt")
+                or (filed and filed.get("stage") in nar1_cases.CR_FILED_STAGES)):
+            raise HTTPException(
+                409,
+                "the Companies Registry already holds this return, so the "
+                "verification behind it cannot be restarted; a filed return is "
+                "corrected by filing again, not by re-asking the client",
+            )
+
         # THE SNAPSHOT GOES TOO. The confirmation the operator clicks through
         # says "The case goes back to Data Verification. The CR-signed snapshot
         # is discarded" — and until this line existed, only the client-side
@@ -279,11 +304,10 @@ async def patch_case(
         # been corrected. That is precisely the "show one document, file
         # another" failure the verification gate exists to prevent.
         #
-        # A filing CR already holds is left alone: `supersede()` filters on the
-        # stage inside the UPDATE and returns False for it. Restarting cannot
-        # un-file a return, and pretending otherwise would hide a registered
-        # filing behind a fresh draft.
-        filing = nar1_cases.current_filing(case_id)
+        # `supersede()` is still the second line of defence, not a formality:
+        # it filters on the stage inside the UPDATE, so a submit that lands
+        # between the guard above and this line cannot be un-filed here.
+        filing = filed
         if filing and tpsi_filings.supersede(filing["id"]):
             events.append((ev.CASE_STATUS_CHANGED, "filing",
                            filing.get("stage"), "superseded"))

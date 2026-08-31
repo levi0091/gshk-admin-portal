@@ -13,7 +13,8 @@ import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
 import {
-  STAGE_LABELS, reachedStage, isValidated, describeError, persistedFailure,
+  STAGE_LABELS, reachedStage, isValidated, isSubmitted, describeError,
+  persistedFailure,
 } from '../components/case/workflow.js'
 import { scrollToTop } from '../lib/scroll.js'
 
@@ -215,7 +216,13 @@ export default function CaseWorkflowPage() {
               for when something is wrong at Client Verification or Signing —
               which is exactly where the button used to be unreachable, because
               it lived in a card two stages back. */}
-          {canWrite && isValidated(c) && (
+          {/* GONE once the return is filed (Levi 2026-08-31). Restart cannot
+              un-file a return — the backend refuses it with a 409 — and the
+              button was still on offer on a Confirmation screen reading
+              "Filed with CR", where its confirmation dialog promises to
+              discard a snapshot and clear an approval that the filing in the
+              register was built on. */}
+          {canWrite && isValidated(c) && !isSubmitted(c) && (
             <button className="btn btn-outline" disabled={restarting}
                     onClick={() => setConfirmRestart(true)}>
               {restarting ? 'Restarting…' : 'Restart verification'}

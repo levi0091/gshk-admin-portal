@@ -452,11 +452,35 @@ describe('Client Verification', () => {
     expect(alert).not.toHaveTextContent(/10:00/)
   })
 
-  it('refuses to offer a send the backend would reject as already filed', async () => {
+  it('offers no send at all once the return has been filed', async () => {
+    // Not a DISABLED button beside a warning — no button. A control you may
+    // not press, next to a sentence explaining why, invites the press; the
+    // record of what happened is what belongs on a finished case.
     renderIt({ manual_submitted_at: '2026-08-28T03:32:06Z' })
     await screen.findByText('chan@example.com')
-    expect(screen.getByText(/completed off-portal/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Send to client/ })).toBeNull()
+  })
+
+  it('keeps the review tick ticked once the mail has gone', async () => {
+    // It gates the send, and the send is the evidence it was given: the mail
+    // could not have left without it. An unticked box on a case whose banner
+    // says "Sent 31 Aug 2026, 19:52" reads as a step that came undone — which
+    // is exactly how it was reported, after stepping to Signing and back.
+    renderIt({ verification_sent_at: '2026-08-31T11:52:00Z' })
+    await screen.findByText('chan@example.com')
+    const tick = screen.getByRole('button',
+      { name: /I have reviewed this return and it is correct/ })
+    expect(tick).toHaveAttribute('aria-pressed', 'true')
+    // Nothing left for it to gate, so it stops inviting a click.
+    expect(tick).toBeDisabled()
+  })
+
+  it('leaves the review tick clear on a case that was never sent', async () => {
+    renderIt({ verification_sent_at: null })
+    await screen.findByText('chan@example.com')
+    expect(screen.getByRole('button',
+      { name: /I have reviewed this return and it is correct/ }))
+      .toHaveAttribute('aria-pressed', 'false')
   })
 
   it('shows the director it cannot write to rather than dropping them', async () => {
@@ -708,10 +732,15 @@ describe('Signing', () => {
     expect(screen.queryByText(/Deposit balance/)).toBeNull()
   })
 
-  it('says signing is free and nothing is charged until Submission', () => {
+  it('does not preach the one-signature rule twice over', () => {
+    // Removed 2026-08-31. The rule is still stated where it is actionable —
+    // the "Apply the signature" card's own subtitle, beside the control it
+    // constrains — rather than as a standing notice above every visit.
     renderIt()
-    expect(screen.getByText(/verifyPinSigningNar1/)).toBeInTheDocument()
-    expect(screen.getByText(/nothing is charged until Submission/)).toBeInTheDocument()
+    expect(screen.queryByText(/verifyPinSigningNar1/)).toBeNull()
+    expect(screen.queryByText(/nothing is charged until Submission/)).toBeNull()
+    expect(screen.getByText(/CR rejects a signature from a corporate account/))
+      .toBeInTheDocument()
   })
 
   it('names the permission the sign button needs', () => {

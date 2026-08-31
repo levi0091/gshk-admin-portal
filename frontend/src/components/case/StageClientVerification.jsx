@@ -5,7 +5,7 @@ import { formatDateTime } from '../../lib/format.js'
 import { downloadFilingPdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
-import { describeError, verificationBlock } from './workflow.js'
+import { describeError, verificationBlock, isSubmitted } from './workflow.js'
 
 // Zoom bounds for the embedded preview. 60% still shows a full A4 page on a
 // laptop; past 200% the object viewport is taller than any screen and the
@@ -65,7 +65,15 @@ export function describeSendError(err) {
  */
 export default function StageClientVerification({ caseRow, canWrite, onChanged, onError }) {
   const { isTestEnv, profile } = useAuth()
-  const [reviewed, setReviewed] = useState(false)
+  // Seeded from the case, not defaulted to false. The tick gates the send, and
+  // the send is the evidence it was given: a mail cannot have gone out without
+  // it. Leaving it unticked on a case whose banner says "Sent 31 Aug 2026,
+  // 19:52" reads as a step that came undone — which is how Levi found it,
+  // after stepping forward to Signing and back.
+  //
+  // `Restart verification` clears verification_sent_at, so it correctly resets
+  // here too: a restarted case really does need reviewing again.
+  const [reviewed, setReviewed] = useState(Boolean(caseRow.verification_sent_at))
   const [busy, setBusy] = useState(null)
   const [sendError, setSendError] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
@@ -83,6 +91,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // Why the backend would refuse this send, worked out before the operator
   // presses anything. See workflow.verificationBlock.
   const blocked = verificationBlock(caseRow)
+  // Filed by EITHER road: CR holds it, or it was filed off-portal on paper.
+  const filed = isSubmitted(caseRow)
   const pdfName =
     `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}.pdf`
 
@@ -272,7 +282,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             over GSHK's name is the mistake this exists to slow down. */}
         <CheckRow
           checked={reviewed}
-          disabled={!canWrite || busy !== null || Boolean(blocked)}
+          disabled={!canWrite || busy !== null || Boolean(blocked)
+                    || Boolean(caseRow.verification_sent_at)}
           onToggle={setReviewed}
           title="I have reviewed this return and it is correct"
           sub="Check the particulars above before it goes to the client."
@@ -331,14 +342,18 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
 
-        {blocked && (
+        {blocked && !filed && (
           <div className="alert al-warn" role="status" style={{ marginTop: 14 }}>
             <span className="al-icon">⚠</span>
             <div className="al-body">{blocked}</div>
           </div>
         )}
 
-        {canWrite && (
+        {/* Nothing to send once the return is in the register, so nothing is
+            offered. A disabled button beside a warning explaining why you may
+            not press it is worse than no button: it invites the press. What
+            stays above is the record — who it went to, when, what they said. */}
+        {canWrite && !filed && (
           <div className="action-bar">
             <div className="ab-note">
               {blocked

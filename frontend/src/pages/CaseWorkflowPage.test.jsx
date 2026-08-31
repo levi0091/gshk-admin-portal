@@ -449,3 +449,47 @@ describe('CaseWorkflowPage — a failure must reach the viewport', () => {
     expect(screen.getByText(/Nothing was charged/)).toBeInTheDocument()
   })
 })
+
+describe('CaseWorkflowPage — Restart stops at the register', () => {
+  const filedCase = (over = {}) => ({
+    ...CASE,
+    form_status: { code: 'submitted', failed: false, faults: [], terminal: true },
+    filing_id: 'f1', verification_sent_at: '2026-08-31T11:52:00Z',
+    client_approved: true, signing_method: 'esign',
+    workflow_status: { code: 'completed', label: 'Completed' },
+    ...over,
+  })
+
+  it('offers no Restart on a return CR already holds', async () => {
+    // The dialog behind that button promises to discard the CR-signed snapshot
+    // and clear the client's approval — the two things the filing in the
+    // register was built on. The backend refuses it with a 409; the screen
+    // should not have asked in the first place.
+    routeGet(filedCase())
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findAllByText(/NAR-2026-0041/)
+    expect(screen.queryByRole('button', { name: /Restart verification/ })).toBeNull()
+  })
+
+  it('offers no Restart on a case filed off-portal either', async () => {
+    routeGet(filedCase({
+      form_status: { code: 'validated', failed: false, faults: [] },
+      manual_submitted_at: '2026-08-30T09:00:00Z', signing_method: 'manual',
+    }))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findAllByText(/NAR-2026-0041/)
+    expect(screen.queryByRole('button', { name: /Restart verification/ })).toBeNull()
+  })
+
+  it('still offers Restart on a snapshot CR has only validated', async () => {
+    // That is the case Restart exists for: the particulars are wrong and the
+    // frozen snapshot has to go before anyone is asked to approve it.
+    routeGet(filedCase({
+      form_status: { code: 'validated', failed: false, faults: [] },
+    }))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findAllByText(/NAR-2026-0041/)
+    expect(screen.getByRole('button', { name: /Restart verification/ }))
+      .toBeInTheDocument()
+  })
+})

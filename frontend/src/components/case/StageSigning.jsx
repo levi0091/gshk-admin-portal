@@ -122,17 +122,6 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
 
       {method === 'esign' && <Preflight preflight={preflight} cred={cred} />}
 
-      {method === 'esign' && (
-        <div className="alert al-info" role="note" style={{ marginBottom: 16 }}>
-          <span className="al-icon">🖊</span>
-          <div className="al-body">
-            A NAR1 carries <b>one signature</b> by a single authorised{' '}
-            <b>individual</b> — a director, or the company secretary's authorised
-            representative. Signing calls <code>verifyPinSigningNar1</code> and is{' '}
-            <b>free</b>; nothing is charged until Submission.
-          </div>
-        </div>
-      )}
 
       {/* The manual card is NOT replaced by a success alert once a scan is
           attached — it keeps its own done state (v11 `cm-upload-done`), which
@@ -141,17 +130,7 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
       {method === 'manual' ? (
         <ManualUpload caseRow={caseRow} canWrite={canWrite} busy={busy}
                       fileInput={fileInput} onPick={upload} attached={done} />
-      ) : done ? (
-        <div className="card mb-16">
-          <div className="alert al-success" role="status">
-            <span className="al-icon">✓</span>
-            <div className="al-body">
-              The return is signed at CR. It has not been filed yet, and nothing
-              has been charged.
-            </div>
-          </div>
-        </div>
-      ) : (
+      ) : done ? null : (
         <div className="card mb-16">
           <div className="card-hdr">
             <div>

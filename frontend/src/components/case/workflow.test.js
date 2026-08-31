@@ -298,11 +298,16 @@ describe('verificationBlock', () => {
       .toMatch(/off-portal/)
   })
 
-  it('refuses a return CR is already holding', () => {
-    // Checked BEFORE "not validated yet" on purpose: a submitted filing
-    // satisfies isValidated too, and that message would be a lie about it.
+  it('says nothing about a return CR is already holding', () => {
+    // Levi 2026-08-31: on a filed case, Client Verification is history — a
+    // green tick, a sent mail, an answer. Cautioning that asking the client
+    // now would be pointless warns about something nobody is attempting.
+    //
+    // Crucially this does NOT re-enable the send: StageClientVerification
+    // withholds the whole send apparatus on `isSubmitted`, so there is no dead
+    // button and no 409 waiting behind one.
     expect(verificationBlock(validated({ form_status: { code: 'submitted' } })))
-      .toMatch(/already holds this return/)
+      .toBeNull()
   })
 
   it('refuses after a failed validation rather than mailing a stale snapshot', () => {
