@@ -2,19 +2,52 @@ from etl.reference_data import decode_id_type, decode_officer_role, AMBIGUOUS_OF
 from etl.reconciliation import ReconciliationReport
 
 
-def _collapse_line3(*parts: str | None) -> str | None:
-    non_empty = [p.strip() for p in parts if p and p.strip()]
-    return ", ".join(non_empty) if non_empty else None
+def _pack_address_lines(*parts: str | None) -> list[str | None]:
+    """Viewpoint's five address lines -> the three CR gives us, losing nothing.
+
+    CR's NAR1 has three free-text street slots (`flatFlrBlk`, `bldg`,
+    `stEstLotVlg`), each capped at 60 characters. Viewpoint has five source
+    lines. Two rules keep the result filable:
+
+    1. COMPACT FIRST. Viewpoint frequently leaves `Address`/`Address2` empty
+       and starts at `Address3`. Mapping positionally then left line1 and line2
+       empty while line3 carried everything — that single mistake is why 874 of
+       8,035 rows held a line over CR's limit while the source held only 25.
+
+    2. MERGE ONLY WHEN FORCED, and merge the ADJACENT PAIR WITH THE SMALLEST
+       COMBINED LENGTH. Three or fewer lines map one-to-one. Above that,
+       something must join, and joining the shortest neighbours minimises the
+       longest resulting line: over the real book that leaves 27 rows above 60
+       versus 275 for the obvious "merge the tail" rule.
+
+    Which fragment ends up under "Building" versus "Street" is therefore chosen
+    by fit, not by meaning. CR validates length, not semantics, and a return
+    that files beats one that is notionally better arranged and rejected.
+
+    Never truncates: a single source line already over 60 is passed through
+    whole, for the reconciliation report to name. Silently trimming a statutory
+    address is worse than loading one a later validation catches.
+    """
+    lines = [p.strip() for p in parts if p and p.strip()]
+    while len(lines) > 3:
+        i = min(range(len(lines) - 1),
+                key=lambda n: len(lines[n]) + len(lines[n + 1]))
+        lines[i:i + 2] = [f"{lines[i]}, {lines[i + 1]}"]
+    return lines + [None] * (3 - len(lines))
 
 
 def transform_address(row: dict) -> dict:
     """VP Addresses row -> addresses insert dict."""
     country = (row.get("Country") or "").strip().upper()
+    line1, line2, line3 = _pack_address_lines(
+        row.get("Address"), row.get("Address2"), row.get("Address3"),
+        row.get("Address4"), row.get("Address5"),
+    )
     return {
         "vp_source_key": str(row["AddrNr"]),
-        "line1": row.get("Address"),
-        "line2": row.get("Address2"),
-        "line3": _collapse_line3(row.get("Address3"), row.get("Address4"), row.get("Address5")),
+        "line1": line1,
+        "line2": line2,
+        "line3": line3,
         "city": row.get("City"),
         "state_region": row.get("State"),
         "country": row.get("Country"),

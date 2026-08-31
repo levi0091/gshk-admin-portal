@@ -37,15 +37,71 @@ def test_transform_address_maps_core_fields():
     }
 
 
-def test_transform_address_collapses_overflow_lines_into_line3():
-    vp_row = {
-        "AddrNr": 1, "Address": "L1", "Address2": "L2", "Address3": "L3",
-        "Address4": "L4", "Address5": "L5", "City": None, "State": None,
+def _address_row(**overrides):
+    """A Viewpoint Addresses row with every column present and empty."""
+    row = {
+        "AddrNr": 1, "Address": None, "Address2": None, "Address3": None,
+        "Address4": None, "Address5": None, "City": None, "State": None,
         "Country": None, "PostalCode": None, "AddressLoc1": None,
         "AddressLoc2": None, "CityLoc": None,
     }
-    result = transform_address(vp_row)
-    assert result["line3"] == "L3, L4, L5"
+    row.update(overrides)
+    return row
+
+
+def test_transform_address_compacts_leading_empty_source_lines():
+    """The 861-row shape: Viewpoint's Address/Address2 are empty and the
+    content starts at Address3. Collapsing 3+4+5 into line3 put all of it in
+    one 60-char slot and left line1 and line2 empty, which is what made most
+    of the book unfilable. The lines must move up instead."""
+    result = transform_address(_address_row(
+        Address3="Cakilli Sokak Oypas Ev Yani Hane 3",
+        Address4="Gonyeli Yenikent",
+        Address5="Nicosia",
+    ))
+    assert result["line1"] == "Cakilli Sokak Oypas Ev Yani Hane 3"
+    assert result["line2"] == "Gonyeli Yenikent"
+    assert result["line3"] == "Nicosia"
+
+
+def test_transform_address_keeps_three_source_lines_one_to_one():
+    """Three lines fit three slots, so nothing is merged."""
+    result = transform_address(_address_row(
+        Address="Flat A", Address2="Tower 3", Address3="18 Kings Road",
+    ))
+    assert [result["line1"], result["line2"], result["line3"]] == [
+        "Flat A", "Tower 3", "18 Kings Road",
+    ]
+
+
+def test_transform_address_merges_the_smallest_adjacent_pair_when_over_three():
+    """Four source lines must become three. The pair with the smallest
+    combined length is merged, because minimising the longest resulting line
+    is what keeps the address inside CR's 60-char cap."""
+    result = transform_address(_address_row(
+        Address="Flat A", Address2="Tower 3",
+        Address3="18 Kings Road", Address4="North Point",
+    ))
+    assert [result["line1"], result["line2"], result["line3"]] == [
+        "Flat A, Tower 3", "18 Kings Road", "North Point",
+    ]
+
+
+def test_transform_address_never_truncates_a_long_source_line():
+    """A single Viewpoint line already over 60 is written whole. Trimming a
+    statutory address to fit is worse than loading one a later validation
+    names — 25 rows in the real book are this shape."""
+    long_line = "M. Floor House-15, 16, Sultan Bin Khalifa Al Habtoor Bldg, 127-44C ST DM.65"
+    assert len(long_line) > 60
+    result = transform_address(_address_row(Address=long_line, Address2="Dubai"))
+    assert result["line1"] == long_line
+
+
+def test_transform_address_unused_lines_are_none():
+    result = transform_address(_address_row(Address="Sole line"))
+    assert result["line1"] == "Sole line"
+    assert result["line2"] is None
+    assert result["line3"] is None
 
 
 def test_transform_address_non_hk_country_is_not_hk_address():
