@@ -494,3 +494,26 @@ CAPACITY_BODY_CORPORATE = frozenset({
     "Authorized Person of the Director (Body Corporate)",
     "Authorized Person of the Company Secretary (Body Corporate)",
 })
+
+#: What a body-corporate signatory means in practice at GSHK (Levi 2026-08-31).
+#:
+#: Every real GSHK client has GSHK Ltd as its company secretary, and a GSHK
+#: director signs on that body corporate's behalf — so this one value fits the
+#: entire book. `scripts/nar1_regression.py` has assumed exactly this string
+#: since the regression was written; making it the default only stops the
+#: operator retyping the same answer on every case.
+#:
+#: It is a DEFAULT, not a constant: the picker still offers all 15 values and a
+#: stored choice always wins.
+DEFAULT_CAPACITY_BODY_CORPORATE = "Director of the Company Secretary (Body Corporate)"
+
+
+def default_capacity(*, is_corporate: bool) -> str | None:
+    """The capacity to assume when the operator has not chosen one.
+
+    Only for a body corporate. CR keeps two separate vocabularies, and an
+    individual signatory carrying a "(Body Corporate)" capacity is a
+    misstatement `_check_capacity` would rightly refuse — so an individual
+    gets no default and, as before, must be answered explicitly.
+    """
+    return DEFAULT_CAPACITY_BODY_CORPORATE if is_corporate else None

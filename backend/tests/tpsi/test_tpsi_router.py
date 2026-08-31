@@ -1522,3 +1522,54 @@ def test_sign_surfaces_CRs_faults_through_the_route(client):
     body = response.json()["detail"]
     assert body["kind"] == "signature"
     assert body["problems"][0][1] == "Signatory not associated with this company."
+
+
+# ---- the defaulted signing capacity (Levi 2026-08-31) -----------------------
+
+def test_prepare_falls_back_to_the_default_capacity_for_a_body_corporate(client):
+    """The picker on Data Verification shows this default, so prepare has to
+    use the same one. If it did not, the screen would show a capacity while
+    the filing refused for want of it — the operator would see an answer and a
+    refusal to the same question."""
+    p = _prepare_patches(case=MagicMock(return_value={
+        "id": "c1", "entity_id": "e1", "manual_receipt": None,
+        "signatory_capacity": None,
+    }))
+    with _with_prepare(p), \
+         patch("routers.tpsi.nar1_mapper._derive_signatory",
+               return_value={"is_corporate": True, "name": "Get Started HK Limited"}):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["map"].call_args.kwargs["signatory_capacity"] == (
+        "Director of the Company Secretary (Body Corporate)"
+    )
+
+
+def test_prepare_keeps_the_operators_stored_capacity_over_the_default(client):
+    chosen = "Company Secretary of the Company Secretary (Body Corporate)"
+    p = _prepare_patches(case=MagicMock(return_value={
+        "id": "c1", "entity_id": "e1", "manual_receipt": None,
+        "signatory_capacity": chosen,
+    }))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["map"].call_args.kwargs["signatory_capacity"] == chosen
+
+
+def test_prepare_invents_no_capacity_for_an_individual_signatory(client):
+    """CR keeps two vocabularies. A "(Body Corporate)" capacity on a natural
+    person is a misstatement, so an individual is still answered explicitly."""
+    p = _prepare_patches(case=MagicMock(return_value={
+        "id": "c1", "entity_id": "e1", "manual_receipt": None,
+        "signatory_capacity": None,
+    }))
+    with _with_prepare(p), \
+         patch("routers.tpsi.nar1_mapper._derive_signatory",
+               return_value={"is_corporate": False, "name": "CHAN Tai Man"}):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["map"].call_args.kwargs["signatory_capacity"] is None

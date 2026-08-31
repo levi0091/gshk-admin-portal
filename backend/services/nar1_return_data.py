@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 from services.tpsi.forms import nar1_mapper
 from services.tpsi.forms.cr_vocabularies import (
+    default_capacity,
     CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL,
 )
 
@@ -105,6 +106,16 @@ def summarise(graph: dict, *, year: int | None = None,
         signatory = nar1_mapper._derive_signatory(graph)
     except Exception:  # noqa: BLE001
         signatory = None
+
+    # Levi 2026-08-31: a body-corporate signatory defaults to the arrangement
+    # every real GSHK client actually has, rather than making the operator
+    # answer the same question on every case. Applied HERE, before the mapper
+    # runs, so the picker and the verdict cannot disagree — a screen showing a
+    # capacity while still reporting "this company cannot be filed" would be
+    # the worst of both.
+    if not signatory_capacity and signatory:
+        signatory_capacity = default_capacity(
+            is_corporate=signatory.get("is_corporate") is True)
 
     problems: list[str] = []
     try:

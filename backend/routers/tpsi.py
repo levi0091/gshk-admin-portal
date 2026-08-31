@@ -20,6 +20,7 @@ from services.nar1_form import fill as nar1_form_fill
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
+from services.tpsi.forms.cr_vocabularies import default_capacity
 # Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
 # and services/nar1_cases.py needed it too — a service importing a router is
 # an inverted dependency. Imported here so `routers.tpsi.form_status` still
@@ -564,8 +565,6 @@ async def prepare_filing(
     # field, so the value that gets filed is the one the operator saw on screen
     # and the audit trail recorded, not one this call could differ on.
     #
-    # This router still invents NO default. An unchosen capacity stays None and
-    # the mapper still refuses — the refusal simply now has a remedy on screen.
     capacity = None
     if body.nar1_case_id:
         try:
@@ -575,6 +574,29 @@ async def prepare_filing(
             # A bad case id is the /cases endpoints' error to raise, not this
             # one's; prepare must not 404 on a field it merely consults.
             capacity = None
+
+    # REVERSES this router's former "invents NO default" rule (Levi 2026-08-31).
+    #
+    # A body corporate now falls back to the arrangement every real GSHK client
+    # has — GSHK Ltd is the secretary and a GSHK director signs for it — rather
+    # than making the operator answer the same question on every case.
+    #
+    # The fallback has to live here as well as in `nar1_return_data`, and both
+    # must use `default_capacity`: the Data Verification picker shows this value,
+    # so a prepare that ignored it would refuse the filing for want of a
+    # capacity the operator can plainly see on screen.
+    #
+    # An INDIVIDUAL signatory still gets nothing. CR keeps two vocabularies and
+    # a "(Body Corporate)" capacity on a natural person is a misstatement, so
+    # the mapper's refusal stands for that case — with its remedy on screen.
+    if not capacity:
+        try:
+            resolved = nar1_mapper._derive_signatory(graph)
+        except Exception:  # noqa: BLE001 — a graph too thin to resolve is the
+            resolved = None  # mapper's problem to report, not this line's.
+        if resolved:
+            capacity = default_capacity(
+                is_corporate=resolved.get("is_corporate") is True)
 
     try:
         # `signatory` is still passed straight through: an explicit override
