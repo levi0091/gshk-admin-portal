@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { formatDate, formatDateTime } from '../lib/format.js'
@@ -49,6 +49,16 @@ export default function CaseWorkflowPage() {
   const [notice, setNotice] = useState(null)
   const [step, setStep] = useState(null)
   const [confirmRestart, setConfirmRestart] = useState(false)
+
+  // WHY THIS EXISTS. The failure banner sits above the stage content, and the
+  // buttons that produce a failure — Validate, Send, Apply signature, Submit —
+  // sit a screen or more below it. A correct, fully-rendered error that never
+  // enters the viewport is experienced as "I pressed the button and nothing
+  // happened", which is exactly how the verification 409 was reported before.
+  //
+  // Announcing it is not enough: `role="alert"` reaches a screen reader, not
+  // someone looking at a button halfway down the page.
+  const failureRef = useRef(null)
   const [restarting, setRestarting] = useState(false)
 
   const load = useCallback(async () => {
@@ -68,6 +78,20 @@ export default function CaseWorkflowPage() {
   }, [caseId])
 
   useEffect(() => { load() }, [load])
+
+  // `block: 'center'` rather than 'start': the banner is below the sticky page
+  // header, and aligning to the top would slide it underneath.
+  // `prefers-reduced-motion` is honoured — a jump is still a scroll.
+  useEffect(() => {
+    const el = failureRef.current
+    // Guarded, and the guard is the point: an exception thrown here happens
+    // during the commit that renders the banner, so a missing scrollIntoView
+    // would BLANK THE ERROR it exists to reveal. Scrolling is a courtesy;
+    // showing the error is not.
+    if (!failure || !el || typeof el.scrollIntoView !== 'function') return
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+    el.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' })
+  }, [failure])
 
   const onChanged = useCallback(async () => {
     setFailure(null)
@@ -215,7 +239,7 @@ export default function CaseWorkflowPage() {
       </div>
 
       {failure && (
-        <div className="alert al-danger" role="alert" style={{ marginBottom: 16 }}>
+        <div ref={failureRef} className="alert al-danger" role="alert" style={{ marginBottom: 16 }}>
           <span className="al-icon">⚠</span>
           <div className="al-body">
             <b>{failure.message}</b>

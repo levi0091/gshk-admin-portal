@@ -199,7 +199,17 @@ def _handle(exc: Exception) -> HTTPException:
 
     if isinstance(exc, (TpsiValidationError, TpsiSignatureError)):
         signature = isinstance(exc, TpsiSignatureError)
-        return HTTPException(502, {
+        # 422, NOT 502 (fixed 2026-08-31). A CR fault is a SUCCESSFUL exchange:
+        # CR was reached, understood the request, and said no. Calling that a
+        # Bad Gateway was a category error with a real cost — a 5xx lets
+        # Cloudflare and Railway replace the response body with their own HTML
+        # error page, and `api.js` falls back to `resp.statusText` when the body
+        # will not parse as JSON. So the operator saw "502 Bad Gateway" while
+        # CR had actually said "Br No does not exist.", and the fault list this
+        # dict exists to carry never reached the screen at all.
+        #
+        # 502 still means what it says below: CR could not be reached.
+        return HTTPException(422, {
             "message": ("The Companies Registry rejected the signature."
                         if signature else
                         "The Companies Registry rejected this return."),

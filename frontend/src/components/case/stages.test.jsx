@@ -627,7 +627,8 @@ describe('Signing', () => {
 
   it('never offers to retry a CR rejection', async () => {
     const user = userEvent.setup()
-    post.mockRejectedValue(Object.assign(new Error('tampered'), { status: 502 }))
+    // 422: CR rejected the signature. 502 now means CR could not be reached.
+    post.mockRejectedValue(Object.assign(new Error('tampered'), { status: 422 }))
     renderIt()
     await user.click(screen.getByRole('button', { name: /Apply signature/ }))
     expect(await screen.findByText(/do not simply retry/i)).toBeInTheDocument()

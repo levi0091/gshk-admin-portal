@@ -583,7 +583,9 @@ def test_validate_filing_cr_fault_is_handled_not_a_500(client):
          patch("routers.tpsi.filings.validate",
                side_effect=TpsiValidationError([("ERR_MSG_REQUIRED", "brNo is required")])):
         response = client.post("/tpsi/filings/f1/validate", headers=H)
-    assert response.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert response.status_code == 422
 
 
 # ---- filings: POST /tpsi/filings/{id}/edrive --------------------------------
@@ -774,7 +776,9 @@ def test_sign_filing_cr_fault_is_handled_not_a_500(client):
          patch("routers.tpsi.filings.sign",
                side_effect=TpsiSignatureError([("ERR_MSG_SIGNATORY_NOT_AUTH", "not authorised")])):
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
-    assert response.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -1447,7 +1451,9 @@ def test_a_validation_refusal_carries_EVERY_fault_not_a_joined_string():
     ])
     http = _handle_for_test(exc)
 
-    assert http.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert http.status_code == 422
     assert http.detail["problems"] == [
         ["ERR_MSG_INVALID_DISTRICT", "Please input valid District."],
         ["ERR_MSG_MANDATORY", "Please check selectPersonId field."],
@@ -1518,7 +1524,9 @@ def test_sign_surfaces_CRs_faults_through_the_route(client):
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
 
-    assert response.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert response.status_code == 422
     body = response.json()["detail"]
     assert body["kind"] == "signature"
     assert body["problems"][0][1] == "Signatory not associated with this company."
@@ -1573,3 +1581,69 @@ def test_prepare_invents_no_capacity_for_an_individual_signatory(client):
                                json={"entity_id": "e1", "nar1_case_id": "c1"})
     assert response.status_code == 201
     assert p["map"].call_args.kwargs["signatory_capacity"] is None
+
+
+# ---- CR business rejections must not be 5xx (2026-08-31) --------------------
+#
+# A CR validation fault is a SUCCESSFUL exchange: CR was reached, understood the
+# request, and said no. Returning 502 for it was a category error with a real
+# cost — a 5xx lets Cloudflare and Railway replace the response body with their
+# own HTML error page, so the structured `problems` never reached the browser.
+# `api.js` then fell back to `resp.statusText` and the operator saw
+# "Bad Gateway" instead of CR's actual words, "Br No does not exist."
+#
+# 502 stays for genuine upstream failures — transport, auth, unavailability.
+
+def test_a_cr_validation_fault_is_not_a_5xx(client):
+    """The regression that mattered: a 5xx body is not ours to keep."""
+    from services.tpsi.errors import TpsiValidationError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate",
+               side_effect=TpsiValidationError([("ERROR", "Br No does not exist.")])):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code < 500, (
+        "a CR rejection returned a 5xx; an edge proxy may replace the body and "
+        "the operator loses CR's actual fault list"
+    )
+    assert response.status_code == 422
+
+
+def test_the_cr_fault_list_survives_in_the_response(client):
+    """What the fault panel renders. CR reports every problem at once."""
+    from services.tpsi.errors import TpsiValidationError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate",
+               side_effect=TpsiValidationError([("ERROR", "Br No does not exist.")])):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    detail = response.json()["detail"]
+    assert detail["kind"] == "validation"
+    assert detail["problems"] == [["ERROR", "Br No does not exist."]]
+
+
+def test_a_signature_refusal_is_also_not_a_5xx(client):
+    from services.tpsi.errors import TpsiSignatureError
+
+    with _super(), \
+         patch("routers.tpsi.credentials.load_eservice", return_value=("DIRECTOR2", "pw")), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.sign",
+               side_effect=TpsiSignatureError([("ERR_MSG_SIGNATORY_NOT_AUTH", "not authorised")])):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+    assert response.status_code == 422
+    assert response.json()["detail"]["kind"] == "signature"
+
+
+def test_a_transport_failure_is_still_a_502(client):
+    """The distinction being drawn: CR refusing is not CR being unreachable."""
+    from services.tpsi.errors import TpsiError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate",
+               side_effect=TpsiError("connection reset by peer")):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code == 502

@@ -175,8 +175,9 @@ describe('describeError — four failures, four different actions', () => {
 
   it('NEVER offers to retry a CR fault', () => {
     // CR locks an account after repeated auth failures, and a chargeable submit
-    // must not be fired twice on a guess.
-    const d = describeError(err(502, 'form data has been tampered'))
+    // must not be fired twice on a guess. 422 since 2026-08-31 — "form data has
+    // been tampered" is CR REFUSING, which is not a gateway failure.
+    const d = describeError(err(422, 'form data has been tampered'))
     expect(d.retry).toBe(false)
     expect(d.hint).toMatch(/do not simply retry/i)
   })
@@ -200,10 +201,29 @@ describe('describeError — four failures, four different actions', () => {
 // ---------------------------------------------------------------------------
 
 describe('describeError — CR refusals', () => {
+  // 422, not 502. A CR refusal is a business answer, and the backend stopped
+  // dressing it as a gateway failure on 2026-08-31 — a 5xx body is replaced by
+  // Cloudflare/Railway before `api.js` can parse it, so the operator saw
+  // "Bad Gateway" instead of CR's "Br No does not exist."
   const crError = (kind, problems = []) =>
     Object.assign(new Error('The Companies Registry rejected this return.'), {
-      status: 502, kind, problems,
+      status: 422, kind, problems,
     })
+
+  it('renders a CR refusal that arrives as 422', () => {
+    // The regression: before the status changed, a 422 fell through to the
+    // default branch and lost every CR-specific hint.
+    const d = describeError(crError('validation'))
+    expect(d.hint).toBeTruthy()
+    expect(d.message).toMatch(/Companies Registry/i)
+  })
+
+  it('still treats a real gateway failure as one', () => {
+    // 502 keeps its old meaning: CR could not be REACHED. It must not claim
+    // CR rejected anything.
+    const d = describeError(Object.assign(new Error('connection reset'), { status: 502 }))
+    expect(d.retry).toBe(false)
+  })
 
   it('never offers a retry on any CR refusal', () => {
     // CR locks accounts on repeated auth failures and a submit spends money.
@@ -234,7 +254,7 @@ describe('describeError — CR refusals', () => {
     expect(d.kind).toBe('account_locked')
   })
 
-  it('falls back to a safe hint for an unlabelled 502', () => {
+  it('falls back to a safe hint for an unlabelled CR refusal', () => {
     const d = describeError(crError(undefined))
     expect(d.hint).toMatch(/do not simply retry/i)
   })

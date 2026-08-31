@@ -158,7 +158,18 @@ export function describeError(err) {
           : 'The case is not in a state that allows this yet.',
         retry: false,
       }
-    case 502:
+    // A CR REFUSAL. 422 since 2026-08-31, not 502: CR was reached and answered
+    // — it just said no. While this was a 5xx, Cloudflare and Railway replaced
+    // the JSON body with their own HTML error page, `api.js` fell back to
+    // `resp.statusText`, and the operator read "Bad Gateway" where CR had
+    // actually said "Br No does not exist."
+    // An unlabelled refusal still lands here and still gets CR_REFUSAL_HINTS
+    // .default — "do not simply retry" is the safe advice when we cannot tell
+    // WHICH refusal it was, and it is the one this endpoint family can produce.
+    // (FastAPI's own 422 for a malformed body would read a little
+    // CR-flavoured, but that is a caller bug that should never reach an
+    // operator, and the advice it gives is not harmful.)
+    case 422:
       return {
         message,
         problems,
@@ -171,6 +182,17 @@ export function describeError(err) {
         // locked is advice they cannot act on, and repeating the attempt is
         // exactly what keeps it locked.
         hint: CR_REFUSAL_HINTS[err?.kind] || CR_REFUSAL_HINTS.default,
+        retry: false,
+      }
+    // CR could not be REACHED, or refused our login — the transport failed
+    // rather than the return. It must not claim CR rejected anything, and it
+    // must NOT auto-retry: a repeated auth failure is exactly what makes CR
+    // lock the account.
+    case 502:
+      return {
+        message,
+        problems,
+        hint: 'The Companies Registry could not be reached. Nothing was filed and nothing was charged. If this repeats, stop — a repeated login failure is what locks a CR account.',
         retry: false,
       }
     case 503:

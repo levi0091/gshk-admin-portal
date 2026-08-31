@@ -228,7 +228,9 @@ describe('CaseWorkflowPage — CR refusals', () => {
   const refuse = (kind, problems) => {
     post.mockRejectedValue(Object.assign(
       new Error('The Companies Registry rejected this return.'),
-      { status: 502, kind, problems },
+      // 422 since 2026-08-31: CR refusing is not a gateway failure, and a
+      // 5xx body was being replaced by the edge before it reached the browser.
+      { status: 422, kind, problems },
     ))
   }
 
@@ -340,5 +342,71 @@ describe('CaseWorkflowPage — restart verification', () => {
   it('names the module the screen belongs to', async () => {
     await renderPage()
     expect(screen.getByText(/case_management/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The failure banner has to be SEEN (Levi 2026-08-31)
+//
+// The banner sits above the stage content, and the buttons that trigger a
+// failure sit a screen or more below it. "I pressed Validate and nothing
+// happened" was a correct, fully-rendered error that never entered the
+// viewport — the same class of bug as the verification 409 before it.
+// ---------------------------------------------------------------------------
+
+describe('CaseWorkflowPage — a failure must reach the viewport', () => {
+  const dataVerificationCase = () => ({
+    ...CASE,
+    form_status: { code: 'draft', failed: false, faults: [] },
+    filing_id: 'f1', signing_method: null,
+    workflow_status: { code: 'data_verification', label: 'Data Verification' },
+    aml_cleared: true, accounts_ready: true,
+  })
+
+  it('scrolls the failure banner into view when CR refuses', async () => {
+    const user = userEvent.setup()
+    const scrollIntoView = vi.fn()
+    // jsdom does not implement it; without a stub the component would throw
+    // rather than scroll, and the test would pass for the wrong reason.
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoView
+
+    routeGet(dataVerificationCase())
+    post.mockRejectedValue(Object.assign(
+      new Error('The Companies Registry rejected this return.'),
+      { status: 422, kind: 'validation', problems: [['ERROR', 'Br No does not exist.']] },
+    ))
+
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText(/NAR-2026-0041/)
+    await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
+
+    await screen.findByRole('alert')
+    expect(scrollIntoView).toHaveBeenCalled()
+  })
+
+  it('still shows the error when the browser cannot scroll', async () => {
+    // The regression this guard exists for: scrollIntoView threw during the
+    // commit that renders the banner, so the failure vanished instead of
+    // being revealed. Scrolling is a courtesy; showing the error is not.
+    delete window.HTMLElement.prototype.scrollIntoView
+    const user = userEvent.setup()
+    routeGet(dataVerificationCase())
+    post.mockRejectedValue(Object.assign(
+      new Error('The Companies Registry rejected this return.'),
+      { status: 422, kind: 'validation', problems: [['ERROR', 'Br No does not exist.']] },
+    ))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText(/NAR-2026-0041/)
+    await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
+    expect(await screen.findByText(/Br No does not exist\./)).toBeInTheDocument()
+  })
+
+  it('does not scroll when nothing has failed', async () => {
+    const scrollIntoView = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoView
+    routeGet(dataVerificationCase())
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText(/NAR-2026-0041/)
+    expect(scrollIntoView).not.toHaveBeenCalled()
   })
 })
