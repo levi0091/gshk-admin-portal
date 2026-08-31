@@ -247,8 +247,8 @@ export default function DashboardPage() {
              viewBox="0 0 16 16" aria-hidden="true">
           <path d="M4 3v10M4 13l-2-2M4 13l2-2M9 4h5M9 8h3M9 12h1" strokeLinecap="round" />
         </svg>
-        Sorted by filing deadline — soonest first, and anniversaries already
-        passed ahead of those. Companies due for NAR1 are found on the{' '}
+        Sorted by date created — newest first. Click <b>Days to anniversary</b>{' '}
+        to order by filing deadline instead. Companies due for NAR1 are found on the{' '}
         <span style={{ color: 'var(--indigo)', cursor: 'pointer', fontWeight: 600 }}
               onClick={() => navigate('/registry')}>Company Registry</span>.
       </div>

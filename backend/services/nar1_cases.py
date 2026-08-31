@@ -302,9 +302,16 @@ _SORTABLE = {
     "created_by_name",
 }
 
-#: The deadline is the reason this screen exists, so it is the default order:
-#: soonest first, and negative (already past, still filable) sorts ahead of that.
-_DEFAULT_SORT = "days_to_anniversary"
+#: Newest case first (Levi 2026-08-31). A case you just opened is the one you
+#: are about to work on, and on a book this size it was landing on page 4 of a
+#: deadline-ordered list. The deadline is still visible on every row, still
+#: filterable, and still one click away as a column sort.
+#:
+#: The direction is part of the default, not a separate knob: "created_at
+#: ascending" is the oldest case in the book, which is nobody's first screen. An
+#: EXPLICIT `sort` still honours `dir`, so a header click behaves as it reads.
+_DEFAULT_SORT = "created_at"
+_DEFAULT_DESC = True
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
 
@@ -411,7 +418,9 @@ async def list_dashboard(
         # nullsfirst=False explicitly: Postgres puts NULLs FIRST on a DESC sort,
         # which would open "furthest from anniversary" with every company that
         # has no incorporation date and therefore no answer.
-        q.order(sort or _DEFAULT_SORT, desc=(direction == "desc"), nullsfirst=False)
+        q.order(sort or _DEFAULT_SORT,
+                desc=(direction == "desc") if sort else _DEFAULT_DESC,
+                nullsfirst=False)
         .range(start, start + page_size - 1)
         .execute().data
     ) or []

@@ -390,14 +390,33 @@ async def test_the_search_reaches_the_count_queries_too():
     assert "case_no.ilike" in sb.page_query["or"]
 
 
-async def test_the_default_sort_is_the_deadline_soonest_first():
-    """The deadline is why this screen exists. nullsfirst=False explicitly:
-    Postgres puts NULLs first on a DESC sort, which would open the list with
-    every company that has no incorporation date and therefore no answer."""
+async def test_the_default_sort_is_the_newest_case_first():
+    """Newest first (Levi 2026-08-31): the case you just opened is the one you
+    came to work on, and on a book this size it used to land pages deep in a
+    deadline-ordered list. nullsfirst=False explicitly -- Postgres puts NULLs
+    first on a DESC sort."""
     sb = _FakeSupabase(rows=[_registry_row()], count=1)
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         await nar1_cases.list_dashboard()
-    assert sb.page_query["order"] == ("days_to_anniversary", False, False)
+    assert sb.page_query["order"] == ("created_at", True, False)
+
+
+async def test_the_default_direction_does_not_leak_into_an_explicit_sort():
+    """A header click reads as it behaves. The DESC default belongs to
+    `created_at`-when-unasked, not to every column the user picks."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(sort="company_name", direction="asc")
+    assert sb.page_query["order"] == ("company_name", False, False)
+
+
+async def test_an_explicit_created_at_ascending_is_honoured():
+    """Otherwise "oldest first" would be unreachable from the UI, because the
+    default silently rewrote the only column that carries one."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(sort="created_at", direction="asc")
+    assert sb.page_query["order"] == ("created_at", False, False)
 
 
 async def test_paging_maps_to_a_postgrest_range():
