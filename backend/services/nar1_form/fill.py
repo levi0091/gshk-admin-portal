@@ -44,6 +44,7 @@ client is being asked to read is noise.
 from __future__ import annotations
 
 import io
+import logging
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -53,6 +54,21 @@ from pypdf.generic import ArrayObject, NameObject, NumberObject, TextStringObjec
 
 from services.nar1_form import appearance
 from services.nar1_form import field_map as fm
+
+# update_page_form_field_values() builds a pypdf-native appearance stream for
+# every field it touches, and warns whenever CR's subsetted form fonts cannot
+# encode the value -- including plain ASCII, because those fonts are
+# subsetted to only the glyphs CR's own printed form needs. That has nothing
+# to do with NeedAppearances or with what a viewer draws: the warning fires
+# regardless, one line per field, because pypdf always attempts to build the
+# stream. Restored 2026-09-01 after Task 3 baked the actual text layer
+# ourselves -- these particular streams are now built and then never used,
+# so the corruption the warning describes cannot happen here, and its
+# remedy (auto_regenerate=True) is the opposite of what this module wants:
+# that would hand rendering back to the CR-subsetted fonts this block exists
+# to stop depending on. Scoped to this one pypdf logger only -- it silences
+# this specific message and nothing else.
+logging.getLogger("pypdf.generic._appearance_stream").setLevel(logging.ERROR)
 
 #: CR's blank form, COMMITTED BESIDE THIS MODULE rather than read from
 #: `docs/`. It is a runtime dependency, not documentation: without it every
