@@ -41,9 +41,70 @@ _FILES = {
 
 _registered = False
 
+#: font name -> the set of Unicode codepoints its cmap can actually draw.
+#: Populated once by `register_fonts()`, from `TTFont.face.charToGlyph` --
+#: reading a TTF's cmap is not free, and a render checks coverage on every
+#: character of every field, so this is built once per process rather than
+#: once per character per render.
+_CMAPS: dict[str, frozenset] = {}
+
 
 class AppearanceError(RuntimeError):
     """The text layer could not be drawn."""
+
+
+def _codepoint_hex(v: int) -> str:
+    """A ToUnicode CMap operand for codepoint `v`, per the PDF spec.
+
+    Anything above the Basic Multilingual Plane -- which is every CJK
+    Extension B character routing now sends to the CJK face -- must be
+    expressed as a UTF-16BE surrogate pair, two 4-digit halves.
+    """
+    if v <= 0xFFFF:
+        return "%04X" % v
+    v -= 0x10000
+    return "%04X%04X" % (0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF))
+
+
+def _patched_make_to_unicode_cmap(fontname, subset):
+    """Corrects `reportlab.pdfbase.ttfonts.makeToUnicodeCMap`.
+
+    The stock function writes `"<%04X>" % v` for every codepoint in the
+    font's subset. For anything above U+FFFF that produces a 5-or-more-digit
+    hex string, which is not valid ToUnicode CMap syntax -- pypdf's reader
+    logs "Got invalid hex string: Odd-length string" and returns nothing
+    for that glyph. The GLYPH still draws correctly either way (drawing goes
+    through the font's own cmap, not this one) but text extraction, search
+    and copy-paste for a CJK Extension B name silently break. Monkeypatched
+    at registration time rather than forked: this is reportlab's own
+    upstream defect, not something this module owns, and the one-line
+    change is worth carrying as a patch rather than a vendored copy of the
+    whole function.
+    """
+    cmap = [
+        "/CIDInit /ProcSet findresource begin",
+        "12 dict begin",
+        "begincmap",
+        "/CIDSystemInfo",
+        "<< /Registry (%s)" % fontname,
+        "/Ordering (%s)" % fontname,
+        "/Supplement 0",
+        ">> def",
+        "/CMapName /%s def" % fontname,
+        "/CMapType 2 def",
+        "1 begincodespacerange",
+        "<00> <%02X>" % (len(subset) - 1),
+        "endcodespacerange",
+        "%d beginbfchar" % len(subset)
+        ] + ["<%02X> <%s>" % (i, _codepoint_hex(v))
+             for i, v in enumerate(subset)] + [
+        "endbfchar",
+        "endcmap",
+        "CMapName currentdict /CMap defineresource pop",
+        "end",
+        "end"
+        ]
+    return "\n".join(cmap)
 
 
 def register_fonts() -> None:
@@ -52,6 +113,8 @@ def register_fonts() -> None:
     global _registered
     if _registered:
         return
+    import reportlab.pdfbase.ttfonts as _ttfonts
+    _ttfonts.makeToUnicodeCMap = _patched_make_to_unicode_cmap
     for name, filename in _FILES.items():
         path = FONT_DIR / filename
         if not path.exists():
@@ -60,6 +123,7 @@ def register_fonts() -> None:
                 f"runtime asset, not documentation -- see fonts/README.md"
             )
         pdfmetrics.registerFont(TTFont(name, str(path)))
+        _CMAPS[name] = frozenset(pdfmetrics.getFont(name).face.charToGlyph.keys())
     _registered = True
 
 
@@ -68,9 +132,31 @@ def _is_cjk(char: str) -> bool:
     them. Deliberately NOT all of 'not ASCII': accented Latin belongs in the
     Latin face, and routing it to the CJK one would change its shape."""
     code = ord(char)
-    return (0x2E80 <= code <= 0x9FFF     # radicals through CJK Unified
-            or 0xF900 <= code <= 0xFAFF  # compatibility ideographs
-            or 0xFF00 <= code <= 0xFFEF)  # fullwidth / halfwidth forms
+    return (0x2E80 <= code <= 0x9FFF      # radicals through CJK Unified
+                                          # (includes Extension A, U+3400-4DBF)
+            or 0xF900 <= code <= 0xFAFF   # compatibility ideographs
+            or 0xFF00 <= code <= 0xFFEF   # fullwidth / halfwidth forms
+            # Extension B through the Compatibility Ideographs Supplement.
+            # Without this a name like a director's, carrying a character
+            # only encoded here, was routed to Tinos -- which has 0 glyphs
+            # in this range -- rather than to the CJK face that may have one.
+            # CR's own template embeds PMingLiU-ExtB, which is direct
+            # evidence CR expects these characters on a filed NAR1.
+            or 0x20000 <= code <= 0x2FA1F)
+
+
+def _uncoverable(font: str, text: str) -> list[str]:
+    """Characters in `text` the registered `font` has no glyph for, in the
+    order they first appear and without repeats."""
+    cmap = _CMAPS.get(font)
+    if cmap is None:
+        # register_fonts() has not run yet on this process -- callers all
+        # route through `bake()`, which registers first, but this guards
+        # against a future direct caller silently treating "not yet
+        # registered" as "nothing is coverable".
+        register_fonts()
+        cmap = _CMAPS.get(font, frozenset())
+    return [char for char in dict.fromkeys(text) if ord(char) not in cmap]
 
 
 def split_runs(text: str, *, bold: bool = True) -> list[tuple[str, str]]:
@@ -141,16 +227,42 @@ def draw_position(text: str, rect, *, size: float, quadding=None,
 
 
 def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
-               bold: bool = True, quadding=None) -> float:
-    """Draw one value inside its widget rectangle. Returns the size used."""
+               bold: bool = True, quadding=None, field: str | None = None
+               ) -> float:
+    """Draw one value inside its widget rectangle. Returns the size used.
+
+    Raises `AppearanceError` if the face `split_runs` selected for some
+    character in `text` has no glyph for it. Left unchecked, reportlab does
+    not raise here either: it maps the codepoint to glyph 0 (.notdef) and
+    draws nothing -- no exception, no log line. That is how a director's
+    Chinese surname rendered as a blank on a filed-looking NAR1, measured
+    against real DEV data (U+6768, a top-ten Hong Kong surname, among them).
+    A statutory return that silently drops a character from someone's name
+    is worse than one that fails to generate; `field` names which one so the
+    failure is actionable rather than a stack trace pointing at a font call.
+    All runs are checked before anything is drawn, so a failure never leaves
+    a half-drawn value on the page.
+    """
     x0, y0, x1, y1 = (float(v) for v in rect)
+    runs = split_runs(text, bold=bold)
+    for font, chunk in runs:
+        missing = _uncoverable(font, chunk)
+        if missing:
+            codepoints = ", ".join(
+                f"{char!r} (U+{ord(char):04X})" for char in missing)
+            where = f" for field {field!r}" if field else ""
+            raise AppearanceError(
+                f"cannot draw {codepoints}{where}: no glyph in {font} for "
+                f"it. reportlab would silently substitute nothing rather "
+                f"than raise, which is how this went unnoticed before."
+            )
     size = fit_size(text, x1 - x0, start=size, bold=bold)
     # Vertically centre the glyph box. 0.72 approximates cap height for both
     # faces; the correction keeps a 10pt value off the rule beneath it.
     y = y0 + ((y1 - y0) - size * 0.72) / 2 + size * 0.06
     x = draw_position(text, rect, size=size, quadding=quadding, bold=bold)
     canvas.setFillColorRGB(0, 0, 0)
-    for font, chunk in split_runs(text, bold=bold):
+    for font, chunk in runs:
         canvas.setFont(font, size)
         canvas.drawString(x, y, chunk)
         x += pdfmetrics.stringWidth(chunk, font, size)
@@ -201,7 +313,8 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
             draw_value(layer, str(value), obj["/Rect"],
                        size=sizes.get(name, DEFAULT_SIZE),
                        bold=name not in regular,
-                       quadding=obj.get("/Q"))
+                       quadding=obj.get("/Q"),
+                       field=name)
             obj[NameObject("/F")] = NumberObject(
                 int(obj.get("/F", 0)) | _ANNOT_HIDDEN)
             drew = True
@@ -216,6 +329,13 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
         # Already carried across by clone_from; only the flag needs clearing.
         # The layer IS the appearance now. Leaving NeedAppearances true invites
         # a viewer to discard it and redraw from /DA -- the original defect.
+        # DELETED rather than set to BooleanObject(False): pypdf's
+        # BooleanObject has no __bool__ override, so any instance -- true OR
+        # false -- is truthy in Python (verified against pypdf 6.16.1), which
+        # would make `acroform.get("/NeedAppearances")` read as set either way
+        # once the bytes are re-parsed. The PDF spec's own default for an
+        # ABSENT key is false, so deleting it is both correct and what a
+        # re-parsed reader actually reports as falsy.
         acroform = acroform.get_object()
         if "/NeedAppearances" in acroform:
             del acroform[NameObject("/NeedAppearances")]
