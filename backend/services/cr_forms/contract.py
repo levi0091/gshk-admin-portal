@@ -126,7 +126,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/stdAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpEmailAddr'):
-        ('mapped', 'entities.email', False, 60),
+        ('unsourced', "a corporate director's/secretary's own email; no entity-level Email column in Entity, CR_Entity or RefMaster", False, 60),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpBrNo'):
         ('mapped', 'entities.br_number', False, 20),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpTcspNo'):
@@ -198,7 +198,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/corpDirList/corpDir/stdAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NAR1', 'submission/Eform/formModel/corpDirList/corpDir/corpEmailAddr'):
-        ('mapped', 'entities.email', False, 60),
+        ('unsourced', "a corporate director's/secretary's own email; no entity-level Email column in Entity, CR_Entity or RefMaster", False, 60),
     ('NAR1', 'submission/Eform/formModel/corpDirList/corpDir/corpBrNo'):
         ('mapped', 'entities.br_number', False, 20),
     ('NAR1', 'submission/Eform/formModel/resDirList/resDir/indvChiName'):
@@ -470,7 +470,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/correspondingAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/email'):
-        ('mapped', 'entities.email', False, 60),
+        ('unsourced', 'as corpEmailAddr', False, 60),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/ubino'):
         ('mapped', 'entities.br_number', False, 20),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/tcspNo'):
@@ -546,7 +546,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/correspondingAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/email'):
-        ('mapped', 'entities.email', False, 60),
+        ('unsourced', 'as corpEmailAddr', False, 60),
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/ubino'):
         ('mapped', 'entities.br_number', False, 20),
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/consentSigned'):

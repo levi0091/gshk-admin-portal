@@ -117,6 +117,11 @@ _COMPANY_FIELD_CODES = {
     "tcsp_licence_no": VP_STATUTORY,
     "tcsp_exemption_reason": VP_STATUTORY,
     "date_name_changed": VP_STATUTORY,
+    # NAR1 s2/s3 and s9. Statutory rather than general: these are figures the
+    # annual return states, and an edit to them changes what gets filed.
+    "business_nature_code": VP_STATUTORY,
+    "business_nature_desc": VP_STATUTORY,
+    "mortgages_total": VP_STATUTORY,
     # M&A / dates folder
     "ar_last_date": VP_MA_DATES,
     "ar_next_date": VP_MA_DATES,
@@ -142,6 +147,13 @@ _PERSON_FIELD_CODES = {
     "surname": VP_MASTER_DETAILS,
     "full_name_zh": VP_MASTER_DETAILS,
     "former_name": VP_MASTER_DETAILS,
+    # CR's "Previous Names (Chinese)" and "Alias". Filed with the other names
+    # as ADC, matching `former_name` above, even though Viewpoint keeps their
+    # source columns on `Compliance` — the audit trail groups by what a reader
+    # is looking for, and someone chasing a name change looks under names.
+    "former_name_zh": VP_MASTER_DETAILS,
+    "alias_en": VP_MASTER_DETAILS,
+    "alias_zh": VP_MASTER_DETAILS,
     "email": VP_MASTER_DETAILS,
     "phone": VP_MASTER_DETAILS,
     "residential_address_id": VP_MASTER_DETAILS,

@@ -165,14 +165,19 @@ RULES: list[tuple] = [
     (None, "corpChiName",       MAPPED, "entities.company_name_zh"),
     (None, "corpEngName",       MAPPED, "entities.company_name"),
     (None, "engName",           MAPPED, "entities.company_name"),
-    (None, "corpEmailAddr",     MAPPED, "entities.email"),
+    # An email on a CORPORATE block is that company's, and no entity-level
+    # email column exists to hold it -- Viewpoint has none either, so it is
+    # unsourced exactly like the top-level company email (PRD 7.2). Mapping it
+    # to a column that does not exist is worse than admitting the gap.
+    (None, "corpEmailAddr",     UNSOURCED,
+     "a corporate director's/secretary's own email; no entity-level Email "
+     "column in Entity, CR_Entity or RefMaster"),
+    ("corpDirList", "email",    UNSOURCED, "as corpEmailAddr"),
+    ("corpSecList", "email",    UNSOURCED, "as corpEmailAddr"),
 
-    # `email` is the person's on an individual block and the company's at the
-    # top of the form. The company one has no source (PRD 7.2).
+    # `email` on an individual block is the person's, and that we do hold.
     ("indDirList", "email",     MAPPED, "persons.email"),
     ("indSecList", "email",     MAPPED, "persons.email"),
-    ("corpDirList", "email",    MAPPED, "entities.email"),
-    ("corpSecList", "email",    MAPPED, "entities.email"),
     (None, "email",             UNSOURCED,
      "company-level email; no entity-level Email column in Entity, CR_Entity "
      "or RefMaster"),
