@@ -612,6 +612,42 @@ describe('Signing', () => {
       <StageSigning caseRow={at(over)} canWrite onChanged={onChanged} onError={onError} />
     </MemoryRouter>)
 
+  // ── spec §5: what authorises this signature ────────────────────────────
+
+  it('names the director who approved, on the screen that signs the return', () => {
+    renderIt({ client_approval: {
+      source: 'self_service', name: 'AH CHAN', system: false,
+      summary: 'Approved by AH CHAN using the link in the verification email',
+      responded_at: '2026-09-02T03:00:00Z' } })
+    const panel = screen.getByTestId('client-approval-provenance')
+    expect(within(panel).getByText(/AH CHAN/)).toBeInTheDocument()
+  })
+
+  it('SAYS SO when nobody answered and the system approved it', () => {
+    // The one that matters. A return nobody confirmed must not look, on the
+    // screen that signs it, exactly like one a director agreed to.
+    renderIt({ client_approval: {
+      source: 'system_timeout', name: null, system: true,
+      summary: 'System-approved — the client did not respond within 14 days',
+      responded_at: '2026-09-02T03:00:00Z' } })
+    const panel = screen.getByTestId('client-approval-provenance')
+    expect(within(panel).getByText(/did not respond within 14 days/)).toBeInTheDocument()
+    expect(within(panel).getByText(/check with the client before signing/))
+      .toBeInTheDocument()
+  })
+
+  it('distinguishes a relayed reply from a client who pressed the button', () => {
+    renderIt({ client_approval: {
+      source: 'staff_relay', name: 'BO LEE', system: false,
+      summary: 'Approved by BO LEE, recorded by a member of staff' } })
+    expect(screen.getByText(/recorded by a member of staff/)).toBeInTheDocument()
+  })
+
+  it('shows nothing at all when there is no approval to describe', () => {
+    renderIt({ client_approval: null })
+    expect(screen.queryByTestId('client-approval-provenance')).not.toBeInTheDocument()
+  })
+
   it('defaults to e-Sign — nothing switches to manual by itself', () => {
     renderIt({ signing_method: null })
     expect(screen.getByRole('radio', { name: /e-Sign/ }))
@@ -983,17 +1019,111 @@ describe('Submission — e-Sign', () => {
     await user.click(await screen.findByRole('button', { name: /Download NAR1 PDF/ }))
     expect(await screen.findByText(/Could not produce the NAR1 PDF/)).toBeInTheDocument()
   })
+
+  // ── spec §6: the pre-submit drift gate ──────────────────────────────────
+
+  const DRIFT = Object.assign(
+    new Error('the validated form no longer matches the company record'),
+    {
+      status: 409,
+      differences: [
+        { path: 'indDirList/indDir/stdAddress/stEstLotVlg',
+          field: 'Director (individual) · Address · Street / estate / lot / village',
+          validated: 'Raggatan 9, Stockholm 11859',
+          current: 'Raggatan 14, Stockholm 11859' },
+        { path: 'indDirList/indDir[2]/indvEngSname',
+          field: 'Director (individual) 2 · Surname (English)',
+          validated: 'WONG', current: null },
+      ],
+    })
+
+  async function attemptDriftedSubmit() {
+    const user = userEvent.setup()
+    post.mockRejectedValue(DRIFT)
+    renderIt()
+    await screen.findByText(/Fee HK\$ 105/)
+    await user.click(screen.getByRole('button', { name: /I understand this submits NAR1 to CR/ }))
+    await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
+    return user
+  }
+
+  it('lists every field that moved, with BOTH values', async () => {
+    await attemptDriftedSubmit()
+    const panel = await screen.findByTestId('drift-panel')
+    expect(within(panel).getByText(/Raggatan 9, Stockholm 11859/)).toBeInTheDocument()
+    expect(within(panel).getByText(/Raggatan 14, Stockholm 11859/)).toBeInTheDocument()
+    // "The data differs" would leave the operator to diff a nine-page statutory
+    // form by eye.
+    expect(within(panel).getByText(/Surname \(English\)/)).toBeInTheDocument()
+  })
+
+  it('renders a field that is GONE as absent, not as blank', async () => {
+    // A director who left the board has no field at all. An empty cell would
+    // read as "unchanged, empty".
+    await attemptDriftedSubmit()
+    const panel = await screen.findByTestId('drift-panel')
+    expect(within(panel).getByText('(absent)')).toBeInTheDocument()
+  })
+
+  it('says nothing was filed and nothing was charged', async () => {
+    await attemptDriftedSubmit()
+    expect(await screen.findByText(/Nothing was sent to the Companies Registry/))
+      .toBeInTheDocument()
+    expect(screen.getByText(/Restart verification/)).toBeInTheDocument()
+  })
+
+  it('clears the acknowledgement, because it was for a stale document', async () => {
+    await attemptDriftedSubmit()
+    await screen.findByTestId('drift-panel')
+    // The operator ticked to acknowledge a charge against a return that has
+    // since been shown to be out of date. Leaving it ticked would let a second
+    // press file it without a fresh decision.
+    expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
+      .toBeDisabled()
+  })
+
+  it('does not put the drift refusal in the page banner as well', async () => {
+    // ONE error surface (Levi 2026-08-31) — and for this refusal the surface is
+    // the table at the button, because a banner cannot show two values a row.
+    await attemptDriftedSubmit()
+    await screen.findByTestId('drift-panel')
+    expect(onError).toHaveBeenLastCalledWith(null)
+  })
+
+  it('leaves an ORDINARY 409 to the page banner', async () => {
+    const user = userEvent.setup()
+    post.mockRejectedValue(Object.assign(new Error('filing is not signed'), { status: 409 }))
+    renderIt()
+    await screen.findByText(/Fee HK\$ 105/)
+    await user.click(screen.getByRole('button', { name: /I understand this submits NAR1 to CR/ }))
+    await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'filing is not signed' })))
+    expect(screen.queryByTestId('drift-panel')).not.toBeInTheDocument()
+  })
 })
 
 describe('Submission — manual', () => {
-  const manual = over => at({ signing_method: 'manual', ...over })
+  // Spec §4: the CR receipt scan is now half the gate on Record, so the default
+  // case here has one attached. Tests ABOUT the gate override it explicitly.
+  const manual = over => at({
+    signing_method: 'manual', manual_receipt_document_id: 'r1',
+    manual_receipt_document_version: 1, ...over,
+  })
   const renderIt = (over = {}, props = {}) => render(
     <StageSubmission caseRow={manual(over)} canSubmit
                      onChanged={onChanged} onError={onError} {...props} />)
 
+  /** The other half of the gate — the two figures the audit trail reads. */
+  const fillRequired = async user => {
+    await user.type(screen.getByLabelText('Case number'), '141945492')
+    await user.type(screen.getByLabelText('Total amount'), '105.00')
+  }
+
   it('NEVER calls CR — recording is not filing', async () => {
     const user = userEvent.setup()
     renderIt()
+    await fillRequired(user)
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
     // The one call is the case endpoint; nothing under /tpsi/ is touched.
@@ -1004,7 +1134,7 @@ describe('Submission — manual', () => {
   it('sends CR\'s own receipt vocabulary, with the payment lines', async () => {
     const user = userEvent.setup()
     renderIt()
-    await user.type(screen.getByLabelText('Case number'), '141945492')
+    await fillRequired(user)
     await user.type(screen.getByLabelText('Receipt no.'), 'D77000418931')
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
@@ -1021,9 +1151,61 @@ describe('Submission — manual', () => {
       new Error({ message: 'receipt is incomplete', problems: ['caseNo: required', 'brNo: required'] }),
       { status: 400 }))
     renderIt()
+    await fillRequired(user)
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
     expect(await screen.findByText(/The receipt is incomplete/)).toBeInTheDocument()
+  })
+
+  // ---- spec §4: the CR receipt document ----------------------------------
+
+  it('will not record a filing until the CR receipt is attached', async () => {
+    const user = userEvent.setup()
+    renderIt({ manual_receipt_document_id: null })
+    await fillRequired(user)
+    expect(screen.getByRole('button', { name: /Record the filing/ })).toBeDisabled()
+    // AT THE BUTTON, not in a page banner a screen and a half above it.
+    expect(screen.getByTestId('manual-submit-block'))
+      .toHaveTextContent(/Attach the CR receipt/)
+  })
+
+  it('will not record a filing until the receipt figures are typed', () => {
+    renderIt()
+    expect(screen.getByRole('button', { name: /Record the filing/ })).toBeDisabled()
+    expect(screen.getByTestId('manual-submit-block'))
+      .toHaveTextContent(/Complete the receipt fields/)
+  })
+
+  it('says BOTH halves are missing when both are', () => {
+    renderIt({ manual_receipt_document_id: null })
+    expect(screen.getByTestId('manual-submit-block'))
+      .toHaveTextContent(/Attach the CR receipt and complete the receipt fields/)
+  })
+
+  it('arms Record once the receipt is attached and the figures are typed', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await fillRequired(user)
+    expect(screen.getByRole('button', { name: /Record the filing/ })).toBeEnabled()
+    expect(screen.queryByTestId('manual-submit-block')).not.toBeInTheDocument()
+  })
+
+  it('uploads the receipt to the case, not to the company', async () => {
+    const user = userEvent.setup()
+    renderIt({ manual_receipt_document_id: null })
+    const file = new File(['%PDF-1.4'], 'receipt.pdf', { type: 'application/pdf' })
+    await user.upload(screen.getByLabelText('CR filing receipt'), file)
+    await waitFor(() => expect(upload).toHaveBeenCalled())
+    expect(upload.mock.calls[0][0]).toBe('/cases/c1/manual-receipt')
+    // A receipt is evidence for one annual return. Owning it by company would
+    // have next year's upload version over this year's.
+    expect(upload.mock.calls[0][1].get('file')).toBe(file)
+  })
+
+  it('names the attached receipt by VERSION, because the case has no filename', () => {
+    renderIt({ manual_receipt_document_version: 3 })
+    expect(screen.getByText(/CR receipt attached/)).toBeInTheDocument()
+    expect(screen.getByText(/Version 3/)).toBeInTheDocument()
   })
 
   it('can add another payment line', async () => {

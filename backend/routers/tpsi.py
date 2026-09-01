@@ -1080,6 +1080,22 @@ async def submit_filing(
         result = filings.submit(
             client_for(user, shared), filing_id, body.confirm, account
         )
+    except filings.DriftDetected as exc:
+        # Spec §6. Its own branch above the general gate: the operator needs the
+        # FIELDS, and `str(exc)` is only the headline. Audited with the field
+        # names but not the values — an audit row is not the place to repeat a
+        # director's residential address, and the values are one click away on
+        # the two records being compared.
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            metadata={"reason": str(exc), "gate": True, "drift": True,
+                      "fields": [d["field"] for d in exc.differences]},
+        )
+        raise HTTPException(409, {"message": str(exc),
+                                  "differences": exc.differences})
     except filings.SubmitGateError as exc:
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],

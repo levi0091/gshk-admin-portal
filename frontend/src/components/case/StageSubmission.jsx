@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../../lib/api.js'
 import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
@@ -26,6 +26,14 @@ const LINE_FIELDS = [
 ]
 
 const emptyLine = () => ({ rcptNo: '', revCode: '', docShtFrm: '', amtChrg: '' })
+
+/**
+ * The two figures the audit trail and fee reconciliation actually read
+ * (spec §4). The backend validates ALL of RECEIPT_FIELDS and answers with every
+ * problem at once; this shorter list is only what arms the button, so an
+ * operator halfway through transcribing is not told the button is broken.
+ */
+const RECEIPT_REQUIRED = ['caseNo', 'totalAmount']
 
 /**
  * Stage 4 — Submission. The chargeable, irreversible one.
@@ -57,6 +65,7 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState(null)
+  const [drift, setDrift] = useState(null)
 
   const filingId = caseRow.filing_id
   const faults = caseRow.form_status?.code === 'submission_failed'
@@ -83,11 +92,22 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const blocked = preflight === undefined || preflight === null || !sufficient
 
   async function submit() {
-    onError(null); setFailure(null); setBusy(true)
+    onError(null); setFailure(null); setDrift(null); setBusy(true)
     try {
       await api.post(`/tpsi/filings/${filingId}/submit`, { confirm: true })
       onChanged()
     } catch (e) {
+      // Spec §6. The drift refusal is the one 409 that carries a field list,
+      // and it is rendered AT THE BUTTON rather than only in the page banner:
+      // the operator has to see WHICH particulars moved to decide whether to
+      // restart verification, and a banner a screen and a half up cannot show
+      // a table.
+      if (e?.status === 409 && Array.isArray(e?.differences) && e.differences.length) {
+        setDrift({ message: e.message, differences: e.differences })
+        setAcknowledged(false)   // the tick was for a document that is now stale
+        onError(null)
+        return
+      }
       const described = describeError(e)
       setFailure(described)
       onError(described)
@@ -209,6 +229,8 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
           ordinary action bar, which made the irreversible step look like every
           other step on the screen. Boxing it is the point: it is the one
           control here that spends money and cannot be undone. */}
+      {drift && <DriftPanel drift={drift} />}
+
       {canSubmit ? (
         <div className="danger-gate" style={{ marginTop: faults?.length ? 16 : 0 }}>
           <div className="dg-hd">Irreversible action — two-step confirmation</div>
@@ -267,6 +289,61 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   )
 }
 
+/**
+ * Spec §6 — why the submission was refused, field by field.
+ *
+ * "The data differs" would leave the operator to diff a nine-page statutory
+ * form by eye. Both values are shown side by side because the decision they
+ * have to make is whether the CURRENT record is the correct one — and that is
+ * not answerable from a field name.
+ */
+function DriftPanel({ drift }) {
+  return (
+    <div className="alert al-danger" role="alert" style={{ marginBottom: 14 }}
+         data-testid="drift-panel">
+      <span className="al-icon">⚠</span>
+      <div className="al-body">
+        <b>Submission blocked — the validated form no longer matches the
+        company record.</b>
+        <div style={{ marginTop: 4 }}>
+          Nothing was sent to the Companies Registry and nothing was charged.
+        </div>
+        {/* `.tbl-wrap` is the app's own scroll container for a table — it
+            carries the overflow-x that keeps a long address from making the
+            whole page scroll sideways. `table` is styled globally; there is no
+            `.tbl` class. */}
+        <div className="tbl-wrap" style={{ marginTop: 10 }}>
+          <table style={{ minWidth: 420 }}>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>As validated</th>
+                <th>Company record now</th>
+              </tr>
+            </thead>
+            <tbody>
+              {drift.differences.map(d => (
+                <tr key={d.path}>
+                  <td>{d.field}</td>
+                  {/* An absent value is not an empty one: a director who left
+                      the board has no field at all, and rendering that as a
+                      blank cell would read as "unchanged, empty". */}
+                  <td>{d.validated ?? <i>(absent)</i>}</td>
+                  <td>{d.current ?? <i>(absent)</i>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          Restart verification to rebuild and re-validate the return, then send
+          it to the client again.
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** HK dollars, grouped. A bare "12480" beside "3480.00" is unreadable. */
 function money(value) {
   const n = Number(value)
@@ -281,14 +358,37 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
   const [lines, setLines] = useState([emptyLine()])
   const [problems, setProblems] = useState([])
   const [busy, setBusy] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const fileInput = useRef(null)
 
   const recorded = Boolean(caseRow.manual_submitted_at)
+  const attached = Boolean(caseRow.manual_receipt_document_id)
+  // The two halves of the receipt (spec §4). They are independent: nothing
+  // parses figures out of the scan, and the scan is not derived from the
+  // figures, so neither substitutes for the other.
+  const typed = RECEIPT_REQUIRED.every(k => String(fields[k] || '').trim())
 
   function setField(key, value) {
     setFields(f => ({ ...f, [key]: value }))
   }
   function setLine(i, key, value) {
     setLines(ls => ls.map((l, j) => (j === i ? { ...l, [key]: value } : l)))
+  }
+
+  async function uploadReceipt(file) {
+    if (!file) return
+    onError(null); setProblems([]); setUploading(true)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      await api.upload(`/cases/${caseRow.id}/manual-receipt`, form)
+      onChanged()
+    } catch (e) {
+      onError(describeError(e))
+    } finally {
+      setUploading(false)
+      if (fileInput.current) fileInput.current.value = ''
+    }
   }
 
   async function record() {
@@ -372,6 +472,50 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
         </div>
       ))}
 
+      <div className="tile-sec-lbl">CR receipt document</div>
+      <input ref={fileInput} type="file" className="visually-hidden"
+             accept="application/pdf,image/*" aria-label="CR filing receipt"
+             disabled={!canSubmit || busy || uploading}
+             onChange={e => uploadReceipt(e.target.files?.[0])} />
+
+      {attached ? (
+        <div className="up-done">
+          <span className="up-tick" aria-hidden="true">✓</span>
+          <span className="up-txt">
+            {/* The case row carries no filename — the receipt is a versioned
+                `documents` row and the case keeps only the pointer, so the
+                version is what identifies WHICH scan is attached. */}
+            <b>CR receipt attached</b>
+            <span className="up-sub">
+              {caseRow.manual_receipt_document_version
+                ? `Version ${caseRow.manual_receipt_document_version} · `
+                : ''}
+              <code>NAR1_MANUAL_RECEIPT_ENTERED</code> written to the audit log
+            </span>
+          </span>
+          {canSubmit && (
+            <button type="button" className="btn btn-outline btn-sm"
+                    style={{ marginLeft: 'auto' }} disabled={busy || uploading}
+                    onClick={() => fileInput.current?.click()}>
+              Replace
+            </button>
+          )}
+        </div>
+      ) : (
+        <button type="button" className="up-zone"
+                disabled={!canSubmit || busy || uploading}
+                onClick={() => fileInput.current?.click()}>
+          <span className="up-arrow" aria-hidden="true">⬆</span>
+          <span className="up-txt">
+            <b>{uploading ? 'Uploading…' : 'Choose the receipt CR issued'}</b>
+            <span className="up-sub">
+              The PDF or scan from CR's own portal. The typed figures above are
+              what the audit trail reads; this is what proves CR issued them.
+            </span>
+          </span>
+        </button>
+      )}
+
       {canSubmit && (
         <div className="action-bar">
           <div className="ab-note">
@@ -381,7 +525,21 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
             </button>
           </div>
           <div className="ab-actions">
-            <button className="btn btn-action" disabled={busy} onClick={record}>
+            {/* AT THE BUTTON, not in a page banner. "I pressed Record and
+                nothing happened" was a correct refusal rendered a screen and a
+                half above the control that caused it (Levi 2026-08-31). */}
+            {!(attached && typed) && (
+              <span className="ab-note" data-testid="manual-submit-block">
+                {!attached && !typed
+                  ? 'Attach the CR receipt and complete the receipt fields first.'
+                  : !attached
+                    ? 'Attach the CR receipt before recording the filing.'
+                    : 'Complete the receipt fields before recording the filing.'}
+              </span>
+            )}
+            <button className="btn btn-action"
+                    disabled={busy || uploading || !attached || !typed}
+                    onClick={record}>
               {busy ? 'Recording…' : 'Record the filing'}
             </button>
           </div>

@@ -385,8 +385,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <div>
             <div className="card-title">Client's answer</div>
             <div className="card-sub">
-              Recorded by you from the client's reply — the portal does not read
-              inbound mail.
+              The client can confirm from the link in their email, or reply and
+              have you record it here — the portal does not read inbound mail.
             </div>
           </div>
         </div>
@@ -395,8 +395,17 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <div className={`alert ${caseRow.client_approved ? 'al-success' : 'al-danger'}`} role="status">
             <span className="al-icon">{caseRow.client_approved ? '✓' : '⚠'}</span>
             <div className="al-body">
-              <b>{caseRow.client_approved ? 'Client approved' : 'Client declined'}</b>{' '}
+              {/* HOW it was approved, never a bare "Client approved" (spec §5).
+                  A case the 14-day job approved on the client's silence must not
+                  read the same as one a named director agreed to — the evidence
+                  behind them is completely different, and the difference is
+                  exactly what somebody reviewing a filing needs to see. */}
+              <b>{caseRow.client_approved
+                ? (caseRow.client_approval?.summary || 'Client approved')
+                : 'Client declined'}</b>{' '}
               on {formatDateTime(caseRow.client_response_at)}.
+              {caseRow.client_approval?.system
+                && ' Nobody replied; the return is being filed as prepared.'}
               {!caseRow.client_approved
                 && ' Correct the return, restart verification and send it again.'}
             </div>

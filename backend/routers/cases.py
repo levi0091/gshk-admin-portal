@@ -5,16 +5,19 @@ Permission module is `nar1` (OQ-B, Levi 2026-08-16) — deliberately not
 different authorities: the second sends mail to clients and spends money.
 """
 import asyncio
+import os
 import re
+import sys
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
+                     UploadFile)
 from pydantic import BaseModel
 
 from middleware.auth import require_permission
 from services import (
-    audit_events as ev, document_service, email_service, nar1_case_status,
-    nar1_cases, nar1_return_data,
+    audit_events as ev, document_service, email_service, nar1_approvals,
+    nar1_case_status, nar1_cases, nar1_return_data,
 )
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
@@ -313,6 +316,25 @@ async def patch_case(
             events.append((ev.CASE_STATUS_CHANGED, "filing",
                            filing.get("stage"), "superseded"))
 
+        # EVERY OUTSTANDING APPROVAL LINK STOPS WORKING (spec §5).
+        #
+        # Unconditional, and before the guard below: a director holding the
+        # PREVIOUS email would otherwise be able to approve a snapshot that has
+        # just been discarded and rebuilt, and the portal would record consent
+        # to a document CR is no longer being asked to file. Same class of
+        # defect as the stale snapshot `supersede()` above exists for, arriving
+        # through a different door — which is why `outcome` carries a
+        # 'superseded' value rather than being a boolean.
+        #
+        # Never blocks the restart: a token store that will not write is a
+        # reason to shout on stderr, not a reason to leave the case holding a
+        # snapshot the operator has already decided is wrong.
+        try:
+            nar1_approvals.supersede_outstanding(case_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cases] WARN: outstanding approval links could not be "
+                  f"superseded for case {case_id}: {exc}", file=sys.stderr)
+
         if any(before.get(field) is not None
                for field in ("verification_sent_at", "client_approved",
                              "client_response_at")):
@@ -326,6 +348,13 @@ async def patch_case(
             patch["verification_sent_at"] = None
             patch["client_approved"] = None
             patch["client_response_at"] = None
+            # The provenance of an approval that no longer stands. Left behind,
+            # the case would report "System-approved — the client did not
+            # respond" over a case that is back at Data Verification and has no
+            # client decision at all.
+            patch["client_approval_source"] = None
+            patch["client_approval_person_id"] = None
+            patch["client_approval_name"] = None
             events.append((ev.CASE_STATUS_CHANGED, "verification",
                            "sent", "restarted"))
 
@@ -468,6 +497,118 @@ async def manual_sign(
             "document_version": patch["manual_signed_document_version"]}
 
 
+#: What CR's own portal hands back as a filing receipt. Nothing else: a receipt
+#: is a scan or a download, and accepting arbitrary types would make the proof
+#: behind an irreversible statutory record whatever the uploader chose to send.
+RECEIPT_MIME_TYPES = frozenset({
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+    "image/heic",
+})
+
+
+@router.post("/{case_id}/manual-receipt", status_code=201)
+async def manual_receipt(
+    case_id: str,
+    file: UploadFile = File(...),
+    user=Depends(require_permission("tpsi", "submit")),
+):
+    """Upload the CR filing receipt for an off-portal submission (spec §4).
+
+    `tpsi:submit`, matching `manual-submit` rather than `manual-sign`. This file
+    is the evidence a filing happened, and it is the second half of the gate
+    that lets a case be declared filed; a role that could not record the
+    submission must not be able to satisfy its precondition either.
+
+    MANUAL PATH ONLY. An e-Signed filing gets its receipt from CR in the submit
+    response (`filings.parse_receipt`), which is CR's own word rather than a
+    scan somebody attached, so there is nothing to upload and nothing here
+    touches it.
+
+    NO CR CALL. Like the rest of this section, the filing happened outside the
+    portal and the portal's job is to hold the evidence.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    if case.get("manual_receipt"):
+        raise HTTPException(
+            409,
+            "this case's off-portal submission is already recorded — the "
+            "receipt behind it is fixed. Upload a corrected scan through the "
+            "company's documents, which versions it.",
+        )
+
+    conflict = nar1_cases.manual_conflict(
+        nar1_cases.blocking_filing(case_id), step="submit"
+    )
+    if conflict:
+        raise HTTPException(409, conflict)
+
+    content = await file.read()
+    if not content:
+        # A zero-byte upload proves nothing and would still satisfy the
+        # manual-submit gate below — the same hole manual-sign closes.
+        raise HTTPException(400, "the uploaded file is empty")
+
+    # Checked against the DECLARED type, which is all an upload carries. It
+    # keeps an honest mistake (a .docx, a .zip) out of the evidence slot; it is
+    # not a content check and does not pretend to be one.
+    mime = (file.content_type or "").split(";")[0].strip().lower()
+    if mime not in RECEIPT_MIME_TYPES:
+        raise HTTPException(
+            400,
+            f"a CR receipt must be a PDF or an image; this file declares "
+            f"'{file.content_type or 'no type'}'",
+        )
+
+    document = await document_service.upload_document(
+        # The CASE owns it, not the company (migration 029). upload_document
+        # versions in place on (owner, type), so an entity-owned receipt would
+        # have next year's return overwrite the row this year's case points at.
+        owner_kind="receipt",
+        owner_id=case_id,
+        document_type_code="cr_receipt",
+        file_name=file.filename or "cr-receipt.pdf",
+        content=content,
+        mime_type=mime,
+        title=f"CR filing receipt — {case.get('case_no') or case_id}",
+        user=user,
+    )
+
+    # Only after the upload succeeded: document_service raises on a storage
+    # failure, and pointing the case at a document that was never stored would
+    # open the manual-submit gate with no evidence behind it.
+    patch = {
+        "manual_receipt_document_id": document["id"],
+        "manual_receipt_document_version": document.get("current_version") or 1,
+    }
+    nar1_cases.update_case(case_id, patch)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.NAR1_MANUAL_RECEIPT_ENTERED,
+        event_code=ev.NAR1_MANUAL_RECEIPT_ENTERED,
+        **_audit_target(case),
+        new_value=file.filename,
+        # `source` is what separates this row from the one manual-submit writes
+        # under the same code. Both are "the receipt was entered"; one is the
+        # scan, the other the figures typed off it, and a trail that could not
+        # tell them apart would show two identical events for two different acts.
+        metadata={"source": "upload", "document_id": document["id"],
+                  "filename": file.filename, "bytes": len(content),
+                  "mime_type": mime,
+                  "version": patch["manual_receipt_document_version"]},
+    )
+    return {"document_id": document["id"],
+            "document_version": patch["manual_receipt_document_version"],
+            "file_name": document.get("file_name")}
+
+
 @router.post("/{case_id}/manual-submit")
 async def manual_submit(
     case_id: str,
@@ -505,6 +646,17 @@ async def manual_submit(
             409,
             "upload the wet-signed NAR1 before recording the submission — a "
             "completion with no signed form is a false record",
+        )
+
+    # BOTH halves of the receipt, spec §4. The typed figures are what the audit
+    # trail and fee reconciliation read; the file is what proves CR ever issued
+    # them. Nothing parses values out of the scan — one is not derived from the
+    # other, so neither substitutes for the other.
+    if not case.get("manual_receipt_document_id"):
+        raise HTTPException(
+            409,
+            "upload the CR filing receipt before recording the submission — "
+            "the typed figures are not evidence on their own",
         )
 
     problems = nar1_cases.validate_receipt(body.receipt)
@@ -662,9 +814,30 @@ async def verification_recipients(
     }
 
 
+def _approval_link_base(request: Request) -> str | None:
+    """Where the client's approval link points (spec §5).
+
+    `PUBLIC_API_BASE_URL` first — an explicit setting is the only thing that
+    survives a proxy that rewrites Host, and Railway sits behind one. The
+    incoming request's own base URL is the fallback, because the admin frontend
+    reaches this API at the address the client should reach it at too.
+
+    Returns None when neither yields an https/http origin, and the caller then
+    sends the email WITHOUT a link. That is a real degradation, not a failure:
+    the message already asks the client to reply, which is the path that existed
+    before this feature and which staff still record by hand. Refusing to send
+    at all would block every verification on one unset variable.
+    """
+    configured = (os.environ.get("PUBLIC_API_BASE_URL") or "").strip()
+    base = configured or str(request.base_url or "").strip()
+    if not base.lower().startswith(("http://", "https://")):
+        return None
+    return base.rstrip("/")
+
+
 @router.post("/{case_id}/verification/send")
 async def send_verification(
-    case_id: str, body: VerificationSendIn,
+    case_id: str, body: VerificationSendIn, request: Request,
     user=Depends(require_permission("nar1", "write")),
 ):
     """Mail the client the PDF of the return CR validated, for approval.
@@ -749,43 +922,104 @@ async def send_verification(
             422, f"the validated snapshot could not be rendered: {exc}")
 
     attachment_name = f"NAR1-{case.get('case_no') or case_id}.pdf"
-    subject, html = email_service.verification_email(
-        case, entity, attachment_name=attachment_name)
 
-    # The person sending this gets a copy, and the client's reply is pointed at
-    # them (Levi 2026-08-30: "whoever is logged in should be in the cc as well
-    # ... so that the person who is working on the case can get an email").
+    # --- who each address belongs to, and their own approval link ---------- #
     #
-    # reply_to matters more than the copy does. The message ASKS the client to
-    # reply, and it is sent from no-reply@getstarted.hk -- without this, the one
-    # action the email requests would go to a mailbox nobody reads.
+    # ONE MESSAGE PER RECIPIENT, reversing this endpoint's original "a board of
+    # three directors is one message with three recipients". Spec §5 needs to
+    # record WHICH director approved, and the only honest evidence of that is a
+    # token delivered to that director's mailbox alone. A shared link in a
+    # shared message would let any recipient approve in any other's name, which
+    # is a misattribution in a statutory record.
     #
-    # `.get`, not `[...]`: the key is new on the auth dict, and a send must not
-    # start failing because an identity was resolved from a cache written
-    # before it existed.
+    # The cost is partial failure, which the original shape avoided: a Resend
+    # error on the second of three now leaves one director informed and two
+    # not. That is handled below by reporting exactly which addresses failed
+    # rather than by pretending the send was atomic.
+    board = nar1_cases.default_recipients(case["entity_id"])
+    by_email = {(r["email"] or "").lower(): r
+                for r in board if r.get("email")}
+    targets = [{
+        "email": address,
+        # For the greeting. See the `recipient_name=` argument below.
+        "given_names": (by_email.get(address.lower()) or {}).get("given_names"),
+        # None when an operator typed an address that belongs to no director on
+        # record. The token is still real; the trail simply cannot name a
+        # person, and says so rather than guessing.
+        "person_id": (by_email.get(address.lower()) or {}).get("person_id"),
+        "name": (by_email.get(address.lower()) or {}).get("name"),
+    } for address in recipients]
+
+    link_base = _approval_link_base(request)
+    if link_base:
+        try:
+            targets = nar1_approvals.issue(case_id=case_id, recipients=targets)
+        except Exception as exc:  # noqa: BLE001
+            # A token store that will not write must not stop the return going
+            # out. Without links the message is exactly the one that shipped
+            # before spec §5, and staff record the reply by hand as they always
+            # have.
+            print(f"[cases] WARN: approval tokens could not be issued for case "
+                  f"{case_id}: {exc}", file=sys.stderr)
+            link_base = None
+
     operator = (user.get("email") or "").strip() or None
 
-    try:
-        # Same reason, and worse: email_service.send is a synchronous
-        # httpx.post with a 15-second timeout, so a hung Resend would stall
-        # the whole worker for 15 seconds rather than this one request.
-        sent = await asyncio.to_thread(
-            email_service.send,
-            to=recipients, cc=[operator] if operator else None,
-            reply_to=operator,
-            subject=subject, html=html,
-            attachments=[(attachment_name, pdf)],
+    sends, failures = [], []
+    for index, target in enumerate(targets):
+        approval_url = (
+            f"{link_base}/public/nar1-approval/{target['token']}"
+            if link_base and target.get("token") else None
         )
-    except email_service.EmailError as exc:
-        # 502, and NOTHING is written: a case marked sent on a mail that never
-        # left sits in Awaiting Client forever, waiting on a reply to nothing.
-        raise HTTPException(502, f"the verification email was not sent: {exc}")
-    except RuntimeError as exc:
-        # Unset RESEND_API_KEY, or an EMAIL_TRANSPORT left over from before the
-        # console stub was removed. A deployment fault, not a crash -- a 500
-        # tells the admin the portal broke, when the truth is that it is
-        # misconfigured and that someone with Railway access can fix it.
-        raise HTTPException(503, str(exc))
+        subject, html = email_service.verification_email(
+            case, entity, attachment_name=attachment_name,
+            approval_url=approval_url,
+            deadline=target.get("expires_at"),
+            # The GIVEN name where the record has one. The letter greets the
+            # reader by name, and this book is mostly Hong Kong directors
+            # recorded surname-first — splitting a full name on whitespace
+            # would greet CHAN TAI MAN as "Hi CHAN", which is their surname.
+            recipient_name=target.get("given_names") or target.get("name"),
+            # The case worker signs it, as they do when they send it by hand.
+            sender_name=user.get("display_name"),
+        )
+
+        try:
+            # Off the event loop: email_service.send is a synchronous
+            # httpx.post with a 15-second timeout, so a hung Resend would stall
+            # the whole worker rather than this one request.
+            #
+            # The COPY goes on the first message only. The case worker asked to
+            # be copied on the request (Levi 2026-08-30), not on each director's
+            # copy of it -- three directors must not mean three identical mails
+            # in their inbox. `reply_to` is on EVERY message, because it is the
+            # load-bearing half: the mail is sent from no-reply@getstarted.hk
+            # and asks the client to reply, so without it the one action the
+            # message requests reaches nobody.
+            sent = await asyncio.to_thread(
+                email_service.send,
+                to=[target["email"]],
+                cc=[operator] if (operator and index == 0) else None,
+                reply_to=operator,
+                subject=subject, html=html,
+                attachments=[(attachment_name, pdf)],
+            )
+        except email_service.EmailError as exc:
+            failures.append({"email": target["email"], "reason": str(exc)})
+            continue
+        except RuntimeError as exc:
+            # Unset RESEND_API_KEY, or an EMAIL_TRANSPORT left over from before
+            # the console stub was removed. A deployment fault, not a crash --
+            # and it will fail identically for every remaining recipient, so
+            # there is nothing to be gained by trying them.
+            raise HTTPException(503, str(exc))
+        sends.append({"target": target, "sent": sent})
+
+    if not sends:
+        # NOTHING is written: a case marked sent on mail that never left sits in
+        # Awaiting Client forever, waiting on a reply to nothing.
+        reasons = "; ".join(f["reason"] for f in failures) or "no recipients"
+        raise HTTPException(502, f"the verification email was not sent: {reasons}")
 
     sent_at = datetime.now(timezone.utc).isoformat()
     patch = {"verification_sent_at": sent_at}
@@ -798,13 +1032,33 @@ async def send_verification(
     if superseded is not None or case.get("client_response_at") is not None:
         patch["client_approved"] = None
         patch["client_response_at"] = None
+        # And how it was approved. See the restart branch: a stale provenance
+        # would have the screen describe a decision the case no longer holds.
+        patch["client_approval_source"] = None
+        patch["client_approval_person_id"] = None
+        patch["client_approval_name"] = None
 
     nar1_cases.update_case(case_id, patch)
 
-    delivered = sent.get("to") or recipients
-    intended = sent.get("intended_to") or recipients
-    copied = sent.get("cc") or []
-    intended_cc = sent.get("intended_cc") or []
+    # Flattened across the per-recipient sends, so the audit row and the
+    # response keep the same shape they had when this was one message. `to`
+    # is who ACTUALLY received something; `intended_to` is who it was addressed
+    # to. Outside production those differ, and a trail that recorded only the
+    # intention would claim a client was told when they were not.
+    def _across(key: str) -> list:
+        out, seen = [], set()
+        for record in sends:
+            for address in (record["sent"].get(key) or []):
+                if address not in seen:
+                    seen.add(address)
+                    out.append(address)
+        return out
+
+    delivered = _across("to") or [s["target"]["email"] for s in sends]
+    intended = _across("intended_to") or [s["target"]["email"] for s in sends]
+    copied = _across("cc")
+    intended_cc = _across("intended_cc")
+    message_ids = [s["sent"].get("id") for s in sends if s["sent"].get("id")]
 
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
@@ -818,9 +1072,16 @@ async def send_verification(
         # Identifiers only. The PDF is the whole statutory return; its bytes
         # belong on the filing row, not in an insert-only trail -- and
         # after_state is NOT scrubbed by audit_service.
-        metadata={"message_id": sent.get("id"),
+        metadata={# The first, kept so existing readers of this key still
+                  # resolve to a real message; `message_ids` is the whole set,
+                  # because there is now one message per director.
+                  "message_id": message_ids[0] if message_ids else None,
+                  "message_ids": message_ids,
                   "intended_to": intended,
                   "recipient_count": len(intended),
+                  # Named, not counted. An operator who sees "2 of 3 sent" and
+                  # not WHICH one failed cannot resend to the right person.
+                  "failed_to": [f["email"] for f in failures],
                   # Both, for the same reason `to` and `intended_to` are both
                   # here: on a test deployment the copy is dropped rather than
                   # delivered, and a trail that recorded only the intention
@@ -833,9 +1094,35 @@ async def send_verification(
                   # 'console', meaning NOTHING WAS DELIVERED, and a reader must
                   # be able to tell those apart from a real send without
                   # knowing the date the stub was removed.
-                  "transport": sent.get("transport", "resend"),
+                  "transport": sends[0]["sent"].get("transport", "resend"),
                   "case_no": case.get("case_no")},
     )
+
+    # One row per director whose link went out. Spec §5's
+    # CLIENT_APPROVAL_LINK_SENT: the trail has to be able to answer "who was
+    # given the power to approve this, and when did their 14 days start" —
+    # which the single EMAIL_SENT row above cannot, because it names addresses
+    # and not the people or the deadlines behind them.
+    for record in sends:
+        target = record["target"]
+        if not target.get("token"):
+            continue
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.CLIENT_APPROVAL_LINK_SENT,
+            event_code=ev.CLIENT_APPROVAL_LINK_SENT,
+            **_audit_target(case),
+            new_value=target.get("name") or target["email"],
+            # NO TOKEN. The trail is readable by every staff member with
+            # audit_trail:read, and a token in it would let any of them approve
+            # a client's statutory return in that client's name.
+            metadata={"recipient_email": target["email"],
+                      "person_id": target.get("person_id"),
+                      "expires_at": (target["expires_at"].isoformat()
+                                     if hasattr(target.get("expires_at"), "isoformat")
+                                     else target.get("expires_at")),
+                      "case_no": case.get("case_no")},
+        )
 
     if "client_approved" in patch:
         await log_event(
@@ -852,14 +1139,28 @@ async def send_verification(
 
     return {"sent_at": sent_at, "to": delivered, "intended_to": intended,
             "cc": copied, "intended_cc": intended_cc,
-            "redirected": bool(sent.get("redirected")),
-            "transport": sent.get("transport", "resend"),
-            "message_id": sent.get("id")}
+            "redirected": any(bool(s["sent"].get("redirected")) for s in sends),
+            "transport": sends[0]["sent"].get("transport", "resend"),
+            "message_id": message_ids[0] if message_ids else None,
+            "message_ids": message_ids,
+            # Named so the operator can resend to exactly the people who were
+            # missed, rather than re-mailing a board that mostly already has it.
+            "failed_to": [f["email"] for f in failures],
+            # False when PUBLIC_API_BASE_URL is unset and the request's own
+            # base URL is unusable. The screen says so, because the difference
+            # decides whether the client can confirm with a button or must
+            # reply to the email.
+            "approval_links": bool(link_base)}
 
 
 class VerificationResponseIn(BaseModel):
     #: Required, with no default: an absent answer is not a "no".
     approved: bool
+    #: WHO said so, when the staff member knows. Optional, because they may be
+    #: relaying a reply from a shared company mailbox that names nobody — but
+    #: recorded when it is known, because spec §5 forbids a bare "Approved" and
+    #: "recorded by staff" alone does not say whose decision was relayed.
+    approved_by: str | None = None
 
 
 @router.post("/{case_id}/verification/response")
@@ -893,6 +1194,15 @@ async def record_verification_response(
     nar1_cases.update_case(case_id, {
         "client_approved": body.approved,
         "client_response_at": datetime.now(timezone.utc).isoformat(),
+        # Provenance, spec §5. A relayed reply must be distinguishable from a
+        # client who pressed the button themselves and from one the 14-day job
+        # approved on their silence — the three have different evidence behind
+        # them and a reader has to be able to tell which they are looking at.
+        "client_approval_source": (nar1_approvals.SOURCE_STAFF_RELAY
+                                   if body.approved else None),
+        "client_approval_name": ((body.approved_by or "").strip() or None
+                                 if body.approved else None),
+        "client_approval_person_id": None,
     })
 
     await log_event(
@@ -903,6 +1213,8 @@ async def record_verification_response(
         old_value=(None if previous is None
                    else "approved" if previous else "rejected"),
         new_value="approved" if body.approved else "rejected",
-        metadata={"case_no": case.get("case_no"), "recorded_by_staff": True},
+        metadata={"case_no": case.get("case_no"), "recorded_by_staff": True,
+                  "channel": "staff_relay",
+                  "approved_by": (body.approved_by or "").strip() or None},
     )
     return nar1_cases.composite(case_id)

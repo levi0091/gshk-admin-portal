@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
+import { formatDateTime } from '../../lib/format.js'
 import { describeError, signedOff } from './workflow.js'
 
 /**
@@ -117,6 +118,12 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
 
   return (
     <>
+      {/* WHAT AUTHORISES THIS SIGNATURE, at the top of the screen that applies
+          it (Levi 2026-09-01). Signing commits the return; the operator about
+          to do it should be able to see whether a named director agreed to it
+          or whether nobody answered and a job approved it on their silence. */}
+      <ClientApproval approval={caseRow.client_approval} />
+
       <MethodChoice method={method} disabled={!canWrite || done || busy !== null}
                     onPick={setMethod} />
 
@@ -322,6 +329,39 @@ function Preflight({ preflight, cred }) {
  * attached there was nothing on screen saying so, or saying that attaching it
  * had been written to the audit trail.
  */
+/**
+ * Who approved this return, and how (spec §5).
+ *
+ * A BARE "Approved" IS NEVER RENDERED. The three sources carry different
+ * evidence: a self-service confirmation has a director, a timestamp and an IP
+ * behind it; a relayed reply has a staff member's word; a timeout approval has
+ * nobody's. Collapsing them would let a return nobody ever answered look, on
+ * the screen that signs it, exactly like one a director confirmed.
+ *
+ * Renders nothing when there is no approval — the stepper already refuses to
+ * reach this stage without one, and an empty card would only take up room.
+ */
+function ClientApproval({ approval }) {
+  if (!approval) return null
+  return (
+    <div className={`alert ${approval.system ? 'al-warn' : 'al-success'}`}
+         role="status" style={{ marginBottom: 16 }}
+         data-testid="client-approval-provenance">
+      <span className="al-icon">{approval.system ? '⚠' : '✓'}</span>
+      <div className="al-body">
+        <b>{approval.summary}</b>
+        {approval.responded_at && <> · {formatDateTime(approval.responded_at)}</>}
+        {approval.system && (
+          <div style={{ marginTop: 4 }}>
+            Nobody confirmed this return. If that is not what you expect, stop
+            and check with the client before signing.
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) {
   return (
     <div className="card mb-16">

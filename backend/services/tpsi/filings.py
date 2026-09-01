@@ -343,6 +343,58 @@ class ManualCompletionInterlock(SubmitGateError):
     """
 
 
+class DriftDetected(SubmitGateError):
+    """The stored return no longer matches the company record (spec §6).
+
+    A SubmitGateError so `submit_filing` refuses, audits TPSI_SUBMISSION_FAILED
+    and 409s it like every other guard on the chargeable call — but it carries
+    `differences`, because the remedy depends on WHICH field moved and a bare
+    "the data differs" leaves the operator to diff a nine-page statutory form
+    by eye.
+    """
+
+    def __init__(self, differences: list):
+        self.differences = differences
+        count = len(differences)
+        super().__init__(
+            f"the validated form no longer matches the company record "
+            f"({count} field{'' if count == 1 else 's'} changed since it was "
+            f"validated). Restart verification to rebuild and re-validate the "
+            f"return."
+        )
+
+
+def _refuse_if_drifted(filing: dict) -> None:
+    """Spec §6. Runs before ANY CR call and before any charge.
+
+    A DriftError — the comparison could not be made at all — is deliberately
+    NOT swallowed. It becomes a refusal too: this gate sits in front of an
+    irreversible chargeable call, and "we could not check" is not a reason to
+    proceed. It is raised as a plain SubmitGateError so the message says the
+    check failed, rather than sending the operator to restart verification for
+    a problem restarting cannot fix.
+    """
+    from services.tpsi import drift
+
+    # NAR1 ONLY. `submit` is generic over form codes and the comparator rebuilds
+    # through `nar1_mapper`; pointing it at an NNC1 would fail to map and refuse
+    # a filing it knows nothing about. A form with no rebuilder is not checked —
+    # which is the state everything was in before this gate existed, not a
+    # regression — and NNC1 has no client-approval snapshot to drift from yet.
+    if (filing.get("form_code") or "").lower() != "nar1":
+        return
+
+    try:
+        differences = drift.differences_for(filing)
+    except drift.DriftError as exc:
+        raise SubmitGateError(
+            f"the return could not be checked against the company record "
+            f"before filing, so it was not submitted: {exc}"
+        ) from exc
+    if differences:
+        raise DriftDetected(differences)
+
+
 def manual_completion(filing: dict) -> dict | None:
     """The off-portal completion recorded against this filing's case, or None.
 
@@ -688,6 +740,10 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
     # chargeable, irreversible one, and a case already filed on paper must never
     # get as far as a request that could spend.
     _refuse_if_filed_off_portal(filing, "submitting it to CR")
+    # Spec §6. Also before any CR traffic, including the free balance read: the
+    # client approved the document as it stood, and a return whose particulars
+    # have moved since is not the one they approved.
+    _refuse_if_drifted(filing)
     quote = fee_quote_for(filing)
     balance = reads.check_balance(client, deposit_account)  # LIVE, never cached
     _check_gate(filing, confirm, balance, quote)

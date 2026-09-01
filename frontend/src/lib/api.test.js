@@ -58,3 +58,33 @@ describe('api.get', () => {
       .rejects.toThrow('anniv_op must be one of lte, gte, eq')
   })
 })
+
+describe('describeApiError — the drift refusal (spec §6)', () => {
+  it('carries `differences` through, rather than flattening them into a message', async () => {
+    // Nothing else in the suite would notice if this forwarding broke: every
+    // Submission-stage test builds its own error object, so the panel would
+    // keep rendering in tests while showing nothing in the browser. This is the
+    // only place the wiring itself is asserted.
+    const differences = [
+      { path: 'roAddr/bldg', field: 'Registered office · Building',
+        validated: 'Test Tower', current: 'New Tower' },
+    ]
+    global.fetch = vi.fn(async () => ({
+      ok: false, status: 409, statusText: 'Conflict',
+      json: async () => ({
+        detail: { message: 'the validated form no longer matches', differences },
+      }),
+    }))
+    await expect(api.post('/tpsi/filings/f1/submit', { confirm: true }))
+      .rejects.toMatchObject({ status: 409, differences })
+  })
+
+  it('leaves `differences` unset on an ordinary refusal', async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: false, status: 409, statusText: 'Conflict',
+      json: async () => ({ detail: 'filing is not signed' }),
+    }))
+    const error = await api.post('/x', {}).catch(e => e)
+    expect(error.differences).toBeUndefined()
+  })
+})

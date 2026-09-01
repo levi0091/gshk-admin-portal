@@ -78,6 +78,11 @@ export function describeApiError(detail, fallback = 'API error') {
     // different remedies in different places — carrying only the message would
     // send the operator to edit a form when the problem is their CR account.
     if (detail.kind) e.kind = detail.kind
+    // Spec §6's drift refusal: which filed particulars moved, with both values.
+    // Carried like `problems` rather than flattened into the message — the
+    // Submission stage renders it as a table, and a sentence cannot show two
+    // values per row.
+    if (Array.isArray(detail.differences)) e.differences = detail.differences
     return e
   }
 
