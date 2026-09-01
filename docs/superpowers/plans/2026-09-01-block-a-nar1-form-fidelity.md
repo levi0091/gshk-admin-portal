@@ -141,8 +141,8 @@ fresh clone. These are runtime assets, exactly like `form/NAR1_fillable.pdf`.
 
 | File | Family | Licence | Source |
 |---|---|---|---|
-| `Tinos-Bold.ttf` | Tinos Bold | Apache-2.0 | github.com/googlefonts/Tinos |
-| `Tinos-Regular.ttf` | Tinos Regular | Apache-2.0 | github.com/googlefonts/Tinos |
+| `Tinos-Bold.ttf` | Tinos Bold | OFL-1.1 | github.com/googlefonts/Tinos |
+| `Tinos-Regular.ttf` | Tinos Regular | OFL-1.1 | github.com/googlefonts/Tinos |
 | `NotoSerifTC-Bold.ttf` | Noto Serif TC | OFL-1.1 | Built by `scripts/build_cjk_font.py` |
 
 ## Why Tinos and not Times New Roman
@@ -179,7 +179,7 @@ git add backend/services/nar1_form/fonts/ backend/scripts/build_cjk_font.py
 git commit -m "feat(nar1): vendor Tinos and Noto Serif TC for the generated form
 
 Tinos is metric-identical to Times New Roman (0.0000pt delta at 10pt) and
-Apache-2.0, so it can ship where timesbd.ttf cannot. The CJK face is instanced
+OFL-1.1, so it can ship where timesbd.ttf cannot. The CJK face is instanced
 from the variable font to wght=700 by a build-time script, because the
 variable default is ExtraLight and no static TrueType Bold is published."
 ```

@@ -106,7 +106,7 @@ New module `services/nar1_form/appearance.py`:
 
 Fonts, committed under `services/nar1_form/fonts/`:
 
-- **Tinos Bold and Tinos Regular** (Apache-2.0). Metric compatibility with
+- **Tinos Bold and Tinos Regular** (OFL-1.1). Metric compatibility with
   Times New Roman was **measured, not assumed**: across company names,
   addresses, amounts and emails the advance-width delta at 10pt is **exactly
   0.0000pt**. Nothing wraps or overflows differently. Chosen over shipping
@@ -589,7 +589,7 @@ depends on two others.
 | Hardcoded page numbers misdirect the client | Resolved: the form is static and §1b restores the full nine-page set, making the sample's references true (§2) |
 | Appearance streams regress rendering rather than fix it | Rasterised visual comparison, not only field assertions (§1) |
 | Cron double-runs or never runs | Job is idempotent; Railway cron is single-instance by construction; **requires Levi to create the service** (§5) |
-| Font licensing | Tinos (Apache-2.0) and Noto Serif TC (OFL) are redistributable; `timesbd.ttf` is not and is not shipped (§1) |
+| Font licensing | Tinos and Noto Serif TC are both **OFL-1.1** and redistributable; `timesbd.ttf` is Monotype-proprietary and is not shipped. OFL's Reserved Font Name clause is respected: `build_cjk_font.py` instances Noto Serif TC but keeps the upstream family name and the result is embedded in a PDF, never redistributed as a font (§1) |
 | Restoring empty pages changes what CR receives | It does not — the filed payload is the XML, unchanged by this. Only the human-readable PDF gains the pages, which is what makes it a facsimile of CR's own output (§1b) |
 | `docs/` is gitignored — runtime assets placed there vanish on Railway and CI | Fonts committed beside the module (§1); this spec needs its own `!` allowlist line in `.gitignore` |
 
