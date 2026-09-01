@@ -41,6 +41,7 @@ docs/
 /docs/superpowers/specs/*
 !/docs/superpowers/specs/2026-08-30-nar1-form-facsimile-design.md
 !/docs/superpowers/specs/2026-08-30-workflow-vs-wireframe-v11.md
+!/docs/superpowers/specs/2026-09-01-nar1-client-approval-and-form-fidelity-design.md
 
 # Python
 __pycache__/
