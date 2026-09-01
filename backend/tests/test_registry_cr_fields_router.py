@@ -109,6 +109,34 @@ def test_company_type_accepts_crs_own_codes():
     assert resp.status_code == 200
 
 
+def test_a_company_cannot_be_CREATED_with_a_type_cr_refuses():
+    """The edit path grandfathers legacy values because they already exist. A
+    company being created now has no legacy to protect, so CR's three are the
+    whole list -- otherwise the portal keeps minting rows it will later have
+    to grandfather."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase"):
+        resp = client.post("/companies", headers=H, json={
+            "company_name": "NewCo", "status": "live",
+            "company_type": "Private company limited by shares"})
+
+    assert resp.status_code == 422
+    assert "company type" in resp.text.lower()
+
+
+def test_a_company_can_be_created_with_crs_code():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb, \
+         patch("routers.companies.log_event", new=AsyncMock()):
+        (msb.return_value.table.return_value.insert.return_value
+         .execute.return_value.data) = [{"id": "c9", "company_name": "NewCo"}]
+
+        resp = client.post("/companies", headers=H, json={
+            "company_name": "NewCo", "status": "live", "company_type": "P"})
+
+    assert resp.status_code == 201
+
+
 def test_an_invented_company_type_is_refused():
     current = {"id": "c1", "company_type": "P"}
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.companies.get_supabase") as msb:

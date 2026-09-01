@@ -186,6 +186,52 @@ def backfill_person_names(vp, sb, apply: bool) -> dict:
 RECORD_LOCATION_ROLES = RECORD_TYPE_CODES
 
 
+def backfill_company_type(sb, apply: bool) -> dict:
+    """entities.company_type -> 'P' where the company HAS share capital.
+
+    There is no Viewpoint source column for this. `Entity.EntType` is a
+    GSHK-custom classification absent from every lookup, and `CW14` companies
+    hold share capital, so it does not encode guarantee either.
+
+    WHAT IS SAFE TO INFER, AND WHAT IS NOT. Having share capital rules out a
+    company limited by guarantee, and no company in the book has more than 50
+    members, which is what would make it public. So `P` is a verifiable
+    inference for exactly those companies.
+
+    The reverse is NOT. "No share capital => G" was tested and rejected: it
+    yields ~219 guarantee companies, of which only a couple carry a name
+    suggesting a real one, so it would stamp ~214 private companies as
+    limited by guarantee on a statutory return. Those rows are LEFT NULL and
+    surfaced through the profile highlighting instead -- their real defect is
+    missing shareholders, and inventing a type would hide it.
+
+    Only fills where the column is empty: a value someone has typed, legacy
+    free text included, is never overwritten by a guess.
+    """
+    sql = """
+        UPDATE entities e
+           SET company_type = 'P'
+         WHERE e.is_client
+           AND coalesce(btrim(e.company_type), '') = ''
+           AND EXISTS (SELECT 1 FROM share_classes s WHERE s.entity_id = e.id)
+    """
+    with sb.connect() as conn:
+        pending = conn.execute(text(
+            "SELECT count(*) FROM entities e WHERE e.is_client "
+            "AND coalesce(btrim(e.company_type), '') = '' "
+            "AND EXISTS (SELECT 1 FROM share_classes s WHERE s.entity_id = e.id)"
+        )).scalar()
+        left_null = conn.execute(text(
+            "SELECT count(*) FROM entities e WHERE e.is_client "
+            "AND coalesce(btrim(e.company_type), '') = '' "
+            "AND NOT EXISTS (SELECT 1 FROM share_classes s WHERE s.entity_id = e.id)"
+        )).scalar()
+        if apply and pending:
+            conn.execute(text(sql))
+            conn.commit()
+    return {"to_set_P": pending, "left_null_no_share_capital": left_null}
+
+
 def backfill_correspondence_addresses(sb, apply: bool) -> dict:
     """entity_officers.correspondence_address_id from the RC assignments.
 
@@ -281,7 +327,8 @@ def main() -> int:
     # These two read `address_assignments`, which already holds Viewpoint's
     # address roles -- no Viewpoint round trip needed.
     for name, fn in (("officer correspondence address", backfill_correspondence_addresses),
-                     ("entity_record_locations (s16)", backfill_record_locations)):
+                     ("entity_record_locations (s16)", backfill_record_locations),
+                     ("entities.company_type", backfill_company_type)):
         stats = fn(sb, args.apply)
         detail = "  ".join(f"{k}={v}" for k, v in stats.items())
         print(f"  {name:32} {detail}")

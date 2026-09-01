@@ -304,6 +304,25 @@ await log_event(
 - `CASE_FIELD_UPDATED` entries record field name + old + new value. Multi-field saves produce one log entry per changed field.
 - Audit log is insert-only — no UPDATE or DELETE on `audit_log` table ever
 
+### 3. CR field fidelity — the form contract owns what CR requires
+
+**`backend/services/cr_forms/contract.py` is generated and committed, and it is the only answer to "does CR want this field, and how long may it be?"** It is built from CR's own worksheet by `scripts/build_cr_form_contract.py`; regenerate it rather than hand-editing, so a CR revision arrives as a reviewable diff. `tests/test_cr_form_contract.py` fails if any of the 294 NAR1/NNC1 leaf fields lacks a **disposition** (`mapped` / `derived` / `form_instance` / `unsourced`), if a `mapped` column is missing from the schema, or if a `form_instance`/`unsourced` entry has no written reason. **An omission has to be a decision somebody made, not a field nobody noticed.**
+
+`GET /form-contract` serves the `mapped` subset — strictest length, mandatory-anywhere — and **both profile screens read their `maxLength`, required markers and highlighting from it** (`frontend/src/lib/formContract.js`). Do not hardcode a CR length or a required flag in a screen; the two would drift and the way you would find out is a rejected filing.
+
+> **One owner per vocabulary.** CR's Country, District, Business Nature, Currency, Capacity, Company Type and record-type lists live in `services/tpsi/forms/cr_vocabularies.py` and `services/cr_forms/record_types.py`, and are served through `/lookups` as `cr_*`. **Never seed them into `lookup_values`** — that makes a second copy that can drift from the one deciding whether a filing is accepted. `lookup_values` keeps Viewpoint's vocabularies for everything not bound for CR. This bit for real: `lookup_values.currency` offers 162 ISO codes, CR takes 54, and four of CR's are not ISO (RMB/NTD/WON/NIS), so a renminbi share class was being offered `CNY` — a code CR has never heard of.
+
+**Two levels of refusal, and they are not the same.**
+
+- **Highlighting** (carrot, non-blocking): a mapped field that is mandatory-and-empty or over CR's length. The save still proceeds — most of these came out of Viewpoint that way, and refusing to store them would mean refusing to show them. `unsourced` fields are never highlighted.
+- **Blocking** (`services/cr_forms/readiness.py`): **only** fields CR marks `Mandatory = Y`. This gates the **Open case** button, and as of 2026-09-02 it stops **457 of 5,930 client companies** — 252 with no registered-office country, 219 with no share class, 4 whose share class lacks `issued_amount`. That is deliberate (PRD OQ-2): it converts a failure discovered at CR, after a chargeable and irreversible submit, into one visible on the profile. **The reason prints beside the button**, never only in a page banner.
+
+> Business nature is the field the blocking rule exists to keep out. It is `M=N` on both forms and Viewpoint holds none for any of its 5,028 rows, so blocking on it would freeze the entire book over something CR does not require.
+
+**Grandfathering is the pattern for validating legacy columns.** `company_type` (CR's `P`/`N`/`G`) and HKID check digits are both enforced on write **only when that field is itself being written**, and the value already stored is always allowed back. A bad legacy value must never block an unrelated edit. Creation is stricter than editing — a new row has no legacy to protect, so `POST /companies` takes only CR's codes.
+
+`scripts/registry_reconciliation.py` (read-only, needs `.env`, never CI) prints what GSHK has to fix by hand: the blocked companies, the 31 identity documents whose number is not what its type says, and the fields that ship empty because nobody has the data. **It calls `filing_problems()` rather than reimplementing the rule in SQL** — a report that counts blocked companies differently from the code that blocks them is worse than no report.
+
 ### PRD requirement for new PBIs
 
 Every PRD for a new PBI must include:

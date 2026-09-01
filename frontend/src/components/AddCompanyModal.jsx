@@ -13,11 +13,13 @@ const STATUSES = [
   { value: 'live', label: 'Live' },
 ]
 
-const COMPANY_TYPES = [
-  'Private company limited by shares',
-  'Private company limited by guarantee',
-  'Public company limited by shares',
-]
+// Company type comes from CR's own vocabulary (`cr_company_type`: P Private,
+// N Public, G Limited by Guarantee), served from /lookups.
+//
+// It used to be three hardcoded free-text descriptions lifted from Viewpoint.
+// CR refuses anything but its three codes on `coyType`, so a company created
+// here was born carrying a value its own annual return could not state — and
+// nothing said so until the filing.
 
 // UAT F-3: operators were keying bare local numbers with no country prefix.
 // A short curated list beats a 200-row lookup here — `company_phone` stays a
@@ -170,7 +172,9 @@ export default function AddCompanyModal({ onClose, onCreated }) {
               <label className="f-label" htmlFor="company_type">Company Type <span className="f-req">*</span></label>
               <select id="company_type" className="f-select" value={form.company_type} onChange={set('company_type')}>
                 <option value="">Select…</option>
-                {COMPANY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                {(lookups.cr_company_type || []).map(t => (
+                  <option key={t.code} value={t.code}>{t.label}</option>
+                ))}
               </select>
               {errors.company_type && <span className="f-hint" style={{ color: '#C53030' }}>{errors.company_type}</span>}
             </div>

@@ -576,6 +576,16 @@ async def create_company(
             status_code=422,
             detail=f"Create-time status must be one of {sorted(_CREATE_STATUSES)}",
         )
+    # No grandfathering here, unlike the edit path: a company being created now
+    # has no legacy value to protect, and accepting free text would just mint
+    # another row that has to be grandfathered later.
+    if body.company_type and body.company_type not in _COMPANY_TYPE_CODES:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"{body.company_type!r} is not a company type CR "
+                    f"recognises. The annual return takes "
+                    f"{', '.join(f'{c} ({l})' for c, l in COMPANY_TYPE)}."),
+        )
     sb = get_supabase()
     payload = body.model_dump()
     address_line = payload.pop("registered_address", None)
