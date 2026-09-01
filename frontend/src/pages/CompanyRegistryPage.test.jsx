@@ -21,7 +21,8 @@ const PAYLOAD = {
   flag_counts: { all: 5982, client: 5914, corporate_party: 279, non_client: 68 },
   companies: [
     {
-      id: 'e1', company_name: 'Harbour Tech Ltd.', br_number: '2100028',
+      id: 'e1', company_name: 'Harbour Tech Ltd.', company_name_zh: '海港科技有限公司',
+      br_number: '2100028',
       cr_number: '2100028', is_client: true, is_corporate_party: false, status: 'live',
       incorporation_date: '2023-08-12',   // 3 days past anniversary — inside the window
     },
@@ -31,7 +32,7 @@ const PAYLOAD = {
       incorporation_date: '2018-09-18',   // 34 days ahead
     },
     {
-      id: 'e3', company_name: 'Asia BC Ltd.', br_number: null,
+      id: 'e3', company_name: 'Asia BC Ltd.', company_name_zh: null, br_number: null,
       cr_number: null, is_client: false, is_corporate_party: true, status: 'live',
       incorporation_date: null,           // Viewpoint row with no incorporation date
     },
@@ -48,6 +49,34 @@ beforeEach(() => {
 })
 
 describe('CompanyRegistryPage', () => {
+  it('shows the Chinese name as its own column', async () => {
+    // Brian's B2 — "where do we show the Chinese Name?". It was already on the
+    // profile; what was missing was any way to find a company by it in a list.
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+
+    expect(screen.getByRole('columnheader', { name: /Chinese Name/ })).toBeInTheDocument()
+    expect(screen.getByText('海港科技有限公司')).toBeInTheDocument()
+  })
+
+  it('leaves the Chinese name blank rather than repeating the English one', async () => {
+    // 'Asia BC Ltd.' has none, and 5,930 Viewpoint companies are in the same
+    // state. An em dash says "not recorded"; the English name would be a lie.
+    renderPage()
+    const row = (await screen.findByText('Asia BC Ltd.')).closest('tr')
+    const cell = row.querySelector('[data-label="Chinese Name"]')
+
+    expect(cell).toHaveTextContent('—')
+    expect(cell).not.toHaveTextContent('Asia BC')
+  })
+
+  it('names the page as CR does', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+
+    expect(screen.getByText('Body Corporate Registry')).toBeInTheDocument()
+  })
+
   it('shows a loading state before data arrives', () => {
     api.get.mockReturnValue(new Promise(() => {}))
     renderPage()

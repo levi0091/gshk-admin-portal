@@ -158,7 +158,7 @@ export default function PersonProfilePage() {
       <div className="pg-hdr">
         <div>
           <div className="breadcrumb">
-            <span className="bc-link" onClick={() => navigate('/persons')}>Persons Registry</span>
+            <span className="bc-link" onClick={() => navigate('/persons')}>Natural Person Registry</span>
             <span className="bc-sep">›</span>
             <span className="bc-cur">Person Profile</span>
           </div>

@@ -534,6 +534,27 @@ def default_capacity(*, is_corporate: bool) -> str | None:
 # with no data behind it and every company's code is typed by hand.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# COMPANY TYPE (`coyType`)
+#
+# CR's worksheet documents only "P - Private, N - Public". `G` (limited by
+# guarantee) appears in CR's shipped NNC1G examples, and the standing rule is
+# that shipped XML outranks the worksheet — so all three are here.
+#
+# VIEWPOINT HAS NO MAPPING FOR THIS, and one was tested and rejected. A company
+# limited by guarantee has no share capital, so "no share capital => G" looks
+# sound; applied to the book it yields 5,711 P / 219 G, but those 219 have no
+# share classes AND no shareholdings — no ownership data at all — and only 5
+# carry a name suggesting a real guarantee company. The rule would have stamped
+# ~214 private companies as limited by guarantee on a statutory return.
+#
+# So `G` is never derived. It is only ever chosen by a human who knows.
+COMPANY_TYPE: tuple[tuple[str, str], ...] = (
+    ("P", "Private"),
+    ("N", "Public"),
+    ("G", "Limited by Guarantee"),
+)
+
 #: CR business nature code -> English description. Verbatim from the sheet.
 BUSINESS_NATURE: dict[str, str] = {
     '001': 'Crop and animal production, hunting and related service activities',

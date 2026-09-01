@@ -93,6 +93,35 @@ def test_cr_currency_offers_crs_codes_and_never_the_iso_ones():
     assert not ({"CNY", "TWD", "KRW", "ILS"} & codes)
 
 
+def test_cr_company_type_offers_exactly_crs_three():
+    """PRD §7.4. CR's worksheet documents only "P - Private, N - Public"; `G`
+    comes from CR's shipped NNC1G examples, and shipped XML outranks the
+    worksheet. Viewpoint has no mapping, so this list is the whole vocabulary
+    and a fourth value would be one an operator invented."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_company_type", headers=H)
+
+    assert resp.status_code == 200
+    values = resp.json()
+    assert [v["code"] for v in values] == ["P", "N", "G"]
+    assert values[0]["label"] == "Private"
+
+
+def test_cr_record_type_lists_the_registers_nar1_s16_asks_about():
+    """Thirteen registers -- Viewpoint's address types minus the seals and the
+    company's own addresses, which are not records."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_record_type", headers=H)
+
+    assert resp.status_code == 200
+    values = resp.json()
+    assert len(values) == 13
+    assert {"SS", "ST", "SU", "SR", "SB"}.isdisjoint({v["code"] for v in values})
+    assert next(v for v in values if v["code"] == "SM")["label"] == "Register of Members"
+
+
 def test_every_cr_district_value_is_one_the_nar1_mapper_accepts():
     """The dropdown must not be able to offer a value CR would refuse. Sending
     the district NAME "WAN CHAI" was rejected live on 2026-08-27 while the code

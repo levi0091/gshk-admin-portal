@@ -94,6 +94,52 @@ def test_an_unknown_business_nature_code_is_refused():
     assert resp.status_code == 422
 
 
+def test_company_type_accepts_crs_own_codes():
+    """PRD §7.4 — P Private, N Public, G Guarantee, and nothing else."""
+    current = {"id": "c1", "company_type": "P"}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.companies.get_supabase") as msb,          patch("routers.companies.log_events", new=AsyncMock()):
+        sb = msb.return_value
+        (sb.table.return_value.select.return_value.eq.return_value
+         .single.return_value.execute.return_value.data) = current
+        (sb.table.return_value.update.return_value.eq.return_value
+         .execute.return_value.data) = [{"id": "c1"}]
+
+        resp = client.patch("/companies/c1", headers=H, json={"company_type": "G"})
+
+    assert resp.status_code == 200
+
+
+def test_an_invented_company_type_is_refused():
+    current = {"id": "c1", "company_type": "P"}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.companies.get_supabase") as msb:
+        (msb.return_value.table.return_value.select.return_value.eq.return_value
+         .single.return_value.execute.return_value.data) = current
+
+        resp = client.patch("/companies/c1", headers=H,
+                            json={"company_type": "Sole Trader"})
+
+    assert resp.status_code == 422
+
+
+def test_a_legacy_company_type_can_be_saved_back_unchanged():
+    """Grandfathering, as for HKID (D4). `entities.company_type` held
+    Viewpoint's free text before CR's codes existed here; re-saving a profile
+    that still carries one must not be refused, or the record freezes."""
+    legacy = "Private company limited by shares"
+    current = {"id": "c1", "company_type": legacy, "case_notes": None}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.companies.get_supabase") as msb,          patch("routers.companies.log_events", new=AsyncMock()):
+        sb = msb.return_value
+        (sb.table.return_value.select.return_value.eq.return_value
+         .single.return_value.execute.return_value.data) = current
+        (sb.table.return_value.update.return_value.eq.return_value
+         .execute.return_value.data) = [{"id": "c1"}]
+
+        resp = client.patch("/companies/c1", headers=H,
+                            json={"company_type": legacy, "case_notes": "hi"})
+
+    assert resp.status_code == 200
+
+
 # --- identity documents: where the HKID check digit applies ---------------
 
 def test_identity_document_rejects_a_bad_hkid_check_digit():

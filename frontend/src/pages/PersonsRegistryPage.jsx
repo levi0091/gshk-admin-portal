@@ -54,7 +54,8 @@ export default function PersonsRegistryPage() {
     <>
       <div className="pg-hdr">
         <div>
-          <div className="pg-title">Persons Registry</div>
+          {/* NAR1's own vocabulary (Brian's B1 / B10). */}
+          <div className="pg-title">Natural Person Registry</div>
           <div className="pg-sub">
             All individuals across every company — directors, shareholders, secretaries &amp; beneficial owners
           </div>

@@ -118,10 +118,10 @@ export default function Sidebar({ isOpen, collapsed, onClose }) {
           <NavItem to="/dashboard" icon={<DashIcon />}>Post-incorporation</NavItem>
         )}
         {hasPermission('companies', 'read') && (
-          <NavItem to="/registry" icon={<RegistryIcon />}>Company Registry</NavItem>
+          <NavItem to="/registry" icon={<RegistryIcon />}>Body Corporate Registry</NavItem>
         )}
         {hasPermission('persons', 'read') && (
-          <NavItem to="/persons" icon={<PersonsIcon />}>Persons Registry</NavItem>
+          <NavItem to="/persons" icon={<PersonsIcon />}>Natural Person Registry</NavItem>
         )}
 
         {isSuperAdmin && (

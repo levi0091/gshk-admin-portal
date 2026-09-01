@@ -67,7 +67,10 @@ export default function CompanyRegistryPage() {
     <>
       <div className="pg-hdr">
         <div>
-          <div className="pg-title">Company Registry</div>
+          {/* NAR1's own vocabulary (Brian's B1). It reads broader than it
+              sounds: a company IS a body corporate, so this list holds client
+              companies as well as the corporate parties that act for them. */}
+          <div className="pg-title">Body Corporate Registry</div>
           <div className="pg-sub">All companies — clients and corporate parties</div>
         </div>
         <div className="pg-actions">
@@ -152,6 +155,10 @@ export default function CompanyRegistryPage() {
                 <tr>
                   {[
                     ['company_name', 'Company Name'],
+                    // Brian's B2. Sortable like the English name — the column
+                    // is on the `company_registry` view already, so the server
+                    // orders all 5,930 rows rather than the visible 50.
+                    ['company_name_zh', 'Chinese Name'],
                     ['br_number', 'BRN'],
                     ['cr_number', 'CR No.'],
                     ['is_client', 'Type'],
@@ -172,12 +179,15 @@ export default function CompanyRegistryPage() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={6} className="empty-state">Loading…</td></tr>
+                  <tr><td colSpan={7} className="empty-state">Loading…</td></tr>
                 ) : companies.length === 0 ? (
-                  <tr><td colSpan={6} className="empty-state">No companies match this view.</td></tr>
+                  <tr><td colSpan={7} className="empty-state">No companies match this view.</td></tr>
                 ) : companies.map(c => (
                   <tr key={c.id} className="clickable" onClick={() => navigate(`/companies/${c.id}`)}>
                     <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>
+                    <td data-label="Chinese Name">
+                      <span className="td-muted">{c.company_name_zh || '—'}</span>
+                    </td>
                     <td data-label="BRN"><span className="td-muted">{c.br_number || '—'}</span></td>
                     <td data-label="CR No."><span className="td-muted">{c.cr_number || '—'}</span></td>
                     <td data-label="Type">

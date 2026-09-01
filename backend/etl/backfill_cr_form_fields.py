@@ -34,6 +34,7 @@ from psycopg2.extras import execute_values
 from sqlalchemy import text
 
 from etl.db import get_supabase_engine, get_viewpoint_engine
+from services.cr_forms.record_types import RECORD_TYPE_CODES
 
 #: Rows per statement. Well under Postgres' 65,535 bind-parameter ceiling at
 #: five params per row.
@@ -177,27 +178,12 @@ def backfill_person_names(vp, sb, apply: bool) -> dict:
             "alias_unmerged_from_former_name": unmerged}
 
 
-#: NAR1 s16 asks where the company's RECORDS are kept. Viewpoint's address
-#: types cover more than that, so this is a deliberate subset:
-#:
-#:   excluded  SR, SB  the company's own addresses (registered office,
-#:                     principal place of business), not records
-#:   excluded  SS, ST, SU  seals and stamps -- physical objects, not records
-RECORD_LOCATION_ROLES = (
-    "SH",  # Register of Directors
-    "SG",  # Register of Company Secretaries
-    "SO",  # Register of Directors/Secretaries
-    "SM",  # Register of Members
-    "SQ",  # Significant Controllers Register
-    "SC",  # Register of Charges
-    "SD",  # Register of Debenture Holders
-    "SI",  # Minute Book
-    "SP",  # Location of Accounting Records
-    "SA",  # Copies of Instruments Creating Charges
-    "S1",  # Copy of Permitted Indemnity Provision
-    "S2",  # Copy of Management Contract
-    "S3",  # Register of Particulars Referred to in s.653P
-)
+#: NAR1 s16 asks where the company's RECORDS are kept. The list -- and the
+#: reasoning about which of Viewpoint's address types are registers and which
+#: are seals or the company's own addresses -- lives in
+#: `services/cr_forms/record_types.py`, because the API validates writes
+#: against the same set and a second copy here would drift from it.
+RECORD_LOCATION_ROLES = RECORD_TYPE_CODES
 
 
 def backfill_correspondence_addresses(sb, apply: bool) -> dict:

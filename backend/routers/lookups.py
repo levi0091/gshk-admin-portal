@@ -14,8 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from middleware.auth import require_any_permission
 from db.supabase import get_supabase
+from services.cr_forms.record_types import RECORD_TYPES
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE,
+    COMPANY_TYPE,
     CURRENCY,
     DISTRICT_CODES,
 )
@@ -58,6 +60,19 @@ _CR_CURRENCY = [
     for code, description in sorted(CURRENCY.items())
 ]
 
+#: CR's three company types. Deliberately NOT sorted — Private first, because
+#: it is what 5,711 of the 5,930 companies in the book are.
+#:
+#: `entities.company_type` held free text before this (Viewpoint's own
+#: descriptions, e.g. "Private company limited by shares"). Those values are
+#: not dropped: `optionsFor` on the front end always offers the stored value
+#: back, flagged, so a legacy record renders rather than silently blanking on
+#: the next save.
+_CR_COMPANY_TYPE = [{"code": code, "label": label} for code, label in COMPANY_TYPE]
+
+#: The registers NAR1 s16 asks a company to locate, in render order.
+_CR_RECORD_TYPE = [{"code": code, "label": label} for code, label in RECORD_TYPES]
+
 # Reference data for both the company and the person forms — a role holding
 # either one may read it.
 require_lookup_read = require_any_permission(("companies", "read"), ("persons", "read"))
@@ -97,6 +112,8 @@ def _all() -> dict[str, list[dict]]:
     grouped["cr_district"] = _CR_DISTRICTS
     grouped["cr_business_nature"] = _CR_BUSINESS_NATURE
     grouped["cr_currency"] = _CR_CURRENCY
+    grouped["cr_company_type"] = _CR_COMPANY_TYPE
+    grouped["cr_record_type"] = _CR_RECORD_TYPE
     _cache = (time.monotonic(), grouped)
     return grouped
 

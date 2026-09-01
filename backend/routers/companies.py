@@ -13,8 +13,12 @@ from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_events, document_service, address_service
-from services.tpsi.forms.cr_vocabularies import BUSINESS_NATURE
+from services.tpsi.forms.cr_vocabularies import BUSINESS_NATURE, COMPANY_TYPE
+
+#: CR's `coyType` codes, for the write check below.
+_COMPANY_TYPE_CODES = {code for code, _ in COMPANY_TYPE}
 from services.cr_forms.readiness import filing_problems
+from services.cr_forms import record_types
 
 router = APIRouter()
 
@@ -89,7 +93,12 @@ _MAX_PAGE_SIZE = 200
 # Columns the table headers may sort by. Whitelisted — `sort` reaches PostgREST's
 # order clause, so it must never be caller-controlled free text.
 _SORTABLE = {
-    "vp_source_key", "company_name", "br_number", "cr_number", "status",
+    # `company_name_zh` is sortable because the registry list shows it as its
+    # own column (Brian's B2). Postgres collates it by code point, which is not
+    # stroke order -- but it does group a company's Chinese name next to
+    # itself, which is what someone scanning the list is after.
+    "vp_source_key", "company_name", "company_name_zh", "br_number",
+    "cr_number", "status",
     "active_workflow", "company_type", "created_at", "updated_at",
     "incorporation_date", "is_client", "is_corporate_party",
     "days_to_anniversary",
@@ -184,6 +193,16 @@ class UpdateCompanyRequest(BaseModel):
 class FlagsRequest(BaseModel):
     is_client: Optional[bool] = None
     is_corporate_party: Optional[bool] = None
+
+
+class RecordLocationRequest(BaseModel):
+    """Where one statutory register is kept, or that it is kept nowhere.
+
+    `None` is a real answer and must survive the round trip, so this cannot
+    use the "drop the nulls" convention the field-patch models use — clearing
+    a location and not mentioning it would become the same request.
+    """
+    address_id: Optional[str] = None
 
 
 class LinkPartyRequest(BaseModel):
@@ -397,7 +416,8 @@ async def get_company(
     async def q(fn):
         return await asyncio.to_thread(fn)
 
-    officers, secretaries, shareholders, ben_owners, contacts, documents, share_classes = await asyncio.gather(
+    (officers, secretaries, shareholders, ben_owners, contacts, documents,
+     share_classes, business_names, record_rows) = await asyncio.gather(
         q(lambda: (sb.table("entity_officers").select(f"*, {person_cols}")
                    .eq("entity_id", company_id).neq("role", _SECRETARY_ROLE)
                    .execute().data) or []),
@@ -417,6 +437,13 @@ async def get_company(
         # whether or not anyone currently holds it.
         q(lambda: (sb.table("share_classes").select("*")
                    .eq("entity_id", company_id).execute().data) or []),
+        # Brian's B9. 5,026 rows have sat here since the ETL and no screen has
+        # ever read one; CR asks for `brName` on both forms.
+        q(lambda: (sb.table("business_names").select("*")
+                   .eq("entity_id", company_id).execute().data) or []),
+        # NAR1 s16 (PRD §7.6 / OQ-3).
+        q(lambda: (sb.table("entity_record_locations").select("*")
+                   .eq("entity_id", company_id).execute().data) or []),
     )
 
     linked = officers + secretaries + shareholders + ben_owners
@@ -424,13 +451,72 @@ async def get_company(
     corp_names: dict[str, dict] = {}
     if corp_ids:
         rows = (sb.table("entities")
-                .select("id, company_name, br_number, cr_number, tcsp_licence_no")
+                .select("id, company_name, company_name_zh, br_number, cr_number, "
+                        "tcsp_licence_no, registered_address_id")
                 .in_("id", list(corp_ids)).execute().data) or []
         corp_names = {r["id"]: r for r in rows}
     for r in linked:
         cid = r.get("corporate_entity_id")
         if cid:
             r["corporate_entity"] = corp_names.get(cid)
+
+    # Every address the profile shows, in ONE query.
+    #
+    # Brian's B4 ("shareholders need an address") and D2 (a director's
+    # correspondence address) both turned out to be data already in Postgres
+    # that nothing ever sent to the screen. Resolving them per row is what
+    # made that expensive: a profile with eight directors, four shareholders
+    # and thirteen registers is twenty-five sequential ~200ms round trips.
+    # `registered_address` itself stays separate because it also needs its
+    # share count.
+    wanted: set[str] = set()
+    for r in linked:
+        for key in ("correspondence_address_id",):
+            if r.get(key):
+                wanted.add(r[key])
+        person = r.get("persons") or {}
+        if person.get("residential_address_id"):
+            wanted.add(person["residential_address_id"])
+    for corp in corp_names.values():
+        if corp.get("registered_address_id"):
+            wanted.add(corp["registered_address_id"])
+    for row in record_rows:
+        if row.get("address_id"):
+            wanted.add(row["address_id"])
+
+    by_id: dict[str, dict] = {}
+    if wanted:
+        rows = await asyncio.to_thread(
+            lambda: (sb.table("addresses").select("*")
+                     .in_("id", list(wanted)).execute().data) or []
+        )
+        by_id = {r["id"]: r for r in rows}
+
+    for r in linked:
+        # A director gives CR both: where they live and where they take post.
+        r["correspondence_address"] = by_id.get(r.get("correspondence_address_id"))
+        person = r.get("persons") or {}
+        if person:
+            person["residential_address"] = by_id.get(
+                person.get("residential_address_id"))
+    for corp in corp_names.values():
+        # A body corporate's address IS its registered office — it does not
+        # have a residence, and labelling it one on the screen would be wrong.
+        corp["registered_address"] = by_id.get(corp.get("registered_address_id"))
+
+    # Every register CR asks about, whether or not one has been recorded. A
+    # register with nowhere kept is the answer s16 needs to *show* — dropping
+    # the row would render an unanswered question as an answered one.
+    seeded = {row["record_type"]: row for row in record_rows}
+    record_locations = [
+        {
+            **seeded.get(code, {"record_type": code, "address_id": None}),
+            "record_type": code,
+            "label": label,
+            "address": by_id.get((seeded.get(code) or {}).get("address_id")),
+        }
+        for code, label in record_types.RECORD_TYPES
+    ]
 
     address = None
     if entity.get("registered_address_id"):
@@ -457,6 +543,8 @@ async def get_company(
         "beneficial_owners": ben_owners,
         "secretaries": secretaries,
         "share_classes": share_classes,
+        "business_names": business_names,
+        "record_locations": record_locations,
     }
     # Whether a return can be produced from this profile at all. Computed here
     # so the screen and the API agree, and so the Open case button can say why
@@ -557,6 +645,22 @@ async def update_company(
     ).data
     if not current:
         raise HTTPException(status_code=404, detail="Company not found")
+
+    # CR takes P, N or G on `coyType` and nothing else -- but this column held
+    # Viewpoint's free text ("Private company limited by shares") long before
+    # CR's codes reached it. Grandfathered the same way a legacy HKID is (D4):
+    # the value already on the row is always allowed back, so re-saving an
+    # untouched profile can never be refused. Only a NEW value must be CR's.
+    if "company_type" in updates:
+        value = str(updates["company_type"]).strip()
+        if value not in _COMPANY_TYPE_CODES and value != (current.get("company_type") or ""):
+            raise HTTPException(
+                status_code=422,
+                detail=(f"{value!r} is not a company type CR recognises. The "
+                        f"annual return takes "
+                        f"{', '.join(f'{c} ({l})' for c, l in COMPANY_TYPE)}."),
+            )
+        updates["company_type"] = value
 
     updated = (
         sb.table("entities").update(updates).eq("id", company_id).execute()
@@ -669,6 +773,75 @@ def _address_audit_entries(*, entity_id, user, subject_name, event_code,
             },
         ))
     return entries
+
+
+@router.put("/{company_id}/record-locations/{record_type}")
+async def set_record_location(
+    company_id: str,
+    record_type: str,
+    body: RecordLocationRequest,
+    user=Depends(require_permission("companies", "write")),
+):
+    """Point one statutory register at an address, or at nothing (OQ-3).
+
+    One row per register per company, so this is an upsert on the unique
+    (entity_id, record_type) — an operator correcting a location twice must
+    not leave two answers to the same NAR1 question.
+    """
+    if not record_types.is_known(record_type):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"'{record_type}' is not a register the annual return asks "
+                    f"about. CR's section 16 covers: "
+                    f"{', '.join(record_types.RECORD_TYPE_CODES)}."),
+        )
+
+    sb = get_supabase()
+    company = (
+        sb.table("entities").select("company_name")
+        .eq("id", company_id).single().execute()
+    ).data
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    existing = next(
+        (r for r in (sb.table("entity_record_locations").select("*")
+                     .eq("entity_id", company_id).execute().data or [])
+         if r.get("record_type") == record_type),
+        None,
+    )
+    old_value = (existing or {}).get("address_id")
+    new_value = body.address_id
+
+    row = {"entity_id": company_id, "record_type": record_type,
+           "address_id": new_value}
+    saved = (
+        sb.table("entity_record_locations")
+        .upsert(row, on_conflict="entity_id,record_type").execute()
+    ).data
+    saved = saved[0] if saved else row
+
+    # No new action_type (PRD §12b): this is a field edit on the company, and
+    # `record_location` earns its own event code so the trail says WHICH
+    # register moved rather than "General".
+    await log_events([
+        dict(
+            case_id=company_id, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type="CASE_FIELD_UPDATED",
+            event_code=audit_events.company_field_code("record_location"),
+            company_name=company.get("company_name"),
+            entity_type="entity_record_location", entity_id=str(company_id),
+            old_value=old_value, new_value=new_value,
+            before_state={"field": f"record_location.{record_type}",
+                          "old": old_value},
+            after_state={"field": f"record_location.{record_type}",
+                         "new": new_value},
+            metadata={"register": record_types.label_for(record_type)},
+        )
+    ] if old_value != new_value else [])
+
+    return {**saved, "label": record_types.label_for(record_type)}
 
 
 @router.patch("/{company_id}/flags")
