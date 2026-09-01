@@ -34,25 +34,41 @@ from fontTools.varLib import instancer
 #: for the full numbers. `appearance.draw_value` now REFUSES to draw a
 #: character the selected face cannot show rather than blanking it, so this
 #: gap is loud (`AppearanceError`) rather than invisible either way.
-SOURCE = ("https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
-          "Serif/Variable/TTF/Subset/NotoSerifTC-VF.ttf")
-TARGET = Path(__file__).resolve().parents[1] / "services" / "nar1_form" / "fonts" / "NotoSerifTC-Bold.ttf"
+#: The two CJK faces, in the order `appearance._CJK_FACES` tries them.
+#: BOTH are needed. Hong Kong's register is Traditional, but mainland directors
+#: of Hong Kong companies are ordinary and their names arrive in Simplified --
+#: measured on DEV, 3 rows across `persons.full_name_zh` and
+#: `entities.company_name_zh` carry characters Noto Serif TC has no glyph for,
+#: including U+6768 杨, the simplified form of a top-ten HK surname. TC is not
+#: redundant either: it carries ~1,700 codepoints SC does not.
+_BASE = ("https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
+         "Serif/Variable/TTF/Subset/")
+FACES = {
+    "NotoSerifTC-Bold.ttf": _BASE + "NotoSerifTC-VF.ttf",
+    "NotoSerifSC-Bold.ttf": _BASE + "NotoSerifSC-VF.ttf",
+}
+FONT_DIR = Path(__file__).resolve().parents[1] / "services" / "nar1_form" / "fonts"
 WEIGHT = 700
 
 
 def main() -> int:
-    print(f"downloading {SOURCE}")
-    raw = urllib.request.urlopen(SOURCE, timeout=180).read()
-    cache = TARGET.parent / "_NotoSerifTC-VF.ttf"
-    cache.write_bytes(raw)
-    try:
-        font = TTFont(cache)
-        static = instancer.instantiateVariableFont(font, {"wght": WEIGHT}, updateFontNames=True)
-        TARGET.parent.mkdir(parents=True, exist_ok=True)
-        static.save(TARGET)
-    finally:
-        cache.unlink(missing_ok=True)
-    print(f"wrote {TARGET} ({TARGET.stat().st_size} bytes) at wght={WEIGHT}")
+    FONT_DIR.mkdir(parents=True, exist_ok=True)
+    for filename, source in FACES.items():
+        target = FONT_DIR / filename
+        print(f"downloading {source}")
+        raw = urllib.request.urlopen(source, timeout=300).read()
+        cache = FONT_DIR / ("_" + filename)
+        cache.write_bytes(raw)
+        try:
+            # updateFontNames=True, or the instanced file keeps the VARIABLE
+            # default's name -- ExtraLight -- and every PDF embeds a font
+            # announcing a weight it is not.
+            static = instancer.instantiateVariableFont(
+                TTFont(cache), {"wght": WEIGHT}, updateFontNames=True)
+            static.save(target)
+        finally:
+            cache.unlink(missing_ok=True)
+        print(f"wrote {target} ({target.stat().st_size} bytes) at wght={WEIGHT}")
     return 0
 
 

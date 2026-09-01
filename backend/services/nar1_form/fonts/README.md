@@ -9,6 +9,7 @@ fresh clone. These are runtime assets, exactly like `form/NAR1_fillable.pdf`.
 | `Tinos-Bold.ttf` | Tinos Bold | OFL-1.1 | github.com/googlefonts/Tinos |
 | `Tinos-Regular.ttf` | Tinos Regular | OFL-1.1 | github.com/googlefonts/Tinos |
 | `NotoSerifTC-Bold.ttf` | Noto Serif TC | OFL-1.1 | Built by `scripts/build_cjk_font.py` |
+| `NotoSerifSC-Bold.ttf` | Noto Serif SC | OFL-1.1 | Built by `scripts/build_cjk_font.py` |
 
 `OFL.txt`, beside these files, is the licence text itself -- OFL-1.1 asks
 for it to travel with the fonts, not just be linked to from here.
@@ -56,3 +57,22 @@ quick fix for one gap; it trades that gap for a different, bigger one at
 3.4x the size. See
 `.superpowers/sdd/2026-09-01-block-a-nar1-form-fidelity/final-fix-report.md`
 for the numbers.
+
+## Why BOTH a Traditional and a Simplified CJK face
+
+Hong Kong's register is Traditional, so `appearance._CJK_FACES` tries Noto
+Serif **TC** first and falls back to **SC** only for characters TC cannot draw.
+Preferring TC matters: a name both faces cover would otherwise render in
+Simplified shapes on a Hong Kong statutory return.
+
+SC is not optional. Measured against DEV, three rows across
+`persons.full_name_zh` and `entities.company_name_zh` carry characters Noto
+Serif TC has no glyph for -- among them **U+6768 杨**, the simplified form of a
+top-ten Hong Kong surname. Mainland directors of Hong Kong companies are
+ordinary, and their names arrive in Simplified. TC is not redundant either: it
+carries roughly 1,700 codepoints SC does not.
+
+Neither face is a general fallback: a character *neither* covers is refused by
+name in `appearance.draw_value` rather than drawn as nothing. reportlab maps an
+uncovered codepoint to glyph 0 and draws blank without raising, which is how a
+missing character in a director's name went unnoticed in the first place.

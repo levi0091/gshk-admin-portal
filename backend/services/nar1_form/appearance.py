@@ -32,12 +32,27 @@ FONT_DIR = Path(__file__).resolve().parent / "fonts"
 FONT_LATIN_BOLD = "NAR1-Bold"
 FONT_LATIN = "NAR1-Regular"
 FONT_CJK = "NAR1-CJK"
+FONT_CJK_SC = "NAR1-CJK-SC"
 
 _FILES = {
     FONT_LATIN_BOLD: "Tinos-Bold.ttf",
     FONT_LATIN: "Tinos-Regular.ttf",
     FONT_CJK: "NotoSerifTC-Bold.ttf",
+    FONT_CJK_SC: "NotoSerifSC-Bold.ttf",
 }
+
+#: CJK faces in preference order. Hong Kong's register is TRADITIONAL, so the
+#: TC face is tried first and the SC face only catches what it cannot draw --
+#: otherwise a company name both faces cover would render in Simplified
+#: shapes on a Hong Kong statutory return.
+#:
+#: SC is here because TC alone is not enough for this book. Measured on DEV:
+#: 2 of 473 `persons.full_name_zh` and 1 of 119 `entities.company_name_zh`
+#: rows carry characters Noto Serif TC has no glyph for -- among them
+#: U+6768 杨, the simplified form of a top-ten Hong Kong surname. Mainland
+#: directors of Hong Kong companies are ordinary, and their names arrive in
+#: Simplified.
+_CJK_FACES = (FONT_CJK, FONT_CJK_SC)
 
 _registered = False
 
@@ -159,6 +174,19 @@ def _uncoverable(font: str, text: str) -> list[str]:
     return [char for char in dict.fromkeys(text) if ord(char) not in cmap]
 
 
+def _cjk_face_for(char: str) -> str:
+    """The first CJK face that can actually draw `char`.
+
+    Falls through to the LAST face when none covers it, so the character still
+    reaches the coverage guard in `draw_value` and is refused there by name
+    rather than silently disappearing here.
+    """
+    for face in _CJK_FACES:
+        if ord(char) in _CMAPS.get(face, frozenset()):
+            return face
+    return _CJK_FACES[-1]
+
+
 def split_runs(text: str, *, bold: bool = True) -> list[tuple[str, str]]:
     """Split `text` into consecutive (font name, chunk) runs.
 
@@ -168,7 +196,7 @@ def split_runs(text: str, *, bold: bool = True) -> list[tuple[str, str]]:
     latin = FONT_LATIN_BOLD if bold else FONT_LATIN
     runs: list[tuple[str, str]] = []
     for char in text:
-        face = FONT_CJK if _is_cjk(char) else latin
+        face = _cjk_face_for(char) if _is_cjk(char) else latin
         if runs and runs[-1][0] == face:
             runs[-1] = (face, runs[-1][1] + char)
         else:

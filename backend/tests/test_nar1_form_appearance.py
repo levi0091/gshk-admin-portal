@@ -232,17 +232,18 @@ def test_a_cjk_extension_b_character_renders_and_round_trips():
 
 
 def test_an_uncoverable_character_raises_rather_than_rendering_blank():
-    """U+6768 (杨/楊, a top-ten Hong Kong surname) is CJK Unified -- routed to
-    the CJK face correctly -- but is measured ABSENT from the currently
-    shipped NotoSerifTC-Bold.ttf's cmap (a curated Subset build, not full CJK
-    coverage). Before this fix reportlab silently mapped it to glyph 0 and
-    drew nothing: no exception, no log line, a director's surname just gone
-    from a statutory return. This asserts the render now refuses instead."""
+    """reportlab maps a codepoint no registered face carries to glyph 0 and
+    draws NOTHING -- no exception, no log line, a director's name simply short
+    a character on a statutory return. This asserts the render refuses instead.
+
+    U+1F600 stands in for "outside every face we ship". It is deliberately not
+    a Chinese character: the TC and SC faces together cover this book's
+    Chinese, so the honest example of an uncoverable character is one with no
+    business on a NAR1 in the first place."""
     from tests.test_nar1_form_fill import build_xml
     from services.nar1_form import fill
-    char = "杨"
-    with pytest.raises(fill.FormFillError, match=r"U\+6768"):
-        fill.render(build_xml(directors=(char,)))
+    with pytest.raises(fill.FormFillError, match=r"U\+1F600"):
+        fill.render(build_xml(directors=("\U0001F600",)))
 
 
 def test_draw_value_names_the_field_and_codepoint_in_the_error():
@@ -254,10 +255,10 @@ def test_draw_value_names_the_field_and_codepoint_in_the_error():
     buf = io.BytesIO()
     layer = rl_canvas.Canvas(buf, pagesize=(200.0, 50.0))
     with pytest.raises(ap.AppearanceError) as exc_info:
-        ap.draw_value(layer, "杨", (0.0, 0.0, 100.0, 20.0),
+        ap.draw_value(layer, "\U0001F600", (0.0, 0.0, 100.0, 20.0),
                       field="fill_6_P.5")
     message = str(exc_info.value)
-    assert "U+6768" in message
+    assert "U+1F600" in message
     assert "fill_6_P.5" in message
 
 
@@ -270,7 +271,7 @@ def test_draw_value_checks_every_run_before_drawing_any_of_them():
     buf = io.BytesIO()
     layer = rl_canvas.Canvas(buf, pagesize=(200.0, 50.0))
     with pytest.raises(ap.AppearanceError):
-        ap.draw_value(layer, "OK 杨", (0.0, 0.0, 150.0, 20.0))
+        ap.draw_value(layer, "OK \U0001F600", (0.0, 0.0, 150.0, 20.0))
     assert buf.getvalue() == b""  # canvas.save() was never reached
 
 
@@ -281,7 +282,10 @@ def test_cmap_coverage_is_cached_not_rebuilt_per_character():
     assert ap._CMAPS.get(ap.FONT_CJK)
     assert 0x4E2D in ap._CMAPS[ap.FONT_CJK]         # 中 -- every CJK render
                                                      # needs this to be there
-    assert 0x6768 not in ap._CMAPS[ap.FONT_CJK]     # the measured DEV gap
+    # The measured DEV gap that forced the SC fallback: the Traditional face
+    # alone cannot draw the simplified surname; the Simplified face can.
+    assert 0x6768 not in ap._CMAPS[ap.FONT_CJK]
+    assert 0x6768 in ap._CMAPS[ap.FONT_CJK_SC]
 
 
 def test_baking_does_not_bloat_the_attachment():
@@ -512,3 +516,43 @@ def test_the_baked_layer_uses_no_deprecated_pypdf_path():
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         fill.render(build_xml())
+
+
+# ---------------------------------------------------------------------------
+# Simplified Chinese: the Traditional face alone is not enough for HK data
+# ---------------------------------------------------------------------------
+
+def test_a_simplified_surname_renders_rather_than_refusing():
+    """U+6768 杨 is the SIMPLIFIED form of a top-ten Hong Kong surname, and it
+    is absent from Noto Serif TC. Measured on DEV, 2 of 473 `persons.full_name_zh`
+    and 1 of 119 `entities.company_name_zh` rows carry characters the
+    Traditional face cannot draw.
+
+    Before the SC fallback these raised, which is safe but means the NAR1 for a
+    real client simply could not be produced -- a functional regression against
+    the old behaviour, where the viewer substituted a system font.
+    """
+    import io as _io
+    from pypdf import PdfReader as _R
+    from services.nar1_form import fill
+    from tests.test_nar1_form_fill import build_xml
+    reader = _R(_io.BytesIO(fill.render(build_xml(directors=("杨大文",)))))
+    assert any("杨" in (page.extract_text() or "") for page in reader.pages)
+
+
+def test_traditional_is_preferred_over_simplified_when_both_carry_the_glyph():
+    """Hong Kong's register is Traditional. A character both faces can draw
+    must come from the TC face, or a company's name would render half in one
+    script's shapes and half in the other's."""
+    ap.register_fonts()
+    assert ap.split_runs("楊") == [(ap.FONT_CJK, "楊")]
+
+
+def test_a_character_neither_CJK_face_carries_still_refuses_loudly():
+    """The fallback widens coverage; it must not reintroduce silent blanking."""
+    ap.register_fonts()
+    from services.nar1_form import fill
+    from tests.test_nar1_form_fill import build_xml
+    with pytest.raises((ap.AppearanceError, fill.FormFillError)) as excinfo:
+        fill.render(build_xml(directors=("😀 EMOJI",)))
+    assert "😀" in str(excinfo.value) or "U+1F600" in str(excinfo.value)
