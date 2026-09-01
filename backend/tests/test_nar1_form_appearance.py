@@ -53,3 +53,27 @@ def test_the_regular_face_is_selectable_for_the_presenter_block():
 def test_empty_text_produces_no_runs():
     ap.register_fonts()
     assert ap.split_runs("") == []
+
+
+def test_accented_latin_stays_in_the_latin_face():
+    """The naive `not char.isascii()` test would sweep these into the CJK
+    face. European directors are real in this book -- the reference return's
+    director is Swedish -- so a Chinese font rendering "Åsa Öberg" is a live
+    failure, not a hypothetical one."""
+    ap.register_fonts()
+    for name in ("Müller", "Ángel", "François", "Åsa Öberg", "İstanbul"):
+        runs = ap.split_runs(name)
+        assert [f for f, _ in runs] == [ap.FONT_LATIN_BOLD], \
+            f"{name!r} did not stay in the Latin face"
+        assert "".join(chunk for _, chunk in runs) == name
+
+
+def test_a_value_mixing_accented_latin_and_cjk_splits_correctly():
+    """Both fallbacks in one value, which is what a Hong Kong record of a
+    European director actually looks like."""
+    ap.register_fonts()
+    runs = ap.split_runs("Müller 中環 Ángel")
+    assert [f for f, _ in runs] == [
+        ap.FONT_LATIN_BOLD, ap.FONT_CJK, ap.FONT_LATIN_BOLD
+    ]
+    assert "".join(chunk for _, chunk in runs) == "Müller 中環 Ángel"
