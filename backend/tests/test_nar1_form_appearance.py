@@ -205,6 +205,85 @@ def test_a_chinese_name_survives_into_the_text_layer():
     assert any("嘉寧斯" in (page.extract_text() or "") for page in reader.pages)
 
 
+# ---------------------------------------------------------------------------
+# C1 -- uncovered characters used to render BLANK, silently (final review)
+# ---------------------------------------------------------------------------
+
+def test_extension_b_is_routed_to_the_cjk_face():
+    """The routing bug, isolated from font coverage: `_is_cjk` used to stop
+    at U+9FFF, so every CJK Extension B character (U+20000-U+2FA1F) fell
+    through to Tinos -- which carries 0 glyphs in that range -- instead of
+    the CJK face, which may."""
+    ap.register_fonts()
+    char = "\U00020021"   # 𠀡, Extension B, one of 1,705 codepoints the
+                          # currently-shipped NotoSerifTC-Bold.ttf carries
+    assert ap.split_runs(char) == [(ap.FONT_CJK, char)]
+
+
+def test_a_cjk_extension_b_character_renders_and_round_trips():
+    """End to end: with the routing fixed, an Extension B character that the
+    shipped CJK face actually carries survives into the rendered PDF's text
+    layer rather than being drawn as glyph 0 (nothing)."""
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    char = "\U00020021"
+    reader = PdfReader(io.BytesIO(fill.render(build_xml(directors=(char,)))))
+    assert any(char in (page.extract_text() or "") for page in reader.pages)
+
+
+def test_an_uncoverable_character_raises_rather_than_rendering_blank():
+    """U+6768 (杨/楊, a top-ten Hong Kong surname) is CJK Unified -- routed to
+    the CJK face correctly -- but is measured ABSENT from the currently
+    shipped NotoSerifTC-Bold.ttf's cmap (a curated Subset build, not full CJK
+    coverage). Before this fix reportlab silently mapped it to glyph 0 and
+    drew nothing: no exception, no log line, a director's surname just gone
+    from a statutory return. This asserts the render now refuses instead."""
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    char = "杨"
+    with pytest.raises(fill.FormFillError, match=r"U\+6768"):
+        fill.render(build_xml(directors=(char,)))
+
+
+def test_draw_value_names_the_field_and_codepoint_in_the_error():
+    """The lower-level contract `bake()` relies on: `draw_value` itself
+    raises, naming both the offending character and which field it was on --
+    not just 'something failed somewhere in a 15-page document'."""
+    from reportlab.pdfgen import canvas as rl_canvas
+    ap.register_fonts()
+    buf = io.BytesIO()
+    layer = rl_canvas.Canvas(buf, pagesize=(200.0, 50.0))
+    with pytest.raises(ap.AppearanceError) as exc_info:
+        ap.draw_value(layer, "杨", (0.0, 0.0, 100.0, 20.0),
+                      field="fill_6_P.5")
+    message = str(exc_info.value)
+    assert "U+6768" in message
+    assert "fill_6_P.5" in message
+
+
+def test_draw_value_checks_every_run_before_drawing_any_of_them():
+    """A mixed value with a good character followed by a bad one must not
+    leave a half-drawn value on the page -- the check runs before any
+    `drawString` call, not interleaved with them."""
+    from reportlab.pdfgen import canvas as rl_canvas
+    ap.register_fonts()
+    buf = io.BytesIO()
+    layer = rl_canvas.Canvas(buf, pagesize=(200.0, 50.0))
+    with pytest.raises(ap.AppearanceError):
+        ap.draw_value(layer, "OK 杨", (0.0, 0.0, 150.0, 20.0))
+    assert buf.getvalue() == b""  # canvas.save() was never reached
+
+
+def test_cmap_coverage_is_cached_not_rebuilt_per_character():
+    """`_uncoverable` reads a set built once by `register_fonts()`, not the
+    TTF's raw cmap dict on every character of every render."""
+    ap.register_fonts()
+    assert ap._CMAPS.get(ap.FONT_CJK)
+    assert 0x4E2D in ap._CMAPS[ap.FONT_CJK]         # 中 -- every CJK render
+                                                     # needs this to be there
+    assert 0x6768 not in ap._CMAPS[ap.FONT_CJK]     # the measured DEV gap
+
+
 def test_baking_does_not_bloat_the_attachment():
     """It has to survive a mail gateway. Subsetting is what keeps a 10MB CJK
     face from becoming 10MB of email."""
@@ -228,6 +307,38 @@ def test_every_page_header_carries_the_BRN_at_14pt():
 def test_the_company_name_is_the_one_12pt_value():
     from services.nar1_form import fill
     assert fill.FIELD_SIZES[fm.MAIN_1["company_name"]] == 12.0
+
+
+def test_every_br_number_in_field_map_is_registered_at_14pt():
+    """CONFLICT B (final review): the ledger claimed 'Task 3 gains a test
+    asserting every br_number in field_map is covered, so this cannot
+    regress silently again' -- no such test existed.
+    `test_every_page_header_carries_the_BRN_at_14pt` above enumerates 8 named
+    groups by hand and omits both Schedule headers and all five Sheet
+    headers, which is precisely what CONFLICT B was about. This makes the
+    claim true: every dict-shaped attribute of `field_map` carrying a
+    `br_number` key -- discovered by walking the module, not hand-listed --
+    must be in `fill.FIELD_SIZES` at 14.0. The five sheet headers come from
+    `_SHEET_HEADER`'s `{p}`-templated prototype, so they are expanded via
+    `fm.sheet_header(page)` rather than skipped."""
+    from services.nar1_form import fill
+    checked = []
+    for name in vars(fm):
+        if name.startswith("_"):
+            continue
+        value = getattr(fm, name)
+        if isinstance(value, dict) and "br_number" in value:
+            checked.append(name)
+            assert fill.FIELD_SIZES.get(value["br_number"]) == 14.0, \
+                f"field_map.{name}['br_number'] is not registered at 14pt"
+    for page in range(fm.PAGE_SHEET_A, fm.PAGE_SHEET_E + 1):
+        head = fm.sheet_header(page)
+        checked.append(f"sheet_header({page})")
+        assert fill.FIELD_SIZES.get(head["br_number"]) == 14.0, \
+            f"sheet_header({page})['br_number'] is not registered at 14pt"
+    # The discovery itself has to find something, or this test would pass
+    # vacuously if `field_map` were gutted.
+    assert len(checked) >= 15, f"only found {checked!r} -- discovery broke"
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +389,90 @@ def test_the_company_name_and_BRN_are_centred_on_the_rendered_form():
                 assert int(obj.get("/Q", 0)) == 1, f"{name} lost its quadding"
                 seen += 1
     assert seen >= 2, "expected the company name and the BRN header"
+
+
+def _field_rect(reader, page_index, field_name):
+    """The widget rectangle CR laid out for `field_name` on `reader`'s page
+    `page_index`, read back from the rendered document's own AcroForm --
+    not assumed, so a template change cannot make this test drift silently."""
+    page = reader.pages[page_index]
+    for annot in page.get("/Annots") or []:
+        obj = annot.get_object()
+        name = str(obj.get("/T") or "").split("__p")[0]
+        if name == field_name:
+            return [float(v) for v in obj["/Rect"]]
+    raise AssertionError(f"field {field_name!r} not found on page {page_index}")
+
+
+def _drawn_runs(page, needle):
+    """Every piece of text drawn on `page` containing `needle`, as
+    (text, x, font_size, base_font) -- read straight out of the page's own
+    content stream via pypdf's visitor callback, per the PDF spec's
+    `(text, cm, tm, font_dict, font_size)` signature. `tm[4]` is the x the
+    text was actually positioned at; `font_dict['/BaseFont']` names the face
+    actually used to draw it. This is independent of every value- and
+    dict-level assertion elsewhere in this file."""
+    hits = []
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if text and needle in text:
+            base = font_dict.get("/BaseFont") if font_dict else None
+            hits.append((text, tm[4], font_size, str(base)))
+
+    page.extract_text(visitor_text=visitor)
+    return hits
+
+
+def test_the_baked_fidelity_wiring_is_actually_applied():
+    """I2 (final review): `sizes=FIELD_SIZES`, `regular=REGULAR_WEIGHT_FIELDS`
+    and `quadding=obj.get('/Q')` were removed from the `bake()` call in
+    `fill._render` -- reverting every fidelity decision Tasks 3 and 6 made --
+    and 63 tests still passed. Every one of them asserted on FIELD_SIZES'
+    contents, REGULAR_WEIGHT_FIELDS membership, or draw_position's arithmetic
+    IN ISOLATION; `test_the_company_name_and_BRN_are_centred_on_the_rendered_
+    form` reads the widget's `/Q`, which is the TEMPLATE's, not the one the
+    renderer was told to honour. None of them read what was actually drawn.
+
+    This one does, for all three: the BRN's drawn size, the company name's
+    drawn x against an independently computed centred position, and the
+    presenter block's drawn face."""
+    from services.nar1_form import fill
+    from services.nar1_form import field_map as fm2
+    from tests.test_nar1_form_fill import build_xml
+
+    pdf = fill.render(build_xml())
+    reader = PdfReader(io.BytesIO(pdf))
+    page1 = reader.pages[0]
+
+    # 1) The BRN header is drawn at CR's 14pt, not the 10pt default.
+    br_runs = _drawn_runs(page1, "T0001137")
+    assert br_runs, "the BRN was not found in page 1's drawn text"
+    _, _br_x, br_size, _br_font = br_runs[0]
+    assert br_size == 14.0, f"the BRN drew at {br_size}pt, not CR's 14pt"
+
+    # 2) The company name is drawn CENTRED -- its x matches an independently
+    # computed centred position, not the plain left pad.
+    name_runs = _drawn_runs(page1, "TEST COMPANY LIMITED")
+    assert name_runs, "the company name was not found in page 1's drawn text"
+    _, name_x, name_size, _name_font = name_runs[0]
+    full_name = "TEST COMPANY LIMITED  測試有限公司"     # what fill._company_name
+                                                          # actually joins
+    rect = _field_rect(reader, 0, fm2.MAIN_1["company_name"])
+    left_pad = rect[0] + 2.0
+    centred_x = ap.draw_position(full_name, rect, size=name_size, quadding=1,
+                                 bold=True)
+    assert abs(name_x - left_pad) > 5.0, \
+        f"the company name drew hard against the left pad ({left_pad}) " \
+        f"instead of centred"
+    assert abs(name_x - centred_x) < 0.5, \
+        f"the company name drew at x={name_x}, not the centred x={centred_x}"
+
+    # 3) The presenter block is drawn in the REGULAR face, not bold.
+    presenter_runs = _drawn_runs(page1, "Get Started HK Limited")
+    assert presenter_runs, "the presenter name was not found in page 1's drawn text"
+    _, _pres_x, _pres_size, presenter_font = presenter_runs[0]
+    assert "Bold" not in presenter_font, \
+        f"the presenter block drew in {presenter_font!r}, not the regular face"
 
 
 def test_the_presenter_block_is_regular_weight_not_bold():
