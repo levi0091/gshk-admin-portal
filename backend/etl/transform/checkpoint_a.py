@@ -62,14 +62,21 @@ def transform_address(row: dict) -> dict:
 def transform_person(row: dict) -> dict:
     """Joined RefMaster (RefType='I') + Compliance row -> persons insert dict."""
     full_name = (row.get("Name") or row.get("SearchName") or "UNKNOWN").strip()
-    former_name = row.get("FormerName") or row.get("Aliases")
     return {
         "vp_source_key": row["RefCode"],
         "full_name": full_name,
         "given_names": row.get("GivenNames"),
         "surname": None,
         "full_name_zh": row.get("ChnsName"),
-        "former_name": former_name,
+        # Previous name and alias are DIFFERENT facts and CR asks for them in
+        # different fields: indvPrevEngName is a name you no longer use,
+        # indvAlsEngName one you also use. This used to be
+        # `FormerName or Aliases` -- one column for both -- which filed a
+        # person's current alias as a name they had abandoned.
+        "former_name": row.get("FormerName"),
+        "former_name_zh": row.get("ChnsFormerName"),
+        "alias_en": row.get("Aliases"),
+        "alias_zh": row.get("ChnsAliases"),
         "email": row.get("Email"),
         "phone": None,
         "date_of_birth": row.get("BirthDate"),

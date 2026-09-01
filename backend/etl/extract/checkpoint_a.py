@@ -18,6 +18,7 @@ def extract_addresses(engine: Engine) -> list[dict]:
 PERSONS_QUERY = text("""
     SELECT rm.RefCode, rm.Name, rm.ChnsName, rm.SearchName, rm.DateEntered,
            c.GivenNames, c.FormerName, c.FormerGivenNames, c.Aliases,
+           c.ChnsFormerName, c.ChnsAliases,
            c.Email, c.BirthDate, c.Gender, c.Nationality, c.NationalityCode,
            c.Occupation, c.PlaceBirth, c.MaritalStatus, c.DateDeath
     FROM RefMaster rm

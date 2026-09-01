@@ -29,6 +29,33 @@ def test_transform_share_classes_basic_mapping():
     assert r["total_paid"] == 1000
 
 
+def test_transform_share_classes_carries_the_issued_amount_separately():
+    """CR's Total Number and Total Amount are different columns and a share
+    need not be worth one dollar. Viewpoint has carried StatedCap all along;
+    the extract just never selected it, so `issued_amount` was unfillable and
+    the form could only be completed by assuming count == value."""
+    rows = [_sc("E1", "OR01", "Ordinary", Issued=1, StatedCap=10000, PaidCap=10000)]
+    report = ReconciliationReport()
+
+    out = transform_share_classes(rows, {"E1": "e-uuid"}, report)
+
+    assert out[0]["total_issued"] == 1
+    assert out[0]["issued_amount"] == 10000
+    assert out[0]["total_paid"] == 10000
+
+
+def test_transform_share_classes_leaves_issued_amount_none_when_vp_has_none():
+    """24 of Viewpoint's 5,740 rows carry no StatedCap. None is honest;
+    defaulting to the share count would reintroduce the exact conflation this
+    column exists to end."""
+    rows = [_sc("E1", "OR01", "Ordinary", Issued=500, StatedCap=None)]
+    report = ReconciliationReport()
+
+    out = transform_share_classes(rows, {"E1": "e-uuid"}, report)
+
+    assert out[0]["issued_amount"] is None
+
+
 def test_transform_share_classes_disambiguates_same_name_within_entity():
     rows = [
         _sc("E1", "OR01", "Ordinary"),

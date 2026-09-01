@@ -155,7 +155,13 @@ def test_transform_person_falls_back_to_search_name_when_name_blank():
     assert result["full_name"] == "FALLBACK NAME"
 
 
-def test_transform_person_merges_aliases_into_former_name():
+def test_transform_person_keeps_alias_separate_from_former_name():
+    """REPLACES test_transform_person_merges_aliases_into_former_name, whose
+    behaviour was `FormerName or Aliases` -- one column for two different
+    facts. CR asks for them separately (indvPrevEngName vs indvAlsEngName) and
+    they mean different things: a previous name is one you no longer use, an
+    alias is one you also use. Merging them files a person's current alias as
+    a name they have abandoned."""
     vp_row = {
         "RefCode": "X2", "Name": "Jane Doe", "ChnsName": None,
         "GivenNames": "Jane", "FormerName": None, "FormerGivenNames": None,
@@ -163,8 +169,31 @@ def test_transform_person_merges_aliases_into_former_name():
         "NationalityCode": None, "Occupation": None, "PlaceBirth": None,
         "MaritalStatus": None, "DateDeath": None, "Aliases": "Jane Smith",
     }
+
     result = transform_person(vp_row)
-    assert result["former_name"] == "Jane Smith"
+
+    assert result["alias_en"] == "Jane Smith"
+    assert result["former_name"] is None
+
+
+def test_transform_person_carries_both_names_in_chinese_too():
+    """CR wants Previous Names and Alias in Chinese as well as English."""
+    vp_row = {
+        "RefCode": "X3", "Name": "Jane Doe", "ChnsName": None,
+        "GivenNames": "Jane", "FormerName": "Jane Roe",
+        "FormerGivenNames": None, "Email": None, "BirthDate": None,
+        "Gender": None, "Nationality": None, "NationalityCode": None,
+        "Occupation": None, "PlaceBirth": None, "MaritalStatus": None,
+        "DateDeath": None, "Aliases": "JD",
+        "ChnsFormerName": "前名", "ChnsAliases": "別名",
+    }
+
+    result = transform_person(vp_row)
+
+    assert result["former_name"] == "Jane Roe"
+    assert result["former_name_zh"] == "前名"
+    assert result["alias_en"] == "JD"
+    assert result["alias_zh"] == "別名"
 
 
 def _entity_row(**overrides):
