@@ -5,6 +5,7 @@ import pytest
 from pypdf import PdfReader
 
 from services.nar1_form import appearance as ap
+from services.nar1_form import field_map as fm
 
 
 def test_the_font_files_are_present_beside_the_module():
@@ -77,3 +78,153 @@ def test_a_value_mixing_accented_latin_and_cjk_splits_correctly():
         ap.FONT_LATIN_BOLD, ap.FONT_CJK, ap.FONT_LATIN_BOLD
     ]
     assert "".join(chunk for _, chunk in runs) == "Müller 中環 Ángel"
+
+
+# --- measuring and fitting -------------------------------------------------
+
+def test_tinos_bold_is_metric_identical_to_times_new_roman(tmp_path):
+    """The whole reason Tinos was chosen over shipping a Monotype font. If a
+    future upgrade breaks this, values start wrapping differently and nobody
+    would otherwise notice until a client complained again."""
+    times = "C:/Windows/Fonts/timesbd.ttf"
+    if not __import__("os").path.exists(times):
+        pytest.skip("Times New Roman is a Windows font; not on this machine")
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    ap.register_fonts()
+    pdfmetrics.registerFont(TTFont("TimesBd-probe", times))
+    for sample in ("Kanenas Holding Limited", "ERIKSSON WASE",
+                   "Suite C, Level 7, World Trust Tower", "10,000.00"):
+        ours = ap.measure(sample, 10.0)
+        theirs = pdfmetrics.stringWidth(sample, "TimesBd-probe", 10.0)
+        assert abs(ours - theirs) < 0.001, f"{sample!r} drifted"
+
+
+def test_a_value_that_fits_keeps_its_nominal_size():
+    ap.register_fonts()
+    assert ap.fit_size("N/A", width=200.0) == 10.0
+
+
+def test_an_overlong_value_is_shrunk_to_fit_not_clipped():
+    """CR's boxes are fixed; an address that overflows must still be readable
+    rather than run off the edge of the field.
+
+    Width recalibrated from the brief's 90.0 to 200.0 (Task 3 implementation,
+    2026-09-01): at 90.0 this 59-character value still measures 107.67pt at
+    the 4.0pt floor -- 86pt usable -- so fit_size correctly returns the floor
+    (the same clamp `test_shrinking_stops_at_a_legible_floor` exercises) and
+    the "fits" assertion below can never hold, for any implementation, given
+    the committed Tinos-Bold metrics. 200.0 lets the value actually converge
+    above the floor (7.25pt), which is what this test means to demonstrate."""
+    ap.register_fonts()
+    long_value = "Flat A, 39/F, Block 2, Something Very Long Gardens, Kowloon"
+    size = ap.fit_size(long_value, width=200.0)
+    assert size < 10.0
+    assert ap.measure(long_value, size) <= 200.0 - 4.0
+
+
+def test_shrinking_stops_at_a_legible_floor():
+    """Better a value that overflows visibly than one rendered at 2pt, which
+    reads as a smudge and hides a wrong particular."""
+    ap.register_fonts()
+    assert ap.fit_size("x" * 400, width=20.0) == 4.0
+
+
+# --- baking a document -----------------------------------------------------
+
+def _baked():
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    return fill.render(build_xml())
+
+
+def test_baking_clears_need_appearances():
+    """The flag that made two viewers disagree."""
+    reader = PdfReader(io.BytesIO(_baked()))
+    acroform = reader.trailer["/Root"]["/AcroForm"]
+    assert not acroform.get("/NeedAppearances")
+
+
+def test_every_drawn_widget_is_hidden():
+    """A visible widget paints its own box, and its own guess of the text,
+    on top of the layer we just drew."""
+    reader = PdfReader(io.BytesIO(_baked()))
+    for page in reader.pages:
+        for annot in (page.get("/Annots") or []):
+            obj = annot.get_object()
+            if obj.get("/FT") != "/Tx":
+                continue
+            value = obj.get("/V")
+            if value is None or not str(value).strip():
+                continue
+            assert int(obj.get("/F", 0)) & 2, \
+                f"a valued widget is still visible: {obj.get('/T')}"
+
+
+def test_both_latin_and_cjk_faces_are_embedded_when_both_are_used():
+    """Non-embedded is how we got here: the viewer substitutes and the
+    document changes shape by platform."""
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    reader = PdfReader(io.BytesIO(fill.render(
+        build_xml(directors=("嘉寧斯控股有限公司",)))))
+    found = {}
+    for page in reader.pages:
+        fonts = (page.get("/Resources") or {}).get("/Font")
+        if not fonts:
+            continue
+        for value in fonts.get_object().values():
+            value = value.get_object()
+            base = str(value.get("/BaseFont"))
+            descriptor = value.get("/FontDescriptor")
+            if descriptor is None and value.get("/DescendantFonts"):
+                descendant = value["/DescendantFonts"].get_object()[0]
+                descriptor = descendant.get_object().get("/FontDescriptor")
+            embedded = bool(descriptor) and any(
+                key in descriptor.get_object()
+                for key in ("/FontFile", "/FontFile2", "/FontFile3"))
+            if "Tinos" in base:
+                found["latin"] = embedded
+            if "NotoSerif" in base:
+                found["cjk"] = embedded
+    assert found.get("latin") is True, "the Latin face is missing or external"
+    assert found.get("cjk") is True, "the CJK face is missing or external"
+
+
+def test_the_pmingliu_default_no_longer_decides_anything():
+    """Even if a stray /DA survives, no viewer should be reaching for it."""
+    reader = PdfReader(io.BytesIO(_baked()))
+    assert not reader.trailer["/Root"]["/AcroForm"].get("/NeedAppearances")
+
+
+def test_a_chinese_name_survives_into_the_text_layer():
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    reader = PdfReader(io.BytesIO(fill.render(
+        build_xml(directors=("嘉寧斯控股有限公司",)))))
+    assert any("嘉寧斯" in (page.extract_text() or "") for page in reader.pages)
+
+
+def test_baking_does_not_bloat_the_attachment():
+    """It has to survive a mail gateway. Subsetting is what keeps a 10MB CJK
+    face from becoming 10MB of email."""
+    assert len(_baked()) < 3_000_000
+
+
+def test_every_page_header_carries_the_BRN_at_14pt():
+    """CR prints it at 14pt on every page, not only the first. A header that
+    silently falls back to 10pt is the kind of drift nobody reports and
+    everybody notices."""
+    from services.nar1_form import fill
+    for group_name in ("MAIN_1", "MAIN_2", "SECRETARY_INDIVIDUAL",
+                       "SECRETARY_CORPORATE", "DIRECTOR_INDIVIDUAL",
+                       "DIRECTOR_CORPORATE_HEADER", "RESERVE_DIRECTOR",
+                       "MEMBERS_AND_SIGNATURE"):
+        group = getattr(fm, group_name)
+        assert fill.FIELD_SIZES.get(group["br_number"]) == 14.0, \
+            f"{group_name} header BRN is not 14pt"
+
+
+def test_the_company_name_is_the_one_12pt_value():
+    from services.nar1_form import fill
+    assert fill.FIELD_SIZES[fm.MAIN_1["company_name"]] == 12.0

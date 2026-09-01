@@ -44,7 +44,6 @@ client is being asked to read is noise.
 from __future__ import annotations
 
 import io
-import logging
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -52,15 +51,8 @@ from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, NameObject, NumberObject, TextStringObject
 
+from services.nar1_form import appearance
 from services.nar1_form import field_map as fm
-
-# pypdf warns "contains characters not supported by font encoding" for every
-# value it writes, including plain ASCII, because it cannot build an appearance
-# stream from CR's subsetted form fonts. It does not have to: the document sets
-# NeedAppearances, so the VIEWER draws the values from the form's own fonts —
-# verified by rasterising a real filled return, Chinese company names included.
-# The warning is therefore noise, and one line per field drowns real logs.
-logging.getLogger("pypdf.generic._appearance_stream").setLevel(logging.ERROR)
 
 #: CR's blank form, COMMITTED BESIDE THIS MODULE rather than read from
 #: `docs/`. It is a runtime dependency, not documentation: without it every
@@ -74,6 +66,33 @@ DEFAULT_PRESENTER = {
     "name": "Get Started HK Limited",
     "email": "no-reply@getstarted.hk",
 }
+
+
+#: The sizes CR uses that are not the 10pt default, keyed by the field's name
+#: on the template. Read off a real filed return rather than guessed: the BRN
+#: in the header box is 14pt on EVERY page, and the company name in field 1
+#: is 12pt.
+#:
+#: Built from field_map's own constants rather than a regex over field names.
+#: `fill_1_P.6` is a BRN header and `fill_6_P.6` is a director's surname --
+#: a pattern loose enough to catch every header also catches those.
+def _br_number_fields() -> set[str]:
+    groups = (fm.MAIN_1, fm.MAIN_2, fm.SECRETARY_INDIVIDUAL,
+              fm.SECRETARY_CORPORATE, fm.DIRECTOR_INDIVIDUAL,
+              fm.DIRECTOR_CORPORATE_HEADER, fm.RESERVE_DIRECTOR,
+              fm.MEMBERS_AND_SIGNATURE,
+              # NOT fm.SCHEDULE_1 / fm.SCHEDULE_2 -- those are row TUPLES.
+              # `"br_number" in <tuple>` is False, so naming them here fails
+              # silently and both Schedule pages print their BRN at 10pt.
+              fm.SCHEDULE_1_HEADER, fm.SCHEDULE_2_HEADER)
+    names = {group["br_number"] for group in groups if "br_number" in group}
+    for page in range(fm.PAGE_SHEET_A, fm.PAGE_SHEET_E + 1):
+        names.add(fm.sheet_header(page)["br_number"])
+    return names
+
+
+FIELD_SIZES = {name: 14.0 for name in _br_number_fields()}
+FIELD_SIZES[fm.MAIN_1["company_name"]] = 12.0
 
 
 class FormFillError(RuntimeError):
@@ -809,11 +828,6 @@ def _render(pages: _Pages) -> bytes:
             writer.pages[-1], renamed, auto_regenerate=False
         )
 
-    # Without this most viewers draw the boxes and none of the values: pypdf
-    # writes /V but no appearance stream, and NeedAppearances asks the viewer
-    # to generate them.
-    writer.set_need_appearances_writer(True)
-
     # Read-only, because the client is being asked to APPROVE this document,
     # not to edit it. Bit 1 of /Ff is ReadOnly.
     for page in writer.pages:
@@ -830,7 +844,11 @@ def _render(pages: _Pages) -> bytes:
 
     buffer = io.BytesIO()
     writer.write(buffer)
-    return buffer.getvalue()
+    # The values are drawn as page content in fonts we embed, and the widgets
+    # are hidden. Until this call the document still renders through CR's
+    # non-embedded /PMingLiU, which is what made the emailed copy and the
+    # portal preview disagree.
+    return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES)
 
 
 def render(validated_xml: str, *, company_type: str = "private",

@@ -84,3 +84,122 @@ def split_runs(text: str, *, bold: bool = True) -> list[tuple[str, str]]:
         else:
             runs.append((face, char))
     return runs
+
+
+import io
+
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject, NumberObject
+from reportlab.pdfgen import canvas as rl_canvas
+
+#: /F bit 2 on an annotation: Hidden.
+_ANNOT_HIDDEN = 2
+
+#: Left and right breathing room inside a widget box, in points.
+_PAD = 2.0
+
+#: Below this the value is a smudge, and an unreadable particular is worse
+#: than one that visibly overflows its box.
+_MIN_SIZE = 4.0
+
+#: Sizes read off CR's own returns.
+DEFAULT_SIZE = 10.0
+
+
+def measure(text: str, size: float, *, bold: bool = True) -> float:
+    """Advance width of `text` at `size`, summed across its script runs."""
+    return sum(pdfmetrics.stringWidth(chunk, font, size)
+               for font, chunk in split_runs(text, bold=bold))
+
+
+def fit_size(text: str, width: float, *, start: float = DEFAULT_SIZE,
+             minimum: float = _MIN_SIZE, bold: bool = True) -> float:
+    """The largest size at or below `start` whose text fits `width`."""
+    size = start
+    usable = width - 2 * _PAD
+    while size > minimum and measure(text, size, bold=bold) > usable:
+        size -= 0.25
+    return round(max(size, minimum), 2)
+
+
+def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
+               bold: bool = True) -> float:
+    """Draw one value inside its widget rectangle. Returns the size used."""
+    x0, y0, x1, y1 = (float(v) for v in rect)
+    size = fit_size(text, x1 - x0, start=size, bold=bold)
+    # Vertically centre the glyph box. 0.72 approximates cap height for both
+    # faces; the correction keeps a 10pt value off the rule beneath it.
+    y = y0 + ((y1 - y0) - size * 0.72) / 2 + size * 0.06
+    x = x0 + _PAD
+    canvas.setFillColorRGB(0, 0, 0)
+    for font, chunk in split_runs(text, bold=bold):
+        canvas.setFont(font, size)
+        canvas.drawString(x, y, chunk)
+        x += pdfmetrics.stringWidth(chunk, font, size)
+    return size
+
+
+def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None) -> bytes:
+    """Draw every field value as page content and hide the widgets.
+
+    `sizes` maps a field's ORIGINAL template name to a point size, for the
+    handful CR sets larger than the rest -- the BRN at 14pt and the company
+    name at 12pt. Names carry the renderer's per-page suffix, so the lookup
+    is on the part before `__p`.
+    """
+    register_fonts()
+    sizes = sizes or {}
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+
+    for page in reader.pages:
+        box = page.mediabox
+        buffer = io.BytesIO()
+        layer = rl_canvas.Canvas(
+            buffer, pagesize=(float(box.width), float(box.height)))
+        drew = False
+
+        for annot in (page.get("/Annots") or []):
+            obj = annot.get_object()
+            if obj.get("/FT") != "/Tx":
+                continue
+            value = obj.get("/V")
+            if value is None or not str(value).strip():
+                continue
+            name = str(obj.get("/T") or "").split("__p")[0]
+            draw_value(layer, str(value), obj["/Rect"],
+                       size=sizes.get(name, DEFAULT_SIZE))
+            obj[NameObject("/F")] = NumberObject(
+                int(obj.get("/F", 0)) | _ANNOT_HIDDEN)
+            drew = True
+
+        layer.save()
+        if drew:
+            buffer.seek(0)
+            page.merge_page(PdfReader(buffer).pages[0])
+        writer.add_page(page)
+
+    acroform = reader.trailer["/Root"].get("/AcroForm")
+    if acroform is not None:
+        # DictionaryObject.get() is plain dict.get() underneath -- unlike
+        # __getitem__, it does NOT resolve an IndirectObject. Without
+        # get_object() here, .clone() runs on the reference itself and
+        # raises "'IndirectObject' object does not support item assignment"
+        # a few lines down. Verified against pypdf 6.16.1.
+        cloned = acroform.get_object().clone(writer)
+        # The layer IS the appearance now. Leaving this true invites a viewer
+        # to discard it and redraw from /DA -- the original defect. REMOVED
+        # rather than set to BooleanObject(False): pypdf's BooleanObject has
+        # no __bool__ override, so any instance -- true OR false -- is
+        # truthy in Python (verified against pypdf 6.16.1), which would make
+        # `acroform.get("/NeedAppearances")` read as set either way once the
+        # bytes are re-parsed. The PDF spec's own default for an ABSENT key
+        # is false, so deleting it is both correct and what a re-parsed
+        # reader actually reports as falsy.
+        if "/NeedAppearances" in cloned:
+            del cloned[NameObject("/NeedAppearances")]
+        writer._root_object[NameObject("/AcroForm")] = writer._add_object(cloned)
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
