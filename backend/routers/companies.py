@@ -13,6 +13,8 @@ from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_events, document_service, address_service
+from services.tpsi.forms.cr_vocabularies import BUSINESS_NATURE
+from services.cr_forms.readiness import filing_problems
 
 router = APIRouter()
 
@@ -43,6 +45,10 @@ _EDITABLE_FIELDS = {
     "br_number", "cr_number", "status", "active_workflow",
     "registered_address_id", "incorporation_date", "incorporation_place",
     "tcsp_licence_no", "tcsp_exemption_reason",
+    # NAR1 s2/s3/s9 (migration 028). `business_nature_desc` is written by the
+    # handler from the code, never accepted from the client -- CR derives it
+    # the same way after web-form validation.
+    "business_nature_code", "business_nature_desc", "mortgages_total",
     "ar_last_date", "ar_next_date", "ar_due_date", "agm_next_date",
     "aoa_director_min", "aoa_director_max", "aoa_agm_waived",
     "previous_name", "date_name_changed", "case_notes", "assigned_to",
@@ -160,6 +166,8 @@ class UpdateCompanyRequest(BaseModel):
     incorporation_place: Optional[str] = None
     tcsp_licence_no: Optional[str] = None
     tcsp_exemption_reason: Optional[str] = None
+    business_nature_code: Optional[str] = None
+    mortgages_total: Optional[str] = None
     ar_last_date: Optional[str] = None
     ar_next_date: Optional[str] = None
     ar_due_date: Optional[str] = None
@@ -389,7 +397,7 @@ async def get_company(
     async def q(fn):
         return await asyncio.to_thread(fn)
 
-    officers, secretaries, shareholders, ben_owners, contacts, documents = await asyncio.gather(
+    officers, secretaries, shareholders, ben_owners, contacts, documents, share_classes = await asyncio.gather(
         q(lambda: (sb.table("entity_officers").select(f"*, {person_cols}")
                    .eq("entity_id", company_id).neq("role", _SECRETARY_ROLE)
                    .execute().data) or []),
@@ -404,6 +412,11 @@ async def get_company(
         q(lambda: (sb.table("contacts").select("*")
                    .eq("entity_id", company_id).execute().data) or []),
         q(lambda: document_service.list_documents(owner_kind="entity", owner_id=company_id)),
+        # CR's section 11 in its own right, not just the class names hanging
+        # off each shareholding: the return states the company's share capital
+        # whether or not anyone currently holds it.
+        q(lambda: (sb.table("share_classes").select("*")
+                   .eq("entity_id", company_id).execute().data) or []),
     )
 
     linked = officers + secretaries + shareholders + ben_owners
@@ -443,7 +456,12 @@ async def get_company(
         "shareholders": shareholders,
         "beneficial_owners": ben_owners,
         "secretaries": secretaries,
+        "share_classes": share_classes,
     }
+    # Whether a return can be produced from this profile at all. Computed here
+    # so the screen and the API agree, and so the Open case button can say why
+    # it is refusing rather than just being grey (PRD OQ-2).
+    result["filing_problems"] = filing_problems(result)
     # Cases pane only for client entities (§6 visibility).
     if entity.get("is_client"):
         # `nar1_case_registry` (024) rather than the raw table: it carries
@@ -518,6 +536,20 @@ async def update_company(
                if v is not None and k in _EDITABLE_FIELDS}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Business nature is a closed list of CR's, and the description follows the
+    # code rather than being typed -- so an unknown code is refused here rather
+    # than reaching CR, and the description is derived rather than trusted.
+    if "business_nature_code" in updates:
+        code = str(updates["business_nature_code"]).strip()
+        description = BUSINESS_NATURE.get(code)
+        if description is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{code!r} is not a CR business nature code",
+            )
+        updates["business_nature_code"] = code
+        updates["business_nature_desc"] = description
 
     sb = get_supabase()
     current = (
