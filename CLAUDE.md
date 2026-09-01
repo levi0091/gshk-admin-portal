@@ -103,6 +103,35 @@ gshk-admin-portal/
 - `main` → auto-deploys to PROD
 - Feature work goes on `dev`. Never push directly to `main`.
 
+### Worktrees — the default for any new piece of work
+
+**Start every new task in its own git worktree, branched from `dev`.** Not just when the tree is dirty — always. Claude Code sessions run concurrently, and two of them sharing one checkout is the failure this rule exists to prevent: one session's `git checkout` moves the branch under another session's feet, an in-flight edit gets stashed by someone else's rebase, and a half-finished refactor ends up in an unrelated commit. This has already bitten us — a PRD could not be committed because another session had uncommitted `nar1_form/fill.py` work in the shared checkout.
+
+```
+Use the EnterWorktree tool (name it for the task, e.g. registry-form-fidelity).
+It creates .claude/worktrees/<name>/ and switches the session into it.
+```
+
+**`origin/HEAD` is unset on this repo and `master` != `dev`**, so a worktree may be created from the wrong base. Always re-point it immediately after creating one, before any work:
+
+```bash
+git fetch origin dev && git reset --hard origin/dev
+```
+
+Then set the worktree up — it does **not** inherit the parent checkout's dependencies or secrets:
+
+```bash
+cd backend  && uv sync          # .venv is per-worktree
+cd frontend && npm ci           # node_modules is per-worktree
+```
+
+`.env` is gitignored and therefore **absent** in a fresh worktree. Backend unit tests are expected to pass without it — if a test needs `.env` to go green, that test is reaching a live service and is the bug (see the memory note on green-local/red-CI). Scripts that genuinely need credentials (ETL, Viewpoint probes, `scripts/`) must be run from a checkout that has `.env`, or be given one explicitly.
+
+Run the baseline before writing any code, so a later failure is unambiguous:
+`uv run pytest -q` and `npm run test -- --run`.
+
+Leave with `ExitWorktree` (`keep` to preserve the work, `remove` to discard). Never `git worktree add` by hand — the harness cannot see or clean up worktrees it did not create.
+
 ---
 
 ## Credentials & secrets
