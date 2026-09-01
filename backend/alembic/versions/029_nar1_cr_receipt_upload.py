@@ -99,6 +99,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Reverses the upgrade, and REFUSES if any receipt has been uploaded.
+
+    The `DELETE FROM document_types` below is blocked by the foreign key from
+    `documents.document_type_code` the moment a real receipt exists. That is
+    the correct behaviour and it is deliberate: a downgrade that silently
+    deleted the evidence behind a filed statutory return would be worse than
+    one that stops. Remove the receipts first, knowingly, if a downgrade is
+    genuinely wanted.
+    """
     op.execute(
         "ALTER TABLE public.nar1_cases "
         "  DROP COLUMN IF EXISTS manual_receipt_document_version, "
@@ -114,6 +123,12 @@ def downgrade() -> None:
         "  ADD CONSTRAINT document_types_applies_to_valid "
         "  CHECK (applies_to IN ('company', 'person', 'both'));"
     )
+    # THE COLUMN GOES BEFORE THE NARROWER CHECK GOES BACK ON. The other order
+    # adds a constraint that any case-owned row still present would violate, so
+    # the downgrade would fail against a database that had actually used the
+    # feature while passing against CI's empty one — the worst kind of green.
+    op.execute("DROP INDEX IF EXISTS public.idx_documents_nar1_case")
+    op.execute("ALTER TABLE public.documents DROP COLUMN IF EXISTS nar1_case_id")
     op.execute(
         "ALTER TABLE public.documents "
         "  DROP CONSTRAINT IF EXISTS documents_owner_present;"
@@ -122,5 +137,3 @@ def downgrade() -> None:
         "ALTER TABLE public.documents ADD CONSTRAINT documents_owner_present "
         "CHECK (entity_id IS NOT NULL OR person_id IS NOT NULL);"
     )
-    op.execute("DROP INDEX IF EXISTS public.idx_documents_nar1_case")
-    op.execute("ALTER TABLE public.documents DROP COLUMN IF EXISTS nar1_case_id")
