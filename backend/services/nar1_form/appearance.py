@@ -122,15 +122,35 @@ def fit_size(text: str, width: float, *, start: float = DEFAULT_SIZE,
     return round(max(size, minimum), 2)
 
 
+def draw_position(text: str, rect, *, size: float, quadding=None,
+                  bold: bool = True) -> float:
+    """The x the text starts at, honouring the field's /Q alignment.
+
+    CR quads the company name and the BRN header CENTRE (`/Q = 1`) and its own
+    filed returns render them that way. Everything else carries no `/Q` and is
+    left-aligned. Getting this wrong is invisible to every value-and-font
+    assertion in this file and obvious the moment anyone lays the two
+    documents side by side -- which is how it was found.
+    """
+    x0, _, x1, _ = (float(v) for v in rect)
+    width = measure(text, size, bold=bold)
+    quad = int(quadding) if quadding is not None else 0
+    if quad == 1:                      # centred
+        return x0 + ((x1 - x0) - width) / 2
+    if quad == 2:                      # right-aligned
+        return x1 - _PAD - width
+    return x0 + _PAD                   # left, and the default
+
+
 def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
-               bold: bool = True) -> float:
+               bold: bool = True, quadding=None) -> float:
     """Draw one value inside its widget rectangle. Returns the size used."""
     x0, y0, x1, y1 = (float(v) for v in rect)
     size = fit_size(text, x1 - x0, start=size, bold=bold)
     # Vertically centre the glyph box. 0.72 approximates cap height for both
     # faces; the correction keeps a 10pt value off the rule beneath it.
     y = y0 + ((y1 - y0) - size * 0.72) / 2 + size * 0.06
-    x = x0 + _PAD
+    x = draw_position(text, rect, size=size, quadding=quadding, bold=bold)
     canvas.setFillColorRGB(0, 0, 0)
     for font, chunk in split_runs(text, bold=bold):
         canvas.setFont(font, size)
@@ -139,16 +159,22 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
     return size
 
 
-def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None) -> bytes:
+def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
+         regular: frozenset[str] | set[str] | None = None) -> bytes:
     """Draw every field value as page content and hide the widgets.
 
     `sizes` maps a field's ORIGINAL template name to a point size, for the
     handful CR sets larger than the rest -- the BRN at 14pt and the company
     name at 12pt. Names carry the renderer's per-page suffix, so the lookup
     is on the part before `__p`.
+
+    `regular` names the fields CR sets in the REGULAR face rather than bold --
+    the presenter's block, which identifies who filed the return rather than
+    stating anything about the company. Everything else is bold.
     """
     register_fonts()
     sizes = sizes or {}
+    regular = regular or frozenset()
     reader = PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter()
 
@@ -168,7 +194,9 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None) -> bytes:
                 continue
             name = str(obj.get("/T") or "").split("__p")[0]
             draw_value(layer, str(value), obj["/Rect"],
-                       size=sizes.get(name, DEFAULT_SIZE))
+                       size=sizes.get(name, DEFAULT_SIZE),
+                       bold=name not in regular,
+                       quadding=obj.get("/Q"))
             obj[NameObject("/F")] = NumberObject(
                 int(obj.get("/F", 0)) | _ANNOT_HIDDEN)
             drew = True

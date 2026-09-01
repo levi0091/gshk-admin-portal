@@ -228,3 +228,74 @@ def test_every_page_header_carries_the_BRN_at_14pt():
 def test_the_company_name_is_the_one_12pt_value():
     from services.nar1_form import fill
     assert fill.FIELD_SIZES[fm.MAIN_1["company_name"]] == 12.0
+
+
+# ---------------------------------------------------------------------------
+# Caught by the visual gate, not by any assertion above (Task 6)
+# ---------------------------------------------------------------------------
+
+def test_a_centred_field_is_actually_centred():
+    """CR sets /Q=1 on the company name and the BRN header, and its own filed
+    returns render both centred in their boxes. Drawing every value hard
+    against the left edge is visibly not CR's form -- and no test above could
+    see it, because they all assert on values and fonts rather than position.
+    """
+    ap.register_fonts()
+    rect = (0.0, 0.0, 200.0, 20.0)
+    left = ap.draw_position("ABC", rect, size=10.0, quadding=0)
+    centre = ap.draw_position("ABC", rect, size=10.0, quadding=1)
+    right = ap.draw_position("ABC", rect, size=10.0, quadding=2)
+    width = ap.measure("ABC", 10.0)
+    assert left == 2.0
+    assert abs(centre - (200.0 - width) / 2) < 0.01
+    assert abs(right - (200.0 - 2.0 - width)) < 0.01
+    assert left < centre < right
+
+
+def test_quadding_falls_back_to_left_when_the_field_does_not_say():
+    """Most of CR's fields carry no /Q at all; those are left-aligned."""
+    ap.register_fonts()
+    rect = (0.0, 0.0, 200.0, 20.0)
+    assert ap.draw_position("ABC", rect, size=10.0, quadding=None) == 2.0
+
+
+def test_the_company_name_and_BRN_are_centred_on_the_rendered_form():
+    """The two fields CR quads centre, checked end to end rather than in
+    isolation -- this is what the reference return shows."""
+    import io as _io
+    from pypdf import PdfReader as _R
+    from services.nar1_form import fill
+    from services.nar1_form import field_map as fm
+    from tests.test_nar1_form_fill import build_xml
+    reader = _R(_io.BytesIO(fill.render(build_xml())))
+    centred = {fm.MAIN_1["company_name"], fm.MAIN_1["br_number"]}
+    seen = 0
+    for page in reader.pages:
+        for annot in (page.get("/Annots") or []):
+            obj = annot.get_object()
+            name = str(obj.get("/T") or "").split("__p")[0]
+            if name in centred:
+                assert int(obj.get("/Q", 0)) == 1, f"{name} lost its quadding"
+                seen += 1
+    assert seen >= 2, "expected the company name and the BRN header"
+
+
+def test_the_presenter_block_is_regular_weight_not_bold():
+    """CR's own return sets the presenter's details in Times New Roman
+    REGULAR while every statutory value above it is bold. Rendering the whole
+    page bold loses the distinction CR draws between the return's content and
+    the administrative block identifying who filed it."""
+    from services.nar1_form import fill
+    from services.nar1_form import field_map as fm
+    for key in ("presenter_name", "presenter_address", "presenter_tel",
+                "presenter_fax", "presenter_email", "presenter_reference"):
+        assert fm.MAIN_1[key] in fill.REGULAR_WEIGHT_FIELDS, \
+            f"{key} should render in the regular face"
+    assert fm.MAIN_1["company_name"] not in fill.REGULAR_WEIGHT_FIELDS
+
+
+def test_a_regular_weight_run_uses_the_regular_face():
+    ap.register_fonts()
+    assert ap.split_runs("Get Started HK Limited", bold=False) == [
+        (ap.FONT_LATIN, "Get Started HK Limited")
+    ]

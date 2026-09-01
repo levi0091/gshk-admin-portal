@@ -110,6 +110,18 @@ def _br_number_fields() -> set[str]:
 FIELD_SIZES = {name: 14.0 for name in _br_number_fields()}
 FIELD_SIZES[fm.MAIN_1["company_name"]] = 12.0
 
+#: The fields CR sets in the REGULAR face rather than bold. On a real filed
+#: return every statutory value is bold and the presenter's block -- who filed
+#: this, and where to write back -- is not. That contrast is how CR separates
+#: the return's content from the administrative note identifying the filer, so
+#: rendering the whole page bold loses a distinction the form is making.
+REGULAR_WEIGHT_FIELDS = frozenset(
+    fm.MAIN_1[key] for key in (
+        "presenter_name", "presenter_address", "presenter_tel",
+        "presenter_fax", "presenter_email", "presenter_reference",
+    )
+)
+
 
 class FormFillError(RuntimeError):
     """The return could not be rendered onto CR's form."""
@@ -886,7 +898,8 @@ def _render(pages: _Pages) -> bytes:
     # are hidden. Until this call the document still renders through CR's
     # non-embedded /PMingLiU, which is what made the emailed copy and the
     # portal preview disagree.
-    return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES)
+    return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES,
+                           regular=REGULAR_WEIGHT_FIELDS)
 
 
 def render(validated_xml: str, *, company_type: str = "private",
