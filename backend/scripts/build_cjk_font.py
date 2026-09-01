@@ -33,7 +33,7 @@ def main() -> int:
     cache.write_bytes(raw)
     try:
         font = TTFont(cache)
-        static = instancer.instantiateVariableFont(font, {"wght": WEIGHT})
+        static = instancer.instantiateVariableFont(font, {"wght": WEIGHT}, updateFontNames=True)
         TARGET.parent.mkdir(parents=True, exist_ok=True)
         static.save(TARGET)
     finally:

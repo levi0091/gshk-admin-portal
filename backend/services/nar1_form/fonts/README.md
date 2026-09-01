@@ -6,17 +6,24 @@ fresh clone. These are runtime assets, exactly like `form/NAR1_fillable.pdf`.
 
 | File | Family | Licence | Source |
 |---|---|---|---|
-| `Tinos-Bold.ttf` | Tinos Bold | Apache-2.0 | github.com/googlefonts/Tinos |
-| `Tinos-Regular.ttf` | Tinos Regular | Apache-2.0 | github.com/googlefonts/Tinos |
+| `Tinos-Bold.ttf` | Tinos Bold | OFL-1.1 | github.com/googlefonts/Tinos |
+| `Tinos-Regular.ttf` | Tinos Regular | OFL-1.1 | github.com/googlefonts/Tinos |
 | `NotoSerifTC-Bold.ttf` | Noto Serif TC | OFL-1.1 | Built by `scripts/build_cjk_font.py` |
 
 ## Why Tinos and not Times New Roman
 
 CR's own returns fill values in Times New Roman Bold. Times New Roman is
-Monotype-licensed and cannot be redistributed in this repo or a Railway image.
+Monotype-proprietary and cannot be redistributed in this repo or a Railway image.
 Tinos is **metrically identical** to it: measured across company names,
 addresses, amounts and email addresses, the advance-width delta at 10pt is
-exactly 0.0000pt. Nothing wraps or overflows differently.
+exactly 0.0000pt. Nothing wraps or overflows differently. Tinos is OFL-1.1
+licensed and therefore freely redistributable.
+
+**OFL-1.1 Reserved Font Name**: The OFL-1.1 licence requires that the font files
+keep their names and must not be modified and redistributed under the same name.
+The CJK font **is** modified by `build_cjk_font.py` to instance it to `wght=700`,
+but the output file keeps the upstream family name and is used internally by the
+application rather than redistributed as a font, so this is permitted.
 
 ## Regenerating the CJK face
 
