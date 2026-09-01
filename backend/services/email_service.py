@@ -198,10 +198,16 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
          reply_to=None) -> dict:
     """Send one message to one or more recipients. Returns who actually got it.
 
-    `to` is an address or a sequence of them — a board of three directors is one
-    message with three recipients, not three messages: the client sees the same
-    thread, and one Resend failure cannot leave two directors informed and the
-    third not.
+    `to` is an address or a sequence of them.
+
+    NOTE FOR CALLERS: this used to carry the rule "a board of three directors is
+    one message with three recipients, not three messages". THAT RULE IS
+    REVERSED for client verification (spec §5): each director now needs their
+    OWN approval link, and a shared link in a shared message would let any
+    recipient approve in another's name. `routers/cases.send_verification`
+    therefore calls this once per recipient and reports which addresses failed.
+    Nothing here changed — one call is still one message — but a new caller
+    should not read the old rule as advice.
 
     `cc` is copied openly, and that is the point: the client can see which
     member of GSHK staff is handling their return, and can reply to all. It is

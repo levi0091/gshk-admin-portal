@@ -17,9 +17,8 @@ get TRUE from the application, not from a column default, so the default staying
 FALSE cannot lock anybody out if a later insert forgets the field.
 
 MIGRATION NUMBERING. 029 (spec §4) and 030 (spec §5) precede this on the same
-branch. A parallel branch (`worktree-registry-form-fidelity`, unmerged) adds its
-own 028; if it lands first, 029's `down_revision` moves to '028' and this chain
-follows unchanged.
+branch, and 028 (the registry CR form fields) precedes those — it came from a
+parallel branch that landed first and the chain was joined at merge time.
 
 Applied to DEV ONLY. Nothing applied to PROD.
 """

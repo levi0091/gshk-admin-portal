@@ -14,7 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from middleware.auth import require_any_permission
 from db.supabase import get_supabase
-from services.tpsi.forms.cr_vocabularies import DISTRICT_CODES
+from services.cr_forms.record_types import RECORD_TYPES
+from services.tpsi.forms.cr_vocabularies import (
+    BUSINESS_NATURE,
+    COMPANY_TYPE,
+    CURRENCY,
+    DISTRICT_CODES,
+)
 
 router = APIRouter()
 
@@ -33,6 +39,39 @@ router = APIRouter()
 #: "WANCHAI" cannot be turned back into "Wan Chai" reliably — inventing a
 #: prettier label risks showing an operator something CR has never heard of.
 _CR_DISTRICTS = [{"code": code, "label": code} for code in sorted(DISTRICT_CODES)]
+
+#: CR's 88 business nature codes. The label IS the description, because picking
+#: a code is what fills the description in — CR derives `natureDesc` from
+#: `nature` after web-form validation, so the two are never independently
+#: chosen. Viewpoint holds no business nature whatsoever (BusNames.BusNature is
+#: empty on all 5,028 rows), so this list is the only guard against an operator
+#: inventing a code.
+_CR_BUSINESS_NATURE = [
+    {"code": code, "label": description}
+    for code, description in sorted(BUSINESS_NATURE.items())
+]
+
+#: CR's 54 currency codes, which are NOT ISO 4217 — CR wants RMB, NTD, WON and
+#: NIS where ISO says CNY, TWD, KRW and ILS. `lookup_values` separately holds
+#: 162 ISO codes lifted from Viewpoint; offering those on a share capital form
+#: produces a filing CR refuses, so anything bound for CR reads this instead.
+_CR_CURRENCY = [
+    {"code": code, "label": f"{code} - {description}"}
+    for code, description in sorted(CURRENCY.items())
+]
+
+#: CR's three company types. Deliberately NOT sorted — Private first, because
+#: it is what 5,711 of the 5,930 companies in the book are.
+#:
+#: `entities.company_type` held free text before this (Viewpoint's own
+#: descriptions, e.g. "Private company limited by shares"). Those values are
+#: not dropped: `optionsFor` on the front end always offers the stored value
+#: back, flagged, so a legacy record renders rather than silently blanking on
+#: the next save.
+_CR_COMPANY_TYPE = [{"code": code, "label": label} for code, label in COMPANY_TYPE]
+
+#: The registers NAR1 s16 asks a company to locate, in render order.
+_CR_RECORD_TYPE = [{"code": code, "label": label} for code, label in RECORD_TYPES]
 
 # Reference data for both the company and the person forms — a role holding
 # either one may read it.
@@ -71,6 +110,10 @@ def _all() -> dict[str, list[dict]]:
     # Rides along with the Viewpoint categories so the address form costs no
     # extra round trip — the whole point of serving these in one response.
     grouped["cr_district"] = _CR_DISTRICTS
+    grouped["cr_business_nature"] = _CR_BUSINESS_NATURE
+    grouped["cr_currency"] = _CR_CURRENCY
+    grouped["cr_company_type"] = _CR_COMPANY_TYPE
+    grouped["cr_record_type"] = _CR_RECORD_TYPE
     _cache = (time.monotonic(), grouped)
     return grouped
 

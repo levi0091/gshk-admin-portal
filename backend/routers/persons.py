@@ -15,11 +15,16 @@ from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_events, document_service, address_service
 from routers.companies import AddressIn, _address_audit_entries
+from services.hkid import is_valid_hkid
 
 router = APIRouter()
 
 _EDITABLE_FIELDS = {
     "full_name", "given_names", "surname", "full_name_zh", "former_name",
+    # CR asks for Previous Names in both languages and Alias separately from
+    # them -- a previous name is one you no longer use, an alias one you also
+    # use. The ETL used to merge them into `former_name` (migration 028).
+    "former_name_zh", "alias_en", "alias_zh",
     "email", "phone", "date_of_birth", "gender", "nationality",
     "nationality_code", "nationality_origin", "occupation", "place_of_birth",
     "marital_status", "date_of_death", "residential_address_id",
@@ -32,6 +37,9 @@ class CreatePersonRequest(BaseModel):
     surname: Optional[str] = None
     full_name_zh: Optional[str] = None
     former_name: Optional[str] = None
+    former_name_zh: Optional[str] = None
+    alias_en: Optional[str] = None
+    alias_zh: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     date_of_birth: Optional[str] = None
@@ -53,6 +61,9 @@ class UpdatePersonRequest(BaseModel):
     surname: Optional[str] = None
     full_name_zh: Optional[str] = None
     former_name: Optional[str] = None
+    former_name_zh: Optional[str] = None
+    alias_en: Optional[str] = None
+    alias_zh: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     date_of_birth: Optional[str] = None
@@ -278,6 +289,101 @@ async def update_person(
             # KYC fields are Compliance (CPC) in Viewpoint; names/contact are ADC.
             event_code=audit_events.person_field_code(field),
             company_name=current.get("full_name"),
+            entity_type="person", entity_id=str(person_id),
+            old_value=old_val, new_value=new_val,
+            before_state={"field": field, "old": old_val},
+            after_state={"field": field, "new": new_val},
+        )
+        for field, new_val in updates.items()
+        for old_val in [current.get(field)]
+        if old_val != new_val
+    ])
+    return updated
+
+
+class UpdateIdentityDocumentRequest(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    id_number: Optional[str] = None
+    issuing_country: Optional[str] = None
+    issue_date: Optional[str] = None
+    expiry_date: Optional[str] = None
+    reminder_date: Optional[str] = None
+    is_primary: Optional[bool] = None
+
+
+_ID_DOC_FIELDS = {"id_number", "issuing_country", "issue_date", "expiry_date",
+                  "reminder_date", "is_primary"}
+
+#: CR gives the passport number 25 characters (indvPptNo / passportNo).
+_PASSPORT_MAX = 25
+
+
+@router.patch("/{person_id}/identity-documents/{document_id}")
+async def update_identity_document(
+    person_id: str,
+    document_id: str,
+    body: UpdateIdentityDocumentRequest,
+    user=Depends(require_permission("persons", "write")),
+):
+    """Edit one identity document.
+
+    An HKID carries its own check digit, so a transposed digit is caught here
+    rather than by CR after a chargeable submit. The check runs **only when
+    `id_number` is itself being written** (PRD D4): 31 rows in DEV would fail
+    it -- 29 of them Mainland China ID numbers mis-typed as HKID -- and
+    freezing those records over a field nobody is touching would punish the
+    wrong person. Correcting the number is what forces the number to be right.
+
+    A passport gets length and non-emptiness only. Passports have no check
+    digit outside the machine-readable zone, and a validator that cannot
+    validate should not pretend to.
+    """
+    updates = {k: v for k, v in body.model_dump().items()
+               if v is not None and k in _ID_DOC_FIELDS}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    sb = get_supabase()
+    current = (
+        sb.table("person_identity_documents").select("*")
+        .eq("id", document_id).eq("person_id", person_id).single().execute()
+    ).data
+    if not current:
+        raise HTTPException(status_code=404, detail="Identity document not found")
+
+    if "id_number" in updates:
+        number = str(updates["id_number"]).strip()
+        id_type = current.get("id_type")
+        if id_type == "hkid" and not is_valid_hkid(number):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{number!r} is not a valid HKID: the check digit does not "
+                    "match. If this is not a Hong Kong identity card, change "
+                    "the document type instead."
+                ),
+            )
+        if id_type == "passport" and len(number) > _PASSPORT_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail=f"CR allows {_PASSPORT_MAX} characters for a passport "
+                       f"number; this is {len(number)}",
+            )
+        updates["id_number"] = number
+
+    updated = (
+        sb.table("person_identity_documents").update(updates)
+        .eq("id", document_id).execute()
+    ).data[0]
+
+    await log_events([
+        dict(
+            case_id=None, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type="PERSON_FIELD_UPDATED",
+            event_code=audit_events.VP_COMPLIANCE,
             entity_type="person", entity_id=str(person_id),
             old_value=old_val, new_value=new_val,
             before_state={"field": field, "old": old_val},

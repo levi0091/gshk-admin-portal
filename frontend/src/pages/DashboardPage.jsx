@@ -250,7 +250,7 @@ export default function DashboardPage() {
         Sorted by date created — newest first. Click <b>Days to anniversary</b>{' '}
         to order by filing deadline instead. Companies due for NAR1 are found on the{' '}
         <span style={{ color: 'var(--indigo)', cursor: 'pointer', fontWeight: 600 }}
-              onClick={() => navigate('/registry')}>Company Registry</span>.
+              onClick={() => navigate('/registry')}>Body Corporate Registry</span>.
       </div>
 
       {error ? (

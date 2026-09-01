@@ -27,18 +27,17 @@ being uploadable as a loose company document — it is evidence attached to one
 filing, produced by one endpoint that also gates the submission behind it.
 'case' keeps it out of both dropdowns without a special case in that router.
 
-MIGRATION NUMBERING — READ BEFORE ADDING THE NEXT ONE. At the time this was
-written the head was 027. A parallel branch (`worktree-registry-form-fidelity`,
-unmerged) adds its own 028. If that branch lands FIRST, this migration's
-`down_revision` must be changed from '027' to '028' or alembic will have two
-heads and `upgrade head` will refuse.
+MIGRATION NUMBERING. This was written against head 027 while a parallel branch
+held an unmerged 028. That branch landed first (`028_registry_cr_form_fields`),
+so `down_revision` is '028' — the two were rebased onto one chain at merge time
+rather than left as two alembic heads, which `upgrade head` refuses to resolve.
 
 Applied to DEV ONLY. Nothing applied to PROD.
 """
 from alembic import op
 
 revision = "029"
-down_revision = "027"
+down_revision = "028"
 branch_labels = None
 depends_on = None
 

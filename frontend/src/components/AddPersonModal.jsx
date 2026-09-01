@@ -5,17 +5,21 @@ import { useLookups } from '../lib/lookups.js'
 import useDiscardGuard from '../lib/useDiscardGuard.js'
 import { api } from '../lib/api.js'
 
+// NAR1's labels, and NAR1's fields (PRD §10.5). Marital Status is gone for
+// the same reason it is gone from the profile: neither form asks for it, and
+// the column is retained so nothing is destroyed (D3).
 const FIELDS = [
   { key: 'full_name', label: 'Full Name', required: true, full: true, placeholder: 'Legal name as per ID' },
-  { key: 'given_names', label: 'Given Names' },
-  { key: 'surname', label: 'Surname' },
-  { key: 'full_name_zh', label: 'Chinese Name' },
+  { key: 'surname', label: 'Name in English (Surname)' },
+  { key: 'given_names', label: 'Name in English (Other Names)' },
+  { key: 'full_name_zh', label: 'Name in Chinese' },
+  { key: 'alias_en', label: 'Alias (English)' },
+  { key: 'alias_zh', label: 'Alias (Chinese)' },
   { key: 'date_of_birth', label: 'Date of Birth', type: 'date' },
   { key: 'gender', label: 'Gender', lookup: 'gender' },
   { key: 'nationality', label: 'Nationality', lookup: 'nationality' },
-  { key: 'marital_status', label: 'Marital Status', lookup: 'marital_status' },
   { key: 'occupation', label: 'Occupation' },
-  { key: 'email', label: 'Email', type: 'email' },
+  { key: 'email', label: 'Email Address', type: 'email' },
   { key: 'phone', label: 'Phone' },
 ]
 

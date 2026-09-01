@@ -1141,3 +1141,24 @@ tbody tr.clickable { cursor: pointer; }
 .addr-block .f-input[aria-invalid="true"] { border-color: var(--carrot); }
 .addr-over { color: var(--carrot); }
 .addr-block .ab-note { padding: 8px 10px; background: var(--carrot-10); border-radius: 6px; color: var(--t-body); }
+
+/* --- Form-contract highlighting (PRD §5.3) ---------------------------------
+   Carrot, deliberately not red, and for the same reason as .addr-count above:
+   these fields are INCOMPLETE, not wrong. Most of them came out of Viewpoint
+   that way and the save is allowed to proceed. What is red — a refusal — is
+   the much smaller blocking set on the Open case button. */
+.fld-warn {
+  display: block; margin-top: 3px;
+  font-size: 11px; font-weight: 500; line-height: 1.35;
+  color: var(--carrot);
+}
+.warn-pill {
+  display: inline-flex; align-items: center; height: 20px;
+  margin-left: 8px; padding: 0 8px; border-radius: 10px;
+  background: var(--carrot-10); color: var(--carrot);
+  font-size: 11px; font-weight: 700; letter-spacing: .01em;
+  vertical-align: middle;
+}
+/* The reason the Open case button is refusing, next to the button. */
+.filing-problems { margin: 6px 0 0; padding-left: 18px; }
+.filing-problems li { margin-top: 3px; }

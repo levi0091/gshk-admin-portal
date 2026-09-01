@@ -146,7 +146,7 @@ export default function LinkPartyModal({ companyId, relation, link, onClose, onS
                 </label>
                 <input id="party_search" className="f-input" type="text"
                        aria-label="Search parties"
-                       placeholder={partyKind === 'person' ? 'Search Persons Registry' : 'Search Company Registry'}
+                       placeholder={partyKind === 'person' ? 'Search Natural Person Registry' : 'Search Body Corporate Registry'}
                        value={selected ? (selected.full_name || selected.company_name) : search}
                        onChange={e => { setSelected(null); setSearch(e.target.value) }} />
               </div>

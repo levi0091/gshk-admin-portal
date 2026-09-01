@@ -39,10 +39,9 @@ years later even if the person row is renamed, merged by the party-master work,
 or deleted — an audit record of who approved a statutory filing must not be
 rewritable by an unrelated edit to a contact record.
 
-MIGRATION NUMBERING. Head was 027 when this branch started; 029 (spec §4) sits
-between. A parallel branch (`worktree-registry-form-fidelity`, unmerged) adds
-its own 028. If that branch lands first, 029's `down_revision` moves to '028'
-and this one keeps pointing at '029'.
+MIGRATION NUMBERING. The chain is 027 -> 028 (the registry CR form fields, from
+a parallel branch that landed first) -> 029 (spec §4) -> this. One head, which
+is what `alembic upgrade head` requires.
 
 Applied to DEV ONLY. Nothing applied to PROD.
 """

@@ -1,4 +1,5 @@
 import { optionsFor } from '../lib/lookups.js'
+import FieldWarning from './FieldWarning.jsx'
 
 /**
  * One address, in the five fields the Companies Registry actually receives.
@@ -39,10 +40,15 @@ const LINES = [
 
 const HK = 'HK'
 
-export default function AddressBlock({ value, lookups, onChange, readOnly = false }) {
+export default function AddressBlock({ value, lookups, onChange, readOnly = false,
+                                       warnings = null }) {
   const a = value || {}
   const isHK = (a.country || '').toUpperCase() === HK
   const sharedBy = Number(a.shared_by || 0)
+  // `warnings` is the form contract read backwards — column -> what CR would
+  // say about this value. Optional: an address rendered somewhere without the
+  // contract simply shows none.
+  const warn = key => warnings?.[key] || null
 
   if (readOnly) {
     return (
@@ -50,16 +56,25 @@ export default function AddressBlock({ value, lookups, onChange, readOnly = fals
         {LINES.map(([key, label]) => (
           <div className="kv-row" key={key}>
             <span className="kv-key">{label}</span>
-            <span className="kv-val">{a[key] || <span className="td-muted">—</span>}</span>
+            <span className="kv-val">
+              {a[key] || <span className="td-muted">—</span>}
+              <FieldWarning warning={warn(key)} />
+            </span>
           </div>
         ))}
         <div className="kv-row">
           <span className="kv-key">District</span>
-          <span className="kv-val">{a.city || <span className="td-muted">—</span>}</span>
+          <span className="kv-val">
+            {a.city || <span className="td-muted">—</span>}
+            <FieldWarning warning={warn('city')} />
+          </span>
         </div>
         <div className="kv-row">
           <span className="kv-key">Country</span>
-          <span className="kv-val">{a.country || <span className="td-muted">—</span>}</span>
+          <span className="kv-val">
+            {a.country || <span className="td-muted">—</span>}
+            <FieldWarning warning={warn('country')} />
+          </span>
         </div>
         <SharedNote count={sharedBy} readOnly />
       </div>
@@ -123,6 +138,7 @@ export default function AddressBlock({ value, lookups, onChange, readOnly = fals
             <option key={o.code} value={o.code}>{o.label}</option>
           ))}
         </select>
+        <FieldWarning warning={warn('country')} />
       </div>
 
       <SharedNote count={sharedBy} />

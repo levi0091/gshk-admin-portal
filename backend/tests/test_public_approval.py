@@ -441,3 +441,79 @@ def test_a_case_approved_by_STAFF_is_not_overwritten_by_a_live_link(client):
     assert "already been confirmed" in response.text
     entered[3].assert_not_called()          # update_case
     entered[4].assert_not_called()          # claim
+
+
+# --------------------------------------------------------------------------- #
+#  Client-controlled input that must not reach a typed column, or a memory leak
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("header", [
+    "<script>alert(1)</script>", "not-an-ip", "999.999.999.999", "'; DROP TABLE",
+    "", "   ", "-1",
+])
+def test_a_junk_forwarded_for_records_no_address_rather_than_500ing(client, header):
+    """`ip_address` is an `inet` column. An unparseable header would make the
+    INSERT fail, the claim fail, and the route answer 500 — a client-controlled
+    string turning a director's confirmation into an error page."""
+    patches = _world(approval=row())
+    with _Stack(*patches) as entered:
+        response = client.post(PATH, headers={"X-Forwarded-For": header})
+    assert response.status_code == 200
+    assert "confirmation is recorded" in response.text.lower()
+    assert entered[4].call_args.kwargs["ip"] is None
+
+
+@pytest.mark.parametrize("header,expected", [
+    ("203.0.113.9", "203.0.113.9"),
+    ("203.0.113.9, 70.41.3.18", "203.0.113.9"),      # leftmost is the client
+    ("  203.0.113.9  ", "203.0.113.9"),
+    ("2001:db8::1", "2001:db8::1"),
+    ("[2001:db8::1]", "2001:db8::1"),
+])
+def test_a_real_address_is_recorded_as_the_client_saw_it(client, header, expected):
+    with _Stack(*_world(approval=row())) as entered:
+        client.post(PATH, headers={"X-Forwarded-For": header})
+    assert entered[4].call_args.kwargs["ip"] == expected
+
+
+def test_the_rate_limiter_does_not_grow_without_bound(client):
+    """It is a map keyed on whatever arrives, on an UNAUTHENTICATED route. A
+    script sending random tokens would grow it until the worker ran out of
+    memory — the limiter would become the denial of service."""
+    from routers import public_approval as pa
+
+    now = pa.time.monotonic()
+    # Simulate a keyspace walk that has already gone cold.
+    for i in range(pa._HITS_MAX_KEYS + 500):
+        pa._HITS[f"t:{i}"] = [now - pa._RATE_WINDOW_SECONDS - 1]
+    assert len(pa._HITS) > pa._HITS_MAX_KEYS
+
+    pa._rate_limited("t:fresh")
+    assert len(pa._HITS) <= pa._HITS_MAX_KEYS
+
+
+def test_the_sweep_never_drops_a_key_that_is_still_being_limited(client):
+    """Shedding a hot key would hand the attacker a fresh allowance."""
+    from routers import public_approval as pa
+
+    now = pa.time.monotonic()
+    for i in range(pa._HITS_MAX_KEYS + 200):
+        pa._HITS[f"cold:{i}"] = [now - pa._RATE_WINDOW_SECONDS - 1]
+    pa._HITS["hot"] = [now] * (pa._RATE_LIMIT + 5)
+
+    pa._rate_limited("something-else")
+    assert "hot" in pa._HITS
+    assert len(pa._HITS["hot"]) >= pa._RATE_LIMIT
+
+
+def test_the_page_runs_no_script_at_all(client):
+    """Nothing on this page executes. It is reached by an unauthenticated link
+    from an email, and the smallest attack surface is no attack surface — which
+    is also why the Confirm control is a plain form and not a fetch()."""
+    with _Stack(*_world(approval=row())):
+        response = client.get(PATH)
+    lowered = response.text.lower()
+    assert "<script" not in lowered
+    assert "onclick" not in lowered
+    assert "onerror" not in lowered
+    assert "javascript:" not in lowered

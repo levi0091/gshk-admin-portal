@@ -11,6 +11,8 @@ import FormField, { displayValue } from '../components/FormField.jsx'
 import AddressBlock from '../components/AddressBlock.jsx'
 import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
+import { useFormContract, fieldWarning } from '../lib/formContract.js'
+import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
@@ -19,19 +21,40 @@ const EDITABLE = [
   { key: 'company_name_zh', label: 'Chinese Name' },
   { key: 'br_number', label: 'BRN' },
   { key: 'cr_number', label: 'CR No.' },
-  { key: 'company_type', label: 'Company Type' },
+  // CR takes P / N / G on `coyType` and nothing else. A legacy free-text value
+  // is still offered back by `optionsFor`, flagged — dropping it would blank
+  // the column on the next save.
+  { key: 'company_type', label: 'Company Type', lookup: 'cr_company_type' },
+  // Brian's B5. The description is NOT here on purpose: CR derives `natureDesc`
+  // from `nature` after web-form validation, so the operator picks a code and
+  // the description follows. A typed description could disagree with the code
+  // it is supposed to describe.
+  { key: 'business_nature_code', label: 'Business Nature Code',
+    lookup: 'cr_business_nature' },
+  // Brian's B6.
+  { key: 'mortgages_total', label: 'Mortgages and Charges' },
   { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'country' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
   { key: 'case_notes', label: 'Case Notes' },
 ]
 
-function Kv({ label, children }) {
+function Kv({ label, children, warning = null }) {
   return (
     <div className="kv-row">
       <span className="kv-key">{label}</span>
-      <span className="kv-val">{children ?? <span className="td-muted">—</span>}</span>
+      <span className="kv-val">
+        {children ?? <span className="td-muted">—</span>}
+        <FieldWarning warning={warning} />
+      </span>
     </div>
   )
+}
+
+/** A money or share figure as CR prints it, or an em dash. */
+function figure(value) {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toLocaleString() : String(value)
 }
 
 function addressText(a) {
@@ -96,6 +119,7 @@ export default function CompanyProfilePage() {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
+  const contract = useFormContract()
   const [busy, setBusy] = useState(false)
   //: The live-case warning, held until the operator decides. null = no
   //: conflict, or already acknowledged.
@@ -195,6 +219,20 @@ export default function CompanyProfilePage() {
     }
   }
 
+  /** Point one statutory register at an address, or at nothing (OQ-3). */
+  async function setRecordLocation(recordType, addressId) {
+    setBusy(true)
+    try {
+      await api.put(`/companies/${companyId}/record-locations/${recordType}`,
+                    { address_id: addressId || null })
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (loading) return <div className="empty-state">Loading…</div>
   if (error) {
     return (
@@ -207,6 +245,23 @@ export default function CompanyProfilePage() {
 
   const isClient = !!company.is_client
   const isCorp = !!company.is_corporate_party
+
+  // What CR would refuse, read off the same contract the API enforces.
+  const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
+  const addressWarnings = Object.fromEntries(
+    ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
+      [k, warnFor('addresses', k, company.registered_address?.[k])]))
+  const infoWarnings = [
+    ...EDITABLE.map(f => warnFor('entities', f.key, company[f.key])),
+    ...Object.values(addressWarnings),
+  ].filter(Boolean)
+
+  // The §11.1 blocking set, computed server-side so the screen and the API
+  // agree about what "filable" means (OQ-2).
+  const filingProblems = company.filing_problems || []
+  const businessName = (company.business_names || [])
+    .map(b => [b.business_name, b.business_name_zh].filter(Boolean).join(' · '))
+    .filter(Boolean).join(', ')
 
   return (
     <>
@@ -277,7 +332,9 @@ export default function CompanyProfilePage() {
           <div className="card mb-16">
             <div className="card-hdr">
               <div>
-                <div className="card-title">Company Information</div>
+                <div className="card-title">
+                  Company Information <WarningCount count={infoWarnings.length} />
+                </div>
                 <div className="card-sub">Core company details, filings &amp; documents</div>
               </div>
               {editing ? (
@@ -308,26 +365,50 @@ export default function CompanyProfilePage() {
                   <AddressBlock
                     value={addrDraft}
                     lookups={lookups}
+                    warnings={Object.fromEntries(
+                      ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
+                        [k, warnFor('addresses', k, addrDraft?.[k])]))}
                     onChange={(k, v) => setAddrDraft(a => ({ ...a, [k]: v }))}
                   />
                 </div>
               </div>
             ) : (
               <div className="kv-list">
-                <Kv label="Company Name"><span className="font-semibold">{company.company_name}</span></Kv>
+                <Kv label="Company Name" warning={warnFor('entities', 'company_name', company.company_name)}>
+                  <span className="font-semibold">{company.company_name}</span>
+                </Kv>
                 <Kv label="Chinese Name">{company.company_name_zh}</Kv>
+                {/* Brian's B9. Already in `business_names` for 5,026 companies
+                    and never shown; CR asks for it as `brName`. */}
+                <Kv label="Business Name">{businessName || null}</Kv>
                 <Kv label="Entity ID">{company.vp_source_key}</Kv>
                 <Kv label="BRN">{company.br_number}</Kv>
                 <Kv label="CR No.">{company.cr_number}</Kv>
                 <Kv label="Status"><StatusBadge status={company.status} /></Kv>
-                <Kv label="Company Type">{company.company_type}</Kv>
+                <Kv label="Company Type"
+                    warning={warnFor('entities', 'company_type', company.company_type)}>
+                  {displayValue({ lookup: 'cr_company_type' }, company.company_type, lookups)}
+                </Kv>
+                {/* B5. Code and description together: the code is what CR
+                    validates, the description is what a human recognises. */}
+                <Kv label="Business Nature">
+                  {company.business_nature_code
+                    ? `${company.business_nature_code} — ${company.business_nature_desc || ''}`.trim()
+                    : null}
+                </Kv>
+                {/* B6. */}
+                <Kv label="Mortgages and Charges"
+                    warning={warnFor('entities', 'mortgages_total', company.mortgages_total)}>
+                  {company.mortgages_total}
+                </Kv>
                 <Kv label="Country of Incorporation">
                   {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
                 </Kv>
                 {/* The five lines CR receives, not a joined string — an
                     address that files correctly and one that does not look
                     identical once you comma-join them. */}
-                <AddressBlock value={company.registered_address} readOnly />
+                <AddressBlock value={company.registered_address} readOnly
+                              warnings={addressWarnings} />
                 <Kv label="Company Phone">
                   {company.contacts?.find(c => c.contact_type === 'phone')?.contact_value}
                 </Kv>
@@ -360,6 +441,21 @@ export default function CompanyProfilePage() {
             </div>
           )}
 
+          {/* Share capital — CR's section 11, in its own right (B7). The
+              return states what the company's capital IS, whether or not
+              anyone currently holds it, so this is not the same list as the
+              share classes hanging off each shareholding. */}
+          {isClient && (
+            <ShareCapitalTile classes={company.share_classes}
+                              warnFor={warnFor} />
+          )}
+
+          {/* NAR1 section 16 (OQ-3). */}
+          {isClient && (
+            <RecordLocationsTile company={company} busy={busy}
+                                 onSet={setRecordLocation} />
+          )}
+
           {/* Client-only party tiles */}
           {isClient && (
             <>
@@ -373,7 +469,18 @@ export default function CompanyProfilePage() {
                              <Kv label="Role">{o.role}</Kv>
                              <Kv label="Appointed">{formatDate(o.appointed_date)}</Kv>
                              {o.resigned_date && <Kv label="Resigned">{formatDate(o.resigned_date)}</Kv>}
-                             <Kv label="Email">{o.persons?.email}</Kv>
+                             {/* B3's substantive half: every director's contact
+                                 details, which the tile did not show at all. */}
+                             <Kv label="Email Address">{o.persons?.email}</Kv>
+                             <Kv label="Residential Address">
+                               {addressText(o.persons?.residential_address)}
+                             </Kv>
+                             {/* D2 — a director may give company A and company
+                                 B different correspondence addresses, as the
+                                 law allows, so it hangs off the APPOINTMENT. */}
+                             <Kv label="Correspondence Address">
+                               {addressText(o.correspondence_address)}
+                             </Kv>
                            </>
                          )} />
 
@@ -384,9 +491,21 @@ export default function CompanyProfilePage() {
                          onRemove={id => unlinkParty('shareholders', id)}
                          render={s => (
                            <>
-                             <Kv label="Shares Held">{s.shares_held}</Kv>
-                             <Kv label="Share Class">{s.share_classes?.class_name}</Kv>
-                             <Kv label="Amount Paid">{s.amount_paid}</Kv>
+                             {/* CR's shareCapitalList states the class and its
+                                 currency beside the holding, not just a count. */}
+                             <Kv label="Class of Shares">{s.share_classes?.class_name}</Kv>
+                             <Kv label="Total Number">{figure(s.shares_held)}</Kv>
+                             <Kv label="Currency">{s.share_classes?.currency}</Kv>
+                             <Kv label="Amount Paid">{figure(s.amount_paid)}</Kv>
+                             {/* B4 — a shareholder needs an address, natural
+                                 person and body corporate alike. They are
+                                 different FACTS: a company has a registered
+                                 office, not a residence. */}
+                             <Kv label={s.corporate_entity_id
+                               ? 'Registered Office' : 'Residential Address'}>
+                               {addressText(s.corporate_entity?.registered_address
+                                 || s.persons?.residential_address)}
+                             </Kv>
                            </>
                          )} />
 
@@ -435,11 +554,26 @@ export default function CompanyProfilePage() {
                     then had to search back to the company you were already on. */}
                 {canOpenCase && (
                   <button className="btn btn-outline btn-sm"
+                          disabled={filingProblems.length > 0}
                           onClick={() => setNewCase(true)}>
                     + New case
                   </button>
                 )}
               </div>
+              {/* WHY THE REFUSAL IS PRINTED HERE. 453 of 5,930 client
+                  companies cannot produce a valid return (OQ-2), and a
+                  disabled button with no explanation is the exact shape of
+                  "I clicked it and nothing happened". The reason belongs
+                  beside the control that is refusing, not in a page banner a
+                  screen and a half above it. */}
+              {filingProblems.length > 0 && (
+                <div className="reveal-note" role="note">
+                  <b>This company cannot file an annual return yet.</b>
+                  <ul className="filing-problems">
+                    {filingProblems.map(p => <li key={p.field}>{p.message}</li>)}
+                  </ul>
+                </div>
+              )}
               <CasesPane cases={company.cases} onOpen={id => navigate(`/cases/${id}`)} />
             </div>
           </div>
@@ -471,6 +605,138 @@ export default function CompanyProfilePage() {
 }
 
 /**
+ * Share capital, under CR's own headings (Brian's B7).
+ *
+ * WHY THE HEADINGS MATTER. "Total Number" is a COUNT of shares and "Total
+ * Amount" is money, and the schema could not tell them apart until migration
+ * 028: `total_issued` stood in for both. On 60 of Viewpoint's 5,740 rows they
+ * genuinely differ — 200 shares worth HK$20,000, 1,000 worth HK$5,000,000 —
+ * so a screen that showed one number under an ambiguous label was showing the
+ * wrong one and no one could tell.
+ */
+function ShareCapitalTile({ classes, warnFor }) {
+  const rows = classes || []
+  const columns = [
+    ['class_name', 'Class of Shares', v => v],
+    ['currency', 'Currency', v => v],
+    ['total_issued', 'Total Number', figure],
+    ['issued_amount', 'Total Amount', figure],
+    ['total_paid', 'Total Amount Paid up or Regarded as Paid up', figure],
+  ]
+  const warnings = rows.flatMap(row =>
+    columns.map(([key]) => warnFor('share_classes', key, row[key])).filter(Boolean))
+
+  return (
+    <div className="card mb-16">
+      <div className="card-hdr">
+        <div>
+          <div className="card-title">
+            Share Capital <span className="count-pill">{rows.length}</span>
+            <WarningCount count={warnings.length} />
+          </div>
+          <div className="card-sub">
+            Section 11 of the annual return — one row per class of shares
+          </div>
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        // 219 client companies are in this state, and it stops them filing.
+        // Saying "None" would read as "nothing to do here".
+        <div className="empty-state" style={{ padding: '16px 0' }}>
+          No share capital recorded. The Companies Registry requires at least one
+          class of shares for a company having a share capital.
+        </div>
+      ) : rows.map(row => (
+        // No separate heading: "Class of Shares" is CR's own first heading and
+        // is right there in the list. Repeating it above would show the same
+        // value twice under two different names.
+        <div className="member-block" key={row.id || row.class_name}>
+          <div className="kv-list">
+            {columns.map(([key, label, render]) => (
+              <Kv key={key} label={label}
+                  warning={warnFor('share_classes', key, row[key])}>
+                {render(row[key])}
+              </Kv>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Where each statutory register is kept — NAR1 section 16 (OQ-3).
+ *
+ * Every register CR asks about is listed, answered or not: a register with
+ * nowhere recorded is the answer the return has to show, and omitting the row
+ * would render an unanswered question as an answered one.
+ *
+ * THE EDITOR IS A CHOICE AMONG ADDRESSES THIS COMPANY ALREADY HAS, plus "not
+ * recorded". That is deliberate rather than a shortcut: addresses are created
+ * by copy-on-write through the company and person address endpoints, and there
+ * is no endpoint that mints a free-standing one. In practice a register is
+ * kept at the registered office or at GSHK's, both of which are already here.
+ */
+function RecordLocationsTile({ company, busy, onSet }) {
+  const rows = company.record_locations || []
+
+  // Every distinct address the company already knows about, by id.
+  const options = new Map()
+  const offer = (id, address) => {
+    if (id && address && !options.has(id)) options.set(id, addressText(address))
+  }
+  offer(company.registered_address?.id, company.registered_address)
+  for (const row of rows) offer(row.address_id, row.address)
+
+  const recorded = rows.filter(r => r.address_id).length
+
+  return (
+    <div className="card mb-16">
+      <div className="card-hdr">
+        <div>
+          <div className="card-title">
+            Statutory Records <span className="count-pill">{recorded}/{rows.length}</span>
+          </div>
+          <div className="card-sub">
+            Section 16 — where each register is kept
+          </div>
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <div className="empty-state" style={{ padding: '16px 0' }}>
+          No registers recorded.
+        </div>
+      ) : (
+        <div className="kv-list">
+          {rows.map(row => (
+            <div className="kv-row" key={row.record_type}>
+              <span className="kv-key">
+                <label htmlFor={`rl_${row.record_type}`}>{row.label}</label>
+              </span>
+              <span className="kv-val">
+                <select
+                  id={`rl_${row.record_type}`}
+                  className="f-select"
+                  disabled={busy}
+                  value={row.address_id || ''}
+                  onChange={e => onSet(row.record_type, e.target.value)}
+                >
+                  <option value="">Not recorded</option>
+                  {[...options.entries()].map(([id, label]) => (
+                    <option key={id} value={id}>{label}</option>
+                  ))}
+                </select>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * A party tile. When `relation` is given the tile is editable: add a link, edit
  * its attributes (OQ-1) or remove it. company_secretaries has no linking
  * endpoint, so that tile stays read-only.
@@ -494,7 +760,8 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
         <div className="member-block" key={row.id}>
           <div className="member-name">
             {nameOf(row)}
-            {row.corporate_entity_id && <span className="member-role-tag">Corporate</span>}
+            {/* Brian's B10 — NAR1 says Body Corporate, so the portal does. */}
+            {row.corporate_entity_id && <span className="member-role-tag">Body Corporate</span>}
             {row.is_current === false && <span className="member-role-tag">Former</span>}
             {relation && (
               <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>

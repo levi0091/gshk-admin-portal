@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from routers import (auth, users, roles, cases, cases_audit, audit, companies,
-                     persons, documents, lookups, public_approval, tpsi)
+                     persons, documents, form_contract, lookups,
+                     public_approval, tpsi)
 from services.app_env import is_production
 
 app = FastAPI(title="G-FlowDesk Admin API", version="0.1.0")
@@ -31,6 +32,7 @@ app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(persons.router, prefix="/persons", tags=["persons"])
 app.include_router(documents.router, prefix="/documents", tags=["documents"])
 app.include_router(lookups.router, prefix="/lookups", tags=["lookups"])
+app.include_router(form_contract.router, prefix="/form-contract", tags=["form-contract"])
 app.include_router(tpsi.router, prefix="/tpsi", tags=["tpsi"])
 # THE ONLY UNAUTHENTICATED ROUTER (spec §5). Mounted under its own prefix so
 # `/public/...` is visibly separate from everything require_permission guards --

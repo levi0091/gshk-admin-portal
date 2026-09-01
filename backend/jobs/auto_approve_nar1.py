@@ -49,12 +49,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def due_tokens(now: datetime | None = None) -> list[dict]:
+#: How many overdue tokens one run will look at.
+#:
+#: EXPLICIT, because PostgREST applies its OWN ceiling when a query does not
+#: (Supabase's default is 1,000) and returns the truncated page with no error
+#: and no marker. A silent cap on this query would auto-approve the first
+#: thousand and leave the rest looking, from the log, exactly like a run with
+#: nothing left to do. Stated here, the cap is visible, and `run` says when it
+#: was reached.
+DUE_TOKEN_LIMIT = 2_000
+
+
+def due_tokens(now: datetime | None = None,
+               limit: int = DUE_TOKEN_LIMIT) -> list[dict]:
     """Outstanding approval links whose 14 days have run out.
 
     Filtered in the DATABASE, not in Python: the book is ~5,900 companies and a
     scan that pulled every token to decide in the loop would grow with history
     rather than with what is actually due.
+
+    Oldest first, so a run that does hit the ceiling clears the most overdue
+    cases and the next night's run takes the remainder. The job is idempotent,
+    so catching up over two nights costs nothing but a day.
     """
     moment = (now or _now()).isoformat()
     return (
@@ -63,6 +79,7 @@ def due_tokens(now: datetime | None = None) -> list[dict]:
         .is_("outcome", None)
         .lt("expires_at", moment)
         .order("expires_at")
+        .limit(limit)
         .execute()
         .data
         or []
@@ -136,7 +153,13 @@ async def run(now: datetime | None = None) -> dict:
     approved, skipped, failed = 0, [], []
     seen: set = set()
 
-    for token_row in due_tokens(moment):
+    due = due_tokens(moment)
+    # A full page means there may be more behind it. Reported rather than
+    # inferred from the counts: "approved 340, skipped 660" out of a 1,000-row
+    # page looks exactly like a finished run.
+    truncated = len(due) >= DUE_TOKEN_LIMIT
+
+    for token_row in due:
         case_id = token_row.get("nar1_case_id")
         # A board of three produced three tokens for one case. The first decides
         # it; the rest are already superseded by then, but the guard here means
@@ -173,6 +196,7 @@ async def run(now: datetime | None = None) -> dict:
         "failed": len(failed),
         "skipped_detail": skipped,
         "failed_detail": failed,
+        "truncated": truncated,
     }
     return report
 
@@ -191,6 +215,10 @@ def main() -> int:
         print(f"  skipped {case_id}: {reason}")
     for case_id, reason in report["failed_detail"]:
         print(f"  FAILED  {case_id}: {reason}", file=sys.stderr)
+    if report.get("truncated"):
+        print(f"  NOTE: the page was full ({DUE_TOKEN_LIMIT} rows) — there may "
+              f"be more overdue cases. They are the least overdue and the next "
+              f"run will take them.", file=sys.stderr)
     # Non-zero ONLY on a failure. A run with nothing due is a success, and a
     # cron service that alerted on it would train everyone to ignore it.
     return 1 if report["failed"] else 0

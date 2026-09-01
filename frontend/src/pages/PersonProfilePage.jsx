@@ -8,36 +8,65 @@ import FormField, { displayValue } from '../components/FormField.jsx'
 import AddressBlock from '../components/AddressBlock.jsx'
 import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
+import { useFormContract, fieldWarning } from '../lib/formContract.js'
+import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
+import { idNumberProblem } from '../lib/hkid.js'
 
 // `lookup` names the controlled vocabulary a field draws from (migration 013,
 // lifted from Viewpoint). Without it these were free-text, which is how the same
 // nationality got in under several spellings.
+//
+// THE LABELS ARE NAR1'S, NOT VIEWPOINT'S (Brian's B12/B13, PRD §10.5). "Given
+// Names" and CR's "Other Names" are the same field, and an operator reading
+// the form and this screen side by side had no way to know that.
+//
+// MARITAL STATUS IS DELIBERATELY ABSENT (D3). The column is kept — no
+// Viewpoint history is destroyed — but neither NAR1 nor NNC1 asks for it, so
+// the screen does not either.
 const EDITABLE = [
   { key: 'full_name', label: 'Full Name', full: true },
-  { key: 'given_names', label: 'Given Names' },
-  { key: 'surname', label: 'Surname' },
-  { key: 'full_name_zh', label: 'Chinese Name' },
-  { key: 'former_name', label: 'Former Name' },
+  { key: 'surname', label: 'Name in English (Surname)' },
+  { key: 'given_names', label: 'Name in English (Other Names)' },
+  { key: 'full_name_zh', label: 'Name in Chinese' },
+  // A previous name and an alias are DIFFERENT facts. The ETL used to write
+  // `former_name = FormerName or Aliases`, which filed a person's current
+  // alias as a name they had abandoned.
+  { key: 'former_name', label: 'Previous Names (English)' },
+  { key: 'former_name_zh', label: 'Previous Names (Chinese)' },
+  { key: 'alias_en', label: 'Alias (English)' },
+  { key: 'alias_zh', label: 'Alias (Chinese)' },
   { key: 'date_of_birth', label: 'Date of Birth', type: 'date' },
   { key: 'gender', label: 'Gender', lookup: 'gender' },
   { key: 'nationality', label: 'Nationality', lookup: 'nationality' },
   { key: 'nationality_origin', label: 'Nationality Origin', lookup: 'nationality' },
   { key: 'place_of_birth', label: 'Place of Birth', lookup: 'country' },
-  { key: 'marital_status', label: 'Marital Status', lookup: 'marital_status' },
   { key: 'occupation', label: 'Occupation' },
-  { key: 'email', label: 'Email' },
+  { key: 'email', label: 'Email Address' },
   { key: 'phone', label: 'Phone' },
+]
+
+// What an identity document holds, minus Place of Issue (B15 / D3): CR asks
+// for the issuing COUNTRY, never the city, and the column is retained.
+const ID_EDITABLE = [
+  { key: 'id_number', label: 'ID Number' },
+  { key: 'issuing_country', label: 'Issuing Country/Region', lookup: 'country' },
+  { key: 'issue_date', label: 'Issue Date', type: 'date' },
+  { key: 'expiry_date', label: 'Expiry Date', type: 'date' },
+  { key: 'reminder_date', label: 'Renewal Reminder', type: 'date' },
 ]
 
 const RELATION_LABEL = {
   officer: 'Director', shareholder: 'Shareholder', beneficial_owner: 'Beneficial Owner',
 }
 
-function Kv({ label, children }) {
+function Kv({ label, children, warning = null }) {
   return (
     <div className="kv-row">
       <span className="kv-key">{label}</span>
-      <span className="kv-val">{children || <span className="td-muted">—</span>}</span>
+      <span className="kv-val">
+        {children || <span className="td-muted">—</span>}
+        <FieldWarning warning={warning} />
+      </span>
     </div>
   )
 }
@@ -45,6 +74,97 @@ function Kv({ label, children }) {
 function addressText(a) {
   if (!a) return null
   return [a.line1, a.line2, a.line3, a.city, a.country].filter(Boolean).join(', ') || null
+}
+
+/**
+ * One identity document, and the only place the HKID check digit can bite.
+ *
+ * Brian's B14 asked for the checksum; what made it possible was Block 4
+ * adding `PATCH /persons/{id}/identity-documents/{doc}`. Before that this card
+ * was read-only and a validator would have been decoration.
+ *
+ * GRANDFATHERING (D4). A bad stored value is SHOWN but never blocks: 31 real
+ * rows would fail, 29 of them Mainland China IDs filed under `id_type =
+ * 'hkid'`, and freezing those records would punish the people least able to
+ * fix them. The check only refuses a number somebody is typing right now —
+ * which is also what the API does, so the two agree.
+ */
+function IdentityDocument({ doc, lookups, busy, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({})
+
+  const start = () => {
+    setDraft(Object.fromEntries(ID_EDITABLE.map(f => [f.key, doc[f.key] ?? ''])))
+    setEditing(true)
+  }
+
+  // The stored value when reading, the typed one when editing.
+  const problem = idNumberProblem(
+    doc.id_type, editing ? draft.id_number : doc.id_number)
+
+  async function save() {
+    const changed = Object.fromEntries(
+      Object.entries(draft).filter(([k, v]) => (doc[k] ?? '') !== v))
+    if (!Object.keys(changed).length) { setEditing(false); return }
+    if (await onSave(changed)) setEditing(false)
+  }
+
+  return (
+    <div className="id-doc-group">
+      <div className="id-doc-head">
+        {(doc.id_type || '').toUpperCase()}
+        {doc.is_primary && <span className="pri-pill">PRIMARY</span>}
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          {editing ? (
+            <>
+              <button className="btn-edit" onClick={() => setEditing(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={save}
+                      disabled={busy || !!problem}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          ) : (
+            <button className="btn-edit" onClick={start}>Edit</button>
+          )}
+        </span>
+      </div>
+
+      {editing ? (
+        <div className="form-grid">
+          {ID_EDITABLE.map(f => (
+            <FormField
+              key={f.key}
+              field={f}
+              value={draft[f.key]}
+              lookups={lookups}
+              onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
+            />
+          ))}
+          {problem && (
+            <div className="f-group full">
+              <FieldWarning warning={{ kind: 'invalid', message: problem }} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="kv-list">
+          <Kv label="ID Number"
+              warning={problem ? { kind: 'invalid', message: problem } : null}>
+            {doc.id_number}
+          </Kv>
+          <Kv label="Issuing Country/Region">{doc.issuing_country}</Kv>
+          {/* Place of Issue removed from the screen (B15 / D3). The column is
+              kept, so no Viewpoint history is destroyed and the decision is
+              reversible. */}
+          <Kv label="Issue Date">{formatDate(doc.issue_date)}</Kv>
+          <Kv label="Expiry Date">{formatDate(doc.expiry_date)}</Kv>
+          <Kv label="Renewal Reminder">{formatDate(doc.reminder_date)}</Kv>
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** Document history: grouped by type, newest version current, older preserved. */
@@ -90,6 +210,7 @@ export default function PersonProfilePage() {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
+  const contract = useFormContract()
   const [busy, setBusy] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
 
@@ -133,6 +254,20 @@ export default function PersonProfilePage() {
     }
   }
 
+  async function saveIdentityDocument(documentId, changed) {
+    setBusy(true)
+    try {
+      await api.patch(`/persons/${personId}/identity-documents/${documentId}`, changed)
+      load()
+      return true
+    } catch (err) {
+      setError(err.message)
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (loading) return <div className="empty-state">Loading…</div>
   if (error) {
     return (
@@ -147,6 +282,16 @@ export default function PersonProfilePage() {
   const idDocs = person.identity_documents || []
   const primary = idDocs.find(d => d.is_primary) || idDocs[0]
 
+  // What CR would refuse, read off the same contract the API enforces (§5.3).
+  const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
+  const addressWarnings = Object.fromEntries(
+    ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
+      [k, warnFor('addresses', k, person.residential_address?.[k])]))
+  const personWarnings = [
+    ...EDITABLE.map(f => warnFor('persons', f.key, person[f.key])),
+    ...Object.values(addressWarnings),
+  ].filter(Boolean)
+
   // Header pills: "Director ×2" — count how many companies per relation.
   const roleCounts = roles.reduce((acc, r) => {
     acc[r.relation] = (acc[r.relation] || 0) + 1
@@ -158,7 +303,7 @@ export default function PersonProfilePage() {
       <div className="pg-hdr">
         <div>
           <div className="breadcrumb">
-            <span className="bc-link" onClick={() => navigate('/persons')}>Persons Registry</span>
+            <span className="bc-link" onClick={() => navigate('/persons')}>Natural Person Registry</span>
             <span className="bc-sep">›</span>
             <span className="bc-cur">Person Profile</span>
           </div>
@@ -199,7 +344,9 @@ export default function PersonProfilePage() {
           <div className="card mb-16">
             <div className="card-hdr">
               <div>
-                <div className="card-title">Personal Information</div>
+                <div className="card-title">
+                  Personal Information <WarningCount count={personWarnings.length} />
+                </div>
                 <div className="card-sub">Identity &amp; contact details held for this individual</div>
               </div>
               {editing ? (
@@ -230,6 +377,9 @@ export default function PersonProfilePage() {
                   <AddressBlock
                     value={addrDraft}
                     lookups={lookups}
+                    warnings={Object.fromEntries(
+                      ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
+                        [k, warnFor('addresses', k, addrDraft?.[k])]))}
                     onChange={(k, v) => setAddrDraft(a => ({ ...a, [k]: v }))}
                   />
                 </div>
@@ -237,14 +387,16 @@ export default function PersonProfilePage() {
             ) : (
               <div className="kv-list">
                 {EDITABLE.map(f => (
-                  <Kv key={f.key} label={f.label}>
+                  <Kv key={f.key} label={f.label}
+                      warning={warnFor('persons', f.key, person[f.key])}>
                     {f.type === 'date'
                       ? formatDate(person[f.key])
                       : displayValue(f, person[f.key], lookups)}
                   </Kv>
                 ))}
                 {/* The lines CR receives, not a joined string. */}
-                <AddressBlock value={person.residential_address} readOnly />
+                <AddressBlock value={person.residential_address} readOnly
+                              warnings={addressWarnings} />
               </div>
             )}
           </div>
@@ -262,20 +414,13 @@ export default function PersonProfilePage() {
             {idDocs.length === 0 ? (
               <div className="empty-state" style={{ padding: '16px 0' }}>No identity documents on file.</div>
             ) : idDocs.map(d => (
-              <div className="id-doc-group" key={d.id}>
-                <div className="id-doc-head">
-                  {(d.id_type || '').toUpperCase()}
-                  {d.is_primary && <span className="pri-pill">PRIMARY</span>}
-                </div>
-                <div className="kv-list">
-                  <Kv label="ID Number">{d.id_number}</Kv>
-                  <Kv label="Issuing Country/Region">{d.issuing_country}</Kv>
-                  <Kv label="Place of Issue">{d.place_of_issue}</Kv>
-                  <Kv label="Issue Date">{formatDate(d.issue_date)}</Kv>
-                  <Kv label="Expiry Date">{formatDate(d.expiry_date)}</Kv>
-                  <Kv label="Renewal Reminder">{formatDate(d.reminder_date)}</Kv>
-                </div>
-              </div>
+              <IdentityDocument
+                key={d.id}
+                doc={d}
+                lookups={lookups}
+                busy={busy}
+                onSave={changed => saveIdentityDocument(d.id, changed)}
+              />
             ))}
           </div>
 

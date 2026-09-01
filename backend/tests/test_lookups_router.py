@@ -61,6 +61,67 @@ def test_cr_district_comes_from_crs_vocabulary_not_the_database():
     assert "WANCHAI" in codes
 
 
+def test_cr_business_nature_is_served_with_its_description():
+    """Picking a code has to fill the description in, so the label carries it.
+    Viewpoint holds no business nature at all, so this dropdown is the only
+    thing standing between an operator and a free-text code."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_business_nature", headers=H)
+
+    assert resp.status_code == 200
+    values = resp.json()
+    assert len(values) == 88
+    head_offices = next(v for v in values if v["code"] == "070")
+    assert head_offices["label"].startswith("Activities of head offices")
+
+
+def test_cr_currency_offers_crs_codes_and_never_the_iso_ones():
+    """`lookup_values` carries 162 ISO currency codes from Viewpoint; CR takes
+    54 of its own. A share class denominated in renminbi must be offered RMB,
+    because CNY is a code CR has never heard of."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_currency", headers=H)
+
+    assert resp.status_code == 200
+    codes = {v["code"] for v in resp.json()}
+    assert len(codes) == 54
+    assert {"RMB", "NTD", "WON", "NIS"} <= codes
+    assert not ({"CNY", "TWD", "KRW", "ILS"} & codes)
+
+
+def test_cr_company_type_offers_exactly_crs_three():
+    """PRD §7.4. CR's worksheet documents only "P - Private, N - Public"; `G`
+    comes from CR's shipped NNC1G examples, and shipped XML outranks the
+    worksheet. Viewpoint has no mapping, so this list is the whole vocabulary
+    and a fourth value would be one an operator invented."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_company_type", headers=H)
+
+    assert resp.status_code == 200
+    values = resp.json()
+    assert [v["code"] for v in values] == ["P", "N", "G"]
+    assert values[0]["label"] == "Private"
+
+
+def test_cr_record_type_lists_the_registers_nar1_s16_asks_about():
+    """Thirteen registers -- Viewpoint's address types minus the seals and the
+    company's own addresses, which are not records."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_record_type", headers=H)
+
+    assert resp.status_code == 200
+    values = resp.json()
+    assert len(values) == 13
+    assert {"SS", "ST", "SU", "SR", "SB"}.isdisjoint({v["code"] for v in values})
+    assert next(v for v in values if v["code"] == "SM")["label"] == "Register of Members"
+
+
 def test_every_cr_district_value_is_one_the_nar1_mapper_accepts():
     """The dropdown must not be able to offer a value CR would refuse. Sending
     the district NAME "WAN CHAI" was rejected live on 2026-08-27 while the code

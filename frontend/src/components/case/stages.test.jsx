@@ -272,6 +272,48 @@ describe('Client Verification', () => {
     <StageClientVerification caseRow={at(over)} canWrite
                              onChanged={onChanged} onError={onError} />)
 
+  // ── spec §5: one message per director, so a send can partly succeed ─────
+
+  async function pressSend() {
+    // Same gate the other send tests go through: the chips have to be on
+    // screen and the review ticked before the button is live.
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await user.click(screen.getByRole('button', { name: /Send to client/ }))
+    return user
+  }
+
+  it('names the directors a partial send did NOT reach', async () => {
+    // The case an operator is most likely to miss: the screen advances, the
+    // status changes, and one director was never asked.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'],
+                             failed_to: ['b@x.com'], approval_links: true })
+    await pressSend()
+    const panel = await screen.findByTestId('send-partial')
+    expect(within(panel).getByText(/b@x\.com/)).toBeInTheDocument()
+    expect(within(panel).getByText(/The others have it/)).toBeInTheDocument()
+  })
+
+  it('says nothing about a partial send when everyone got it', async () => {
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'], failed_to: [],
+                             approval_links: true })
+    await pressSend()
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+    expect(screen.queryByTestId('send-partial')).not.toBeInTheDocument()
+  })
+
+  it('says when the email went out with no Confirm button', async () => {
+    // Nobody should be waiting for a button press that is not in the email.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'], failed_to: [],
+                             approval_links: false })
+    await pressSend()
+    const panel = await screen.findByTestId('send-no-links')
+    expect(within(panel).getByText(/reply by email/)).toBeInTheDocument()
+    expect(within(panel).getByText(/PUBLIC_API_BASE_URL/)).toBeInTheDocument()
+  })
+
   // ── v11 restorations (Q3, Block C) ──────────────────────────────────────
 
   it('leads with the frozen snapshot, so a moved profile is not a mystery', () => {

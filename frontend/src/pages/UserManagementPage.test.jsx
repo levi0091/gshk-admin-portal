@@ -90,3 +90,23 @@ describe('UserManagementPage — adding a user', () => {
         .not.toBeInTheDocument())
   })
 })
+
+describe('UserManagementPage — a test deployment', () => {
+  it('says the password went to the test mailboxes, not to the new user', async () => {
+    // The account is real and locked to `must_change_password`. Unless the new
+    // user is one of the four TEST_RECIPIENTS they can never sign in, and
+    // nothing else on this screen would say why.
+    post.mockResolvedValue({ id: 'u9', welcome_email_sent: true,
+                             welcome_email_redirected: true })
+    const user = await openAddUser()
+    await user.type(screen.getByPlaceholderText(/Sarah Wong/), 'Roy Tan')
+    await user.type(document.querySelector('input[type="email"]'), 'roy@x.com')
+    await user.selectOptions(screen.getByRole('combobox'), 'role-cm')
+    await user.click(screen.getByRole('button', { name: /Create User/ }))
+
+    expect(await screen.findByText(/test environment/i)).toBeInTheDocument()
+    expect(screen.getByText(/roy@x\.com/)).toBeInTheDocument()
+    expect(screen.getByText(/cannot sign in until somebody passes them/i))
+      .toBeInTheDocument()
+  })
+})

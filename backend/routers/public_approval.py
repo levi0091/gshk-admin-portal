@@ -37,6 +37,7 @@ that there is no vulnerability to exploit"):
 from __future__ import annotations
 
 import html
+import ipaddress
 import re
 import sys
 import time
@@ -67,11 +68,39 @@ _RATE_WINDOW_SECONDS = 300
 #: well enough per worker. The real defence against guessing is a 256-bit token.
 _HITS: dict[str, list] = defaultdict(list)
 
+#: How many keys the limiter will hold before it sheds the idle ones.
+#:
+#: WITHOUT THIS IT IS ITSELF A DENIAL OF SERVICE. Every distinct token that
+#: arrives becomes a dict key, so a script sending random 40-character strings
+#: grows this map without bound on an UNAUTHENTICATED route — the map would run
+#: the worker out of memory long before the tokens ran out. The sweep below
+#: drops every key whose window has fully elapsed, which is all of them for an
+#: attacker walking the keyspace.
+_HITS_MAX_KEYS = 10_000
+
 _HKT = timezone(timedelta(hours=8))
+
+
+def _sweep(now: float) -> None:
+    """Drop every key whose window has fully elapsed. See `_HITS_MAX_KEYS`."""
+    stale = [k for k, hits in _HITS.items()
+             if not hits or now - hits[-1] >= _RATE_WINDOW_SECONDS]
+    for key in stale:
+        del _HITS[key]
+    if len(_HITS) > _HITS_MAX_KEYS:
+        # Everything is inside its window and there are still too many. Keep the
+        # most recently seen, because those are the ones a limit can still act
+        # on; an attacker's spent keys are the oldest by construction.
+        keep = sorted(_HITS.items(), key=lambda kv: kv[1][-1],
+                      reverse=True)[:_HITS_MAX_KEYS]
+        _HITS.clear()
+        _HITS.update(keep)
 
 
 def _rate_limited(*keys: str) -> bool:
     now = time.monotonic()
+    if len(_HITS) >= _HITS_MAX_KEYS:
+        _sweep(now)
     limited = False
     for key in keys:
         if not key:
@@ -90,12 +119,25 @@ def _client_ip(request: Request) -> str | None:
     The LEFTMOST entry in X-Forwarded-For is the client; everything after it is
     a proxy chain. It is client-controllable, which is why it is only ever
     RECORDED and displayed to staff — never used to authorise anything.
+
+    IT IS ALSO PARSED BEFORE IT IS RETURNED, and that is not tidiness.
+    `nar1_client_approvals.ip_address` is an `inet` column: a header of
+    `<script>` or `not-an-ip` would make the INSERT fail, the whole `claim`
+    fail, and the route answer 500 — a client-controlled string turning a
+    director's confirmation into an error page. Anything unparseable yields
+    None, which the column accepts and which honestly records that we do not
+    know where the press came from.
     """
     forwarded = request.headers.get("x-forwarded-for") or ""
-    first = forwarded.split(",")[0].strip()
-    if first:
-        return first[:100]
-    return request.client.host if request.client else None
+    candidate = forwarded.split(",")[0].strip()
+    if not candidate:
+        candidate = request.client.host if request.client else ""
+    try:
+        # Normalised through ipaddress rather than regex-matched: it accepts
+        # every form Postgres's `inet` does, and rejects everything else.
+        return str(ipaddress.ip_address(candidate.strip("[]")))
+    except ValueError:
+        return None
 
 
 def _hkt(value) -> str:

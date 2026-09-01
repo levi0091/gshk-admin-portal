@@ -32,6 +32,20 @@ function AddUserModal({ roles, onClose, onCreated }) {
       // real user in Supabase Auth who has no password and no way to ask for
       // one, so this cannot be silent — but it is not an error either, because
       // retrying the creation would collide on the email address.
+      // ON A TEST DEPLOYMENT THE MAIL IS REDIRECTED to the four hardcoded
+      // addresses in `email_service.TEST_RECIPIENTS`. The account is real and
+      // it is locked to `must_change_password`, so unless the new user IS one
+      // of those four they can never sign in — and nothing else on this screen
+      // would say why.
+      if (created?.welcome_email_redirected) {
+        setWarning(
+          'The account was created, but this is a test environment: the '
+          + 'welcome email went to the test mailboxes, not to '
+          + `${form.email}. They cannot sign in until somebody passes them the `
+          + 'password from that mailbox.')
+        onCreated()
+        return
+      }
       if (created?.welcome_email_sent === false) {
         setWarning(
           'The account was created, but the welcome email did not send'

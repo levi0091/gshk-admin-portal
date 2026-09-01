@@ -18,21 +18,45 @@ beforeEach(() => {
   // the Country of Incorporation select reads /lookups
   api.get.mockResolvedValue({
     country: [{ code: 'GB', label: 'United Kingdom' }, { code: 'HK', label: 'Hong Kong' }],
+    cr_company_type: [{ code: 'P', label: 'Private' }, { code: 'N', label: 'Public' },
+                      { code: 'G', label: 'Limited by Guarantee' }],
   })
   api.post.mockResolvedValue({ id: 'new-1', company_name: 'NewCo' })
   api.put.mockResolvedValue({ id: 'addr-1' })
 })
 
+/** Company type is fetched, so it is not selectable on the first paint. */
+async function selectCompanyType(user, code = 'P') {
+  const select = screen.getByLabelText(/Company Type/)
+  await waitFor(() =>
+    expect(select.querySelector(`option[value="${code}"]`)).not.toBeNull())
+  await user.selectOptions(select, code)
+}
+
 async function fillRequired(user) {
   await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
   await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
-  await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
+  await selectCompanyType(user)
   // The address is now the separate lines CR receives, not one free-text box.
   await user.type(screen.getByLabelText(/Flat \/ Floor \/ Block/), '1 Harbour View St')
   await user.type(screen.getByLabelText(/Company Phone/), '3500 1234')
 }
 
 describe('AddCompanyModal', () => {
+  it('offers CRs three company types, not Viewpoints descriptions', async () => {
+    // The list used to be three hardcoded free-text descriptions. CR takes
+    // P, N or G on `coyType` and refuses anything else, so a company created
+    // here was born with a value its own annual return could not carry.
+    renderModal()
+    await waitFor(() =>
+      expect(within(screen.getByLabelText(/Company Type/)).queryAllByRole('option').length)
+        .toBeGreaterThan(1))
+    const options = within(screen.getByLabelText(/Company Type/))
+      .queryAllByRole('option').map(o => o.textContent)
+
+    expect(options).toEqual(['Select…', 'Private', 'Public', 'Limited by Guarantee'])
+  })
+
   it('only offers Pre-Incorporation and Live at create time (OQ-3)', () => {
     renderModal()
     const options = within(screen.getByLabelText(/Status/)).queryAllByRole('option')
@@ -71,7 +95,7 @@ describe('AddCompanyModal', () => {
       expect(api.post).toHaveBeenCalledWith('/companies', {
         company_name: 'NewCo',
         status: 'pre_incorporation',
-        company_type: 'Private company limited by shares',
+        company_type: 'P',
         incorporation_place: 'HK',
         company_phone: '+852 3500 1234',
       })
@@ -226,7 +250,7 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
     renderModal()
     await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
     await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
-    await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
+    await selectCompanyType(user)
     await user.type(screen.getByLabelText(/Company Phone/), '3500 1234')
     await user.click(screen.getByRole('button', { name: 'Create Company' }))
     expect(await screen.findByText('A registered address is required')).toBeInTheDocument()
@@ -238,7 +262,7 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
     renderModal()
     await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
     await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
-    await user.selectOptions(screen.getByLabelText(/Company Type/), 'Private company limited by shares')
+    await selectCompanyType(user)
     await user.type(screen.getByLabelText(/Flat \/ Floor \/ Block/), '1 Harbour View St')
     await user.click(screen.getByRole('button', { name: 'Create Company' }))
     expect(await screen.findByText('Company phone is required')).toBeInTheDocument()
@@ -247,7 +271,11 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
 
   it('blocks submit when the country of incorporation is empty', async () => {
     const user = userEvent.setup()
-    api.get.mockResolvedValue({ country: [{ code: 'GB', label: 'United Kingdom' }] })
+    // Company type still has to be selectable — it comes from /lookups too.
+    api.get.mockResolvedValue({
+      country: [{ code: 'GB', label: 'United Kingdom' }],
+      cr_company_type: [{ code: 'P', label: 'Private' }],
+    })
     renderModal()
     await fillRequired(user)
     await user.click(screen.getByRole('button', { name: 'Create Company' }))

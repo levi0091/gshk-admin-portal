@@ -1,9 +1,14 @@
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+#: StatedCap is CR's "Total Amount" -- the VALUE of the issued shares, as
+#: opposed to Issued, which is how many there are. It was missing from this
+#: SELECT until 2026-09-02, which is why share_classes could only ever say how
+#: many shares existed. The two differ on 60 of Viewpoint's 5,740 rows, so the
+#: omission silently mis-stated the share capital section for those companies.
 SHARE_CAPITAL_QUERY = text("""
     SELECT EntCode, ShareClass, ShareClassName, Currency,
-           NomValShare, VotesPerShare, Issued, PaidCap
+           NomValShare, VotesPerShare, Issued, StatedCap, PaidCap
     FROM Share_Capital
 """)
 

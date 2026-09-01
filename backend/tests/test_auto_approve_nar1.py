@@ -292,3 +292,69 @@ def test_the_window_is_the_one_the_email_promised():
     """The deadline printed in the client's email and the deadline this job acts
     on are the same number, read from the same place."""
     assert approvals.APPROVAL_WINDOW_DAYS == 14
+
+
+# --------------------------------------------------------------------------- #
+#  The silent row cap
+# --------------------------------------------------------------------------- #
+
+def test_the_query_states_its_own_ceiling():
+    """PostgREST applies ITS ceiling when a query does not (Supabase defaults to
+    1,000) and returns the truncated page with no error and no marker. An
+    unstated cap here would auto-approve the first thousand and leave the rest
+    looking, from the log, exactly like a run with nothing left to do."""
+    table = MagicMock()
+    limits = []
+    table.select.return_value = table
+    table.is_.return_value = table
+    table.lt.return_value = table
+    table.order.return_value = table
+    table.limit.side_effect = lambda n: (limits.append(n), table)[1]
+    table.execute.return_value = MagicMock(data=[])
+    sb = MagicMock()
+    sb.table.return_value = table
+
+    with patch("jobs.auto_approve_nar1.get_supabase", return_value=sb):
+        job.due_tokens(NOW)
+
+    assert limits == [job.DUE_TOKEN_LIMIT]
+
+
+@pytest.mark.asyncio
+async def test_a_full_page_is_reported_rather_than_looking_finished():
+    """"approved 340, skipped 660" out of a full page looks exactly like a
+    finished run."""
+    tokens = [token(id=f"a{i}", case_id=f"c{i}")
+              for i in range(job.DUE_TOKEN_LIMIT)]
+    cases = [case(id=f"c{i}", client_approved=True)
+             for i in range(job.DUE_TOKEN_LIMIT)]
+    with _Stack(*_world(tokens=tokens, cases=cases)):
+        report = await job.run(NOW)
+    assert report["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_partial_page_is_not_reported_as_truncated():
+    with _Stack(*_world()):
+        report = await job.run(NOW)
+    assert report["truncated"] is False
+
+
+def test_the_oldest_overdue_cases_are_taken_first():
+    """A run that does hit the ceiling must clear the MOST overdue, so the
+    remainder is the least urgent and one more night costs nothing."""
+    table = MagicMock()
+    ordered = []
+    table.select.return_value = table
+    table.is_.return_value = table
+    table.lt.return_value = table
+    table.order.side_effect = lambda col, **kw: (ordered.append((col, kw)), table)[1]
+    table.limit.return_value = table
+    table.execute.return_value = MagicMock(data=[])
+    sb = MagicMock()
+    sb.table.return_value = table
+
+    with patch("jobs.auto_approve_nar1.get_supabase", return_value=sb):
+        job.due_tokens(NOW)
+
+    assert ordered == [("expires_at", {})]     # ascending: oldest expiry first
