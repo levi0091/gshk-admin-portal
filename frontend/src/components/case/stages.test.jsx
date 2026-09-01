@@ -310,7 +310,15 @@ describe('Client Verification', () => {
     expect(blob.mock.calls[1][0]).toBe('/tpsi/filings/f1/pdf')
   })
 
-  it('opens the return full screen — 460px cannot show a nine-page form', async () => {
+  it('gives the preview enough height to read a statutory return', async () => {
+    renderIt()
+    const frame = await screen.findByLabelText('NAR1 preview')
+    // 690px at 100% zoom. The return is nine A4 pages and the operator is
+    // checking particulars against the company record, not glancing at it.
+    expect(frame).toHaveStyle({ height: '690px' })
+  })
+
+  it('opens the return full screen — even 690px cannot show a nine-page form', async () => {
     const open = vi.fn()
     vi.stubGlobal('open', open)
     const user = userEvent.setup()
@@ -425,7 +433,7 @@ describe('Client Verification', () => {
   // ── The failure Levi hit: a refused send that looked like a dead button ──
 
   it('reports a refused send AT the button, not only through onError', async () => {
-    // The page-level banner `onError` drives sits above a 460px PDF frame —
+    // The page-level banner `onError` drives sits above a 690px PDF frame —
     // about a screen and a half from the button that was just pressed.
     post.mockRejectedValueOnce(
       Object.assign(new Error('this case was completed off-portal'), { status: 409 }))

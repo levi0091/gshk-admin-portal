@@ -279,7 +279,7 @@ describe('describeError — CR refusals', () => {
 //
 // This exists because of a real report (Levi 2026-08-30): "I clicked on the
 // send to client button. nothing happened." The backend HAD refused it, with a
-// 409 rendered at the top of a page whose Send button sits below a 460px PDF
+// 409 rendered at the top of a page whose Send button sits below a 690px PDF
 // frame. Deciding it here means the button explains itself instead.
 // ---------------------------------------------------------------------------
 

@@ -157,7 +157,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       onChanged()
     } catch (e) {
       // Reported HERE, next to the button, and NOT bubbled to `onError`. The
-      // page-level banner sits above a 460px PDF frame, so a failure raised
+      // page-level banner sits above a 690px PDF frame, so a failure raised
       // there is off-screen at the moment the operator is looking at the
       // button they just pressed.
       setSendError(describeSendError(e))
@@ -208,8 +208,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               {saving ? 'Preparing…' : 'Download PDF'}
             </button>
             {/* A tab, not a modal: the operator is checking this against the
-                company record in another window, and 460px of embedded viewer
-                is not enough to read a nine-page statutory return. */}
+                company record in another window, and even 690px of embedded
+                viewer is not a whole nine-page statutory return. */}
             <button type="button" className="btn btn-outline btn-sm"
                     disabled={!pdfUrl}
                     onClick={() => window.open(pdfUrl, '_blank', 'noopener')}>
@@ -246,7 +246,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
                 frame is what the embedded viewer actually reads as bigger. */}
             <object data={pdfUrl} type="application/pdf" aria-label="NAR1 preview"
                     className="pdf-frame"
-                    style={{ height: Math.round(460 * zoom / 100) }}>
+                    style={{ height: Math.round(690 * zoom / 100) }}>
               {/* Some browsers refuse to embed; a link is not a dead end. */}
               <a href={pdfUrl} target="_blank" rel="noreferrer">Open the NAR1 preview</a>
             </object>
@@ -327,7 +327,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
         {/* THE ERROR LIVES HERE, beside the button that caused it. It used to
             be reported only through `onError`, which renders at the top of the
-            page — roughly a screen and a half above this button, past a 460px
+            page — roughly a screen and a half above this button, past a 690px
             PDF frame. A refused send therefore looked exactly like a dead
             button, which is how it was reported on 2026-08-30. */}
         {sendError && (
