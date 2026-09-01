@@ -552,32 +552,54 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
     corp_dirs = _as_list(model.get("corpDirList"))
     res_dirs = _as_list(model.get("resDirList"))
 
+    # CR's NAR1 is a STATIC form: a section's page is filed whether or not the
+    # section has content. The reference return carries an empty natural-person
+    # secretary page, an empty body-corporate director page and an empty
+    # reserve-director page, and files all three.
+    #
+    # These used to be conditional, so a typical private company rendered six
+    # pages instead of nine and every section below the gap moved. The client
+    # verification email names pages ("Page 5: Director's details"), so a page
+    # set that shifts with the officer mix points the reader at the wrong
+    # section. Continuation sheets stay conditional below -- those really are
+    # overflow, and CR's own form says so.
     if ind_secs:
         values = _individual_officer(fm.SECRETARY_INDIVIDUAL, ind_secs[0],
                                      hk_only=True)
-        values[fm.SECRETARY_INDIVIDUAL["br_number"]] = br_number
-        pages.add(fm.PAGE_SECRETARY_INDIVIDUAL, values)
+    else:
+        values = {}
+    values[fm.SECRETARY_INDIVIDUAL["br_number"]] = br_number
+    pages.add(fm.PAGE_SECRETARY_INDIVIDUAL, values)
+
     if corp_secs:
         values = _corporate_officer(fm.SECRETARY_CORPORATE, corp_secs[0],
                                     hk_only=True)
-        values[fm.SECRETARY_CORPORATE["br_number"]] = br_number
-        pages.add(fm.PAGE_SECRETARY_CORPORATE, values)
+    else:
+        values = {}
+    values[fm.SECRETARY_CORPORATE["br_number"]] = br_number
+    pages.add(fm.PAGE_SECRETARY_CORPORATE, values)
+
     if ind_dirs:
         values = _individual_officer(fm.DIRECTOR_INDIVIDUAL, ind_dirs[0],
                                      hk_only=False)
-        values[fm.DIRECTOR_INDIVIDUAL["br_number"]] = br_number
-        pages.add(fm.PAGE_DIRECTOR_INDIVIDUAL, values)
-    if corp_dirs:
-        values = {fm.DIRECTOR_CORPORATE_HEADER["br_number"]: br_number}
-        for slot, body in zip(fm.DIRECTOR_CORPORATE,
-                              corp_dirs[:fm.DIRECTOR_CORPORATE_SLOTS]):
-            values.update(_corporate_officer(slot, body, hk_only=False))
-        pages.add(fm.PAGE_DIRECTOR_CORPORATE, values)
+    else:
+        values = {}
+    values[fm.DIRECTOR_INDIVIDUAL["br_number"]] = br_number
+    pages.add(fm.PAGE_DIRECTOR_INDIVIDUAL, values)
+
+    values = {fm.DIRECTOR_CORPORATE_HEADER["br_number"]: br_number}
+    for slot, body in zip(fm.DIRECTOR_CORPORATE,
+                          corp_dirs[:fm.DIRECTOR_CORPORATE_SLOTS]):
+        values.update(_corporate_officer(slot, body, hk_only=False))
+    pages.add(fm.PAGE_DIRECTOR_CORPORATE, values)
+
     if res_dirs:
         values = _individual_officer(fm.RESERVE_DIRECTOR, res_dirs[0],
                                      hk_only=False)
-        values[fm.RESERVE_DIRECTOR["br_number"]] = br_number
-        pages.add(fm.PAGE_RESERVE_DIRECTOR, values)
+    else:
+        values = {}
+    values[fm.RESERVE_DIRECTOR["br_number"]] = br_number
+    pages.add(fm.PAGE_RESERVE_DIRECTOR, values)
 
     def sheet_header_values(page_no):
         head = fm.sheet_header(page_no)

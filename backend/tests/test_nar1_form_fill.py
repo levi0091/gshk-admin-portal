@@ -408,3 +408,49 @@ def test_the_document_is_small_enough_to_email():
     pdf = fill.render(build_xml(directors=("A", "B", "C"),
                                 members=("A", "B", "C", "D")))
     assert len(pdf) < 4_000_000, f"{len(pdf)} bytes is too big to attach"
+
+
+# ---------------------------------------------------------------------------
+# CR's form is STATIC (client-confirmed 2026-09-01)
+# ---------------------------------------------------------------------------
+
+def test_the_return_is_always_CRs_nine_pages():
+    """CR does not drop a section's page when the section is empty. The
+    reference return carries an empty natural-person secretary page, an empty
+    body-corporate director page and an empty reserve-director page, and files
+    all three. Dropping them moved every later section's page number, which is
+    what made the client's page references disagree with ours."""
+    assert len(PdfReader(io.BytesIO(fill.render(build_xml()))).pages) == 9
+
+
+def test_the_page_set_does_not_move_with_the_officer_mix():
+    """The email tells the client 'Page 5: Director's details'. That is only
+    true if page 5 is the director page for every company."""
+    one = PdfReader(io.BytesIO(fill.render(build_xml()))).pages
+    corp = PdfReader(io.BytesIO(fill.render(
+        build_xml(corporate_directors=("ALPHA LTD",))))).pages
+    assert len(one) == len(corp) == 9
+
+
+def test_share_capital_is_on_page_2_and_directors_on_page_5():
+    """The two page numbers hardcoded into the client email.
+
+    Text is whitespace-normalised before matching: CR's own template renders
+    "Director  (Natural Person)" with a double space between the words (a
+    kerning artefact of the static artwork, present before this change and
+    unrelated to it), which a literal single-space match would miss."""
+    pages = PdfReader(io.BytesIO(fill.render(build_xml()))).pages
+    page2_text = re.sub(r"\s+", " ", pages[1].extract_text() or "")
+    page5_text = re.sub(r"\s+", " ", pages[4].extract_text() or "")
+    assert "Share Capital" in page2_text
+    assert "Director (Natural Person)" in page5_text
+
+
+def test_continuation_sheets_are_still_conditional():
+    """Those genuinely ARE overflow -- CR's form says 'Use Continuation Sheet
+    C if more than 1 director is a natural person'."""
+    plain = PdfReader(io.BytesIO(fill.render(build_xml()))).pages
+    overflow = PdfReader(io.BytesIO(fill.render(
+        build_xml(directors=("CHAN", "LEE", "WONG"))))).pages
+    assert len(plain) == 9
+    assert len(overflow) > 9
