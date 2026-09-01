@@ -365,6 +365,39 @@ def test_more_share_classes_than_the_printed_table_is_refused():
         fill.render(build_xml(share_classes=fm.SHARE_CAPITAL_ROWS + 1))
 
 
+def test_the_officer_guard_checks_each_kind_separately_not_pooled():
+    """Pages 3-7 are now UNCONDITIONALLY present (CR's form is static -- see
+    'CR'S FORM IS STATIC' below), so a return with zero secretaries and zero
+    corporate directors still has those pages' capacity sitting in the
+    document: 1 secretary (natural person) + 1 secretary (body corporate) +
+    1 director (natural person) + 2 director (body corporate) + 1 reserve
+    director = 6 slots that exist whether or not anything occupies them. A
+    combined 'total capacity >= total officers' check cannot tell a director
+    from a secretary, so those 6 phantom slots can cover for a genuinely
+    missing director. This builds the exact failure by hand: 4 individual
+    directors in the model, but only the ONE main-page slot laid out and no
+    Sheet C added -- the return the pooled guard let through."""
+    model = {"indDirList": [{"indvEngSname": n} for n in ("A", "B", "C", "D")]}
+    pages = fill._Pages()
+    for page_no in (fm.PAGE_MAIN_1, fm.PAGE_MAIN_2,
+                    fm.PAGE_SECRETARY_INDIVIDUAL, fm.PAGE_SECRETARY_CORPORATE,
+                    fm.PAGE_DIRECTOR_INDIVIDUAL, fm.PAGE_DIRECTOR_CORPORATE,
+                    fm.PAGE_RESERVE_DIRECTOR, fm.PAGE_MEMBERS_AND_SIGNATURE,
+                    fm.PAGE_SCHEDULE_1):
+        pages.add(page_no, {})
+    with pytest.raises(fill.FormFillError,
+                       match=r"4 director \(natural person\) officers"):
+        fill._assert_nothing_dropped(model, pages)
+
+
+def test_the_officer_guard_still_passes_a_correctly_laid_out_return():
+    """The other half of the same fix: per-kind counting must not become
+    per-kind OVER-strict. Four individual directors laid out correctly --
+    one on the main page, three on Sheet C -- must still pass."""
+    pdf = fill.render(build_xml(directors=("A", "B", "C", "D")))
+    assert pdf  # did not raise
+
+
 # ---------------------------------------------------------------------------
 # Content lands where CR prints it
 # ---------------------------------------------------------------------------
@@ -423,6 +456,22 @@ def test_the_return_is_always_CRs_nine_pages():
     assert len(PdfReader(io.BytesIO(fill.render(build_xml()))).pages) == 9
 
 
+def test_a_memberless_return_still_carries_a_schedule_page():
+    """`_chunk(rows, ...)` on zero members yields nothing, which used to skip
+    the Schedule page entirely -- an 8-page document that STILL ticked
+    'members are shown on Schedule 1' on page 8 (see
+    `test_a_listed_company_uses_schedule_2_and_a_private_one_schedule_1`),
+    pointing at a sheet that was not in the file it was ticked on. Spec §1b:
+    every return is pages 1-8 PLUS Schedule 1 or 2, always."""
+    pdf = fill.render(build_xml(members=()))
+    reader = PdfReader(io.BytesIO(pdf))
+    assert len(reader.pages) == 9
+    values = values_of(pdf)
+    assert fm.SCHEDULE_1_HEADER["br_number"] in values, \
+        "the Schedule 1 header page was dropped for having no member rows"
+    assert values[fm.MEMBERS_AND_SIGNATURE["count_schedule_1"]] == ["1"]
+
+
 def test_the_page_set_does_not_move_with_the_officer_mix():
     """The email tells the client 'Page 5: Director's details'. That is only
     true if page 5 is the director page for every company."""
@@ -448,9 +497,15 @@ def test_share_capital_is_on_page_2_and_directors_on_page_5():
 
 def test_continuation_sheets_are_still_conditional():
     """Those genuinely ARE overflow -- CR's form says 'Use Continuation Sheet
-    C if more than 1 director is a natural person'."""
+    C if more than 1 director is a natural person'.
+
+    The exact count, not merely '> 9': `len(overflow) > 9` would pass for a
+    40-page document just as happily as the correct 11-page one, and would
+    not have caught a Sheet C page silently duplicated or dropped."""
     plain = PdfReader(io.BytesIO(fill.render(build_xml()))).pages
     overflow = PdfReader(io.BytesIO(fill.render(
         build_xml(directors=("CHAN", "LEE", "WONG"))))).pages
     assert len(plain) == 9
-    assert len(overflow) > 9
+    # 9 base pages (main 1-8 + one Schedule 1 page) + 2 extra Sheet C pages
+    # for LEE and WONG, the directors beyond the one CHAN occupies on page 5.
+    assert len(overflow) == 11

@@ -660,15 +660,22 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
             for allottee in _as_list(group.get("allotteeRec")):
                 rows.append((share_class, total, group, allottee))
 
-    for chunk in _chunk(rows, fm.SCHEDULE_SLOTS):
+    # ALWAYS at least one chunk, even with zero members. `_chunk(rows, ...)`
+    # on an empty list yields nothing, which used to drop the Schedule page
+    # entirely -- an 8-page document that STILL ticked "members are listed on
+    # Schedule 1/2" on page 8, pointing at a sheet that was not in the file.
+    # CR's form is static the same way pages 3-7 are (see "CR'S FORM IS
+    # STATIC" below): the schedule is filed whether or not it has rows.
+    for chunk in (list(_chunk(rows, fm.SCHEDULE_SLOTS)) or [()]):
         values = {
             schedule_head["br_number"]: br_number,
             schedule_head["return_date_dd"]: dd,
             schedule_head["return_date_mm"]: mm,
             schedule_head["return_date_yyyy"]: yyyy,
-            schedule_head["share_class"]: chunk[0][0],
-            schedule_head["class_total_issued"]: chunk[0][1],
         }
+        if chunk:
+            values[schedule_head["share_class"]] = chunk[0][0]
+            values[schedule_head["class_total_issued"]] = chunk[0][1]
         for slot, (_cls, _total, group, allottee) in zip(schedule_slots, chunk):
             values.update(_member(slot, allottee, group, listed=listed))
         pages.add(schedule_page, values)
@@ -729,32 +736,51 @@ def _assert_nothing_dropped(model: dict, pages: _Pages) -> None:
     is being asked to approve and CR is being asked to register. So the counts
     are checked rather than trusted, after composition and before any bytes are
     produced.
+
+    PER OFFICER KIND, not pooled into one total. Pages 3-7 are now
+    unconditionally present (CR's form is static -- see `_compose`), so a
+    single combined "capacity of every page present" figure always includes
+    the 6 phantom slots of the four other kinds' main pages -- 1 secretary
+    (natural person) + 1 secretary (body corporate) + 1 director (natural
+    person) + 2 director (body corporate) + 1 reserve director -- whether or
+    not that kind has any officers at all. A director cannot occupy a
+    secretary's box, so that phantom capacity must not be able to cover for
+    a genuinely missing director. Demonstrated in review: a return with 4
+    individual directors and only the ONE main-page slot laid out (no Sheet C
+    added) passed the pooled check, because the other 5 phantom slots alone
+    already exceeded 4.
     """
-    expected_officers = (
-        len(_as_list(model.get("indSecList")))
-        + len(_as_list(model.get("corpSecList")))
-        + len(_as_list(model.get("indDirList")))
-        + len(_as_list(model.get("corpDirList")))
-        + len(_as_list(model.get("resDirList")))
-    )
-    capacity = {
-        fm.PAGE_SECRETARY_INDIVIDUAL: 1, fm.PAGE_SECRETARY_CORPORATE: 1,
-        fm.PAGE_DIRECTOR_INDIVIDUAL: 1,
-        fm.PAGE_DIRECTOR_CORPORATE: fm.DIRECTOR_CORPORATE_SLOTS,
-        fm.PAGE_RESERVE_DIRECTOR: 1,
-        fm.PAGE_SHEET_A: 1, fm.PAGE_SHEET_B: 1, fm.PAGE_SHEET_C: 1,
-        fm.PAGE_SHEET_D: fm.SHEET_D_SLOTS,
+    counts = {
+        "indSecList": len(_as_list(model.get("indSecList"))),
+        "corpSecList": len(_as_list(model.get("corpSecList"))),
+        "indDirList": len(_as_list(model.get("indDirList"))),
+        "corpDirList": len(_as_list(model.get("corpDirList"))),
+        "resDirList": len(_as_list(model.get("resDirList"))),
     }
-    # Capacity, not occupancy: a page with one of its two slots used still has
-    # room for the other, so this can only ever over-count -- which is the safe
-    # direction for a check whose job is to catch UNDER-provisioning.
-    provisioned = sum(capacity.get(page_no, 0) for page_no, _ in pages.items)
-    if provisioned < expected_officers:
-        raise FormFillError(
-            f"the return has {expected_officers} officers but only "
-            f"{provisioned} slots were laid out; some would be silently "
-            f"dropped from the form"
-        )
+    # Capacity, not occupancy, within each kind: a page with one of its two
+    # slots used still has room for the other, so this can only ever
+    # over-count within a kind -- the safe direction for a check whose job
+    # is to catch UNDER-provisioning. It must NOT be summed ACROSS kinds.
+    per_kind = (
+        ("secretary (natural person)", "indSecList",
+         1 + pages.count_of(fm.PAGE_SHEET_A)),
+        ("secretary (body corporate)", "corpSecList",
+         1 + pages.count_of(fm.PAGE_SHEET_B)),
+        ("director (natural person)", "indDirList",
+         1 + pages.count_of(fm.PAGE_SHEET_C)),
+        ("director (body corporate)", "corpDirList",
+         fm.DIRECTOR_CORPORATE_SLOTS
+         + pages.count_of(fm.PAGE_SHEET_D) * fm.SHEET_D_SLOTS),
+        ("reserve director", "resDirList", 1),
+    )
+    for label, key, provisioned in per_kind:
+        expected = counts[key]
+        if provisioned < expected:
+            raise FormFillError(
+                f"the return has {expected} {label} officers but only "
+                f"{provisioned} slots were laid out; some would be silently "
+                f"dropped from the form"
+            )
 
     members = sum(
         len(_as_list(group.get("allotteeRec")))
@@ -898,8 +924,16 @@ def _render(pages: _Pages) -> bytes:
     # are hidden. Until this call the document still renders through CR's
     # non-embedded /PMingLiU, which is what made the emailed copy and the
     # portal preview disagree.
-    return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES,
-                           regular=REGULAR_WEIGHT_FIELDS)
+    try:
+        return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES,
+                               regular=REGULAR_WEIGHT_FIELDS)
+    except appearance.AppearanceError as exc:
+        # Translated rather than left to propagate: every caller of
+        # `render()` already catches `FormFillError` (routers/cases.py,
+        # routers/tpsi.py) and turns it into a 422 naming the problem. An
+        # uncaught AppearanceError would surface as an opaque 500 instead of
+        # "this character on this field cannot be rendered."
+        raise FormFillError(str(exc)) from exc
 
 
 def render(validated_xml: str, *, company_type: str = "private",
