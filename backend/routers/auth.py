@@ -35,4 +35,10 @@ async def get_me(user=Depends(require_user)):
         # actually talking to — a dev build pointed at the prod API would
         # otherwise wear a TEST badge while filing real returns.
         "is_test_env": not is_production(),
+        # Spec §7. The frontend redirects on this, but the redirect is only the
+        # courtesy: `middleware/auth` refuses every other route while it is set,
+        # so a user who navigates around the screen gets 409s rather than a
+        # working portal. /auth/me is deliberately still reachable — it is how
+        # the frontend learns the flag is set at all.
+        "must_change_password": bool(user.get("must_change_password")),
     }

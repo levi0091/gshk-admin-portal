@@ -10,14 +10,24 @@ import PersonProfilePage from './pages/PersonProfilePage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import CrCredentialsPage from './pages/CrCredentialsPage.jsx'
 import UserManagementPage from './pages/UserManagementPage.jsx'
+import SetPasswordPage from './pages/SetPasswordPage.jsx'
 import RoleManagementPage from './pages/RoleManagementPage.jsx'
 import AuditLogPage from './pages/AuditLogPage.jsx'
 import AppShell from './components/AppShell.jsx'
 
 function RequireAuth({ children }) {
-  const { session } = useAuth()
+  const { session, mustChangePassword, profileLoading } = useAuth()
   if (session === undefined) return null // loading
   if (!session) return <Navigate to="/login" replace />
+  // Spec §7. Rendered IN PLACE rather than redirected to a route, so there is
+  // no URL a new user can navigate back out to. This is the courtesy layer:
+  // `middleware/auth` refuses every API route while the flag is set, so
+  // someone who defeats this gets 409s rather than a working portal.
+  //
+  // Waits for /auth/me, like RequireSuperAdmin does — deciding before the
+  // profile resolves would flash this screen at every signed-in user on every
+  // reload.
+  if (!profileLoading && mustChangePassword) return <SetPasswordPage />
   return children
 }
 
