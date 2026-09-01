@@ -23,19 +23,35 @@ The complaint was that the NAR1 attached to the client's email and the NAR1 in
 the portal's preview render in different fonts, and that the font is wrong.
 Both halves have the same cause, and it is not a styling choice.
 
-`services/nar1_form/fill.py` sets `NeedAppearances=true` and writes only field
-values. Measured on a rendered test return:
+Measured on a rendered test return from `services/nar1_form/fill.py`:
 
 | Property | Measured |
 |---|---|
 | Text fields | 131 |
-| Fields carrying an appearance stream (`/AP`) | 53 |
-| Fields with `/DA = /PMingLiU 12 Tf` | 125 |
+| Fields carrying a value | 53 |
+| Valued fields with an appearance stream (`/AP`) | **53 — all of them** |
+| Fields whose `/DA` is `/PMingLiU 12 Tf` | 125 |
+| Font referenced inside those appearance streams | `/PMingLiU` (52), `/TimesNewRoman` (1) |
+| Is `/PMingLiU` embedded in the document? | **No** |
+| `NeedAppearances` | `true` |
 
-Seventy-eight fields carry **no appearance at all**, so every renderer invents
-one. The font they are told to invent it in is PMingLiU — a Traditional
-Chinese face that Windows substitutes one way, Chrome's pdfium another, and
-Outlook's Word renderer a third. Identical bytes, three different documents.
+There are **two independent defects**, and the first is not the one it looks
+like from the outside:
+
+1. **`NeedAppearances=true` tells conforming viewers to discard the appearance
+   streams and regenerate them from `/DA`.** Acrobat and Word/Outlook obey;
+   Chrome's pdfium largely renders the existing `/AP` instead. Same bytes, two
+   different rendering paths — which is precisely the reported symptom, the
+   email attachment and the portal preview disagreeing.
+2. **Whichever path a viewer takes, the font is `/PMingLiU` and it is not
+   embedded.** It is a Traditional Chinese face; a Windows machine substitutes
+   one thing, a Mac another, a Linux container a third. So the font is both
+   wrong and unstable across platforms.
+
+An earlier reading of this counted 78 fields as having "no appearance stream".
+That was wrong — those 78 are the *empty* fields, which correctly have none.
+Every field that carries a value already has a stream. The defect is what the
+streams point at, and the flag that invites them to be thrown away.
 
 ### The target, measured
 
@@ -52,43 +68,98 @@ the CR-produced return GSHK regards as correct:
 The Arial / MingLiU throughout the reference is CR's *printed form*, not
 filled data. We do not touch it — it arrives in the template.
 
-### Approach
+### Approach — a baked text layer, verified by spike
 
-Keep writing `/V`, and **additionally** generate a real `/AP` appearance
-stream per widget, then set `NeedAppearances` off.
+Draw the values as a **baked page layer** in embedded fonts, hide the widget
+annotations so nothing paints over it, and set `NeedAppearances` **off**.
 
-Keeping `/V` is deliberate. Flattening the values into the page content stream
-would also fix the rendering, but it would break every `values_of()` assertion
-in `tests/test_nar1_form_fill.py` and would make the document unreadable to
-anything that inspects it as a form. Writing both means viewers render our
-bytes while the data stays machine-readable.
+Rejected: rewriting each widget's `/AP` in place. It leaves the values subject
+to the same regeneration flag and requires hand-building CID font dictionaries
+for CJK. The overlay uses `reportlab`, **already a dependency of this repo**,
+which handles embedding and subsetting itself.
+
+Keeping `/V` is deliberate. A true flatten would also fix the rendering, but
+it would break every `values_of()` assertion in `tests/test_nar1_form_fill.py`
+and make the document unreadable to anything inspecting it as a form. Writing
+the layer *and* keeping `/V` means viewers render our bytes while the data
+stays machine-readable.
 
 New module `services/nar1_form/appearance.py`:
 
-- Draws into each widget's `/Rect`, honouring `/Q` (alignment), the multiline
-  flag (`/Ff` bit 13), and auto-size fields (`0 Tf`), which must compute a
-  size that fits rather than inheriting one.
-- Splits each value into runs by script and selects a font per run.
-- Emits the stream with an explicit `/Resources` font dictionary, so nothing
-  resolves through the AcroForm `/DR` at render time.
+- For each widget with a non-empty `/V`, draws the value inside its `/Rect` at
+  10pt, shrinking in 0.25pt steps to fit, vertically centred.
+- Splits each value into runs by Unicode block, selecting the CJK face
+  per-character so a mixed Latin/Chinese value renders correctly.
+- Sets `/F` bit 2 (Hidden) on each widget it has drawn, so no viewer paints a
+  field box or its own guess of the text over the layer.
+
+**Measured on the spike** (`build_xml()` with a Chinese director name):
+
+| | |
+|---|---|
+| Values drawn | 53 of 53 |
+| `NeedAppearances` in output | `False` |
+| Tinos Bold in output | embedded + subsetted |
+| Noto Serif TC in output | embedded + subsetted |
+| CJK recoverable from the text layer | yes |
+| Document size | 1.75 MB → 1.77 MB |
 
 Fonts, committed under `services/nar1_form/fonts/`:
 
-- **Tinos Bold and Tinos Regular** (Apache-2.0) — metrically identical to
-  Times New Roman: same advance widths, same line breaks, near-indistinguishable
-  glyphs. Chosen over shipping `timesbd.ttf`, which is Monotype-licensed and
-  cannot be redistributed in this repo or a Railway image.
-- **Noto Serif TC** (OFL) for CJK runs, subsetted per document with
-  `fonttools` to only the codepoints actually used — a full face is ~20MB and
-  would put the attachment past every mail size limit.
+- **Tinos Bold and Tinos Regular** (Apache-2.0). Metric compatibility with
+  Times New Roman was **measured, not assumed**: across company names,
+  addresses, amounts and emails the advance-width delta at 10pt is **exactly
+  0.0000pt**. Nothing wraps or overflows differently. Chosen over shipping
+  `timesbd.ttf`, which is Monotype-licensed and cannot be redistributed here.
+- **Noto Serif TC** (OFL) for CJK runs.
 
-> Both font files live beside the module, **not** under `docs/`. `docs/` is
-> gitignored repo-wide, so a copy there exists on one laptop and is absent
-> from CI, Railway, and every fresh clone. This is the same trap the NAR1
-> template itself nearly shipped into.
+Two font facts the spike established the hard way, both of which would
+otherwise have been discovered mid-implementation:
 
-New dependency: `fonttools` — a **runtime** dependency, not a dev tool, for
-the same reason `pypdf` is.
+- **reportlab cannot load PostScript-outline OTF** — it raises
+  `TTFError: postscript outlines are not supported`. The CJK face must be a
+  TrueType-outline build.
+- **The Noto Serif TC variable font's default instance is ExtraLight**, so
+  registering the VF directly embeds the wrong weight. It is instanced to
+  `wght=700` **once, offline**, with `fontTools.varLib.instancer`, and the
+  resulting 10.0 MB static Bold is committed. Doing it offline means
+  **`fonttools` is a build-time tool, not a runtime dependency** — nothing new
+  is added to `pyproject.toml`'s runtime list.
+
+> Font files live beside the module, **not** under `docs/`, which is gitignored
+> repo-wide — a copy there exists on one laptop and is absent from CI, Railway
+> and every fresh clone. This is the trap the NAR1 template itself nearly
+> shipped into.
+
+### 1b · The form is static — empty pages are still filed
+
+Raised by the client, and confirmed against the reference: CR's NAR1 is a
+**fixed nine-page form**. Pages are not dropped when their section is empty.
+
+| Page | Section | Kanenas |
+|---|---|---|
+| 1 | 1–6 company name, type, return date, registered office | filled |
+| 2 | 7–11 email, telephone, charges, **share capital** | filled |
+| 3 | 12 Company Secretary A — natural person | **empty, still present** |
+| 4 | 12 Company Secretary B — body corporate | filled (GSHK Ltd) |
+| 5 | 13 **Directors A — natural person** | filled |
+| 6 | 13 Directors B — body corporate | **empty, still present** |
+| 7 | 13 Directors C — reserve director | **empty, still present** |
+| 8 | 14 Members | filled |
+| 9 | Schedule 1 | filled |
+
+`fill.py` emits pages 3–7 only when the matching officer list is non-empty
+(`fill.py:520-545`), so a typical private company renders **6 pages instead of
+9**, and the page a given section lands on shifts with the company's officer
+mix.
+
+**Fix:** always emit pages 1–8 plus Schedule 1 or Schedule 2, regardless of
+whether the section has content. Continuation sheets (11–15) stay conditional
+— CR's own form says "Use Continuation Sheet C if more than 1 director is a
+natural person", so those genuinely are overflow.
+
+This makes the page numbering stable and correct by construction, which is
+what resolves §2's page references.
 
 ### Tests
 
@@ -131,24 +202,24 @@ The deadline renders as **send date + 14 days**, computed from the same value
 the auto-approval job reads (§5), so the email and the job can never state
 different dates.
 
-### One open point for review
+### The page numbers are correct — this was our bug, not the sample's
 
-You chose the sample's page numbers verbatim. Measured against our own
-generated form, they are half right:
+An earlier draft of this spec flagged the sample's page references as wrong,
+having measured them against our own six-page output. That was backwards. The
+client's point stands: the NAR1 is a **static form**, and CR keeps a section's
+page whether or not it has content (§1b).
 
-| Our NAR1 (typical private company, 6 pages) | |
+Against the real nine-page form the sample is exactly right:
+
+| Sample says | Actual |
 |---|---|
-| Page 2 | Share capital — **matches the sample** |
-| Page 4 | Directors — sample says page 5 |
-| Page 5 | Members / Schedule 1 |
+| Page 2: Share capital | ✓ section 11, page 2 |
+| Page 5: Director's details | ✓ section 13A, page 5 |
+| Schedule 1: Shareholder's details | ✓ page 9 |
 
-The sample was written against a 9-page CR form; our composer drops CR's 12
-pages of printed notes, so the return is 6 pages for one director and 8 for
-three. Hardcoded "Page 5: Director's details" therefore points the client at
-the shareholder page, and shifts further as directors are added.
-
-Built verbatim as instructed. Flagged here because it is a two-character
-change either way and the choice was made before this was measured.
+So the references are hardcoded — as chosen — and §1b makes them true. **§2
+therefore depends on §1b**, not merely on §1: sending this wording against a
+page-dropping renderer would misdirect the client.
 
 ### Preserved from the existing design
 
@@ -497,10 +568,10 @@ Five blocks. Each is independently reviewable and independently revertable.
 
 | Block | Contents | Depends on |
 |---|---|---|
-| **A** | §1 fonts · §3 viewer height | — |
+| **A** | §1 fonts · §1b static page set · §3 viewer height | — |
 | **B** | §4 receipt upload · §6 drift gate | — |
 | **C** | §5 self-approval, table, public route, cron, provenance | — |
-| **D** | §2 client email wording | A (attachment), C (button, deadline) |
+| **D** | §2 client email wording | A (§1b page numbering), C (button, deadline) |
 | **E** | §7 user creation and welcome email | — |
 
 A, B, C and E are parallelisable. D is last because it is the only piece that
@@ -515,10 +586,11 @@ depends on two others.
 | A public write route on the API that files statutory documents | GET is inert; fixed response set; no echo; empty POST body; rate-limited; token-scoped to one row (§5) |
 | The drift gate blocks a legitimate filing near a deadline | Comparator validated against the real book via `nar1_regression.py`; zero differences required on unmodified cases (§6) |
 | A director approves a snapshot that was since corrected, using an old email | Restarting verification supersedes every outstanding token and restarts the clock (§5) |
-| Hardcoded page numbers misdirect the client | Measured and flagged (§2); accepted as instructed |
+| Hardcoded page numbers misdirect the client | Resolved: the form is static and §1b restores the full nine-page set, making the sample's references true (§2) |
 | Appearance streams regress rendering rather than fix it | Rasterised visual comparison, not only field assertions (§1) |
 | Cron double-runs or never runs | Job is idempotent; Railway cron is single-instance by construction; **requires Levi to create the service** (§5) |
 | Font licensing | Tinos (Apache-2.0) and Noto Serif TC (OFL) are redistributable; `timesbd.ttf` is not and is not shipped (§1) |
+| Restoring empty pages changes what CR receives | It does not — the filed payload is the XML, unchanged by this. Only the human-readable PDF gains the pages, which is what makes it a facsimile of CR's own output (§1b) |
 | `docs/` is gitignored — runtime assets placed there vanish on Railway and CI | Fonts committed beside the module (§1); this spec needs its own `!` allowlist line in `.gitignore` |
 
 ---
