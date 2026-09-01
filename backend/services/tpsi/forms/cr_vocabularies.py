@@ -517,3 +517,191 @@ def default_capacity(*, is_corporate: bool) -> str | None:
     gets no default and, as before, must be answered explicitly.
     """
     return DEFAULT_CAPACITY_BODY_CORPORATE if is_corporate else None
+
+
+# ---------------------------------------------------------------------------
+# Business Nature — sheet "Business Nature", 88 rows
+#
+# CR fills natureDesc in from the code itself after web-form validation, so the
+# description is never independently typed: the operator picks a code and the
+# description follows. Held here rather than in `lookup_values` for the reason
+# the district list is (see routers/lookups.py) — one owner per vocabulary, and
+# the owner is whatever decides whether a filing is accepted.
+#
+# Viewpoint holds NO business nature: BusNames.BusNature is empty on all 5,028
+# rows across all four of its business-name tables, and no %activit% / %sic% /
+# %industr% / %sector% column carries it either. So this vocabulary arrives
+# with no data behind it and every company's code is typed by hand.
+# ---------------------------------------------------------------------------
+
+#: CR business nature code -> English description. Verbatim from the sheet.
+BUSINESS_NATURE: dict[str, str] = {
+    '001': 'Crop and animal production, hunting and related service activities',
+    '002': 'Forestry activities',
+    '003': 'Fishing and aquaculture',
+    '005': 'Mining of coal and lignite',
+    '006': 'Extraction of crude petroleum and natural gas',
+    '007': 'Mining of metal ores',
+    '008': 'Quarrying and other mining of non-metal ores',
+    '009': 'Mining support service activities',
+    '010': 'Manufacture of food products',
+    '011': 'Manufacture of beverages',
+    '012': 'Manufacture of tobacco products',
+    '013': 'Manufacture of textiles',
+    '014': 'Manufacture of wearing apparel',
+    '015': 'Manufacture of leather and related products',
+    '016': 'Manufacture of wood and of products of wood and cork, articles of straw and plaiting materials (except furniture and toys)',
+    '017': 'Manufacture of paper and paper products',
+    '018': 'Printing and reproduction of recorded media',
+    '019': 'Manufacture of coke and refined petroleum products',
+    '020': 'Manufacture of chemicals and chemical products',
+    '021': 'Manufacture of pharmaceuticals, medicinal chemical and botanical products',
+    '022': 'Manufacture of rubber and plastics products (except furniture, toys, sports goods and stationery)',
+    '023': 'Manufacture of other non-metallic mineral products',
+    '024': 'Manufacture of basic metals',
+    '025': 'Manufacture of fabricated metal products (except machinery and equipment)',
+    '026': 'Manufacture of computer, electronic and optical products',
+    '027': 'Manufacture of electrical equipment',
+    '028': 'Manufacture of machinery and equipment n.e.c.',
+    '029': 'Body assembly of motor vehicles',
+    '030': 'Manufacture of other transport equipment',
+    '031': 'Manufacture of furniture',
+    '032': 'Other manufacturing',
+    '033': 'Repair and installation of machinery and equipment',
+    '035': 'Electricity and gas supply',
+    '036': 'Water collection, treatment and supply',
+    '037': 'Sewerage',
+    '038': 'Waste collection, treatment and disposal activities; materials recovery',
+    '039': 'Remediation activities and other waste management services',
+    '041': 'Construction of buildings',
+    '042': 'Civil engineering',
+    '043': 'Specialised construction activities',
+    '045': 'Import and export trade',
+    '046': 'Wholesale',
+    '047': 'Retail trade',
+    '049': 'Land transport',
+    '050': 'Water transport',
+    '051': 'Air transport',
+    '052': 'Warehousing and support activities for transportation',
+    '053': 'Postal and courier activities',
+    '055': 'Short term accommodation activities',
+    '056': 'Food and beverage service activities',
+    '058': 'Publishing activities',
+    '059': 'Motion picture, video and television programme production, sound recording and music publishing activities',
+    '060': 'Programming and broadcasting activities',
+    '061': 'Telecommunications',
+    '062': 'Information technology service activities',
+    '063': 'Information service activities',
+    '064': 'Financial service activities, including investment and holding companies, and the activities of trusts, funds and similar financial entities',
+    '065': 'Insurance (including pension funding)',
+    '066': 'Activities auxiliary to financial service and insurance activities',
+    '068': 'Real estate activities',
+    '069': 'Legal and accounting activities',
+    '070': 'Activities of head offices; management and management consultancy activities, such as company secretary services',
+    '071': 'Architecture and engineering activities, technical testing and analysis',
+    '072': 'Scientific research and development',
+    '073': 'Veterinary activities',
+    '074': 'Advertising and market research',
+    '075': 'Other professional, scientific and technical activities',
+    '077': 'Rental and leasing activities',
+    '078': 'Employment activities',
+    '079': 'Travel agency, reservation service and related activities',
+    '080': 'Security and investigation activities',
+    '081': 'Services to buildings and landscape care activities',
+    '082': 'Office administrative, office support and other business support activities',
+    '084': 'Public administration',
+    '085': 'Education',
+    '086': 'Human health activities',
+    '087': 'Residential care activities',
+    '088': 'Social work activities without accommodation',
+    '090': 'Creative and performing arts activities',
+    '091': 'Libraries, archives, museums and other cultural activities',
+    '092': 'Activities of amusement parks and theme parks',
+    '093': 'Sports and other entertainment activities',
+    '094': 'Activities of membership organisations',
+    '095': 'Repair of motor vehicles, motorcycles, computers, personal and household goods',
+    '096': 'Other personal service activities',
+    '097': 'Activities of households as employers of domestic personnel',
+    '098': 'Goods- and services-producing activities of private households for own use',
+    '099': 'Activities of extraterritorial organisations and bodies',
+}
+
+
+# ---------------------------------------------------------------------------
+# Currency — sheet "Currency", 54 rows
+#
+# NOT ISO 4217, and that is the whole reason this table exists. CR uses its own
+# codes for four currencies:
+#
+#     RMB  Ren Min Bi          (ISO says CNY)
+#     NTD  New Taiwan Dollar   (ISO says TWD)
+#     WON  Korean Won          (ISO says KRW)
+#     NIS  New Israeli Shekel  (ISO says ILS)
+#
+# `lookup_values` separately carries 162 currency codes lifted from Viewpoint,
+# which are ISO. Offering those on the share capital form means a share class
+# denominated in renminbi is filed as CNY and refused. The share capital editor
+# must use THIS list; `lookup_values.currency` is for anything not bound for CR.
+#
+# CYP (Cyprus Pound) is retired in the real world -- Cyprus joined the euro in
+# 2008 -- but CR still lists it, so it stays. This table mirrors what CR
+# accepts, not what is current.
+# ---------------------------------------------------------------------------
+
+#: CR currency code -> English description. Verbatim from the sheet.
+CURRENCY: dict[str, str] = {
+    'AED': 'United Arab Emirates Dirham',
+    'AUD': 'Australian Dollars',
+    'BDT': 'Currency of Bangladesh',
+    'BHD': 'Bahraina Dinar',
+    'BMD': 'Bermudian Dollar',
+    'BND': 'Brunei Dollars',
+    'BRL': 'Brazilian Real',
+    'BSD': 'Bahamas Dollars',
+    'CAD': 'Canadian Dollars',
+    'CDF': 'Congolese Franc',
+    'CHF': 'Swiss Francs',
+    'CLP': 'Chilean Peso',
+    'CYP': 'Cyprus Pound',
+    'CZK': 'Czech Koruna',
+    'DKK': 'Danish Kroners',
+    'ETB': 'Ethiopian Birr',
+    'EUR': 'Euro',
+    'FJD': 'Fiji Dollar',
+    'GBP': 'Sterling',
+    'HKD': 'Hong Kong Dollar',
+    'HUF': 'Hungarian Forint',
+    'IDR': 'Indonesian Rupiah',
+    'INR': 'Indian Rupees',
+    'JPY': 'Japanese Yen',
+    'LKR': 'Sri Lankan Rupee',
+    'MNT': 'Mongolian Tugrik',
+    'MOP': 'Macau Pataka',
+    'MUR': 'Mauritian Rupee',
+    'MXN': 'Mexican Peso',
+    'MYR': 'Malaysian Ringgit',
+    'NIS': 'New Israeli Shekel',
+    'NOK': 'Norwegian Kroners',
+    'NPR': 'Nepalese Rupee',
+    'NTD': 'New Taiwan Dollar',
+    'NZD': 'New Zealand Dollars',
+    'PHP': 'Philippine Pesos',
+    'PKR': 'Pakistan Rupees',
+    'PLN': 'Polish Zloty',
+    'QAR': 'Qatari Rial',
+    'RMB': 'Ren Min Bi',
+    'RUB': 'Russian Ruble',
+    'SAR': 'Saudi Arabian Riyal',
+    'SEK': 'Swedish Kroners',
+    'SGD': 'Singapore Dollars',
+    'THB': 'Thai Bahts',
+    'TRY': 'New Turkish Lira',
+    'USD': 'United States Dollar',
+    'UYU': 'Peso Uruguayo',
+    'VND': 'Vietnam Dong',
+    'WON': 'Korean Won',
+    'XCD': 'East Caribbean Dollar',
+    'XOF': 'West African CFA',
+    'XPF': 'CFP Franc',
+    'ZAR': 'C. South African Rand',
+}
