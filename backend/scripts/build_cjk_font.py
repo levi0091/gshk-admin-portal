@@ -20,6 +20,20 @@ from pathlib import Path
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 
+#: STILL the Subset build, NOT `Serif/Variable/TTF/NotoSerifCJKtc-VF.ttf` --
+#: evaluated 2026-09-02 and deliberately not switched. That "full" per-region
+#: build was fetched, instanced and measured: 35,542,216 bytes (~33.9MB) at
+#: wght=700, over the >25MB stop line the fidelity review set. Measuring its
+#: cmap turned up a second problem the review did not anticipate: it covers
+#: the BMP gaps this Subset build misses (U+6768, U+59D7, U+3F18 -- none of
+#: which round-trip through the CURRENT font either, see AppearanceError) but
+#: carries ZERO CJK Extension B codepoints, where the CURRENT Subset build
+#: (still shipped below) carries 1,705. Swapping would trade one silent gap
+#: for a different one at 3.4x the size, not close it. Left for the
+#: controller -- see 2026-09-01-block-a-nar1-form-fidelity/final-fix-report.md
+#: for the full numbers. `appearance.draw_value` now REFUSES to draw a
+#: character the selected face cannot show rather than blanking it, so this
+#: gap is loud (`AppearanceError`) rather than invisible either way.
 SOURCE = ("https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
           "Serif/Variable/TTF/Subset/NotoSerifTC-VF.ttf")
 TARGET = Path(__file__).resolve().parents[1] / "services" / "nar1_form" / "fonts" / "NotoSerifTC-Bold.ttf"

@@ -10,6 +10,9 @@ fresh clone. These are runtime assets, exactly like `form/NAR1_fillable.pdf`.
 | `Tinos-Regular.ttf` | Tinos Regular | OFL-1.1 | github.com/googlefonts/Tinos |
 | `NotoSerifTC-Bold.ttf` | Noto Serif TC | OFL-1.1 | Built by `scripts/build_cjk_font.py` |
 
+`OFL.txt`, beside these files, is the licence text itself -- OFL-1.1 asks
+for it to travel with the fonts, not just be linked to from here.
+
 ## Why Tinos and not Times New Roman
 
 CR's own returns fill values in Times New Roman Bold. Times New Roman is
@@ -19,11 +22,17 @@ addresses, amounts and email addresses, the advance-width delta at 10pt is
 exactly 0.0000pt. Nothing wraps or overflows differently. Tinos is OFL-1.1
 licensed and therefore freely redistributable.
 
-**OFL-1.1 Reserved Font Name**: The OFL-1.1 licence requires that the font files
-keep their names and must not be modified and redistributed under the same name.
-The CJK font **is** modified by `build_cjk_font.py` to instance it to `wght=700`,
-but the output file keeps the upstream family name and is used internally by the
-application rather than redistributed as a font, so this is permitted.
+**OFL-1.1 Reserved Font Name**: neither family reserves one. A Reserved Font
+Name is whatever the copyright holder names explicitly in the licence text
+that ships with the font (OFL-1.1 §"Definitions"); it is not automatic, and
+absent one, condition 3 (no modified version may use the Reserved Font
+Name(s)) has nothing to bind. Checked directly against what each file itself
+declares (`name` table, nameID 13/14, read with `fontTools`) rather than
+assumed: Tinos' is the licence's plain FAQ-pointer text with no name
+singled out, and Noto Serif TC's the same. So instancing the CJK font to
+`wght=700` in `build_cjk_font.py` needs no permission this licence would
+otherwise withhold -- there is no reserved name to have collided with by
+keeping the upstream family name on the output file.
 
 ## Regenerating the CJK face
 
@@ -33,3 +42,17 @@ Noto Serif TC publishes a variable font whose **default instance is
 ExtraLight**, and no static TrueType Bold. The script instances it to
 `wght=700`. Do not swap in the `SubsetOTF` build: reportlab cannot read
 PostScript outlines and raises `TTFError` on it.
+
+**Coverage.** This is the `Serif/Variable/TTF/Subset/NotoSerifTC-VF.ttf`
+build -- 20,748 codepoints, curated for Traditional Chinese use, not full CJK
+Unified coverage. A few real DEV names (measured 2026-09-01: U+6768, U+59D7,
+U+3F18) have no glyph in it; `appearance.draw_value` raises `AppearanceError`
+for those rather than drawing nothing, so this is loud, not silent. The
+non-Subset per-region build, `Serif/Variable/TTF/NotoSerifCJKtc-VF.ttf`, DOES
+cover those three -- but instances to ~34MB (measured), over this repo's
+25MB stop line, and was ALSO measured to carry zero CJK Extension B
+codepoints where this Subset build carries 1,705. Do not swap it in as a
+quick fix for one gap; it trades that gap for a different, bigger one at
+3.4x the size. See
+`.superpowers/sdd/2026-09-01-block-a-nar1-form-fidelity/final-fix-report.md`
+for the numbers.
