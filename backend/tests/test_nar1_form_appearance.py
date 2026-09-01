@@ -299,3 +299,21 @@ def test_a_regular_weight_run_uses_the_regular_face():
     assert ap.split_runs("Get Started HK Limited", bold=False) == [
         (ap.FONT_LATIN, "Get Started HK Limited")
     ]
+
+
+def test_the_baked_layer_uses_no_deprecated_pypdf_path():
+    """`pypdf` is declared `>=6.16.1` with no upper bound, so a routine
+    `uv sync` can resolve 7.0 and this renderer must still work then.
+
+    pypdf 6.16 deprecates merging onto a page that is not attached to a
+    writer -- its own note says "the existing approach has proved being
+    unreliable" -- and removes it in 7.0. Without this test the failure mode
+    is a dependency bump that silently stops every client-verification email
+    from rendering its attachment.
+    """
+    import warnings
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        fill.render(build_xml())

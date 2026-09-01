@@ -16,10 +16,14 @@ asserts on it -- but no viewer is asked to interpret it any more.
 """
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject, NumberObject
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas as rl_canvas
 
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 
@@ -85,12 +89,6 @@ def split_runs(text: str, *, bold: bool = True) -> list[tuple[str, str]]:
             runs.append((face, char))
     return runs
 
-
-import io
-
-from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject, NumberObject
-from reportlab.pdfgen import canvas as rl_canvas
 
 #: /F bit 2 on an annotation: Hidden.
 _ANNOT_HIDDEN = 2
@@ -176,9 +174,16 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
     sizes = sizes or {}
     regular = regular or frozenset()
     reader = PdfReader(io.BytesIO(pdf_bytes))
-    writer = PdfWriter()
+    # clone_from, rather than building a writer and adding pages to it one at a
+    # time. `merge_page` on a page that is not yet attached to a writer is
+    # deprecated in pypdf 6.16 -- its own note says the approach "has proved
+    # being unreliable" -- and removed in 7.0. `pypdf` is declared `>=6.16.1`
+    # with no upper bound, so a routine `uv sync` can resolve 7.0, and the
+    # failure mode would be every client-verification attachment silently
+    # ceasing to render.
+    writer = PdfWriter(clone_from=reader)
 
-    for page in reader.pages:
+    for page in writer.pages:
         box = page.mediabox
         buffer = io.BytesIO()
         layer = rl_canvas.Canvas(
@@ -205,28 +210,15 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
         if drew:
             buffer.seek(0)
             page.merge_page(PdfReader(buffer).pages[0])
-        writer.add_page(page)
 
-    acroform = reader.trailer["/Root"].get("/AcroForm")
+    acroform = writer._root_object.get("/AcroForm")
     if acroform is not None:
-        # DictionaryObject.get() is plain dict.get() underneath -- unlike
-        # __getitem__, it does NOT resolve an IndirectObject. Without
-        # get_object() here, .clone() runs on the reference itself and
-        # raises "'IndirectObject' object does not support item assignment"
-        # a few lines down. Verified against pypdf 6.16.1.
-        cloned = acroform.get_object().clone(writer)
-        # The layer IS the appearance now. Leaving this true invites a viewer
-        # to discard it and redraw from /DA -- the original defect. REMOVED
-        # rather than set to BooleanObject(False): pypdf's BooleanObject has
-        # no __bool__ override, so any instance -- true OR false -- is
-        # truthy in Python (verified against pypdf 6.16.1), which would make
-        # `acroform.get("/NeedAppearances")` read as set either way once the
-        # bytes are re-parsed. The PDF spec's own default for an ABSENT key
-        # is false, so deleting it is both correct and what a re-parsed
-        # reader actually reports as falsy.
-        if "/NeedAppearances" in cloned:
-            del cloned[NameObject("/NeedAppearances")]
-        writer._root_object[NameObject("/AcroForm")] = writer._add_object(cloned)
+        # Already carried across by clone_from; only the flag needs clearing.
+        # The layer IS the appearance now. Leaving NeedAppearances true invites
+        # a viewer to discard it and redraw from /DA -- the original defect.
+        acroform = acroform.get_object()
+        if "/NeedAppearances" in acroform:
+            del acroform[NameObject("/NeedAppearances")]
 
     out = io.BytesIO()
     writer.write(out)
