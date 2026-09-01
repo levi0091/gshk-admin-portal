@@ -630,6 +630,32 @@ def test_an_unrenderable_snapshot_is_422_not_500(client):
     send.assert_not_called()
 
 
+def test_an_uncoverable_character_is_422_not_500(client):
+    """M5 (final review): `AppearanceError` -- raised when a character has
+    no glyph in either embedded face (see `appearance.draw_value`) -- was not
+    in this handler's except tuple, so a real missing-glyph failure on
+    Railway would have surfaced as an opaque 500 instead of this route's own
+    'the validated snapshot could not be rendered' message. `fill.render`
+    already translates `AppearanceError` into `FormFillError` internally, so
+    this also stands as a belt-and-braces check on the route itself."""
+    from services.nar1_form.appearance import AppearanceError
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         patch("routers.cases.nar1_cases.current_filing", return_value=VALIDATED), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=[]), \
+         patch("routers.cases.nar1_cases.recipient_email",
+               return_value="client@example.com"), \
+         patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \
+         patch("routers.cases.nar1_form_fill.render",
+               side_effect=AppearanceError(
+                   "cannot draw '杨' (U+6768): no glyph in NAR1-CJK")), \
+         patch("routers.cases.email_service.send") as send:
+        response = client.post("/cases/c1/verification/send", headers=H, json={})
+    assert response.status_code == 422
+    assert "U+6768" in response.json()["detail"]
+    send.assert_not_called()
+
+
 def test_resending_supersedes_the_previous_client_answer(client):
     """A rejection answers the PREVIOUS request. Left in place it pins the badge
     at Client Rejected forever, while the client is looking at a fresh PDF."""

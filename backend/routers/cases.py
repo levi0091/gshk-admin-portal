@@ -17,6 +17,7 @@ from services import (
     nar1_cases, nar1_return_data,
 )
 from services.nar1_form import fill as nar1_form_fill
+from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms import nar1_source
@@ -743,7 +744,7 @@ async def send_verification(
                 entity.get("company_type")
             ),
         )
-    except (ValueError, nar1_form_fill.FormFillError) as exc:
+    except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         raise HTTPException(
             422, f"the validated snapshot could not be rendered: {exc}")
 

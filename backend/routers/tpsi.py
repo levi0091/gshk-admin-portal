@@ -17,6 +17,7 @@ from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
 from services import nar1_cases
 from services.nar1_form import fill as nar1_form_fill
+from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
@@ -809,7 +810,7 @@ async def filing_pdf(
                 entity.get("company_type")
             ),
         )
-    except (ValueError, nar1_form_fill.FormFillError) as exc:
+    except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         # A stored payload CR accepted but we cannot parse is a data problem,
         # not an unhandled 500 that reads like a crash in the renderer.
         raise HTTPException(422, str(exc))
