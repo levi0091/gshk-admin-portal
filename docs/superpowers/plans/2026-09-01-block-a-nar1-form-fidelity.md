@@ -691,7 +691,11 @@ def _br_number_fields() -> set[str]:
     groups = (fm.MAIN_1, fm.MAIN_2, fm.SECRETARY_INDIVIDUAL,
               fm.SECRETARY_CORPORATE, fm.DIRECTOR_INDIVIDUAL,
               fm.DIRECTOR_CORPORATE_HEADER, fm.RESERVE_DIRECTOR,
-              fm.MEMBERS_AND_SIGNATURE, fm.SCHEDULE_1, fm.SCHEDULE_2)
+              fm.MEMBERS_AND_SIGNATURE,
+              # NOT fm.SCHEDULE_1 / fm.SCHEDULE_2 -- those are row TUPLES.
+              # `"br_number" in <tuple>` is False, so naming them here fails
+              # silently and both Schedule pages print their BRN at 10pt.
+              fm.SCHEDULE_1_HEADER, fm.SCHEDULE_2_HEADER)
     names = {group["br_number"] for group in groups if "br_number" in group}
     for page in range(fm.PAGE_SHEET_A, fm.PAGE_SHEET_E + 1):
         names.add(fm.sheet_header(page)["br_number"])
@@ -702,10 +706,10 @@ FIELD_SIZES = {name: 14.0 for name in _br_number_fields()}
 FIELD_SIZES[fm.MAIN_1["company_name"]] = 12.0
 ```
 
-> Confirm the constant names in `field_map.py` before pasting this — the
-> Schedule groups may be named differently. `grep -n '"br_number"'
-> services/nar1_form/field_map.py` lists all eleven; every one of them must
-> end up in the set, and the test in the next step checks that.
+> The constant names above were verified against `field_map.py` on
+> 2026-09-01. `grep -n '"br_number"' services/nar1_form/field_map.py` lists
+> eleven; every one must end up in the set, and the test two steps down
+> asserts exactly that, so a miss fails loudly rather than printing 10pt.
 
 Then in `_render`, replace the `set_need_appearances_writer(True)` call and its
 comment with nothing, and change the final write so the bytes go through the
@@ -735,14 +739,16 @@ baker. The tail of `_render` becomes:
     return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES)
 ```
 
-Also delete the now-stale logging suppression at the top of the file and its
-comment block, since nothing asks the viewer to build appearances any more:
+Also delete the now-stale logging suppression and its comment block, since
+nothing asks the viewer to build appearances any more — `fill.py:63`:
 
 ```python
 logging.getLogger("pypdf.generic._appearance_stream").setLevel(logging.ERROR)
 ```
 
-Leave the `import logging` if anything else uses it; remove it if not.
+**Remove `import logging` (fill.py:47) with it.** Verified 2026-09-01: those
+are the only two occurrences of `logging` in the file, so leaving the import
+orphans it and leaving the suppression without the import is a NameError.
 
 - [ ] **Step 5: Run the appearance tests**
 
@@ -783,7 +789,10 @@ the existing suite still asserts on it."
 ## Task 4: Emit CR's full static page set
 
 **Files:**
-- Modify: `backend/services/nar1_form/fill.py:520-545`
+- Modify: `backend/services/nar1_form/fill.py` — the officer block running from
+  `if ind_secs:` to `pages.add(fm.PAGE_RESERVE_DIRECTOR, values)`. Anchor on
+  that code, **not** on line numbers: Task 3 inserts `FIELD_SIZES` and
+  `_br_number_fields()` earlier in the same file and shifts everything below.
 - Test: `backend/tests/test_nar1_form_fill.py`
 
 **Interfaces:**
@@ -844,7 +853,8 @@ Expected: FAIL — `assert 6 == 9`.
 
 - [ ] **Step 3: Make the five section pages unconditional**
 
-In `backend/services/nar1_form/fill.py`, replace the officer block at lines 520-545 with:
+In `backend/services/nar1_form/fill.py`, replace the officer block — from
+`if ind_secs:` through `pages.add(fm.PAGE_RESERVE_DIRECTOR, values)` — with:
 
 ```python
     # CR's NAR1 is a STATIC form: a section's page is filed whether or not the
