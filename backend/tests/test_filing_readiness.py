@@ -68,6 +68,48 @@ def test_an_incomplete_share_class_blocks_and_names_the_column():
     assert [p["field"] for p in problems] == ["share_classes.issued_amount"]
 
 
+def test_a_country_cr_cannot_resolve_blocks_just_like_a_missing_one():
+    """THE DEFECT THIS TEST EXISTS FOR. The gate only asked whether a country
+    was present, so 'HK-CH' -- Viewpoint's code for the Chinese Hong Kong --
+    passed it. The case opened, ran to Data Verification, and only there did
+    the mapper say "no CR region code is known for country 'HK-CH'".
+
+    Present is not the same as filable. The gate has to ask the question the
+    mapper will ask."""
+    problems = filing_problems(
+        _company(registered_address={"line1": "Unit 1", "country": "HK-CH"}))
+
+    assert [p["field"] for p in problems] == ["registered_address.country"]
+    assert "HK-CH" in problems[0]["message"]
+
+
+def test_a_country_cr_does_resolve_passes_however_it_is_spelt():
+    for country in ("HK", "HKG", "Hong Kong", "GB", "VN"):
+        assert filing_problems(
+            _company(registered_address={"line1": "Unit 1", "country": country})) == []
+
+
+def test_a_currency_cr_does_not_accept_blocks():
+    """CR takes 54 currency codes and four of them are not ISO: it wants RMB,
+    not CNY. One real share class in DEV is denominated 'CNY' and another
+    'XXX'; both passed this gate and would have been refused by CR after the
+    fee was taken."""
+    problems = filing_problems(_company(share_classes=[{
+        "class_name": "Ordinary", "currency": "CNY",
+        "total_issued": 100, "issued_amount": 100, "total_paid": 100,
+    }]))
+
+    assert [p["field"] for p in problems] == ["share_classes.currency"]
+    assert "RMB" in problems[0]["message"] or "CNY" in problems[0]["message"]
+
+
+def test_the_currency_cr_does_want_for_renminbi_passes():
+    assert filing_problems(_company(share_classes=[{
+        "class_name": "Ordinary", "currency": "RMB",
+        "total_issued": 100, "issued_amount": 100, "total_paid": 100,
+    }])) == []
+
+
 def test_problems_accumulate_rather_than_stopping_at_the_first():
     """An operator fixing one thing at a time, told only about the next
     failure each time, is the worst version of this."""

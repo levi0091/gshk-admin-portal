@@ -4,6 +4,7 @@ All routes gated by require_permission("companies", ...). Every mutation audits
 before returning (PBI-11). Company = row in `entities` (PBI-40 superset).
 """
 import asyncio
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -13,14 +14,15 @@ from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_events, document_service, address_service
-from services.tpsi.forms.cr_vocabularies import BUSINESS_NATURE, COMPANY_TYPE
-
-#: CR's `coyType` codes, for the write check below.
-_COMPANY_TYPE_CODES = {code for code, _ in COMPANY_TYPE}
+from services.tpsi.forms.cr_vocabularies import (
+    BUSINESS_NATURE, COMPANY_TYPE, CURRENCY)
 from services.cr_forms.readiness import filing_problems
 from services.cr_forms import record_types
 
 router = APIRouter()
+
+#: CR's `coyType` codes, for the write check below.
+_COMPANY_TYPE_CODES = {code for code, _ in COMPANY_TYPE}
 
 
 class AddressIn(BaseModel):
@@ -193,6 +195,78 @@ class UpdateCompanyRequest(BaseModel):
 class FlagsRequest(BaseModel):
     is_client: Optional[bool] = None
     is_corporate_party: Optional[bool] = None
+
+
+#: CR's section 11, per class. `max` is CHARACTERS as CR counts them, taking
+#: the STRICTER of NAR1 and NNC1 where they differ (NNC1 caps the money
+#: figures at 14 to NAR1's 16) — a value that fits one form and not the other
+#: is one CR would refuse in the second context.
+_SHARE_CLASS_FIELDS = {
+    "class_name": {"max": 100, "numeric": False},
+    "currency": {"max": 3, "numeric": False},
+    "total_issued": {"max": 16, "numeric": True},
+    "issued_amount": {"max": 14, "numeric": True},
+    "total_paid": {"max": 14, "numeric": True},
+}
+
+
+class ShareClassRequest(BaseModel):
+    """One class of shares. Every field optional so a PATCH can send one."""
+    class_name: Optional[str] = None
+    currency: Optional[str] = None
+    total_issued: Optional[str] = None
+    issued_amount: Optional[str] = None
+    total_paid: Optional[str] = None
+
+
+def _validate_share_class(values: dict) -> dict:
+    """Refuse here what CR would refuse after taking the fee.
+
+    Money and share counts arrive as STRINGS because CR counts characters,
+    not magnitude: `issuedCapital` is 14 characters on an NNC1, and a float
+    that round-trips through JSON as 1.0000000001e14 is a different value from
+    the one somebody typed.
+    """
+    out = {}
+    for field, value in values.items():
+        rule = _SHARE_CLASS_FIELDS[field]
+        text = "" if value is None else str(value).strip()
+        if not text:
+            out[field] = None
+            continue
+        if len(text) > rule["max"]:
+            raise HTTPException(
+                status_code=422,
+                detail=(f"{field} is {len(text)} characters; the Companies "
+                        f"Registry accepts {rule['max']}."),
+            )
+        if rule["numeric"]:
+            try:
+                number = Decimal(text)
+            except InvalidOperation:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{field} must be a number; got {text!r}.",
+                )
+            # Zero is a real answer — a class with nothing paid up exists —
+            # so only NEGATIVE is refused.
+            if number < 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{field} cannot be negative.",
+                )
+        if field == "currency":
+            code = text.upper()
+            if code not in CURRENCY:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(f"{code!r} is not a currency the Companies "
+                            "Registry accepts. Its list is not ISO 4217 — "
+                            "renminbi is 'RMB', not 'CNY'."),
+                )
+            text = code
+        out[field] = text
+    return out
 
 
 class RecordLocationRequest(BaseModel):
@@ -783,6 +857,123 @@ def _address_audit_entries(*, entity_id, user, subject_name, event_code,
             },
         ))
     return entries
+
+
+@router.patch("/{company_id}/share-classes/{share_class_id}")
+async def update_share_class(
+    company_id: str,
+    share_class_id: str,
+    body: ShareClassRequest,
+    user=Depends(require_permission("companies", "write")),
+):
+    """Edit one class of shares — CR's section 11.
+
+    The Share Capital card shipped read-only, badge and all, so a company
+    whose Total Amount was blank displayed "1 to fix" and offered nothing
+    that could fix it.
+    """
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updates = _validate_share_class(updates)
+
+    sb = get_supabase()
+    company = (
+        sb.table("entities").select("company_name")
+        .eq("id", company_id).single().execute()
+    ).data
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Scoped to the company as well as the id: without the second filter a
+    # share class belonging to another company could be edited through this
+    # route just by knowing its id.
+    current = (
+        sb.table("share_classes").select("*")
+        .eq("id", share_class_id).eq("entity_id", company_id)
+        .single().execute()
+    ).data
+    if not current:
+        raise HTTPException(status_code=404, detail="Share class not found")
+
+    updated = (
+        sb.table("share_classes").update(updates)
+        .eq("id", share_class_id).execute()
+    ).data
+    updated = updated[0] if updated else {**current, **updates}
+
+    await log_events([
+        dict(
+            case_id=company_id, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type="CASE_FIELD_UPDATED",
+            event_code=audit_events.company_field_code("share_capital"),
+            company_name=company.get("company_name"),
+            entity_type="share_class", entity_id=str(share_class_id),
+            old_value=old, new_value=new,
+            before_state={"field": f"share_class.{field}", "old": old},
+            after_state={"field": f"share_class.{field}", "new": new},
+        )
+        for field, new in updates.items()
+        for old in [current.get(field)]
+        if str(old if old is not None else "") != str(new if new is not None else "")
+    ])
+    return updated
+
+
+@router.post("/{company_id}/share-classes", status_code=201)
+async def create_share_class(
+    company_id: str,
+    body: ShareClassRequest,
+    user=Depends(require_permission("companies", "write")),
+):
+    """Give a company its share capital.
+
+    219 client companies hold none at all, which is what stops them filing
+    (PRD §11.1). Editing alone would never unblock one of them, so this is
+    the other half of the same fix.
+    """
+    values = _validate_share_class(
+        {k: v for k, v in body.model_dump().items() if v is not None})
+
+    # Every column CR marks Mandatory=Y, or the new row just moves the block
+    # rather than clearing it.
+    missing = [f for f in _SHARE_CLASS_FIELDS if not values.get(f)
+               # 0 is a real answer for a paid-up figure.
+               and values.get(f) != "0"]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"A class of shares needs {', '.join(sorted(missing))} — "
+                    "the Companies Registry requires all of them on the "
+                    "return."),
+        )
+
+    sb = get_supabase()
+    company = (
+        sb.table("entities").select("company_name")
+        .eq("id", company_id).single().execute()
+    ).data
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    created = (
+        sb.table("share_classes")
+        .insert({**values, "entity_id": company_id}).execute()
+    ).data
+    if not created:
+        raise HTTPException(status_code=500, detail="Share class not created")
+
+    await log_event(
+        case_id=company_id, user_id=user["id"],
+        user_display_name=user["display_name"],
+        action_type="CASE_FIELD_UPDATED",
+        event_code=audit_events.company_field_code("share_capital"),
+        company_name=company.get("company_name"),
+        entity_type="share_class", entity_id=str(created[0]["id"]),
+        after_state={"field": "share_class", "new": values},
+    )
+    return created[0]
 
 
 @router.put("/{company_id}/record-locations/{record_type}")

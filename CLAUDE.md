@@ -310,7 +310,15 @@ await log_event(
 
 `GET /form-contract` serves the `mapped` subset — strictest length, mandatory-anywhere — and **both profile screens read their `maxLength`, required markers and highlighting from it** (`frontend/src/lib/formContract.js`). Do not hardcode a CR length or a required flag in a screen; the two would drift and the way you would find out is a rejected filing.
 
-> **One owner per vocabulary.** CR's Country, District, Business Nature, Currency, Capacity, Company Type and record-type lists live in `services/tpsi/forms/cr_vocabularies.py` and `services/cr_forms/record_types.py`, and are served through `/lookups` as `cr_*`. **Never seed them into `lookup_values`** — that makes a second copy that can drift from the one deciding whether a filing is accepted. `lookup_values` keeps Viewpoint's vocabularies for everything not bound for CR. This bit for real: `lookup_values.currency` offers 162 ISO codes, CR takes 54, and four of CR's are not ISO (RMB/NTD/WON/NIS), so a renminbi share class was being offered `CNY` — a code CR has never heard of.
+> **One owner per vocabulary.** CR's Country, District, Business Nature, Currency, Capacity, Company Type and record-type lists live in `services/tpsi/forms/cr_vocabularies.py` and `services/cr_forms/record_types.py`, and are served through `/lookups` as `cr_*`. **Never seed them into `lookup_values`, and never point a CR-validated field at one** — either makes a second copy that can drift from the one deciding whether a filing is accepted. `lookup_values` keeps Viewpoint's vocabularies for the fields CR never sees (`place_of_birth`, `gender`, `nationality`).
+>
+> **This has now bitten twice, and the second time reached a real case.** `lookup_values.currency` offers 162 ISO codes where CR takes 54, four of them non-ISO (RMB/NTD/WON/NIS) — a renminbi share class was offered `CNY`, which CR has never heard of. Worse, the **address Country dropdown fed on `lookup_values.country`**: 270 Viewpoint rows, **20 of which resolve to no CR code at all** — US states, UK constituent countries, Labuan, Zaire, and three labelled *only in Chinese*. An operator picked the Chinese Hong Kong, it stored `HK-CH`, every check passed, and the NAR1 died at Data Verification with *"no CR region code is known for country 'HK-CH'"*.
+>
+> **Country fields are keyed by ISO alpha-2** (`cr_country`), because that is what `addresses.country` holds in all 141 of its distinct values — serving CR's three-letter codes would orphan every row. `cr_vocabularies.to_alpha2()` normalises anything CR can resolve onto that key.
+
+> **"Present" is not "filable" — validate resolvability, not emptiness.** Both the write path (`address_service.validate`) and the gate (`readiness.filing_problems`) must ask the question `nar1_mapper` will ask, through the same resolver. Checking only that a country was non-empty is exactly what let `HK-CH` open a case. Same for currency: in the CR list, not merely present. Verified against DEV — all four companies holding an unresolvable country are now caught by the gate, with the mapper's own message.
+>
+> Beware `country.upper() == "HK"`-style comparisons: `resolve_country()` first, then compare to the CR code. The raw-string form silently skipped the Hong Kong district check for the 7 rows spelt `HKG` or `Hong Kong`.
 
 **Two levels of refusal, and they are not the same.**
 

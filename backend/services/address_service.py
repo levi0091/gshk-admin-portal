@@ -19,7 +19,7 @@ TWO RULES, AND BOTH EXIST BECAUSE OF MEASURED DATA.
 """
 from typing import Optional
 
-from services.tpsi.forms.cr_vocabularies import resolve_district
+from services.tpsi.forms.cr_vocabularies import resolve_country, resolve_district
 
 #: CR's per-line cap — `nar1_schema.json` gives max_length 60 for flatFlrBlk,
 #: bldg, stEstLotVlg and dstCtyStatePostal alike.
@@ -31,6 +31,12 @@ LINE_FIELDS = ("line1", "line2", "line3")
 #: joins them. Kept in one place so the two cannot drift.
 DISTRICT_FIELDS = ("city", "state_region", "postal_code")
 
+#: What `resolve_country` returns for Hong Kong however it was typed — "HK",
+#: "HKG" and "Hong Kong" all land here. Compare against THIS, never the raw
+#: stored string.
+HKG_CR_CODE = "HKG"
+
+#: Kept for callers that still import it. The alpha-2 the column mostly holds.
 HKG = "HK"
 
 
@@ -68,6 +74,21 @@ def validate(payload: dict) -> None:
             "address without one."
         )
 
+    # The country must be one CR HAS A CODE FOR, not merely present.
+    #
+    # Being non-empty was the only check, and it let 'HK-CH' through — a
+    # Viewpoint code for 香港 that CR has never heard of. The address saved
+    # cleanly and the return died weeks later at Data Verification, which is
+    # precisely the failure this service exists to move forward in time.
+    cr_code = resolve_country(country)
+    if cr_code is None:
+        raise AddressError(
+            f"{country!r} is not a country or region the Companies Registry "
+            "has a code for. Pick one from the list — CR's own Country & "
+            "Region sheet is the only set it accepts, and a filing sent with "
+            "anything else is refused after the fee is taken."
+        )
+
     district = district_of(payload)
     if len(district) > LIMIT:
         raise AddressError(
@@ -78,7 +99,11 @@ def validate(payload: dict) -> None:
     # Only Hong Kong. Everywhere else CR really does take free text, and
     # validating an overseas address against HK's district list would reject
     # every foreign director — which is most of the ones that need fixing.
-    if country.upper() == HKG and district and resolve_district(district) is None:
+    #
+    # Compared on the RESOLVED code: this used to test the raw string against
+    # "HK", so an address stored as "HKG" or "Hong Kong" — 7 real rows —
+    # skipped the district check altogether.
+    if cr_code == HKG_CR_CODE and district and resolve_district(district) is None:
         raise AddressError(
             f"{district!r} is not a Hong Kong district the Companies Registry "
             "recognises. Pick one of its District codes — they are the name "

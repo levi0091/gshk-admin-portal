@@ -125,6 +125,8 @@ _COMPANY_FIELD_CODES = {
     # NAR1 s16 — where a statutory register is kept. Statutory for the same
     # reason: moving the Register of Members changes what the return says.
     "record_location": VP_STATUTORY,
+    # NAR1 s11 — the share capital the return states.
+    "share_capital": VP_STATUTORY,
     # M&A / dates folder
     "ar_last_date": VP_MA_DATES,
     "ar_next_date": VP_MA_DATES,

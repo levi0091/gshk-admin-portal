@@ -371,6 +371,60 @@ CR_COUNTRY_CODES, _BY_ALPHA2, _BY_DESCRIPTION = _build()
 #: is the mapping the review asked to be able to assert over.
 ALPHA2_TO_CR_CODE: dict[str, str] = dict(_BY_ALPHA2)
 
+#: The inverse, for `to_alpha2`. Structural, from the same rows, so the two
+#: directions cannot disagree.
+_CR_CODE_TO_ALPHA2: dict[str, str] = {
+    cr_code: alpha2 for cr_code, _, alpha2 in _COUNTRY_ROWS
+}
+
+
+def to_alpha2(value: str | None) -> str | None:
+    """Anything CR can resolve -> the ISO alpha-2 G-FlowDesk stores.
+
+    "Hong Kong", "HKG" and "hk" all become "HK". None when CR has no code,
+    so a caller can tell "needs normalising" from "is not a country".
+
+    This exists because the profile dropdowns are keyed by alpha-2 (that is
+    what `addresses.country` holds), while 251 `incorporation_place` rows held
+    the literal "Hong Kong". Both resolve for filing; only one matches a
+    dropdown option, and the other rendered as "Hong Kong (not in list)".
+    """
+    cr_code = resolve_country(value)
+    return _CR_CODE_TO_ALPHA2.get(cr_code) if cr_code else None
+
+
+def _readable(description: str) -> str:
+    """CR's UPPERCASE description, title-cased for a dropdown.
+
+    Cosmetic only -- the CODE is what is stored and what CR validates, so no
+    filing depends on this. `str.title()` alone is wrong: it capitalises the
+    letter after an apostrophe, turning "LAO PEOPLE'S DEMOCRATIC REPUBLIC"
+    into "Lao People'S Democratic Republic".
+    """
+    out, prev_is_alpha = [], False
+    for ch in description.lower():
+        out.append(ch.upper() if ch.isalpha() and not prev_is_alpha else ch)
+        prev_is_alpha = ch.isalpha() or ch == "'"
+    return "".join(out)
+
+
+#: The country dropdown, as the profile screens must render it: CR's own 250
+#: rows, keyed by the ISO alpha-2 that `addresses.country` actually stores,
+#: labelled in readable English, ordered the way someone scans a list.
+#:
+#: WHY THIS EXISTS. The address form fed on `lookup_values.country` -- 270
+#: Viewpoint rows, 20 of which CR has no code for, three labelled only in
+#: Chinese. Picking the Chinese Hong Kong stored 'HK-CH' and the return died
+#: at Data Verification. `lookup_values` is the wrong owner for a field CR
+#: validates; this is the right one.
+COUNTRY_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        ((alpha2, _readable(description))
+         for _, description, alpha2 in _COUNTRY_ROWS),
+        key=lambda option: option[1],
+    )
+)
+
 
 def resolve_country(value: str | None) -> str | None:
     """A country as G-FlowDesk records it -> CR's ctryRegion code, or None.

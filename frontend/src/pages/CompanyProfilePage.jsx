@@ -33,7 +33,7 @@ const EDITABLE = [
     lookup: 'cr_business_nature' },
   // Brian's B6.
   { key: 'mortgages_total', label: 'Mortgages and Charges' },
-  { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'country' },
+  { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'cr_country' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
   { key: 'case_notes', label: 'Case Notes' },
 ]
@@ -214,6 +214,40 @@ export default function CompanyProfilePage() {
       load()
     } catch (err) {
       setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Edit one class of shares — CR's section 11. */
+  async function saveShareClass(shareClassId, changed) {
+    if (!Object.keys(changed).length) return true
+    setBusy(true)
+    try {
+      await api.patch(`/companies/${companyId}/share-classes/${shareClassId}`, changed)
+      load()
+      return true
+    } catch (err) {
+      // The API refuses a currency CR does not take and a figure over its
+      // length. Surfacing the reason is the whole point of refusing here
+      // rather than at CR, after the fee.
+      setError(err.message)
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Give a company share capital it never had — 219 are in that state. */
+  async function createShareClass(values) {
+    setBusy(true)
+    try {
+      await api.post(`/companies/${companyId}/share-classes`, values)
+      load()
+      return true
+    } catch (err) {
+      setError(err.message)
+      return false
     } finally {
       setBusy(false)
     }
@@ -402,7 +436,7 @@ export default function CompanyProfilePage() {
                   {company.mortgages_total}
                 </Kv>
                 <Kv label="Country of Incorporation">
-                  {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
+                  {displayValue({ lookup: 'cr_country' }, company.incorporation_place, lookups)}
                 </Kv>
                 {/* The five lines CR receives, not a joined string — an
                     address that files correctly and one that does not look
@@ -447,7 +481,8 @@ export default function CompanyProfilePage() {
               share classes hanging off each shareholding. */}
           {isClient && (
             <ShareCapitalTile classes={company.share_classes}
-                              warnFor={warnFor} />
+                              lookups={lookups} warnFor={warnFor} busy={busy}
+                              onSave={saveShareClass} onCreate={createShareClass} />
           )}
 
           {/* NAR1 section 16 (OQ-3). */}
@@ -614,17 +649,65 @@ export default function CompanyProfilePage() {
  * so a screen that showed one number under an ambiguous label was showing the
  * wrong one and no one could tell.
  */
-function ShareCapitalTile({ classes, warnFor }) {
+//: CR's section 11 headings, in CR's order. `lookup` names the vocabulary the
+//: editor draws from — currency is CR's 54 codes, NOT the 162 ISO ones in
+//: `lookup_values`, because CR wants RMB where ISO says CNY.
+const SHARE_CLASS_FIELDS = [
+  { key: 'class_name', label: 'Class of Shares' },
+  { key: 'currency', label: 'Currency', lookup: 'cr_currency' },
+  { key: 'total_issued', label: 'Total Number' },
+  { key: 'issued_amount', label: 'Total Amount' },
+  { key: 'total_paid', label: 'Total Amount Paid up or Regarded as Paid up' },
+]
+
+function ShareCapitalTile({ classes, lookups, warnFor, busy, onSave, onCreate }) {
   const rows = classes || []
-  const columns = [
-    ['class_name', 'Class of Shares', v => v],
-    ['currency', 'Currency', v => v],
-    ['total_issued', 'Total Number', figure],
-    ['issued_amount', 'Total Amount', figure],
-    ['total_paid', 'Total Amount Paid up or Regarded as Paid up', figure],
-  ]
+  // The id being edited, 'new' while adding, or null.
+  const [editing, setEditing] = useState(null)
+  const [draft, setDraft] = useState({})
+
   const warnings = rows.flatMap(row =>
-    columns.map(([key]) => warnFor('share_classes', key, row[key])).filter(Boolean))
+    SHARE_CLASS_FIELDS.map(f => warnFor('share_classes', f.key, row[f.key]))
+      .filter(Boolean))
+
+  const startEdit = (row) => {
+    setDraft(Object.fromEntries(
+      SHARE_CLASS_FIELDS.map(f => [f.key, row[f.key] ?? ''])))
+    setEditing(row.id)
+  }
+  const startAdd = () => {
+    setDraft(Object.fromEntries(SHARE_CLASS_FIELDS.map(f => [f.key, ''])))
+    setEditing('new')
+  }
+
+  async function save() {
+    // Figures go as STRINGS: CR counts characters, and a number that
+    // round-trips through JSON as 1.0000000001e14 is not what was typed.
+    const ok = editing === 'new'
+      ? await onCreate(draft)
+      : await onSave(editing, Object.fromEntries(
+          Object.entries(draft).filter(
+            ([k, v]) => String(rows.find(r => r.id === editing)?.[k] ?? '') !== String(v))))
+    if (ok) setEditing(null)
+  }
+
+  const editor = (
+    <div className="form-grid">
+      {SHARE_CLASS_FIELDS.map(f => (
+        <FormField key={f.key} field={{ ...f, full: true }} value={draft[f.key]}
+                   lookups={lookups}
+                   onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
+      ))}
+      <div className="f-group full hdr-actions">
+        <button className="btn-edit" onClick={() => setEditing(null)} disabled={busy}>
+          Cancel
+        </button>
+        <button className="btn btn-primary btn-sm" onClick={save} disabled={busy}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
 
   return (
     <div className="card mb-16">
@@ -638,8 +721,16 @@ function ShareCapitalTile({ classes, warnFor }) {
             Section 11 of the annual return — one row per class of shares
           </div>
         </div>
+        {editing === null && (
+          <button className="btn btn-outline btn-sm" onClick={startAdd}>
+            + Add a class
+          </button>
+        )}
       </div>
-      {rows.length === 0 ? (
+
+      {editing === 'new' && editor}
+
+      {rows.length === 0 && editing !== 'new' ? (
         // 219 client companies are in this state, and it stops them filing.
         // Saying "None" would read as "nothing to do here".
         <div className="empty-state" style={{ padding: '16px 0' }}>
@@ -651,14 +742,24 @@ function ShareCapitalTile({ classes, warnFor }) {
         // is right there in the list. Repeating it above would show the same
         // value twice under two different names.
         <div className="member-block" key={row.id || row.class_name}>
-          <div className="kv-list">
-            {columns.map(([key, label, render]) => (
-              <Kv key={key} label={label}
-                  warning={warnFor('share_classes', key, row[key])}>
-                {render(row[key])}
-              </Kv>
-            ))}
-          </div>
+          {editing === row.id ? editor : (
+            <>
+              <div className="member-name">
+                <span style={{ marginLeft: 'auto' }}>
+                  <button className="btn-edit" onClick={() => startEdit(row)}>Edit</button>
+                </span>
+              </div>
+              <div className="kv-list">
+                {SHARE_CLASS_FIELDS.map(f => (
+                  <Kv key={f.key} label={f.label}
+                      warning={warnFor('share_classes', f.key, row[f.key])}>
+                    {f.key === 'class_name' || f.key === 'currency'
+                      ? row[f.key] : figure(row[f.key])}
+                  </Kv>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       ))}
     </div>

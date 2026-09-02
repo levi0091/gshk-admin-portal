@@ -29,6 +29,8 @@ from etl.db import get_supabase_engine               # noqa: E402
 from services.hkid import is_valid_hkid, split_hkid  # noqa: E402
 from services.cr_forms.record_types import RECORD_TYPES  # noqa: E402
 from services.cr_forms.readiness import filing_problems  # noqa: E402
+from services.tpsi.forms.cr_vocabularies import (  # noqa: E402
+    CURRENCY, resolve_country)
 
 #: Names suggesting a company really is limited by guarantee. Used to SUGGEST,
 #: never to decide -- the share-capital derivation was tested and rejected
@@ -199,6 +201,85 @@ def ownership_gap(conn, out):
     out("")
 
 
+def missing_br_numbers(conn, out):
+    """CR marks `brNo` Mandatory=Y, and 42% of the book has none.
+
+    DELIBERATELY NOT IN THE BLOCKING SET. By the rule in `readiness.py` it
+    qualifies -- CR requires it and the mapper refuses without it
+    ("entity: no BR number - CR rejects a NAR1 without one"). But blocking it
+    would stop 2,506 LIVE client companies from opening a case, five times
+    the 457 that OQ-2 already stops, and that is a decision about what the
+    portal permits rather than a bug to fix quietly. It is highlighted on
+    every profile; whether it should also BLOCK is Levi's call.
+    """
+    rows = _rows(conn, """
+        SELECT status, count(*) AS n FROM entities
+         WHERE is_client AND coalesce(btrim(br_number), '') = ''
+         GROUP BY status ORDER BY n DESC
+    """)
+    total = sum(r.n for r in rows)
+    with_br = _rows(conn, """
+        SELECT count(*) AS n FROM entities
+         WHERE is_client AND coalesce(btrim(br_number), '') <> ''
+    """)[0].n
+
+    out(f"NO BR NUMBER - {total} client companies ({with_br} have one)")
+    for row in rows:
+        out(f"  {row.status:22} {row.n}")
+    out("")
+    out("  CR marks brNo Mandatory=Y and the mapper refuses a return without")
+    out("  one, so none of these can be filed as they stand. They are")
+    out("  HIGHLIGHTED on the profile but deliberately do NOT block a case:")
+    out("  blocking would stop 2,506 live companies, five times what OQ-2")
+    out("  already stops, and that is a decision to take rather than assume.")
+    out("")
+
+
+def unfilable_vocabulary(conn, out):
+    """Values stored in a CR-validated field that CR has no code for.
+
+    These are the ones that used to pass every check and die at Data
+    Verification, because "present" was mistaken for "filable". They cannot
+    be normalised automatically -- 'HK-CH' is not a misspelling of anything,
+    it is Viewpoint's code for a country CR does not have -- so each needs a
+    human to re-pick it.
+    """
+    out("VALUES CR HAS NO CODE FOR")
+
+    bad_countries = []
+    for table, column in (("addresses", "country"),
+                          ("entities", "incorporation_place"),
+                          ("person_identity_documents", "issuing_country")):
+        for row in _rows(conn, f"""
+            SELECT id, {column} AS value FROM {table}
+             WHERE coalesce(btrim({column}), '') <> ''
+        """):
+            if resolve_country(row.value) is None:
+                bad_countries.append((table, column, row.value))
+
+    out(f"  countries/regions   {len(bad_countries)}")
+    for table, column, value in sorted(bad_countries):
+        out(f"    {ascii_safe(value):10} {table}.{column}")
+    if bad_countries:
+        out("    -> re-pick on the profile; the dropdown no longer offers these.")
+    out("")
+
+    bad_currency = [
+        row for row in _rows(conn, """
+            SELECT s.currency, e.company_name
+              FROM share_classes s JOIN entities e ON e.id = s.entity_id
+             WHERE coalesce(btrim(s.currency), '') <> ''
+        """)
+        if row.currency.strip().upper() not in CURRENCY
+    ]
+    out(f"  share-class currencies   {len(bad_currency)}")
+    for row in bad_currency:
+        out(f"    {ascii_safe(row.currency):6} {ascii_safe(row.company_name)}")
+    if bad_currency:
+        out("    -> CR's list is not ISO 4217: renminbi is RMB, not CNY.")
+    out("")
+
+
 def hand_entered_fields(conn, out):
     """The fields that ship empty because nobody has the data (PRD section 7.5)."""
     counts = _rows(conn, """
@@ -291,6 +372,12 @@ def main() -> int:
         out("=" * 72)
         out("")
         ownership_gap(conn, out)
+        out("=" * 72)
+        out("")
+        unfilable_vocabulary(conn, out)
+        out("=" * 72)
+        out("")
+        missing_br_numbers(conn, out)
         out("=" * 72)
         out("")
         hand_entered_fields(conn, out)

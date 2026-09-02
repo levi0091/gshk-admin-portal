@@ -83,7 +83,10 @@ const LOOKUPS = {
   gender: [{ code: 'M', label: 'Male' }, { code: 'F', label: 'Female' }],
   nationality: [{ code: 'Dutch', label: 'Dutch' }, { code: 'British', label: 'British' }],
   marital_status: [{ code: 'SI', label: 'Single' }, { code: 'MA', label: 'Married' }],
-  country: [{ code: 'HK', label: 'Hong Kong' }, { code: 'ZA', label: 'South Africa' }],
+  // Viewpoint's list, deliberately carrying a value CR cannot resolve — the
+  // screens must not read it for any field CR validates.
+  country: [{ code: 'HK-CH', label: '香港' }],
+  cr_country: [{ code: 'HK', label: 'Hong Kong' }, { code: 'ZA', label: 'South Africa' }],
   cr_company_type: [{ code: 'P', label: 'Private' }, { code: 'N', label: 'Public' },
                     { code: 'G', label: 'Limited by Guarantee' }],
   cr_business_nature: [{ code: '070', label: 'Activities of head offices' },
@@ -418,6 +421,63 @@ describe('CompanyProfilePage — the CR form fields', () => {
     expect(within(tile).getByText('Total Amount')).toBeInTheDocument()
     expect(within(tile).getByText(/Total Amount Paid up/)).toBeInTheDocument()
     expect(within(tile).getByText('Ordinary')).toBeInTheDocument()
+  })
+
+  it('can edit a share class — the card shipped with no way to fix it', async () => {
+    // THE DEFECT. The card showed "1 to fix" beside a blank Total Amount and
+    // offered no control that could fix it. A badge you cannot act on is
+    // worse than no badge.
+    const user = userEvent.setup()
+    mockGet({
+      ...CLIENT,
+      share_classes: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD',
+                        total_issued: 100, issued_amount: null, total_paid: 100 }],
+    })
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+
+    await user.click(within(tile).getByRole('button', { name: 'Edit' }))
+    await user.type(screen.getByLabelText('Total Amount'), '100')
+    await user.click(within(tile).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/companies/e1/share-classes/sc1',
+      expect.objectContaining({ issued_amount: '100' })))
+  })
+
+  it('offers currency from CRs list, which is not ISO', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+    await user.click(within(tile).getByRole('button', { name: 'Edit' }))
+
+    const select = screen.getByLabelText('Currency')
+    const codes = [...select.querySelectorAll('option')].map(o => o.value)
+
+    expect(codes).toContain('RMB')      // CR's renminbi
+    expect(codes).not.toContain('CNY')  // ISO's, which CR refuses
+  })
+
+  it('a company with no share capital can be given some', async () => {
+    // 219 client companies are in this state, and it is what stops them
+    // filing. Editing alone would never unblock one.
+    const user = userEvent.setup()
+    mockGet({ ...CLIENT, share_classes: [] })
+    api.post.mockResolvedValue({ id: 'sc9' })
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+
+    await user.click(within(tile).getByRole('button', { name: /Add a class/ }))
+    await user.type(screen.getByLabelText('Class of Shares'), 'Ordinary')
+    await user.selectOptions(screen.getByLabelText('Currency'), 'HKD')
+    await user.type(screen.getByLabelText('Total Number'), '100')
+    await user.type(screen.getByLabelText('Total Amount'), '100')
+    await user.type(screen.getByLabelText(/Total Amount Paid up/), '100')
+    await user.click(within(tile).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/companies/e1/share-classes',
+      expect.objectContaining({ class_name: 'Ordinary', currency: 'HKD' })))
   })
 
   it('says so plainly when a company has no share capital at all', async () => {

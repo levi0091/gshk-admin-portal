@@ -39,7 +39,7 @@ const EDITABLE = [
   { key: 'gender', label: 'Gender', lookup: 'gender' },
   { key: 'nationality', label: 'Nationality', lookup: 'nationality' },
   { key: 'nationality_origin', label: 'Nationality Origin', lookup: 'nationality' },
-  { key: 'place_of_birth', label: 'Place of Birth', lookup: 'country' },
+  { key: 'place_of_birth', label: 'Place of Birth', lookup: 'cr_country' },
   { key: 'occupation', label: 'Occupation' },
   { key: 'email', label: 'Email Address' },
   { key: 'phone', label: 'Phone' },
@@ -49,7 +49,7 @@ const EDITABLE = [
 // for the issuing COUNTRY, never the city, and the column is retained.
 const ID_EDITABLE = [
   { key: 'id_number', label: 'ID Number' },
-  { key: 'issuing_country', label: 'Issuing Country/Region', lookup: 'country' },
+  { key: 'issuing_country', label: 'Issuing Country/Region', lookup: 'cr_country' },
   { key: 'issue_date', label: 'Issue Date', type: 'date' },
   { key: 'expiry_date', label: 'Expiry Date', type: 'date' },
   { key: 'reminder_date', label: 'Renewal Reminder', type: 'date' },

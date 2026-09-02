@@ -224,6 +224,42 @@ def test_a_bad_stored_hkid_does_not_block_editing_a_different_field():
     assert resp.status_code == 200
 
 
+def test_an_issuing_country_cr_cannot_resolve_is_refused():
+    """`indvPptIssCtry` is a CR-validated field, so it takes CR's codes. This
+    is the same defect as the address country: the dropdown used to offer
+    Viewpoint's list, 20 of whose codes CR has never heard of."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb:
+        (msb.return_value.table.return_value.select.return_value.eq.return_value
+         .eq.return_value.single.return_value.execute.return_value.data) = {
+             "id": "d1", "person_id": "p1", "id_type": "passport",
+             "id_number": "123456789", "issuing_country": "GB"}
+
+        resp = client.patch("/persons/p1/identity-documents/d1", headers=H,
+                            json={"issuing_country": "HK-CH"})
+
+    assert resp.status_code == 422
+    assert "HK-CH" in resp.text
+
+
+def test_an_issuing_country_cr_does_resolve_is_accepted():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.log_events", new=AsyncMock()):
+        sb = msb.return_value
+        (sb.table.return_value.select.return_value.eq.return_value
+         .eq.return_value.single.return_value.execute.return_value.data) = {
+             "id": "d1", "person_id": "p1", "id_type": "passport",
+             "id_number": "123456789", "issuing_country": "GB"}
+        (sb.table.return_value.update.return_value.eq.return_value
+         .execute.return_value.data) = [{"id": "d1"}]
+
+        resp = client.patch("/persons/p1/identity-documents/d1", headers=H,
+                            json={"issuing_country": "HK"})
+
+    assert resp.status_code == 200
+
+
 def test_a_passport_number_is_not_check_digit_validated():
     """There is no passport check digit to compute. Only format and length."""
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \

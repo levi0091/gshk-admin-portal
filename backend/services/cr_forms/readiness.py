@@ -18,6 +18,8 @@ the same contract on the front end.
 """
 from typing import Optional
 
+from services.tpsi.forms.cr_vocabularies import CURRENCY, resolve_country
+
 #: The share-capital columns CR requires per class: clsOfShares, currency,
 #: noOfShareIssuedOnThisCls, issuedCapital, paidUpCapital. All Mandatory=Y.
 _SHARE_CLASS_REQUIRED = (
@@ -43,11 +45,23 @@ def filing_problems(company: dict) -> list[dict]:
     problems: list[dict] = []
 
     address: Optional[dict] = company.get("registered_address")
-    if not address or not (address.get("country") or "").strip():
+    country = ((address or {}).get("country") or "").strip()
+    if not country:
         problems.append(_problem(
             "registered_address.country",
             "The registered office has no country or region. CR requires one "
             "on every return, and it must be HKG.",
+        ))
+    elif resolve_country(country) is None:
+        # PRESENT IS NOT FILABLE. This gate used to ask only whether a country
+        # was there, so 'HK-CH' -- Viewpoint's code for the Chinese Hong Kong,
+        # which CR has never heard of -- opened a case that then died at Data
+        # Verification. The gate has to ask the question the mapper will ask.
+        problems.append(_problem(
+            "registered_address.country",
+            f"The registered office country {country!r} is not one CR has a "
+            "code for, so the return cannot be built. Re-pick it from the "
+            "country list on the company profile.",
         ))
 
     share_classes = company.get("share_classes") or []
@@ -66,4 +80,16 @@ def filing_problems(company: dict) -> list[dict]:
                         f"share_classes.{column}",
                         f"A share class is missing {label}, which CR requires.",
                     ))
+            # Same rule as the country: a currency that is merely present is
+            # not a currency CR takes. Its list is 54 codes and four are NOT
+            # ISO -- it wants RMB where ISO says CNY. One real share class in
+            # DEV is denominated 'CNY' and another 'XXX'.
+            currency = (share_class.get("currency") or "").strip().upper()
+            if currency and currency not in CURRENCY:
+                problems.append(_problem(
+                    "share_classes.currency",
+                    f"{currency!r} is not a currency CR accepts. Its list is "
+                    "not ISO 4217 — renminbi is 'RMB', not 'CNY'. Re-pick it "
+                    "on the Share Capital card.",
+                ))
     return problems

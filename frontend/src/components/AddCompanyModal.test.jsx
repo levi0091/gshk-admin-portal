@@ -17,7 +17,9 @@ beforeEach(() => {
   _resetLookups()
   // the Country of Incorporation select reads /lookups
   api.get.mockResolvedValue({
-    country: [{ code: 'GB', label: 'United Kingdom' }, { code: 'HK', label: 'Hong Kong' }],
+    // CR's own Country & Region sheet. `lookup_values.country` is not used
+    // for this field: 20 of its codes resolve to nothing CR accepts.
+    cr_country: [{ code: 'GB', label: 'United Kingdom' }, { code: 'HK', label: 'Hong Kong' }],
     cr_company_type: [{ code: 'P', label: 'Private' }, { code: 'N', label: 'Public' },
                       { code: 'G', label: 'Limited by Guarantee' }],
   })
@@ -195,7 +197,7 @@ describe('AddCompanyModal — Hong Kong default (UAT F-2)', () => {
   })
 
   it('leaves the field blank when Hong Kong is absent from the vocabulary', async () => {
-    api.get.mockResolvedValue({ country: [{ code: 'GB', label: 'United Kingdom' }] })
+    api.get.mockResolvedValue({ cr_country: [{ code: 'GB', label: 'United Kingdom' }] })
     renderModal()
     await waitFor(() => {
       expect(within(screen.getByLabelText(/Country of Incorporation/)).getAllByRole('option'))
@@ -273,7 +275,7 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
     const user = userEvent.setup()
     // Company type still has to be selectable — it comes from /lookups too.
     api.get.mockResolvedValue({
-      country: [{ code: 'GB', label: 'United Kingdom' }],
+      cr_country: [{ code: 'GB', label: 'United Kingdom' }],
       cr_company_type: [{ code: 'P', label: 'Private' }],
     })
     renderModal()

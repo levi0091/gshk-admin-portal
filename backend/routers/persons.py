@@ -16,6 +16,7 @@ from services.audit_service import log_event, log_events
 from services import audit_events, document_service, address_service
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
+from services.tpsi.forms.cr_vocabularies import resolve_country
 
 router = APIRouter()
 
@@ -372,6 +373,19 @@ async def update_identity_document(
                        f"number; this is {len(number)}",
             )
         updates["id_number"] = number
+
+    # `indvPptIssCtry` is a CR-validated field, so it takes CR's codes and not
+    # Viewpoint's — the same defect as the address country, where picking the
+    # Chinese "Hong Kong" stored 'HK-CH' and killed the return.
+    if "issuing_country" in updates:
+        country = str(updates["issuing_country"]).strip()
+        if country and resolve_country(country) is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(f"{country!r} is not a country or region the Companies "
+                        "Registry has a code for. Pick one from the list."),
+            )
+        updates["issuing_country"] = country or None
 
     updated = (
         sb.table("person_identity_documents").update(updates)

@@ -7,7 +7,14 @@ const HK_DISTRICTS = [
   { code: 'CENTRAL', label: 'CENTRAL' },
   { code: 'WANCHAI', label: 'WANCHAI' },
 ]
-const LOOKUPS = { cr_district: HK_DISTRICTS, country: [{ code: 'HK', label: 'Hong Kong' }] }
+// `cr_country` is CR's own Country & Region sheet. `country` is Viewpoint's
+// 270-row list, which carries 20 codes CR cannot resolve — it is deliberately
+// here in the fixture so the test can prove the component ignores it.
+const LOOKUPS = {
+  cr_district: HK_DISTRICTS,
+  cr_country: [{ code: 'HK', label: 'Hong Kong' }, { code: 'CY', label: 'Cyprus' }],
+  country: [{ code: 'HK-CH', label: '香港' }, { code: 'US-DE', label: 'Delaware' }],
+}
 
 const ADDRESS = {
   line1: 'Suite C, Level 7',
@@ -99,5 +106,45 @@ describe('AddressBlock', () => {
   it('renders an empty address without crashing', () => {
     setup({ value: null })
     expect(screen.getByLabelText(/Flat \/ Floor \/ Block/i)).toHaveValue('')
+  })
+
+  // -- The country list must be CR's, not Viewpoint's -----------------------
+  //
+  // THE DEFECT. This dropdown fed on `lookup_values.country`, 20 of whose
+  // codes CR has no code for — three of them labelled only in Chinese. An
+  // operator picked the Chinese Hong Kong, it stored 'HK-CH', and the NAR1
+  // died at Data Verification with "no CR region code is known for country
+  // 'HK-CH'". The fee is taken before that check, so this list is load-bearing.
+
+  it('offers CRs countries and never Viewpoints unfilable ones', () => {
+    setup()
+    const select = screen.getByLabelText('Country')
+    const options = [...select.querySelectorAll('option')].map(o => o.value)
+
+    expect(options).toContain('HK')
+    expect(options).toContain('CY')
+    expect(options).not.toContain('HK-CH')
+    expect(options).not.toContain('US-DE')
+  })
+
+  it('shows every label in English', () => {
+    setup()
+    const labels = [...screen.getByLabelText('Country').querySelectorAll('option')]
+      .map(o => o.textContent)
+      // The empty-value placeholder is "Select…" — its ellipsis is not ASCII
+      // and it is not a country, so it is not what this test is about.
+      .filter(l => l !== 'Select…')
+
+    expect(labels).not.toContain('香港')
+    expect(labels.every(l => [...l].every(ch => ch.charCodeAt(0) < 128))).toBe(true)
+  })
+
+  it('still shows a stored country CR cannot resolve, flagged rather than dropped', () => {
+    // 7 real address rows hold one. Silently blanking it on the next save
+    // would destroy the only evidence of what someone meant.
+    setup({ value: { ...ADDRESS, country: 'HK-CH' } })
+
+    expect(screen.getByLabelText('Country')).toHaveValue('HK-CH')
+    expect(screen.getByText(/not in list/)).toBeInTheDocument()
   })
 })

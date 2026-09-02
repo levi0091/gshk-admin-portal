@@ -18,6 +18,7 @@ from services.cr_forms.record_types import RECORD_TYPES
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE,
     COMPANY_TYPE,
+    COUNTRY_OPTIONS,
     CURRENCY,
     DISTRICT_CODES,
 )
@@ -73,6 +74,20 @@ _CR_COMPANY_TYPE = [{"code": code, "label": label} for code, label in COMPANY_TY
 #: The registers NAR1 s16 asks a company to locate, in render order.
 _CR_RECORD_TYPE = [{"code": code, "label": label} for code, label in RECORD_TYPES]
 
+#: CR's Country & Region sheet, for every field CR validates a country on:
+#: an address's `ctryRegion` and a passport's `indvPptIssCtry`.
+#:
+#: `lookup_values.country` is NOT usable for these. It carries 270 Viewpoint
+#: rows, 20 of which resolve to no CR code at all -- US states, UK constituent
+#: countries, Labuan, Zaire, and three labelled only in Chinese. Picking the
+#: Chinese Hong Kong stored 'HK-CH' and killed the return at Data
+#: Verification. Same rule as the district and currency lists above: the
+#: vocabulary that decides whether a filing is accepted owns the dropdown.
+#:
+#: `lookup_values.country` stays for `place_of_birth` and the other fields CR
+#: never sees.
+_CR_COUNTRY = [{"code": code, "label": label} for code, label in COUNTRY_OPTIONS]
+
 # Reference data for both the company and the person forms — a role holding
 # either one may read it.
 require_lookup_read = require_any_permission(("companies", "read"), ("persons", "read"))
@@ -114,6 +129,7 @@ def _all() -> dict[str, list[dict]]:
     grouped["cr_currency"] = _CR_CURRENCY
     grouped["cr_company_type"] = _CR_COMPANY_TYPE
     grouped["cr_record_type"] = _CR_RECORD_TYPE
+    grouped["cr_country"] = _CR_COUNTRY
     _cache = (time.monotonic(), grouped)
     return grouped
 

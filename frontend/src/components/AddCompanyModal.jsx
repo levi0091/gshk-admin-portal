@@ -71,13 +71,13 @@ export default function AddCompanyModal({ onClose, onCreated }) {
   // initial value; if the vocabulary has no Hong Kong row, leave it blank
   // rather than posting a code the backend has never heard of.
   useEffect(() => {
-    const hk = findHongKong(lookups.country)
+    const hk = findHongKong(lookups.cr_country)
     if (!hk) return
     setForm(f => (f.incorporation_place ? f : { ...f, incorporation_place: hk.code }))
     if (!baseline.current.incorporation_place) {
       baseline.current = { ...baseline.current, incorporation_place: hk.code }
     }
-  }, [lookups.country])
+  }, [lookups.cr_country])
 
   const isDirty = Object.keys(form).some(k => form[k] !== baseline.current[k])
   const guard = useDiscardGuard(isDirty, onClose)
@@ -186,7 +186,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
               <select id="incorporation_place" className="f-select"
                       value={form.incorporation_place} onChange={set('incorporation_place')}>
                 <option value="">Select…</option>
-                {(lookups.country || []).map(c => (
+                {(lookups.cr_country || []).map(c => (
                   <option key={c.code} value={c.code}>{c.label}</option>
                 ))}
               </select>

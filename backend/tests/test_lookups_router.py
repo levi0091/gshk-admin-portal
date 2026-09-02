@@ -212,3 +212,82 @@ def test_document_types_rejects_a_bogus_owner_type():
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN):
         resp = client.get("/documents/types?owner_type=alien", headers=H)
     assert resp.status_code == 400
+
+
+def test_cr_country_is_crs_own_list_keyed_by_what_we_store():
+    """The address Country dropdown fed on `lookup_values.country` -- 270
+    Viewpoint rows, 20 of which CR has no code for at all, three of them
+    labelled only in Chinese ('HK-CH', 'MO-CH', 'TW-CH').
+
+    An operator filing a Hong Kong company picked the Chinese Hong Kong, it
+    stored 'HK-CH', and the return died at Data Verification with "no CR
+    region code is known for country 'HK-CH'". CR's own sheet is the only
+    list allowed to feed a field CR validates.
+
+    Keyed by ISO alpha-2 because that is what `addresses.country` holds in
+    all 141 of DEV's distinct non-blank values -- serving CR's three-letter
+    codes instead would orphan every one of the 8,035 rows.
+    """
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_country", headers=H)
+
+    assert resp.status_code == 200
+    values = resp.json()
+    assert len(values) == 250
+    codes = {v["code"] for v in values}
+    assert {"HK", "VN", "AE", "NL", "GB"} <= codes          # what DEV stores
+    assert not (codes & {"HK-CH", "MO-CH", "TW-CH", "GB-ENG", "US-DE", "ZR"})
+
+
+def test_every_cr_country_option_resolves_to_a_code_cr_accepts():
+    """The dropdown must not be able to offer a value the mapper refuses --
+    that is the entire defect. Asserted through the SAME resolver
+    `nar1_mapper` calls, so the two cannot drift."""
+    from services.tpsi.forms.cr_vocabularies import resolve_country
+
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        values = client.get("/lookups/cr_country", headers=H).json()
+
+    assert all(resolve_country(v["code"]) is not None for v in values)
+
+
+def test_to_alpha2_normalises_every_spelling_onto_a_dropdown_key():
+    """251 `incorporation_place` rows held the literal "Hong Kong", which
+    files perfectly well and matches no dropdown option — so the profile
+    rendered "Hong Kong (not in list)". Normalising is what makes the stored
+    data and the vocabulary the same set."""
+    from services.tpsi.forms.cr_vocabularies import to_alpha2
+
+    assert to_alpha2("Hong Kong") == "HK"
+    assert to_alpha2("HKG") == "HK"
+    assert to_alpha2("hk") == "HK"
+    assert to_alpha2("CHN") == "CN"
+    assert to_alpha2("France") == "FR"
+    # Guernsey is CR's own GBR1, never GBR.
+    assert to_alpha2("GBR1") == "GG"
+    # None means CR has no code — distinguishable from "already normalised".
+    assert to_alpha2("HK-CH") is None
+    assert to_alpha2("") is None
+
+
+def test_cr_country_labels_are_english_and_readable():
+    """The complaint was that the list was not all English. CR's sheet is
+    UPPERCASE; the label is title-cased for reading and the CODE is what gets
+    stored, so nothing CR validates depends on the casing."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        values = client.get("/lookups/cr_country", headers=H).json()
+
+    by_code = {v["code"]: v["label"] for v in values}
+    assert by_code["HK"] == "Hong Kong"
+    assert by_code["US"] == "United States"
+    # An apostrophe must not become "People'S" -- naive .title() does that.
+    assert "'S" not in by_code["LA"]
+    assert all(ch.isascii() for label in by_code.values() for ch in label)
+    # Sorted by label, because that is the order someone scans.
+    assert [v["label"] for v in values] == sorted(v["label"] for v in values)

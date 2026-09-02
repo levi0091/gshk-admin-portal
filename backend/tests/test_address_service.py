@@ -96,3 +96,59 @@ def test_a_shared_address_is_copied_rather_than_rewritten():
 
 def test_a_record_with_no_address_yet_gets_a_new_row():
     assert svc.plan(reference_count=0) == "copy"
+
+
+# ---- the country CR has to be able to resolve -------------------------------
+#
+# This is the defect that reached a real case: the address form offered
+# Viewpoint's 270-row country list, 20 of whose codes CR has no code for.
+# Someone picked the Chinese "Hong Kong", it stored 'HK-CH', validation said
+# nothing, and the NAR1 died at Data Verification with
+#     no CR region code is known for country 'HK-CH'
+# The service's whole job is to refuse exactly what the mapper would refuse.
+
+def test_a_country_cr_cannot_resolve_is_refused():
+    with pytest.raises(svc.AddressError) as err:
+        svc.validate(_payload(country="HK-CH"))
+
+    assert "HK-CH" in str(err.value)
+
+
+@pytest.mark.parametrize("country", ["GB-ENG", "US-DE", "MY-15", "ZR", "TW-CH"])
+def test_every_unresolvable_viewpoint_country_is_refused(country):
+    """The other values the old dropdown could produce."""
+    with pytest.raises(svc.AddressError):
+        svc.validate(_payload(country=country))
+
+
+@pytest.mark.parametrize("country", ["HK", "hk", "HKG", "Hong Kong", "GB", "VN", "GG"])
+def test_a_country_cr_does_resolve_is_accepted(country):
+    """Alpha-2 is what the column holds; the CR code and the English name are
+    both accepted because `resolve_country` takes all three."""
+    svc.validate(_payload(country=country, city="CENTRAL"))
+
+
+def test_the_district_check_fires_for_every_spelling_of_hong_kong():
+    """It used to compare the raw string to 'HK', so an address stored as
+    'HKG' or 'Hong Kong' skipped the district validation entirely -- 7 real
+    rows in DEV. Resolve first, then compare.
+
+    "Greater London" is a district CR genuinely has no code for. Note that
+    "WAN CHAI" would NOT do here: `resolve_district` drops spaces, so it
+    resolves to WANCHAI and is correctly accepted."""
+    for country in ("HK", "HKG", "Hong Kong"):
+        with pytest.raises(svc.AddressError) as err:
+            svc.validate(_payload(country=country, city="Greater London"))
+        assert "district" in str(err.value).lower()
+
+
+def test_a_hong_kong_district_typed_with_spaces_is_still_accepted():
+    """CR's code is the name with the spaces removed, and the resolver
+    normalises rather than demanding the operator do it."""
+    svc.validate(_payload(country="HK", city="WAN CHAI"))
+
+
+def test_an_overseas_district_is_still_free_text():
+    """Validating a foreign address against Hong Kong's district list would
+    reject every overseas director, who are most of the ones needing fixes."""
+    svc.validate(_payload(country="GB", city="Greater London"))

@@ -134,7 +134,13 @@ export default function AddressBlock({ value, lookups, onChange, readOnly = fals
           onChange={e => onChange('country', e.target.value)}
         >
           <option value="">Select…</option>
-          {optionsFor(lookups?.country, a.country).map(o => (
+          {/* CR's OWN Country & Region sheet (`cr_country`), never
+              `lookup_values.country`. Viewpoint's list carries 20 codes CR
+              has no code for — US states, UK constituent countries, and
+              three labelled only in Chinese. Someone picked the Chinese Hong
+              Kong, it stored 'HK-CH', and the return died at Data
+              Verification, after the point where CR takes the fee. */}
+          {optionsFor(lookups?.cr_country, a.country).map(o => (
             <option key={o.code} value={o.code}>{o.label}</option>
           ))}
         </select>

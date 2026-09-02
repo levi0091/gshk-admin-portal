@@ -186,6 +186,65 @@ def backfill_person_names(vp, sb, apply: bool) -> dict:
 RECORD_LOCATION_ROLES = RECORD_TYPE_CODES
 
 
+#: Country columns the profile screens render from CR's own list, and which
+#: therefore have to HOLD one of its keys. `addresses.country` is already
+#: alpha-2 in every one of DEV's 141 distinct values; these three were not.
+_COUNTRY_COLUMNS = (
+    ("entities", "incorporation_place"),
+    ("person_identity_documents", "issuing_country"),
+    ("addresses", "country"),
+)
+
+
+def normalise_country_columns(sb, apply: bool) -> dict:
+    """Store the alpha-2 CR resolves to, wherever a country is spelt some
+    other way.
+
+    "Hong Kong" and "HKG" both FILE correctly -- `resolve_country` takes
+    either -- so this is not a correctness fix for CR. It is a fix for the
+    screen: the dropdowns are keyed by alpha-2, so 251 companies holding the
+    literal "Hong Kong" rendered as "Hong Kong (not in list)", which invites
+    an operator to "correct" a value that was never wrong.
+
+    Values CR cannot resolve at all are LEFT ALONE, deliberately. 'HK-CH' is
+    not a spelling of anything -- it is Viewpoint's code for a country CR has
+    no code for, and it needs a human to re-pick it, not a guess from here.
+    """
+    from services.tpsi.forms.cr_vocabularies import to_alpha2
+
+    changed, unresolvable = [], []
+    with sb.connect() as conn:
+        for table, column in _COUNTRY_COLUMNS:
+            rows = conn.execute(text(
+                f"SELECT id, {column} AS value FROM {table} "
+                f"WHERE coalesce(btrim({column}), '') <> ''"
+            ))
+            for row in rows:
+                alpha2 = to_alpha2(row.value)
+                if alpha2 is None:
+                    unresolvable.append((table, column, row.value))
+                elif alpha2 != (row.value or "").strip():
+                    changed.append((table, column, str(row.id), alpha2))
+
+        if apply and changed:
+            for table, column in _COUNTRY_COLUMNS:
+                rows = [(rid, value) for t, c, rid, value in changed
+                        if t == table and c == column]
+                for chunk in _chunks(rows):
+                    conn.execute(
+                        text(f"UPDATE {table} AS t SET {column} = v.value "
+                             f"FROM (SELECT unnest(:ids)::uuid AS id, "
+                             f"unnest(:values) AS value) AS v "
+                             f"WHERE t.id = v.id"),
+                        {"ids": [r[0] for r in chunk],
+                         "values": [r[1] for r in chunk]},
+                    )
+            conn.commit()
+
+    return {"to_normalise": len(changed),
+            "left_for_a_human": len(unresolvable)}
+
+
 def backfill_company_type(sb, apply: bool) -> dict:
     """entities.company_type -> 'P' where the company HAS share capital.
 
@@ -328,7 +387,8 @@ def main() -> int:
     # address roles -- no Viewpoint round trip needed.
     for name, fn in (("officer correspondence address", backfill_correspondence_addresses),
                      ("entity_record_locations (s16)", backfill_record_locations),
-                     ("entities.company_type", backfill_company_type)):
+                     ("entities.company_type", backfill_company_type),
+                     ("country columns -> alpha-2", normalise_country_columns)):
         stats = fn(sb, args.apply)
         detail = "  ".join(f"{k}={v}" for k, v in stats.items())
         print(f"  {name:32} {detail}")
