@@ -6,7 +6,7 @@ import { labelForDays } from '../lib/anniversary.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
 import CaseStepper from '../components/case/CaseStepper.jsx'
-import { readFault } from '../components/case/FaultPanel.jsx'
+import RefusalDetail from '../components/case/RefusalDetail.jsx'
 import StageDataVerification from '../components/case/StageDataVerification.jsx'
 import StageClientVerification from '../components/case/StageClientVerification.jsx'
 import StageSigning from '../components/case/StageSigning.jsx'
@@ -63,7 +63,22 @@ export default function CaseWorkflowPage() {
   // Announcing it is not enough: `role="alert"` reaches a screen reader, not
   // someone looking at a button halfway down the page.
   const failureRef = useRef(null)
+  const noticeRef = useRef(null)
   const [restarting, setRestarting] = useState(false)
+
+  // THE STANDARD (Levi 2026-09-03): every stage reports through `onError` and
+  // `onWarn`, both of which render HERE and both of which scroll the page to
+  // them. Stages used to choose between bubbling up and drawing their own
+  // alert beside the button, and the workflow ended up doing both at once for
+  // the same failure — a detailed banner at the top and a vaguer restatement
+  // half a page down (which is what a submit refusal looked like on the day
+  // this was reported). Scrolling is what makes one surface sufficient.
+  const warn = useCallback((title, text) => {
+    setNotice(text ? { tone: 'warn', title, text } : null)
+  }, [])
+  const inform = useCallback(text => {
+    setNotice(text ? { tone: 'info', text } : null)
+  }, [])
 
   const load = useCallback(async () => {
     try {
@@ -100,14 +115,19 @@ export default function CaseWorkflowPage() {
   // exception blanks the very error it exists to reveal. That regression has
   // already happened once. The guard must not depend on a collaborator keeping
   // its own try/catch.
+  //
+  // A WARN notice scrolls too. A partial send — "two directors have it, the
+  // third does not" — is a failure the operator has to act on, and it appears
+  // at the same place for the same reason.
+  const alarm = failure || (notice?.tone === 'warn' ? notice : null)
   useEffect(() => {
-    if (!failure) return
+    if (!alarm) return
     try {
-      scrollToTop(failureRef.current)
+      scrollToTop(failureRef.current || noticeRef.current)
     } catch {
       /* Scrolling is a courtesy. Showing the error is not. */
     }
-  }, [failure])
+  }, [alarm])
 
   const onChanged = useCallback(async () => {
     setFailure(null)
@@ -145,7 +165,13 @@ export default function CaseWorkflowPage() {
   // genuinely unlocked the next stage — this is the operator saying they are
   // finished reading, which is a different event and must not be inferred.
   const goTo = n => { setStep(n); setNotice(null) }
-  const stageProps = { caseRow: c, onChanged, onError: setFailure, onGo: goTo }
+  // `onWarn(title, text)` is the second half of the standard: an outcome that
+  // is not a refusal but still needs acting on — a send that reached two of
+  // three directors. It renders in the same place as an error and scrolls the
+  // same way, so no stage has a reason to grow an alert of its own.
+  const stageProps = {
+    caseRow: c, onChanged, onError: setFailure, onWarn: warn, onGo: goTo,
+  }
 
   // THE ONLY PLACE A CR REFUSAL IS DRAWN. The stages used to render the same
   // faults again in their own FaultPanel, so one rejection appeared twice on
@@ -272,23 +298,46 @@ export default function CaseWorkflowPage() {
           <span className="al-icon">⚠</span>
           <div className="al-body">
             <b>{banner.message}</b>
-            {/* Every reason the backend gathered — it collects them all so one
-                pass can fix them all, and showing one would waste that.
-                Rendered through readFault because CR sends (code, message)
-                PAIRS: JSON.stringify put ["ERR_MSG_...","..."] on screen. */}
-            {banner.problems && (
-              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                {banner.problems.map((p, i) => {
-                  const { field, msg } = readFault(p)
-                  return (
-                    <li key={i}>
-                      {msg}
-                      {field && <span className="td-muted"> ({field})</span>}
-                    </li>
-                  )
-                })}
-              </ul>
+            {/* Before anything else: the money did not move. The operator has
+                just pressed a button labelled with a four-figure sum, and no
+                amount of detail below is read calmly until that is settled. */}
+            {banner.reassurance && (
+              <div style={{ marginTop: 4 }}>{banner.reassurance}</div>
             )}
+
+            {/* THE EVIDENCE, one card per fault. Every reason the backend
+                gathered — it collects them all so one pass can fix them all,
+                and showing one would waste that.
+
+                Cards rather than the bullet list this replaced: a mismatch has
+                TWO values and a bullet can only hold a sentence, which is how
+                "on the form X, in the profile Y" used to arrive as a
+                semicolon-spliced paragraph. */}
+            <RefusalDetail differences={banner.differences}
+                           problems={banner.problems} />
+
+            {/* WHAT TO DO, under the evidence, with the actual control beside
+                it. Restart lives in the page header too, but by the time an
+                operator has read three fault cards the header is a place they
+                have to go looking for. */}
+            {banner.remedy && (
+              <div className="rf-remedy">
+                <div className="rf-remedy-txt">{banner.remedy}</div>
+                {/* Offered only where restarting is genuinely the remedy —
+                    never for a check that could not run — and only to someone
+                    holding the permission and on a case that can still be
+                    restarted. Those are the same conditions the header button
+                    applies; disagreeing with it would put a button here that
+                    fails when pressed. */}
+                {banner.offerRestart && canWrite && isValidated(c) && !isSubmitted(c) && (
+                  <button className="btn btn-outline btn-sm" disabled={restarting}
+                          onClick={() => setConfirmRestart(true)}>
+                    {restarting ? 'Restarting…' : 'Restart verification'}
+                  </button>
+                )}
+              </div>
+            )}
+
             {banner.hint && (
               <div style={{ marginTop: 4 }}
                    // A locked CR account is not an ordinary validation note:
@@ -303,8 +352,14 @@ export default function CaseWorkflowPage() {
         </div>
       )}
       {notice && (
-        <div className="alert al-info" role="status" style={{ marginBottom: 16 }}>
-          <span className="al-icon">ℹ</span><div className="al-body">{notice}</div>
+        <div ref={noticeRef} className={`alert al-${notice.tone || 'info'}`}
+             role={notice.tone === 'warn' ? 'alert' : 'status'}
+             style={{ marginBottom: 16 }}>
+          <span className="al-icon">{notice.tone === 'warn' ? '⚠' : 'ℹ'}</span>
+          <div className="al-body">
+            {notice.title && <b>{notice.title}</b>}
+            <div style={{ marginTop: notice.title ? 4 : 0 }}>{notice.text}</div>
+          </div>
         </div>
       )}
 
@@ -314,7 +369,9 @@ export default function CaseWorkflowPage() {
         // Moving somewhere clears the "that stage is locked" note. Leaving it up
         // would have it explaining a refusal the operator has already moved past.
         onGo={n => { setStep(n); setNotice(null) }}
-        onLocked={setNotice}
+        // A locked stage is guidance, not a failure — it informs, and it does
+        // not scroll the page out from under a click on the stepper.
+        onLocked={inform}
       />
 
       {current === 1 && (

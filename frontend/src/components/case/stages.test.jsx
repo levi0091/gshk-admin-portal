@@ -27,6 +27,7 @@ vi.mock('../../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 
 const onChanged = vi.fn()
 const onError = vi.fn()
+const onWarn = vi.fn()
 
 /** Render inside a router, for stages that link or navigate. */
 const renderRouted = ui => render(<MemoryRouter>{ui}</MemoryRouter>)
@@ -269,7 +270,7 @@ describe('Data Verification', () => {
 
 describe('Client Verification', () => {
   const renderIt = (over = {}) => render(
-    <StageClientVerification caseRow={at(over)} canWrite
+    <StageClientVerification caseRow={at(over)} canWrite onWarn={onWarn}
                              onChanged={onChanged} onError={onError} />)
 
   // ── spec §5: one message per director, so a send can partly succeed ─────
@@ -287,13 +288,17 @@ describe('Client Verification', () => {
 
   it('names the directors a partial send did NOT reach', async () => {
     // The case an operator is most likely to miss: the screen advances, the
-    // status changes, and one director was never asked.
+    // status changes, and one director was never asked. It is raised to the
+    // page, which draws it at the top and scrolls there — the stage keeps no
+    // alert of its own (Levi 2026-09-03).
     post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'],
                              failed_to: ['b@x.com'], approval_links: true })
     await pressSend()
-    const panel = await screen.findByTestId('send-partial')
-    expect(within(panel).getByText(/b@x\.com/)).toBeInTheDocument()
-    expect(within(panel).getByText(/The others have it/)).toBeInTheDocument()
+    await waitFor(() => expect(onWarn).toHaveBeenCalledWith(
+      'The return did not reach everyone.',
+      expect.stringMatching(/b@x\.com/)))
+    expect(onWarn).toHaveBeenLastCalledWith(
+      expect.any(String), expect.stringMatching(/The others have it/))
   })
 
   it('says nothing about a partial send when everyone got it', async () => {
@@ -301,7 +306,8 @@ describe('Client Verification', () => {
                              approval_links: true })
     await pressSend()
     await waitFor(() => expect(onChanged).toHaveBeenCalled())
-    expect(screen.queryByTestId('send-partial')).not.toBeInTheDocument()
+    // Only the clear-down at the start of the send, never a warning.
+    expect(onWarn).not.toHaveBeenCalledWith(expect.any(String), expect.any(String))
   })
 
   it('says when the email went out with no Confirm button', async () => {
@@ -309,9 +315,11 @@ describe('Client Verification', () => {
     post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'], failed_to: [],
                              approval_links: false })
     await pressSend()
-    const panel = await screen.findByTestId('send-no-links')
-    expect(within(panel).getByText(/reply by email/)).toBeInTheDocument()
-    expect(within(panel).getByText(/PUBLIC_API_BASE_URL/)).toBeInTheDocument()
+    await waitFor(() => expect(onWarn).toHaveBeenCalledWith(
+      'Sent without a Confirm button.',
+      expect.stringMatching(/reply by email/)))
+    expect(onWarn).toHaveBeenLastCalledWith(
+      expect.any(String), expect.stringMatching(/PUBLIC_API_BASE_URL/))
   })
 
   // ── v11 restorations (Q3, Block C) ──────────────────────────────────────
@@ -474,19 +482,22 @@ describe('Client Verification', () => {
 
   // ── The failure Levi hit: a refused send that looked like a dead button ──
 
-  it('reports a refused send AT the button, not only through onError', async () => {
-    // The page-level banner `onError` drives sits above a 690px PDF frame —
-    // about a screen and a half from the button that was just pressed.
+  it('reports a refused send to the PAGE, and draws none of its own', async () => {
+    // It used to be drawn at the button, because the page banner sits above a
+    // 690px PDF frame — about a screen and a half up — and a refused send
+    // therefore looked like a dead button. The page now scrolls to the banner
+    // on every failure, so the reason is gone; keeping it would leave this one
+    // stage with an error surface no other stage has (Levi 2026-09-03).
     post.mockRejectedValueOnce(
       Object.assign(new Error('this case was completed off-portal'), { status: 409 }))
     const user = userEvent.setup()
     renderIt()
     await reviewAndSend(user)
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringMatching(/off-portal/) })))
     const card = screen.getByText('Send for verification').closest('.card')
-    expect(await within(card).findByRole('alert')).toHaveTextContent(
-      /completed off-portal/)
-    expect(onError).not.toHaveBeenCalledWith(expect.objectContaining({
-      message: expect.stringMatching(/off-portal/) }))
+    expect(within(card).queryByRole('alert')).toBeNull()
   })
 
   it('does not send the CR office-hours hint when the mail config is missing', async () => {
@@ -497,9 +508,11 @@ describe('Client Verification', () => {
     const user = userEvent.setup()
     renderIt()
     await reviewAndSend(user)
-    const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent(/missing its email configuration/)
-    expect(alert).not.toHaveTextContent(/10:00/)
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hint: expect.stringMatching(/missing its email configuration/) })))
+    expect(onError).not.toHaveBeenCalledWith(expect.objectContaining({
+      hint: expect.stringMatching(/10:00/) }))
   })
 
   it('offers no send at all once the return has been filed', async () => {
@@ -769,7 +782,15 @@ describe('Signing', () => {
     post.mockRejectedValue(Object.assign(new Error('tampered'), { status: 422 }))
     renderIt()
     await user.click(screen.getByRole('button', { name: /Apply signature/ }))
-    expect(await screen.findByText(/do not simply retry/i)).toBeInTheDocument()
+    // Raised to the page, which is the only place a refusal is drawn. The
+    // stage used to repeat the hint in a yellow box of its own, half a page
+    // under a banner that had already said it (Levi 2026-09-03).
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        retry: false,
+        hint: expect.stringMatching(/do not simply retry/i),
+      })))
+    expect(document.querySelector('.alert')).toBeNull()
   })
 
   it('uploads the wet-signed form as multipart on the manual route', async () => {
@@ -916,8 +937,10 @@ describe('Submission — e-Sign', () => {
     expect(screen.getByText(/within 9 months of the return date/)).toBeInTheDocument()
     expect(screen.getByText(/2026-01-01/)).toBeInTheDocument()
     // "late" sits in its own <b>, so the sentence is split across elements —
-    // read the alert's text rather than hunting for one node.
-    expect(document.querySelector('.alert').textContent)
+    // read the fee panel's text rather than hunting for one node. It is a
+    // `.card-note`, not an `.alert`: `.alert` on the workflow now means "what
+    // you just did was refused" and is drawn once, at the top of the page.
+    expect(document.querySelector('.card-note').textContent)
       .toMatch(/This return is\s*late/)
   })
 
@@ -934,7 +957,7 @@ describe('Submission — e-Sign', () => {
     withPreflight()
     renderIt()
     await screen.findByText(/Fee HK\$ 105\.00/)
-    expect(document.querySelector('.alert').textContent).not.toMatch(/is\s*late/)
+    expect(document.querySelector('.card-note').textContent).not.toMatch(/is\s*late/)
     expect(screen.getByText(/within 42 days of the return date/)).toBeInTheDocument()
   })
 
@@ -979,7 +1002,7 @@ describe('Submission — e-Sign', () => {
   it('BLOCKS filing when the pre-flight itself failed', async () => {
     get.mockRejectedValue(Object.assign(new Error('CR down'), { status: 503 }))
     renderIt()
-    await screen.findByText(/Could not reach CR for the fee and balance/)
+    await screen.findByText(/fee and balance are unavailable/)
     expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
   })
 
@@ -1068,6 +1091,7 @@ describe('Submission — e-Sign', () => {
     new Error('the validated form no longer matches the company record'),
     {
       status: 409,
+      reason: 'drift',
       differences: [
         { path: 'indDirList/indDir/stdAddress/stEstLotVlg',
           field: 'Director (individual) · Address · Street / estate / lot / village',
@@ -1089,47 +1113,36 @@ describe('Submission — e-Sign', () => {
     return user
   }
 
-  it('lists every field that moved, with BOTH values', async () => {
+  it('hands the refusal UP, with every field that moved intact', async () => {
+    // The stage no longer draws this. Spec §6's refusal is rendered by
+    // RefusalDetail in the page banner, as one comparison card per field —
+    // see RefusalDetail.test.jsx and CaseWorkflowPage.test.jsx. Drawing it
+    // here as well is what produced a detailed refusal at the top of the page
+    // and a vague one beside the button (Levi 2026-09-03).
     await attemptDriftedSubmit()
-    const panel = await screen.findByTestId('drift-panel')
-    expect(within(panel).getByText(/Raggatan 9, Stockholm 11859/)).toBeInTheDocument()
-    expect(within(panel).getByText(/Raggatan 14, Stockholm 11859/)).toBeInTheDocument()
-    // "The data differs" would leave the operator to diff a nine-page statutory
-    // form by eye.
-    expect(within(panel).getByText(/Surname \(English\)/)).toBeInTheDocument()
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        reason: 'drift',
+        differences: DRIFT.differences,
+      })))
   })
 
-  it('renders a field that is GONE as absent, not as blank', async () => {
-    // A director who left the board has no field at all. An empty cell would
-    // read as "unchanged, empty".
+  it('draws no refusal of its own beside the button', async () => {
     await attemptDriftedSubmit()
-    const panel = await screen.findByTestId('drift-panel')
-    expect(within(panel).getByText('(absent)')).toBeInTheDocument()
-  })
-
-  it('says nothing was filed and nothing was charged', async () => {
-    await attemptDriftedSubmit()
-    expect(await screen.findByText(/Nothing was sent to the Companies Registry/))
-      .toBeInTheDocument()
-    expect(screen.getByText(/Restart verification/)).toBeInTheDocument()
+    await waitFor(() => expect(onError).toHaveBeenCalled())
+    expect(screen.queryByTestId('drift-panel')).not.toBeInTheDocument()
+    // And nothing took its place: no alert at all inside the stage.
+    expect(document.querySelector('.alert')).toBeNull()
   })
 
   it('clears the acknowledgement, because it was for a stale document', async () => {
     await attemptDriftedSubmit()
-    await screen.findByTestId('drift-panel')
     // The operator ticked to acknowledge a charge against a return that has
     // since been shown to be out of date. Leaving it ticked would let a second
     // press file it without a fresh decision.
-    expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
-      .toBeDisabled()
-  })
-
-  it('does not put the drift refusal in the page banner as well', async () => {
-    // ONE error surface (Levi 2026-08-31) — and for this refusal the surface is
-    // the table at the button, because a banner cannot show two values a row.
-    await attemptDriftedSubmit()
-    await screen.findByTestId('drift-panel')
-    expect(onError).toHaveBeenLastCalledWith(null)
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
+      .toBeDisabled())
   })
 
   it('leaves an ORDINARY 409 to the page banner', async () => {
@@ -1141,7 +1154,6 @@ describe('Submission — e-Sign', () => {
     await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
     await waitFor(() => expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'filing is not signed' })))
-    expect(screen.queryByTestId('drift-panel')).not.toBeInTheDocument()
   })
 })
 

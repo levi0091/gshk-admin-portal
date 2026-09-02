@@ -17,6 +17,8 @@ import StageClientVerification from './StageClientVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
+import RefusalDetail from './RefusalDetail.jsx'
+import { describeError } from './workflow.js'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
 const blob = vi.fn(); const upload = vi.fn()
@@ -173,5 +175,63 @@ describe.runIf(SHOOT)('visual harness', () => {
       <StageConfirmation caseRow={{ ...CASE, form_status: { code: 'registered', label: 'Registered' } }}
                          canRead onError={noop} />,
       () => waitFor(() => screen.getByText(/filed & confirmed by CR/)))
+  })
+
+  // The refusal banner, drawn exactly as CaseWorkflowPage draws it. Reading
+  // the JSX tells you what was written; a picture tells you whether an
+  // operator can find the one value they have to decide about.
+  const banner = described => (
+    <div className="alert al-danger" role="alert" style={{ marginBottom: 16 }}>
+      <span className="al-icon">⚠</span>
+      <div className="al-body">
+        <b>{described.message}</b>
+        <div style={{ marginTop: 4 }}>{described.reassurance}</div>
+        <RefusalDetail differences={described.differences}
+                       problems={described.problems} />
+        <div className="rf-remedy">
+          <div className="rf-remedy-txt">{described.remedy}</div>
+          {described.offerRestart && (
+            <button className="btn btn-outline btn-sm">Restart verification</button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+
+  it('6 · Refusal — particulars moved after approval', async () => {
+    await dump('6-refusal-drift', banner(describeError(Object.assign(
+      new Error('x'), {
+        status: 409, reason: 'drift',
+        differences: [
+          { path: 'corpDirList/corpDir/stdAddress/ctryRegion',
+            field: 'Director (body corporate) 1 · Address · Country / region',
+            validated: 'Hong Kong', current: 'HK-CH' },
+          { path: 'indDirList/indDir[2]/stdAddress/stEstLotVlg',
+            field: 'Director (individual) 2 · Address · Street / estate / lot / village',
+            validated: 'Raggatan 9, Stockholm 11859',
+            current: 'Raggatan 14, Stockholm 11859' },
+          { path: 'indDirList/indDir[3]/indvEngSname',
+            field: 'Director (individual) 3 · Surname (English)',
+            validated: 'WONG', current: null },
+        ],
+      }))))
+  })
+
+  it('6b · Refusal — the record cannot make a return', async () => {
+    await dump('6b-refusal-unfilable', banner(describeError(Object.assign(
+      new Error('x'), {
+        status: 409, reason: 'record_unusable',
+        problems: [
+          "corporate party CGAHCHBAABBG DIRECTOR COMPANY LIMITED: no CR region "
+          + "code is known for country 'HK-CH' — CR's Country & Region sheet "
+          + "(worksheet v1.0.14) carries no code, alpha-2 or English name "
+          + "matching it; correct the address rather than guessing a code CR "
+          + "would take the fee for and then reject",
+          'entity: no BR number — CR rejects a NAR1 without one',
+          'share class Ordinary: Schedule 1 accounts for 90 shares but the '
+          + 'class records 100 issued — the register and the return would '
+          + 'disagree',
+        ],
+      }))))
   })
 })

@@ -493,3 +493,138 @@ describe('CaseWorkflowPage — Restart stops at the register', () => {
       .toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// THE PRE-SUBMIT GATE, ON SCREEN (Levi 2026-09-03).
+//
+// The report: "I purposefully changed something in a body corporate profile
+// while this form is on-going ... when I try to submit I get this error which
+// is good. However it is not very user friendly." The screen showed a single
+// run-on sentence at the top —
+//
+//   "the return could not be checked against the company record before filing,
+//    so it was not submitted: the company record can no longer be mapped to a
+//    NAR1: corporate party CGAHCHBAABBG DIRECTOR COMPANY LIMITED: no CR region
+//    code is known for country 'HK-CH' — CR's Country & Region sheet ..."
+//
+// — and, half a page below it, a second yellow box reading "The case is not in
+// a state that allows this."
+// ---------------------------------------------------------------------------
+
+describe('CaseWorkflowPage — the submit gate refuses', () => {
+  const submitAndRefuse = async detail => {
+    const user = userEvent.setup()
+    post.mockRejectedValue(Object.assign(
+      new Error('the backend sentence'), { status: 409, ...detail }))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText(/NAR-2026-0041/)
+    await screen.findByText(/Fee HK\$/)
+    await user.click(screen.getByRole('button',
+      { name: /I understand this submits NAR1 to CR/ }))
+    await user.click(screen.getByRole('button',
+      { name: /Submit NAR1 to Companies Registry/ }))
+    return user
+  }
+
+  const UNFILABLE = {
+    reason: 'record_unusable',
+    problems: ["corporate party CGAHCHBAABBG DIRECTOR COMPANY LIMITED: no CR "
+               + "region code is known for country 'HK-CH' — CR's Country & "
+               + "Region sheet (worksheet v1.0.14) carries no code, alpha-2 or "
+               + "English name matching it; correct the address rather than "
+               + "guessing a code CR would take the fee for and then reject"],
+  }
+
+  const DRIFTED = {
+    reason: 'drift',
+    differences: [
+      { path: 'corpDirList/corpDir/stdAddress/ctryRegion',
+        field: 'Director (body corporate) · Address · Country / region',
+        validated: 'HKG', current: 'HK-CH' },
+      { path: 'corpDirList/corpDir/corpEngName',
+        field: 'Director (body corporate) · Name (English)',
+        validated: 'CGAHCHBAABBG DIRECTOR COMPANY LIMITED', current: null },
+    ],
+  }
+
+  it('names the party and the fault as separate things, not one sentence', async () => {
+    await submitAndRefuse(UNFILABLE)
+    const card = await screen.findByTestId('problem-card')
+    expect(within(card).getByText('Corporate party')).toBeInTheDocument()
+    expect(within(card).getByText('CGAHCHBAABBG DIRECTOR COMPANY LIMITED'))
+      .toBeInTheDocument()
+    expect(within(card).getByText(/^No CR region code is known/)).toBeInTheDocument()
+  })
+
+  it('shows the two values side by side when particulars have moved', async () => {
+    await submitAndRefuse(DRIFTED)
+    const cards = await screen.findAllByTestId('mismatch-card')
+    expect(cards).toHaveLength(2)
+    expect(within(cards[0]).getByText('HKG')).toBeInTheDocument()
+    expect(within(cards[0]).getByText('HK-CH')).toBeInTheDocument()
+    expect(within(cards[0]).getByText(/On the NAR1 the client approved/))
+      .toBeInTheDocument()
+    expect(within(cards[0]).getByText(/In the company profile now/))
+      .toBeInTheDocument()
+  })
+
+  it('says the money did not move, before the detail', async () => {
+    await submitAndRefuse(UNFILABLE)
+    expect(await screen.findByText(/Nothing was sent to the Companies Registry/))
+      .toBeInTheDocument()
+  })
+
+  it('draws the refusal EXACTLY ONCE on the page', async () => {
+    // The whole complaint. A detailed banner at the top and a vague yellow
+    // "The case is not in a state that allows this" beside the button is two
+    // boxes for one refusal, and the redundant one says less.
+    await submitAndRefuse(UNFILABLE)
+    await screen.findByTestId('problem-card')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(screen.queryByText(/not in a state that allows this/i)).toBeNull()
+  })
+
+  it('scrolls to the top so the refusal is not left below the fold', async () => {
+    await submitAndRefuse(UNFILABLE)
+    const banner = await screen.findByRole('alert')
+    await waitFor(() => expect(scrollToTop).toHaveBeenLastCalledWith(banner))
+  })
+
+  it('offers Restart verification where restarting is the remedy', async () => {
+    await submitAndRefuse(DRIFTED)
+    const banner = await screen.findByRole('alert')
+    expect(within(banner).getByRole('button', { name: /Restart verification/ }))
+      .toBeInTheDocument()
+    // And it says WHY, next to the button: the operator has to decide which of
+    // the two records is right before restarting is the correct move.
+    expect(banner.querySelector('.rf-remedy-txt').textContent)
+      .toMatch(/which record is right/i)
+  })
+
+  it('does NOT offer Restart when the check itself could not run', async () => {
+    // Restarting discards a CR-signed snapshot. It cannot reach a database
+    // that would not load.
+    await submitAndRefuse({ reason: 'check_failed' })
+    const banner = await screen.findByRole('alert')
+    expect(within(banner).queryByRole('button', { name: /Restart verification/ }))
+      .toBeNull()
+    expect(within(banner).getByText(/will not help/i)).toBeInTheDocument()
+  })
+
+  it('opens the same confirmation the header Restart opens', async () => {
+    // One control, not a second path that skips the warning about discarding a
+    // CR-signed snapshot and a client approval.
+    const user = await submitAndRefuse(DRIFTED)
+    const banner = await screen.findByRole('alert')
+    await user.click(within(banner).getByRole('button', { name: /Restart verification/ }))
+    expect(await screen.findByRole('alertdialog', { name: /Restart verification/ }))
+      .toBeInTheDocument()
+  })
+
+  it('un-ticks the acknowledgement, so a second press is a fresh decision', async () => {
+    await submitAndRefuse(DRIFTED)
+    await screen.findAllByTestId('mismatch-card')
+    expect(screen.getByRole('button',
+      { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
+  })
+})

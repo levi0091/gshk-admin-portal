@@ -1336,3 +1336,128 @@ th.th-filtered {
 @media (max-width: 720px) {
   .colf { width: calc(100vw - 24px); max-width: 288px; }
 }
+
+/* ── CARD NOTE — a panel explaining ITSELF, not reporting an action ────────
+   The workflow now keeps one meaning for `.alert`: something you did was
+   refused, drawn once at the top of the page, with the page scrolled to it.
+   Everything else that used to reach for an alert — the fee panel with no
+   figures in it, the preview that would not render, the reason the Send button
+   is not on offer, the missing signing credential — is a panel describing its
+   own state, and says so quietly, where it is.
+
+   Deliberately flatter than an alert: no icon, no coloured fill by default,
+   one rule down the left. It should read as part of the card it sits in, which
+   is what distinguishes it from a refusal at a glance. */
+.card-note {
+  border-left: 3px solid var(--indigo-20);
+  background: var(--indigo-5);
+  border-radius: var(--r-xs);
+  padding: 10px 13px; margin-bottom: 14px;
+  font-size: 13px; color: var(--t-body); line-height: 1.5;
+}
+.card-note b { color: var(--t-head); font-weight: 600; }
+/* Carrot, not red: these are things to know before acting, not refusals of
+   something already attempted. Same reasoning as .fld-warn above. */
+.card-note-warn { border-left-color: var(--carrot); background: var(--carrot-10); }
+.card-note-warn b { color: var(--carrot); }
+
+/* ── WORKFLOW REFUSAL — the evidence under a blocked action ────────────────
+   Levi 2026-09-03. The pre-submit gate used to report itself two ways at once:
+   a run-on sentence in the page banner ("...corporate party CGAHCHBAABBG
+   DIRECTOR COMPANY LIMITED: no CR region code is known for country 'HK-CH' —
+   CR's Country & Region sheet (worksheet v1.0.14) carries no code, alpha-2 or
+   English name...") and a second, vaguer alert half a page below it. One was
+   unreadable and the other was redundant.
+
+   These are the replacement: one card per fault, inside the one banner.
+
+   WHITE CARDS INSIDE A RED SHELL. The shell has already said "stopped". The
+   cards are evidence — somebody has to read a Stockholm street address off one
+   — and tinting evidence with alarm only makes it harder to read. */
+.rf-list {
+  list-style: none; margin: 12px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+/* The carrot rail is what makes a stack of these read as one list of faults
+   rather than a pile of cards, and it is the ONLY accent on the card — the
+   rest of the border is the app's ordinary hairline. A red outline here as
+   well put three alarm colours inside one alert and made the evidence harder
+   to read than the shell it sits in. */
+.rf-card {
+  background: var(--white); border: 1px solid var(--border);
+  border-left: 3px solid var(--carrot);
+  border-radius: var(--r-sm); padding: 11px 14px 12px;
+}
+
+/* WHERE this is, on the record. A coordinate, not prose — hence uppercase,
+   tracked, and small. The last segment is the field itself and carries the
+   weight, because the route through the form is context and the field is the
+   subject. */
+.rf-where {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px;
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  margin-bottom: 9px;
+}
+.rf-where-step { color: var(--t-muted); font-weight: 600; }
+.rf-where-step::after { content: '·'; margin-left: 5px; color: var(--indigo-20); }
+.rf-where-field { color: var(--indigo); font-weight: 700; }
+
+/* THE TWO VALUES, side by side, with the arrow saying which way the change
+   ran. The values are the largest type on the card because the operator's
+   whole question is "which of these is right" — the field name is not what
+   they are deciding between. */
+.rf-compare {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: stretch; gap: 10px;
+}
+.rf-val {
+  background: var(--indigo-5); border: 1px solid var(--border);
+  border-radius: var(--r-xs); padding: 8px 10px; min-width: 0;
+}
+.rf-val-lbl {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--t-muted); margin-bottom: 4px;
+}
+.rf-val-txt {
+  font-size: 14px; font-weight: 600; color: var(--t-head); line-height: 1.4;
+  /* A CR address line runs to 60 characters and a company name further. It
+     wraps inside its pane; it never widens the pane and pushes the page
+     sideways. */
+  overflow-wrap: anywhere;
+}
+/* The changed side, and the only carrot on the card. One accent, one meaning. */
+.rf-val-now { background: var(--carrot-10); border-color: var(--carrot-20); }
+.rf-val-now .rf-val-txt { color: var(--carrot); }
+.rf-absent { font-style: italic; font-weight: 500; color: var(--t-muted); }
+.rf-arrow {
+  align-self: center; color: var(--t-muted);
+  font-size: 15px; line-height: 1; user-select: none;
+}
+
+/* The other card shape: a fault with no pair, because the record cannot make
+   a return at all. Same rail, same eyebrow, so both read as one family. */
+.rf-problem {
+  font-size: 13.5px; font-weight: 600; color: var(--t-head); line-height: 1.45;
+}
+.rf-detail {
+  font-size: 12.5px; color: var(--t-body); line-height: 1.6; margin-top: 5px;
+}
+
+/* What to do about it, under the evidence rather than buried above it. The
+   button is the real Restart control — the same one in the page header, put
+   where the operator is already looking. */
+.rf-remedy {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px;
+  margin-top: 13px; padding-top: 12px; border-top: 1px solid #FCA5A5;
+}
+.rf-remedy-txt {
+  font-size: 12.5px; color: var(--t-body); line-height: 1.55; flex: 1 1 260px;
+}
+
+@media (max-width: 620px) {
+  /* Stacked, with the arrow turned to match. A 1fr/auto/1fr grid at 320px
+     gives each value about eleven characters. */
+  .rf-compare { grid-template-columns: 1fr; }
+  .rf-arrow { transform: rotate(90deg); justify-self: center; }
+}

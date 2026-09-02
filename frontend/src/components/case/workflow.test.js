@@ -197,6 +197,77 @@ describe('describeError — four failures, four different actions', () => {
 })
 
 // ---------------------------------------------------------------------------
+// The pre-submit gate's three 409s (Levi 2026-09-03).
+//
+// They used to share one hint — "The case is not in a state that allows this
+// yet" — printed under whatever the backend had said. Beneath a message that
+// already named the country code CR would not take, that is not a second piece
+// of information; it is the same refusal, said worse.
+// ---------------------------------------------------------------------------
+
+describe('describeError — the submit gate, three situations', () => {
+  const gate = (reason, extra = {}) => describeError(Object.assign(
+    new Error('the backend sentence nobody should read'),
+    { status: 409, reason, ...extra }))
+
+  it('leads a drift refusal with the situation, not the backend sentence', () => {
+    const d = gate('drift', { differences: [{ path: 'brNo', field: 'BR number' }] })
+    expect(d.message).toMatch(/company record changed after this return was approved/i)
+    expect(d.message).not.toMatch(/backend sentence/)
+    expect(d.differences).toHaveLength(1)
+  })
+
+  it('settles the money question before anything else', () => {
+    // The operator has just pressed a button labelled with a four-figure sum.
+    for (const reason of ['drift', 'record_unusable', 'check_failed']) {
+      expect(gate(reason).reassurance).toMatch(/nothing was charged/i)
+    }
+  })
+
+  it('sends an unfilable record to the PROFILE, then to restart', () => {
+    const d = gate('record_unusable', { problems: ['entity: no BR number'] })
+    expect(d.message).toMatch(/can no longer produce a NAR1/i)
+    expect(d.remedy).toMatch(/company profile/i)
+    expect(d.offerRestart).toBe(true)
+    expect(d.problems).toHaveLength(1)
+  })
+
+  it('does NOT offer a restart when the check itself could not run', () => {
+    // Restarting discards a CR-signed snapshot. It cannot reach a database
+    // that would not load, so offering it here sends someone to throw away a
+    // signature for nothing.
+    const d = gate('check_failed')
+    expect(d.offerRestart).toBe(false)
+    expect(d.remedy).toMatch(/will not help/i)
+  })
+
+  it('never carries the old generic state hint on a classified refusal', () => {
+    for (const reason of ['drift', 'record_unusable', 'check_failed']) {
+      expect(gate(reason).hint).toBeNull()
+    }
+  })
+
+  it('keeps the generic hint for an UNCLASSIFIED 409 with no detail', () => {
+    // "filing is 'draft' — it must be signed" still benefits from it.
+    const d = describeError(Object.assign(new Error('boom'), { status: 409 }))
+    expect(d.hint).toMatch(/not in a state that allows this/)
+  })
+
+  it('drops the generic hint when the refusal already lists its reasons', () => {
+    const d = describeError(Object.assign(new Error('boom'),
+      { status: 409, problems: ['entity: no BR number'] }))
+    expect(d.hint).toBeNull()
+    expect(d.problems).toHaveLength(1)
+  })
+
+  it('never retries any of them', () => {
+    for (const reason of ['drift', 'record_unusable', 'check_failed']) {
+      expect(gate(reason).retry).toBe(false)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // CR refusals. Three kinds, three remedies, three different places to go.
 // ---------------------------------------------------------------------------
 

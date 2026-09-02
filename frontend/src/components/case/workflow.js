@@ -182,6 +182,44 @@ export function persistedFailure(c) {
   }
 }
 
+/**
+ * The three refusals the pre-submit gate can produce, in the operator's words.
+ *
+ * They are three different situations with three different remedies, and the
+ * screen used to render all of them as one sentence spliced together with
+ * colons and semicolons (Levi 2026-09-03). What each `message` must do is say
+ * WHAT HAPPENED in one line; the evidence goes in the cards below it, and the
+ * `remedy` says what to do next.
+ *
+ * `restart` is the load-bearing flag. Restarting verification rebuilds the
+ * return from today's record — which fixes a mismatch and fixes an unfilable
+ * record once the profile is corrected, and fixes NOTHING when the check
+ * itself could not run. Offering it there sends someone to discard a
+ * CR-signed snapshot for a problem discarding cannot touch.
+ */
+const GATE_REFUSALS = {
+  drift: {
+    message: 'The company record changed after this return was approved.',
+    remedy: 'Check which record is right. If the company profile is the '
+      + 'correct one, restart verification — that rebuilds the return from '
+      + "today's record and sends it to the client to approve again.",
+    restart: true,
+  },
+  record_unusable: {
+    message: 'The company record can no longer produce a NAR1.',
+    remedy: 'Correct these details on the company profile, then restart '
+      + 'verification to rebuild the return. The Companies Registry would '
+      + 'reject the filing as it stands, after taking the fee.',
+    restart: true,
+  },
+  check_failed: {
+    message: 'The return could not be checked against the company record.',
+    remedy: 'Filing stays blocked until the check can run. Restarting '
+      + 'verification will not help — this is not a problem with the return.',
+    restart: false,
+  },
+}
+
 export function describeError(err) {
   const message = err?.message || 'Something went wrong.'
   // Every specific reason the backend gathered, carried through so the caller
@@ -190,6 +228,11 @@ export function describeError(err) {
   // workflow used to do.
   const problems = Array.isArray(err?.problems) && err.problems.length
     ? err.problems : null
+  // Spec §6's field-by-field drift, carried the same way `problems` is. The
+  // page renders one comparison card per entry; a sentence cannot show two
+  // values per row.
+  const differences = Array.isArray(err?.differences) && err.differences.length
+    ? err.differences : null
 
   switch (err?.status) {
     case 400:
@@ -203,15 +246,48 @@ export function describeError(err) {
       }
     case 403:
       return { message, problems, hint: 'Your role does not allow this action.', retry: false }
-    case 409:
+    // 409 IS THE SUBMIT GATE, mostly. Four different refusals arrive here and
+    // they used to share one hint — "The case is not in a state that allows
+    // this yet" — printed underneath whatever the backend had said. Beneath a
+    // message that already names the country code CR will not take, that
+    // sentence is not a second piece of information; it is the same refusal,
+    // said less well (Levi 2026-09-03).
+    case 409: {
+      const gate = GATE_REFUSALS[err?.reason]
+      if (gate) {
+        return {
+          // OUR headline, not the backend's. The gate's own message is a
+          // developer sentence ("the company record has changed and can no
+          // longer be made into a NAR1, so it was not submitted"); what the
+          // operator needs on the first line is the situation, with the
+          // detail in the cards below.
+          message: gate.message,
+          problems,
+          differences,
+          reason: err.reason,
+          // Constant across all three, and first: an operator who has just
+          // pressed a button marked "deducts HK$2,610" needs to know that did
+          // not happen before they read anything else.
+          reassurance: 'Nothing was sent to the Companies Registry and '
+            + 'nothing was charged.',
+          remedy: gate.remedy,
+          offerRestart: gate.restart,
+          hint: null,
+          retry: false,
+        }
+      }
       return {
         message,
         problems,
         hint: /password/i.test(message)
           ? 'The shared TPSI password needs changing in Settings → CR Credentials before this can proceed.'
-          : 'The case is not in a state that allows this yet.',
+          // Only when the message did not already explain itself. The gate
+          // says things like "filing is 'draft' — it must be signed", and a
+          // generic restatement under a specific reason is noise.
+          : (problems ? null : 'The case is not in a state that allows this yet.'),
         retry: false,
       }
+    }
     // A CR REFUSAL. 422 since 2026-08-31, not 502: CR was reached and answered
     // — it just said no. While this was a 5xx, Cloudflare and Railway replaced
     // the JSON body with their own HTML error page, `api.js` fell back to

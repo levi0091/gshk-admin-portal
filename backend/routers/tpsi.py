@@ -1094,8 +1094,25 @@ async def submit_filing(
             metadata={"reason": str(exc), "gate": True, "drift": True,
                       "fields": [d["field"] for d in exc.differences]},
         )
-        raise HTTPException(409, {"message": str(exc),
+        raise HTTPException(409, {"message": str(exc), "reason": "drift",
                                   "differences": exc.differences})
+    except filings.RecordCheckFailed as exc:
+        # Its own branch, above the general gate, for the same reason
+        # DriftDetected has one: it carries a LIST. Flattened into
+        # `str(exc)` by the general branch below, the mapper's faults arrived
+        # as one run-on sentence and were drawn as one — which is the thing
+        # being fixed (Levi 2026-09-03). The fault TEXT is audited; it names
+        # parties and countries but no personal particulars.
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            metadata={"reason": str(exc), "gate": True,
+                      "check": exc.reason, "problems": exc.problems},
+        )
+        raise HTTPException(409, {"message": str(exc), "reason": exc.reason,
+                                  "problems": exc.problems})
     except filings.SubmitGateError as exc:
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],

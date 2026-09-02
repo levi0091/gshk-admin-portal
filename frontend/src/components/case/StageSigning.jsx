@@ -28,15 +28,12 @@ import { describeError, signedOff } from './workflow.js'
 export default function StageSigning({ caseRow, canWrite, onChanged, onError, onGo }) {
   const method = caseRow.signing_method || 'esign'
   const [busy, setBusy] = useState(null)
-  const [failure, setFailure] = useState(null)
   const [cred, setCred] = useState(null)
   const [preflight, setPreflight] = useState(undefined)
   const fileInput = useRef(null)
 
   const done = signedOff(caseRow)
   const filingId = caseRow.filing_id
-  const faults = caseRow.form_status?.code === 'signing_failed'
-    ? caseRow.form_status.faults : null
 
   // Read once, and never block the screen on it: a credential lookup that
   // fails must not hide the manual route, which needs no credential at all.
@@ -84,7 +81,7 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
   }
 
   async function sign() {
-    onError(null); setFailure(null); setBusy('sign')
+    onError(null); setBusy('sign')
     try {
       // No body. The backend takes the signatory from the session and refuses
       // the withdrawn fields, so anything sent here would be a 400 rather than
@@ -92,9 +89,7 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
       await api.post(`/tpsi/filings/${caseRow.filing_id}/sign`, {})
       onChanged()
     } catch (e) {
-      const described = describeError(e)
-      setFailure(described)
-      onError(described)
+      onError(describeError(e))
     } finally {
       setBusy(null)
     }
@@ -149,15 +144,12 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
             </div>
           </div>
 
-          {failure?.hint && (
-            <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-              <span className="al-icon">⚠</span><div className="al-body">{failure.hint}</div>
-            </div>
-          )}
-          {/* NO FaultPanel — the page banner is the single error surface
-              (Levi 2026-08-31). `faults` still spaces the group below. */}
+          {/* NOTHING ABOUT THE LAST FAILURE IS DRAWN HERE — not CR's faults
+              and not the hint. The page banner is the single surface and the
+              page scrolls to it, so a copy here is a second box saying less
+              about the same refusal (Levi 2026-09-03). */}
 
-          <div className="f-group" style={{ marginTop: faults?.length ? 16 : 0 }}>
+          <div className="f-group">
             <span className="f-label">Signing as</span>
             {cred === null ? (
               <div className="f-static" aria-busy="true">Checking your credentials…</div>
@@ -176,14 +168,15 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
                 </span>
               </>
             ) : (
-              <div className="alert al-warn" role="status">
-                <span className="al-icon">⚠</span>
-                <div className="al-body">
-                  <b>You have no e-Service signing password stored,</b> so you
-                  cannot sign this return. Add one under{' '}
-                  <Link to="/cr-credentials">CR Credentials</Link> — it is the{' '}
-                  <b>signing</b> password, not the TPSI login one.
-                </div>
+              // A card note, not an alert: this is the state of the field it
+              // sits under — you have no credential — rather than the outcome
+              // of anything pressed. Alerts on the workflow mean "what you
+              // just did was refused" and live at the top of the page.
+              <div className="card-note card-note-warn" role="status">
+                <b>You have no e-Service signing password stored,</b> so you
+                cannot sign this return. Add one under{' '}
+                <Link to="/cr-credentials">CR Credentials</Link> — it is the{' '}
+                <b>signing</b> password, not the TPSI login one.
               </div>
             )}
           </div>

@@ -64,19 +64,23 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const [preflight, setPreflight] = useState(undefined)
   const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState(null)
-  const [drift, setDrift] = useState(null)
+  // The PRE-FLIGHT's own failure, and nothing else. It is not the outcome of
+  // anything the operator pressed — it happens on arrival, and it explains why
+  // this card has no numbers in it — so it stays inside the card as a note.
+  // Every failure that IS an outcome goes to `onError`, which draws it once at
+  // the top of the page and scrolls there.
+  const [preflightError, setPreflightError] = useState(null)
 
   const filingId = caseRow.filing_id
-  const faults = caseRow.form_status?.code === 'submission_failed'
-    ? caseRow.form_status.faults : null
 
   useEffect(() => {
     if (!filingId) return undefined
     let cancelled = false
     api.get(`/tpsi/filings/${filingId}/preview`)
       .then(p => { if (!cancelled) setPreflight(p) })
-      .catch(e => { if (!cancelled) { setPreflight(null); setFailure(describeError(e)) } })
+      .catch(e => {
+        if (!cancelled) { setPreflight(null); setPreflightError(describeError(e)) }
+      })
     return () => { cancelled = true }
   }, [filingId])
 
@@ -92,25 +96,23 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const blocked = preflight === undefined || preflight === null || !sufficient
 
   async function submit() {
-    onError(null); setFailure(null); setDrift(null); setBusy(true)
+    onError(null); setBusy(true)
     try {
       await api.post(`/tpsi/filings/${filingId}/submit`, { confirm: true })
       onChanged()
     } catch (e) {
-      // Spec §6. The drift refusal is the one 409 that carries a field list,
-      // and it is rendered AT THE BUTTON rather than only in the page banner:
-      // the operator has to see WHICH particulars moved to decide whether to
-      // restart verification, and a banner a screen and a half up cannot show
-      // a table.
-      if (e?.status === 409 && Array.isArray(e?.differences) && e.differences.length) {
-        setDrift({ message: e.message, differences: e.differences })
-        setAcknowledged(false)   // the tick was for a document that is now stale
-        onError(null)
-        return
-      }
-      const described = describeError(e)
-      setFailure(described)
-      onError(described)
+      // ONE SURFACE. The drift refusal used to be drawn here, at the button,
+      // because the page banner could show a sentence but not a table and the
+      // banner was off-screen anyway. Both halves of that are fixed: the
+      // banner renders comparison cards, and every failure scrolls the page to
+      // it. Drawing it twice is what produced the detailed refusal at the top
+      // and the vague "not in a state that allows this" beside the button
+      // (Levi 2026-09-03).
+      onError(describeError(e))
+      // The tick was an acknowledgement of a specific charge against a
+      // specific document. Whatever was refused, that document is now in
+      // question — so the acknowledgement is spent and must be given again.
+      setAcknowledged(false)
     } finally {
       setBusy(false)
     }
@@ -134,18 +136,16 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
       {preflight === undefined ? (
         <div className="empty-state" style={{ padding: 16 }}>Checking the fee and balance…</div>
       ) : preflight === null ? (
-        <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-          <span className="al-icon">⚠</span>
-          <div className="al-body">
-            Could not reach CR for the fee and balance, so filing is blocked.
-            {failure?.hint && <div style={{ marginTop: 4 }}>{failure.hint}</div>}
-          </div>
+        // A card note, not an alert. This is the fee panel saying it has no
+        // figures to show; alerts on this screen mean "something you did was
+        // refused" and live at the top of the page.
+        <div className="card-note card-note-warn" role="status">
+          <b>The fee and balance are unavailable, so filing is blocked.</b>
+          {preflightError?.hint && <div style={{ marginTop: 4 }}>{preflightError.hint}</div>}
         </div>
       ) : (
-        <div className={`alert ${sufficient ? 'al-info' : 'al-danger'}`} role="status"
-             style={{ marginBottom: 14 }}>
-          <span className="al-icon">{sufficient ? 'ℹ' : '⚠'}</span>
-          <div className="al-body">
+        <div className={`card-note ${sufficient ? '' : 'card-note-warn'}`} role="status">
+          <div>
             {/* The COMPUTED fee for this company's return date, not the flat
                 on-time figure. A return 7 months past its anniversary is
                 HK$2,610; quoting HK$105 for it told the operator something
@@ -215,24 +215,23 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
         </div>
       )}
 
-      {failure?.hint && (
-        <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-          <span className="al-icon">⚠</span><div className="al-body">{failure.hint}</div>
-        </div>
-      )}
-      {/* NO FaultPanel for CR's refusal — the page banner is the single
-          error surface (Levi 2026-08-31). The receipt panel below is a
-          DIFFERENT thing: those are our own field checks, and they belong
-          beside the fields they are about. */}
+      {/* NOTHING ABOUT THE LAST FAILURE IS DRAWN HERE. Not CR's faults, not
+          the drift table, and not the hint — the hint is what put a yellow
+          "The case is not in a state that allows this yet" between the deposit
+          box and the Submit button, underneath a page banner that had already
+          said, in detail, exactly what was wrong (Levi 2026-09-03).
+
+          The page banner is the single surface and the page scrolls to it. The
+          receipt panel in the manual half below is a DIFFERENT thing: those
+          are our own field checks, and they belong beside the fields they are
+          about. */}
 
       {/* v11's `danger-gate`. The tick and the button used to sit in an
           ordinary action bar, which made the irreversible step look like every
           other step on the screen. Boxing it is the point: it is the one
           control here that spends money and cannot be undone. */}
-      {drift && <DriftPanel drift={drift} />}
-
       {canSubmit ? (
-        <div className="danger-gate" style={{ marginTop: faults?.length ? 16 : 0 }}>
+        <div className="danger-gate">
           <div className="dg-hd">Irreversible action — two-step confirmation</div>
           <div className="dg-warn">
             Submitting files the Annual Return with the Companies Registry and{' '}
@@ -289,60 +288,11 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   )
 }
 
-/**
- * Spec §6 — why the submission was refused, field by field.
- *
- * "The data differs" would leave the operator to diff a nine-page statutory
- * form by eye. Both values are shown side by side because the decision they
- * have to make is whether the CURRENT record is the correct one — and that is
- * not answerable from a field name.
- */
-function DriftPanel({ drift }) {
-  return (
-    <div className="alert al-danger" role="alert" style={{ marginBottom: 14 }}
-         data-testid="drift-panel">
-      <span className="al-icon">⚠</span>
-      <div className="al-body">
-        <b>Submission blocked — the validated form no longer matches the
-        company record.</b>
-        <div style={{ marginTop: 4 }}>
-          Nothing was sent to the Companies Registry and nothing was charged.
-        </div>
-        {/* `.tbl-wrap` is the app's own scroll container for a table — it
-            carries the overflow-x that keeps a long address from making the
-            whole page scroll sideways. `table` is styled globally; there is no
-            `.tbl` class. */}
-        <div className="tbl-wrap" style={{ marginTop: 10 }}>
-          <table style={{ minWidth: 420 }}>
-            <thead>
-              <tr>
-                <th>Field</th>
-                <th>As validated</th>
-                <th>Company record now</th>
-              </tr>
-            </thead>
-            <tbody>
-              {drift.differences.map(d => (
-                <tr key={d.path}>
-                  <td>{d.field}</td>
-                  {/* An absent value is not an empty one: a director who left
-                      the board has no field at all, and rendering that as a
-                      blank cell would read as "unchanged, empty". */}
-                  <td>{d.validated ?? <i>(absent)</i>}</td>
-                  <td>{d.current ?? <i>(absent)</i>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ marginTop: 10 }}>
-          Restart verification to rebuild and re-validate the return, then send
-          it to the client again.
-        </div>
-      </div>
-    </div>
-  )
-}
+/* The drift table that used to live here is gone. Spec §6's refusal is now
+   rendered by `RefusalDetail` in the page banner, as one comparison card per
+   field that moved — see components/case/RefusalDetail.jsx. It was here
+   because the banner could not show a table and was off-screen anyway; the
+   banner now shows cards and the page scrolls to it. */
 
 /** HK dollars, grouped. A bare "12480" beside "3480.00" is unreadable. */
 function money(value) {

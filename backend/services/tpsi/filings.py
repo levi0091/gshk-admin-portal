@@ -364,6 +364,34 @@ class DriftDetected(SubmitGateError):
         )
 
 
+class RecordCheckFailed(SubmitGateError):
+    """The drift comparison could not be made, so nothing was filed.
+
+    Split out of the plain SubmitGateError it used to be (Levi 2026-09-03) for
+    one reason: it can carry `problems`. When the rebuild failed because the
+    COMPANY RECORD is no longer filable, the mapper already knows exactly what
+    is wrong with it and which party each fault belongs to — and joining that
+    list into the exception message threw the structure away one line before
+    the screen needed it.
+
+    `reason` separates the two cases, because they send the operator to
+    different places:
+
+      record_unusable — someone edited the company into a state CR would
+                        reject. Fixable on the profile, then restart
+                        verification.
+      check_failed    — the comparison itself broke (the graph would not load,
+                        the stored XML would not parse). Restarting cannot fix
+                        that, so the screen must not suggest it.
+    """
+
+    def __init__(self, message: str, problems: list | None = None,
+                 reason: str = "check_failed"):
+        self.problems = list(problems or [])
+        self.reason = reason
+        super().__init__(message)
+
+
 def _refuse_if_drifted(filing: dict) -> None:
     """Spec §6. Runs before ANY CR call and before any charge.
 
@@ -387,7 +415,17 @@ def _refuse_if_drifted(filing: dict) -> None:
     try:
         differences = drift.differences_for(filing)
     except drift.DriftError as exc:
-        raise SubmitGateError(
+        # The headline stays a sentence an operator can read on its own; the
+        # faults ride alongside it as a LIST rather than spliced into it.
+        # `problems` is populated only when the mapper refused the record,
+        # which is also the only case where restarting verification is the
+        # remedy — hence the two reasons and the two headlines.
+        if exc.problems:
+            raise RecordCheckFailed(
+                f"{exc}, so it was not submitted",
+                problems=exc.problems, reason="record_unusable",
+            ) from exc
+        raise RecordCheckFailed(
             f"the return could not be checked against the company record "
             f"before filing, so it was not submitted: {exc}"
         ) from exc

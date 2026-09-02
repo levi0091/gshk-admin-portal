@@ -141,7 +141,19 @@ class DriftError(Exception):
     unparseable stored XML, is an operational failure. Reporting it as drift
     would send the operator to restart verification for a problem restarting
     cannot fix.
+
+    `problems` is the mapper's own list when the rebuild failed because the
+    COMPANY RECORD is no longer filable — one entry per thing wrong with it,
+    each already naming the party it belongs to. Kept as a list rather than
+    joined into the message because the screen renders one card per entry: a
+    single semicolon-spliced sentence naming three directors is the shape this
+    whole change exists to stop. Empty for the operational failures, which have
+    one cause and one sentence.
     """
+
+    def __init__(self, message: str, problems: list[str] | None = None):
+        self.problems = list(problems or [])
+        super().__init__(message)
 
 
 def _local(tag: str) -> str:
@@ -333,9 +345,16 @@ def current_xml_for(filing: dict) -> str:
     except nar1_mapper.MappingError as exc:
         # The company can no longer be mapped at all — which is itself a change
         # since validation, and a decisive reason not to submit.
+        #
+        # The headline says WHAT happened and the problems say what is wrong,
+        # one per entry. They used to be spliced into the headline with "; ",
+        # which produced a single 300-character sentence carrying a company
+        # name, a country code, a worksheet version and an instruction — read
+        # as one run-on line above the Submit button (Levi 2026-09-03).
         raise DriftError(
-            "the company record can no longer be mapped to a NAR1: "
-            + "; ".join(exc.problems)
+            "the company record has changed and can no longer be made into a "
+            "NAR1",
+            problems=exc.problems,
         ) from exc
     except Exception as exc:  # noqa: BLE001
         raise DriftError(

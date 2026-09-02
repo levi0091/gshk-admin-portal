@@ -939,6 +939,58 @@ def test_submit_gate_refusal_is_409_not_500(client):
     assert "TPSI_SUBMISSION_FAILED" in events
 
 
+def test_an_unfilable_record_409s_with_its_faults_as_a_json_list(client):
+    """The gate collects one fault per thing wrong with the company and the
+    screen draws one card per fault. The general SubmitGateError branch below
+    it answers `detail: str(exc)`, which would flatten the list back into the
+    run-on sentence this branch exists to replace."""
+    from services.tpsi.filings import RecordCheckFailed
+
+    faults = ["corporate party ACME LIMITED: no CR region code is known for "
+              "country 'HK-CH' — correct the address",
+              "entity: no BR number — CR rejects a NAR1 without one"]
+
+    async def fake_log(**kwargs):
+        pass
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.submit",
+               side_effect=RecordCheckFailed("the company record has changed",
+                                             problems=faults,
+                                             reason="record_unusable")), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"deposit_account": "ACC", "confirm": True})
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["problems"] == faults
+    # The reason is what decides whether Restart verification is offered.
+    assert detail["reason"] == "record_unusable"
+
+
+def test_a_check_that_could_not_run_409s_without_offering_a_restart(client):
+    """Supabase being down is not fixed by restarting verification, so the
+    reason must not say it is."""
+    from services.tpsi.filings import RecordCheckFailed
+
+    async def fake_log(**kwargs):
+        pass
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.submit",
+               side_effect=RecordCheckFailed("the return could not be checked")), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"deposit_account": "ACC", "confirm": True})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "check_failed"
+    assert response.json()["detail"]["problems"] == []
+
+
 def test_submit_requires_the_submit_permission_not_merely_write(client):
     """A role that may prepare and sign a NAR1 must not thereby be able to
     spend from the deposit account."""

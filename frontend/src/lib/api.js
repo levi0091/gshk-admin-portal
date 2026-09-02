@@ -78,6 +78,12 @@ export function describeApiError(detail, fallback = 'API error') {
     // different remedies in different places — carrying only the message would
     // send the operator to edit a form when the problem is their CR account.
     if (detail.kind) e.kind = detail.kind
+    // WHICH GATE refused, for the 409s the submit gate raises: `drift`,
+    // `record_unusable` or `check_failed`. They are three different situations
+    // with three different remedies — and one of them (check_failed) must NOT
+    // offer to restart verification, because restarting cannot fix a company
+    // record that would not load.
+    if (detail.reason) e.reason = detail.reason
     // Spec §6's drift refusal: which filed particulars moved, with both values.
     // Carried like `problems` rather than flattened into the message — the
     // Submission stage renders it as a table, and a sentence cannot show two

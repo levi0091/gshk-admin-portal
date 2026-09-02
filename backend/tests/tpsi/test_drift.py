@@ -306,6 +306,37 @@ def test_a_gate_that_cannot_run_refuses_rather_than_waving_the_filing_through():
 
     assert not isinstance(exc.value, filings.DriftDetected)
     assert "could not be checked" in str(exc.value)
+    # `check_failed`, not `record_unusable`: the screen reads this to decide
+    # whether to offer Restart verification, and restarting cannot reach a
+    # Supabase that is down.
+    assert exc.value.reason == "check_failed"
+    assert exc.value.problems == []
+    client.post_form.assert_not_called()
+
+
+def test_an_unfilable_company_is_refused_with_its_faults_as_a_list():
+    """The other half of the same gate, and the one an operator actually hits:
+    somebody edited the company mid-case into a state CR would reject. Each
+    fault has to arrive separately — the screen draws one card per fault, and a
+    "; "-spliced sentence is what it drew before."""
+    client = MagicMock()
+    faults = ["corporate party ACME LIMITED: no CR region code is known for "
+              "country 'HK-CH' — correct the address",
+              "entity: no BR number — CR rejects a NAR1 without one"]
+    with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
+         patch("services.tpsi.filings.manual_completion", return_value=None), \
+         patch("services.tpsi.drift.current_xml_for",
+               side_effect=drift.DriftError("the company record has changed "
+                                            "and can no longer be made into a "
+                                            "NAR1", problems=faults)):
+        with pytest.raises(filings.RecordCheckFailed) as exc:
+            filings.submit(client, "f1", True, "N00061980009")
+
+    assert exc.value.problems == faults
+    assert exc.value.reason == "record_unusable"
+    # Readable on its own, with no fault text spliced into it.
+    assert "HK-CH" not in str(exc.value)
+    assert "not submitted" in str(exc.value)
     client.post_form.assert_not_called()
 
 
@@ -403,13 +434,46 @@ def test_a_filing_with_no_company_cannot_be_checked():
 
 def test_a_company_that_no_longer_maps_is_reported_as_such():
     """It is a change since validation, and a decisive reason not to file — but
-    the message has to say the company cannot be mapped, not that two documents
-    differ, because the remedy is different."""
+    the message has to say the company cannot be made into a return, not that
+    two documents differ, because the remedy is different."""
     from services.tpsi.forms import nar1_mapper
 
     with patch("services.tpsi.drift._run_async", return_value=BASE), \
          patch("services.tpsi.forms.nar1_mapper.map_entity",
                side_effect=nar1_mapper.MappingError(["no BR number"])), \
          patch("services.nar1_cases.get_case", return_value={}):
-        with pytest.raises(drift.DriftError, match="can no longer be mapped"):
+        with pytest.raises(drift.DriftError, match="can no longer be made"):
             drift.current_xml_for(_filing())
+
+
+def test_the_mappers_faults_stay_a_list_instead_of_one_spliced_sentence():
+    """They used to be joined into the message with "; ", which is how three
+    faults reached the screen as one 300-character line above the Submit
+    button. The screen draws one card per fault, so the list has to survive."""
+    from services.tpsi.forms import nar1_mapper
+
+    faults = ["entity: no BR number",
+              "corporate party ACME LIMITED: no CR region code for 'HK-CH'"]
+    with patch("services.tpsi.drift._run_async", return_value=BASE), \
+         patch("services.tpsi.forms.nar1_mapper.map_entity",
+               side_effect=nar1_mapper.MappingError(faults)), \
+         patch("services.nar1_cases.get_case", return_value={}):
+        with pytest.raises(drift.DriftError) as exc:
+            drift.current_xml_for(_filing())
+
+    assert exc.value.problems == faults
+    # And the headline stays readable on its own — no fault text spliced in.
+    assert "HK-CH" not in str(exc.value)
+
+
+def test_an_operational_failure_carries_no_problem_list():
+    """`problems` is what tells the gate to say "fix the profile, then restart".
+    A graph that would not load is not fixable that way, so it must stay
+    empty."""
+    with patch("services.tpsi.drift._run_async",
+               side_effect=RuntimeError("supabase is down")), \
+         patch("services.nar1_cases.get_case", return_value={}):
+        with pytest.raises(drift.DriftError) as exc:
+            drift.current_xml_for(_filing())
+
+    assert exc.value.problems == []

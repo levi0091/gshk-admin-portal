@@ -30,7 +30,15 @@ export function describeSendError(err) {
     case 403:
       return { message, hint: 'Your role does not allow sending client verification for this case.' }
     case 409:
-      return { message, hint: 'The case is not in a state that allows this. Nothing was sent.' }
+      // What state, and what to do about it — not the bare fact that the case
+      // is in the wrong one. "Not in a state that allows this" is a sentence
+      // an operator can do nothing with (Levi 2026-09-03).
+      return {
+        message,
+        hint: 'Nothing was sent. The return has to be validated by CR and not '
+          + 'yet filed before it can go to the client — check the CR form '
+          + 'status in the header.',
+      }
     case 422:
       return { message, hint: 'Fix the recipient list or re-validate the return, then try again.' }
     case 502:
@@ -63,7 +71,7 @@ export function describeSendError(err) {
  * human records the answer here. That is why "Client approved" is a button an
  * admin presses, and why it is audited as CLIENT_APPROVAL_RECEIVED.
  */
-export default function StageClientVerification({ caseRow, canWrite, onChanged, onError }) {
+export default function StageClientVerification({ caseRow, canWrite, onChanged, onError, onWarn }) {
   const { isTestEnv, profile } = useAuth()
   // Seeded from the case, not defaulted to false. The tick gates the send, and
   // the send is the evidence it was given: a mail cannot have gone out without
@@ -75,12 +83,10 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // here too: a restarted case really does need reviewing again.
   const [reviewed, setReviewed] = useState(Boolean(caseRow.verification_sent_at))
   const [busy, setBusy] = useState(null)
-  const [sendError, setSendError] = useState(null)
-  // What the send REPORTED, as distinct from what it refused. A partly
-  // successful send is not an error — some directors have the return — but it
-  // is not a success either, and the difference decides whether the operator
-  // needs to do anything.
-  const [sendReport, setSendReport] = useState(null)
+  // NO LOCAL ERROR STATE. What the send refused goes to `onError` and what it
+  // REPORTED — a partial delivery, a message without a Confirm button — goes
+  // to `onWarn`. Both render at the top of the page and both scroll there, so
+  // this screen no longer keeps an error surface of its own (Levi 2026-09-03).
   const [pdfUrl, setPdfUrl] = useState(null)
   const [pdfError, setPdfError] = useState(null)
   const [recipients, setRecipients] = useState([])
@@ -152,7 +158,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   }, [filingId])
 
   async function send() {
-    onError(null); setSendError(null); setSendReport(null); setBusy('send')
+    onError(null); onWarn?.(null, null); setBusy('send')
     try {
       // Always explicit, never `{}`. The chips on screen are what the operator
       // agreed to send to; letting the server re-derive the list would mail a
@@ -163,16 +169,32 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       // ONE MESSAGE PER DIRECTOR now, so a send can partly succeed. The
       // response names the addresses that failed; showing only a green tick
       // would leave a director unasked with nothing on screen saying so.
-      if (result?.failed_to?.length || result?.approval_links === false) {
-        setSendReport(result)
+      //
+      // Raised to the page, which puts it in the same place as every other
+      // outcome and scrolls there — a partial send is the thing on this screen
+      // an operator is most likely to miss, because the stage advances and the
+      // status changes around it.
+      if (result?.failed_to?.length) {
+        const one = result.failed_to.length === 1
+        onWarn?.('The return did not reach everyone.',
+          `${result.failed_to.join(', ')} — send again to just `
+          + `${one ? 'that address' : 'those addresses'}. The others have it `
+          + 'and their links are live.')
+      } else if (result?.approval_links === false) {
+        onWarn?.('Sent without a Confirm button.',
+          'This deployment could not build the approval link, so the client '
+          + 'has to reply by email and you record the answer below. '
+          + 'PUBLIC_API_BASE_URL needs setting on the backend.')
       }
       onChanged()
     } catch (e) {
-      // Reported HERE, next to the button, and NOT bubbled to `onError`. The
-      // page-level banner sits above a 690px PDF frame, so a failure raised
-      // there is off-screen at the moment the operator is looking at the
-      // button they just pressed.
-      setSendError(describeSendError(e))
+      // TO THE PAGE, like every other refusal. It used to be drawn here next
+      // to the button because the banner sits above a 690px PDF frame and was
+      // therefore off-screen — but the page now scrolls to the banner on every
+      // failure, so the reason for the exception is gone, and keeping it would
+      // leave this screen with an error surface no other stage has (Levi
+      // 2026-09-03).
+      onError(describeSendError(e))
     } finally {
       setBusy(null)
     }
@@ -231,12 +253,14 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
         </div>
 
         {pdfError ? (
-          <div className="alert al-warn" role="alert">
-            <span className="al-icon">⚠</span>
-            <div className="al-body">
-              Could not render the preview: {pdfError.message}
-              {pdfError.hint && <div style={{ marginTop: 4 }}>{pdfError.hint}</div>}
-            </div>
+          // The preview pane saying it has nothing to show, in the place the
+          // preview would have been. Not an alert: nothing the operator did
+          // was refused, and the Download and Send controls above it still
+          // work.
+          <div className="card-note card-note-warn" role="status">
+            <b>The preview could not be rendered.</b>
+            <div style={{ marginTop: 4 }}>{pdfError.message}</div>
+            {pdfError.hint && <div style={{ marginTop: 4 }}>{pdfError.hint}</div>}
           </div>
         ) : pdfUrl ? (
           <>
@@ -337,65 +361,20 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
 
-        {/* THE ERROR LIVES HERE, beside the button that caused it. It used to
-            be reported only through `onError`, which renders at the top of the
-            page — roughly a screen and a half above this button, past a 690px
-            PDF frame. A refused send therefore looked exactly like a dead
-            button, which is how it was reported on 2026-08-30. */}
-        {sendError && (
-          <div className="alert al-danger" role="alert" style={{ marginTop: 14 }}>
-            <span className="al-icon">⚠</span>
-            <div className="al-body">
-              <b>{sendError.message}</b>
-              {sendError.hint && (
-                <div style={{ marginTop: 4 }}>{sendError.hint}</div>
-              )}
-            </div>
-          </div>
-        )}
+        {/* NEITHER THE REFUSAL NOR THE PARTIAL-SEND REPORT IS DRAWN HERE
+            any more. They were, because the page banner sits above a 690px PDF
+            frame and a refused send therefore looked like a dead button. The
+            page now scrolls to the banner on every failure, which removes the
+            reason — and leaving them would give this one stage an error
+            surface no other stage has. */}
 
-        {/* Beside the button, for the same reason the error is. A partial send
-            is the case an operator is most likely to miss: the screen advances,
-            the status changes, and one director was never asked. */}
-        {sendReport?.failed_to?.length > 0 && (
-          <div className="alert al-warn" role="alert" style={{ marginTop: 14 }}
-               data-testid="send-partial">
-            <span className="al-icon">⚠</span>
-            <div className="al-body">
-              <b>The return did not reach everyone.</b>
-              <div style={{ marginTop: 4 }}>
-                {sendReport.failed_to.join(', ')} — send again to just{' '}
-                {sendReport.failed_to.length === 1 ? 'that address' : 'those addresses'}.
-                {' '}The others have it and their links are live.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* A deployment that cannot build an approval URL sends the message
-            that shipped before the Confirm button existed. The client can still
-            reply — but nobody should be waiting for a button press that is not
-            in the email. */}
-        {sendReport?.approval_links === false && (
-          <div className="alert al-warn" role="status" style={{ marginTop: 14 }}
-               data-testid="send-no-links">
-            <span className="al-icon">⚠</span>
-            <div className="al-body">
-              <b>Sent without a Confirm button.</b>
-              <div style={{ marginTop: 4 }}>
-                This deployment could not build the approval link, so the client
-                has to reply by email and you record the answer below.{' '}
-                <code>PUBLIC_API_BASE_URL</code> needs setting on the backend.
-              </div>
-            </div>
-          </div>
-        )}
-
+        {/* PRE-EMPTIVE, and therefore not an alert: this says why the Send
+            button is not on offer, before anyone presses anything. It reads as
+            a note under the controls rather than as a refusal, which is what
+            an alert box would have claimed. */}
         {blocked && !filed && (
-          <div className="alert al-warn" role="status" style={{ marginTop: 14 }}>
-            <span className="al-icon">⚠</span>
-            <div className="al-body">{blocked}</div>
-          </div>
+          <div className="card-note card-note-warn" role="status"
+               style={{ marginTop: 14 }}>{blocked}</div>
         )}
 
         {/* Nothing to send once the return is in the register, so nothing is
