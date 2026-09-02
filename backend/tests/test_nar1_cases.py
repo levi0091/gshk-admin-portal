@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from services import nar1_case_status, nar1_cases
+from services import nar1_case_status, nar1_cases, table_filters as tf
 from services.tpsi import filings as tpsi_filings
 
 
@@ -236,6 +236,7 @@ class _FakeQuery:
         self._rows = rows
         self._count = count
         log.update({"or": None, "eq": [], "cmp": [], "not_is": [],
+                    "ilike": [], "in": [], "neq": [], "is": [],
                     "order": None, "range": None, "limit": None})
 
     def or_(self, expr):
@@ -244,6 +245,22 @@ class _FakeQuery:
 
     def eq(self, col, val):
         self.log["eq"].append((col, val))
+        return self
+
+    def neq(self, col, val):
+        self.log["neq"].append((col, val))
+        return self
+
+    def ilike(self, col, val):
+        self.log["ilike"].append((col, val))
+        return self
+
+    def in_(self, col, vals):
+        self.log["in"].append((col, list(vals)))
+        return self
+
+    def is_(self, col, val):
+        self.log["is"].append((col, val))
         return self
 
     def __getattr__(self, name):
@@ -369,6 +386,52 @@ async def test_the_total_follows_the_selected_status():
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         result = await nar1_cases.list_dashboard(workflow_status="signing")
     assert result["total"] == result["counts"]["signing"]
+
+
+async def test_several_statuses_narrow_the_page_query_together():
+    """The "Action Required" tile stands for five badges. Filtering to one of
+    them would show a table that disagrees with the number on the tile."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=4)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        result = await nar1_cases.list_dashboard(
+            workflow_statuses=["signing", "submission"])
+    assert ("workflow_status", ["signing", "submission"]) in sb.page_query["in"]
+    # The badges partition the set — a case wears exactly one — so the total is
+    # the sum of the picked counts, not a fresh query and not an over-count.
+    assert result["total"] == (result["counts"]["signing"]
+                               + result["counts"]["submission"])
+
+
+async def test_several_statuses_still_leave_the_badge_counts_alone():
+    sb = _FakeSupabase(rows=[_registry_row()], count=4)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(workflow_statuses=["signing", "submission"])
+    assert all(not q["in"] for q in sb.count_queries)
+
+
+async def test_column_filters_reach_the_count_queries_too():
+    """Same rule as the search and the anniversary: a filter applied only to the
+    page leaves the badge counts and the pager describing a wider set."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    filters = tf.parse(
+        ["company_name:contains:acme", "days_to_anniversary:lte:60"],
+        nar1_cases._FILTERABLE,
+    )
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(filters=filters)
+    assert all(("company_name", "%acme%") in q["ilike"] for q in sb.queries)
+    assert all(("lte", "days_to_anniversary", 60) in q["cmp"] for q in sb.queries)
+
+
+async def test_created_by_filters_the_dashboard_to_one_user():
+    """The dashboard opens on your own cases. That has to be a real server-side
+    filter — narrowing the 50 rows that arrived would show you a page of
+    somebody else's work with your own cases missing from it."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    filters = tf.parse(["created_by:eq:u-1"], nar1_cases._FILTERABLE)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(filters=filters)
+    assert all(("created_by", "u-1") in q["ilike"] for q in sb.queries)
 
 
 async def test_the_anniversary_filter_reaches_the_count_queries_too():

@@ -408,13 +408,61 @@ def test_dashboard_passes_every_filter_through_to_the_query(client):
     assert response.status_code == 200
     kwargs = spy.call_args.kwargs
     assert kwargs["search"] == "acme"
-    assert kwargs["workflow_status"] == "awaiting_client"
+    assert kwargs["workflow_statuses"] == ["awaiting_client"]
     assert kwargs["anniv_op"] == "lte"
     assert kwargs["anniv_days"] == 30
     assert kwargs["sort"] == "case_no"
     assert kwargs["direction"] == "desc"
     assert kwargs["page"] == 2
     assert kwargs["page_size"] == 10
+
+
+def test_dashboard_takes_several_workflow_statuses_at_once(client):
+    """"Action Required" is five badges, not one.
+
+    The tile counts every case whose next move belongs to GSHK, so clicking it
+    has to be able to ask for all five — otherwise the number on the tile and
+    the rows it filters to are different sets.
+    """
+    spy = _dashboard([])
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", spy):
+        response = client.get(
+            "/cases?scope=dashboard&workflow_status=signing,submission", headers=H)
+    assert response.status_code == 200
+    assert spy.call_args.kwargs["workflow_statuses"] == ["signing", "submission"]
+
+
+def test_dashboard_rejects_an_unknown_status_inside_a_list(client):
+    """One bad name refuses the whole request rather than being dropped from the
+    list — a silently narrowed selection is a wrong answer told confidently."""
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", _dashboard([])):
+        response = client.get(
+            "/cases?scope=dashboard&workflow_status=signing,not_a_status", headers=H)
+    assert response.status_code == 422
+    assert "not_a_status" in response.json()["detail"]
+
+
+def test_dashboard_passes_column_filters_through_to_the_query(client):
+    spy = _dashboard([])
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", spy):
+        response = client.get(
+            "/cases?scope=dashboard&filter=company_name:contains:acme"
+            "&filter=days_to_anniversary:lte:60",
+            headers=H,
+        )
+    assert response.status_code == 200
+    assert [(f.column, f.op, f.value) for f in spy.call_args.kwargs["filters"]] == [
+        ("company_name", "contains", "acme"),
+        ("days_to_anniversary", "lte", 60),
+    ]
+
+
+def test_dashboard_refuses_a_filter_on_an_unlisted_column(client):
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", _dashboard([])):
+        response = client.get(
+            "/cases?scope=dashboard&filter=signing_method:contains:x", headers=H)
+    assert response.status_code == 422
+    assert "signing_method" in response.json()["detail"]
 
 
 def test_dashboard_rejects_an_unknown_comparison(client):

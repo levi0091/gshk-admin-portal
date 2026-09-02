@@ -78,8 +78,16 @@ function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks()
   api.get.mockResolvedValue(PAYLOAD)
-  auth = { hasPermission: () => true, isSuperAdmin: true }
+  // The dashboard opens on the signed-in user's own cases, so it needs an id
+  // as well as permissions. `profileLoading: false` is the settled state.
+  auth = {
+    hasPermission: () => true, isSuperAdmin: true,
+    profile: { id: 'u-1', display_name: 'Levi Z.' }, profileLoading: false,
+  }
 })
+
+/** The query string as it reads before URL-encoding, for legible assertions. */
+const urls = () => api.get.mock.calls.map(c => decodeURIComponent(c[0]))
 
 describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
   it('shows a loading state before data arrives', () => {
@@ -144,15 +152,93 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     expect(screen.getByText('Pending').parentElement).toHaveTextContent('1')
   })
 
-  it('filters by workflow status when a filter tab is clicked', async () => {
+  it('opens on the signed-in user\'s own cases', async () => {
+    // A dashboard of 30 cases, most of them somebody else's, is not a to-do
+    // list. Server-side, because the page holds 50 rows of a longer set.
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(urls()[0]).toContain('filter=created_by:eq:u-1')
+  })
+
+  it('says so, in a chip that drops the default in one click', async () => {
+    // A default that hides rows without naming itself cannot be told apart
+    // from a table that is simply missing data.
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('NAR-2025-0028')
-    await user.click(screen.getByRole('tab', { name: /Awaiting Client/ }))
+    await user.click(screen.getByRole('button', { name: 'Remove the Created By filter' }))
     await waitFor(() => {
-      expect(api.get.mock.calls.some(c => c[0].includes('workflow_status=awaiting_client')))
-        .toBe(true)
+      expect(urls().some(u => !u.includes('created_by'))).toBe(true)
     })
+  })
+
+  it('shows everyone\'s cases rather than hanging when there is no identity', async () => {
+    // /auth/me can fail. An unfiltered dashboard is a worse default but a
+    // working screen; waiting forever for an id that is not coming is not.
+    auth = { ...auth, profile: null }
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(urls()[0]).not.toContain('created_by')
+  })
+
+  it('has no workflow-status tab row — those badges are one form\'s process', async () => {
+    // This dashboard is meant to hold every post-incorporation form. A
+    // permanent row of NAR1's seven statuses stops being true the moment a
+    // second form arrives, so they live on the Workflow column instead.
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.queryByRole('tab', { name: /Data Verification/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /Awaiting Client/ })).not.toBeInTheDocument()
+  })
+
+  it('filters by workflow status through the Workflow column', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('button', { name: /^Filter Workflow/ }))
+    await user.click(screen.getByRole('checkbox', { name: /Awaiting Client/ }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('workflow_status=awaiting_client'))).toBe(true)
+    })
+  })
+
+  it('keeps the per-badge counts the removed tab row used to carry', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('button', { name: /^Filter Workflow/ }))
+    const panel = within(screen.getByRole('dialog', { name: 'Filter Workflow' }))
+    expect(panel.getByText('Data Verification').parentElement).toHaveTextContent('2')
+    expect(panel.getByText('Awaiting Client').parentElement).toHaveTextContent('1')
+  })
+
+  it('filters to the work that is ours when Action Required is clicked', async () => {
+    // The tile IS the filter for its own set, so the number on it and the rows
+    // beneath it can never disagree.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('button', { name: /Action Required/ }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes(
+        'workflow_status=data_verification,client_verification,client_rejected,signing,submission'
+      ))).toBe(true)
+    })
+  })
+
+  it('filters to the client\'s move when Pending is clicked, and clears on a second click', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    const tile = screen.getByRole('button', { name: /Pending/ })
+    await user.click(tile)
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('workflow_status=awaiting_client'))).toBe(true)
+    })
+    expect(tile).toHaveAttribute('aria-pressed', 'true')
+    await user.click(tile)
+    await waitFor(() => expect(tile).toHaveAttribute('aria-pressed', 'false'))
   })
 
   it('debounces search and sends it to the server', async () => {
@@ -181,11 +267,12 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Review overdue' }))
     await waitFor(() => {
-      // Both parameters or neither — the backend 422s on a half-supplied pair.
-      const hit = api.get.mock.calls.find(c => c[0].includes('anniv_op=lte'))
-      expect(hit).toBeTruthy()
-      expect(hit[0]).toContain('anniv_days=0')
+      // Writes the same Days-to-anniversary filter the column header does, so
+      // it shows up as a chip and lights that column's funnel.
+      expect(urls().some(u => u.includes('filter=days_to_anniversary:lte:0'))).toBe(true)
     })
+    expect(screen.getByRole('button', { name: 'Remove the Days to anniversary filter' }))
+      .toBeInTheDocument()
   })
 
   it('does not warn when nothing has passed its anniversary', async () => {
@@ -253,14 +340,26 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     expect(api.get.mock.calls.some(c => /sort=created_by(&|$)/.test(c[0]))).toBe(false)
   })
 
-  it('says plainly that pre-incorporation is not built rather than showing an empty table', async () => {
+  it('does not offer a phase toggle on a screen that only lists one phase', async () => {
+    // "All cases / Post-incorporation / Pre-incorporation" sat above a table
+    // that has only ever held post-incorporation cases; picking either of the
+    // other two selected an empty table with an apology in it.
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.queryByRole('tab', { name: 'Pre-incorporation' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'All cases' })).not.toBeInTheDocument()
+  })
+
+  it('filters a column the header offers, server-side', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('NAR-2025-0028')
-    await user.click(screen.getByRole('tab', { name: 'Pre-incorporation' }))
-    expect(screen.getByText(/Pre-incorporation cases \(NNC1\) are not built yet/))
-      .toBeInTheDocument()
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Filter Company Name/ }))
+    await user.type(screen.getByLabelText('Company Name value'), 'harbour')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=company_name:contains:harbour'))).toBe(true)
+    })
   })
 
   it('renders an empty state when no cases match', async () => {
@@ -303,19 +402,22 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
     return { promise, resolve, reject }
   }
 
-  async function toggleTo(tabName) {
+  /** Fire a second request over the first — now through the Pending tile,
+   *  which is what the removed "Awaiting Client" tab used to do. */
+  async function toggleTo() {
     const user = userEvent.setup()
     const first = deferred()
     const second = deferred()
     api.get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
     renderPage()
-    await user.click(screen.getByRole('tab', { name: tabName }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1))
+    await user.click(screen.getByRole('button', { name: /Pending/ }))
     await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
     return { first, second }
   }
 
   it('does not report a failure from a request the user has already moved past', async () => {
-    const { first, second } = await toggleTo(/Awaiting Client/)
+    const { first, second } = await toggleTo()
 
     first.reject(new Error('boom'))     // superseded request fails, late
     second.resolve(PAYLOAD)             // the one the user is waiting for
@@ -325,7 +427,7 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
   })
 
   it('ignores a slow response that arrives after a newer one', async () => {
-    const { first, second } = await toggleTo(/Awaiting Client/)
+    const { first, second } = await toggleTo()
 
     second.resolve({
       ...PAYLOAD,
@@ -341,7 +443,7 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
   })
 
   it('keeps showing Loading… when only the superseded request has resolved', async () => {
-    const { first } = await toggleTo(/Awaiting Client/)
+    const { first } = await toggleTo()
 
     first.resolve(PAYLOAD)              // stale; the current request is still out
     // Drain the microtask queue so the stale .then/.finally definitely runs.
@@ -353,7 +455,7 @@ describe('DashboardPage — overlapping requests (UAT W-8)', () => {
   })
 
   it('aborts the superseded request rather than leaving it in flight', async () => {
-    await toggleTo(/Awaiting Client/)
+    await toggleTo()
 
     const signal = api.get.mock.calls[0][1]?.signal
     expect(signal).toBeInstanceOf(AbortSignal)

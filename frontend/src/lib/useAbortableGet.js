@@ -34,6 +34,15 @@ export default function useAbortableGet(path) {
   const [error, setError] = useState('')
 
   useEffect(() => {
+    // A null path is "not yet" rather than "nothing" — the dashboard opens on
+    // the signed-in user's own cases and cannot build its request until
+    // /auth/me says who that is. Staying in `loading` keeps the screen from
+    // firing one request for every case and a second for yours a moment later.
+    if (path == null) {
+      setLoading(true)
+      return undefined
+    }
+
     const controller = new AbortController()
     setLoading(true)
     setError('')

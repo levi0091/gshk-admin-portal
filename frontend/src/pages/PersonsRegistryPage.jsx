@@ -4,10 +4,17 @@ import useAbortableGet from '../lib/useAbortableGet.js'
 import { formatDate } from '../lib/format.js'
 import RoleTags, { initials } from '../components/RoleTags.jsx'
 import AddPersonModal from '../components/AddPersonModal.jsx'
-import SortableTh from '../components/SortableTh.jsx'
+import FilterableTh from '../components/FilterableTh.jsx'
+import FilterChips from '../components/FilterChips.jsx'
+import {
+  DATE, ENUM, TEXT, appendTo, filtersFor, setColumn,
+} from '../lib/tableFilters.js'
 
 const PAGE_SIZE = 50
 
+// The role tabs and the Roles column's funnel write the same filter, for the
+// same reason the company registry's Type does: one state, two ways in. The API
+// answers one role at a time, so the column's list is radios.
 const TABS = [
   { key: null, label: 'All', count: 'all' },
   { key: 'director', label: 'Directors', count: 'director' },
@@ -16,19 +23,66 @@ const TABS = [
   { key: 'beneficial_owner', label: 'Beneficial Owners', count: 'beneficial_owner' },
 ]
 
+const ID_TYPES = [
+  { value: 'hkid', label: 'HKID' },
+  { value: 'passport', label: 'Passport' },
+  { value: 'china_id', label: 'China ID' },
+  { value: 'other', label: 'Other' },
+]
+
+const COLUMNS = [
+  { col: 'full_name', label: 'Name', sort: 'full_name',
+    filter: { kind: TEXT, placeholder: 'Full name' } },
+  // The cell shows the type and the number together. The funnel filters the
+  // TYPE, because that is the question with a closed set of answers; a specific
+  // number is what the search box above already looks for (it searches
+  // `primary_id_number` among other things), so a second box for it here would
+  // be a duplicate control with a narrower reach.
+  { col: 'primary_id_type', label: 'Identity', sort: 'primary_id_number',
+    filter: { kind: ENUM, options: ID_TYPES } },
+  // Nationality has NO Viewpoint lookup — it is free-text demonyms — so this is
+  // a text match and "has no value" is a question worth asking of it.
+  { col: 'nationality', label: 'Nationality', sort: 'nationality',
+    filter: { kind: TEXT, placeholder: 'e.g. British' } },
+  { col: 'role', label: 'Roles', sort: null,
+    filter: {
+      kind: ENUM, single: true,
+      options: TABS.filter(t => t.key).map(t => ({ value: t.key, label: t.label })),
+    } },
+  { col: 'updated_at', label: 'Last Updated', sort: 'updated_at', filter: { kind: DATE } },
+]
+
 export default function PersonsRegistryPage() {
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
-  const [role, setRole] = useState(null)
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
   const [sort, setSort] = useState(null)
   const [dir, setDir] = useState('asc')
+  const [filters, setFilters] = useState([])
+
+  const role = filtersFor(filters, 'role')[0]?.value?.[0] || null
 
   function onSort(col, nextDir) {
     setSort(col)
     setDir(nextDir)
+    setPage(1)
+  }
+
+  function onFilter(column, next) {
+    setFilters(f => setColumn(f, column.col, next))
+    setPage(1)
+  }
+
+  function setRole(key) {
+    setFilters(f => setColumn(f, 'role',
+      key ? [{ col: 'role', op: 'in', value: [key] }] : []))
+    setPage(1)
+  }
+
+  function removeColumns(cols) {
+    setFilters(f => f.filter(x => !cols.includes(x.col)))
     setPage(1)
   }
 
@@ -39,8 +93,11 @@ export default function PersonsRegistryPage() {
 
   const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) })
   if (query) params.set('search', query)
+  // `role` reads one of four boolean flags on the view rather than comparing a
+  // column, so it keeps its own API parameter.
   if (role) params.set('role', role)
   if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  appendTo(params, filters.filter(f => f.col !== 'role'))
 
   // Cancels the previous request on every toggle — UAT W-8. See the hook.
   const { data, loading, error } = useAbortableGet(`/persons?${params}`)
@@ -94,13 +151,20 @@ export default function PersonsRegistryPage() {
             role="tab"
             aria-selected={role === tab.key}
             className={`filter-tab ${role === tab.key ? 'active' : ''}`}
-            onClick={() => { setRole(tab.key); setPage(1) }}
+            onClick={() => setRole(tab.key)}
           >
             {tab.label}
             <span className="filter-count">{counts[tab.count] ?? 0}</span>
           </button>
         ))}
       </div>
+
+      <FilterChips
+        columns={COLUMNS}
+        filters={filters}
+        onRemove={removeColumns}
+        onClearAll={() => { setFilters([]); setPage(1) }}
+      />
 
       {error ? (
         <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
@@ -112,24 +176,19 @@ export default function PersonsRegistryPage() {
             <table>
               <thead>
                 <tr>
-                  {[
-                    ['full_name', 'Name'],
-                    ['primary_id_number', 'Identity'],
-                    ['nationality', 'Nationality'],
-                    [null, 'Roles'],
-                    ['updated_at', 'Last Updated'],
-                  ].map(([col, label]) => (
-                    <SortableTh key={label} col={col} sort={sort} dir={dir} onSort={onSort}>
-                      {label}
-                    </SortableTh>
+                  {COLUMNS.map(column => (
+                    <FilterableTh key={column.col} column={column} sort={sort} dir={dir}
+                                  onSort={onSort} filters={filters} onFilter={onFilter} />
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={5} className="empty-state">Loading…</td></tr>
+                  <tr><td colSpan={COLUMNS.length} className="empty-state">Loading…</td></tr>
                 ) : persons.length === 0 ? (
-                  <tr><td colSpan={5} className="empty-state">No persons match this view.</td></tr>
+                  <tr><td colSpan={COLUMNS.length} className="empty-state">
+                    No persons match this view.
+                  </td></tr>
                 ) : persons.map(p => (
                   <tr key={p.id} className="clickable" onClick={() => navigate(`/persons/${p.id}`)}>
                     <td data-label="Name">

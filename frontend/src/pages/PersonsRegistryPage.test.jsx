@@ -164,3 +164,86 @@ describe('PersonsRegistryPage — overlapping requests (UAT W-8)', () => {
     expect(signal.aborted).toBe(true)
   })
 })
+
+describe('PersonsRegistryPage — column filters', () => {
+  const urls = () => api.get.mock.calls.map(c => decodeURIComponent(c[0]))
+
+  it('offers a filter on every column', async () => {
+    renderPage()
+    await screen.findByText('John Smith')
+    for (const label of ['Name', 'Identity', 'Nationality', 'Roles', 'Last Updated']) {
+      expect(screen.getByRole('button', { name: new RegExp(`^Filter ${label}`) }))
+        .toBeInTheDocument()
+    }
+  })
+
+  it('filters a name server-side', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Name/ }))
+    await user.type(screen.getByLabelText('Name value'), 'chan')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=full_name:contains:chan'))).toBe(true)
+    })
+  })
+
+  it('picks several identity types at once', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Identity/ }))
+    await user.click(screen.getByRole('checkbox', { name: 'HKID' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Passport' }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=primary_id_type:in:hkid,passport'))).toBe(true)
+    })
+  })
+
+  it('finds the people with no nationality on record', async () => {
+    // Nationality has no Viewpoint lookup and is free text, so blanks are
+    // common — and finding them is the reason to filter the column at all.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Nationality/ }))
+    await user.selectOptions(screen.getByLabelText('Condition'), 'empty')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=nationality:empty:'))).toBe(true)
+    })
+  })
+
+  it('drives the SAME role filter the tabs do, through the Roles column', async () => {
+    // Two ways in, one state. Two states over one role is how a tab and a
+    // header start disagreeing about what the table is showing.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Roles/ }))
+    await user.click(screen.getByRole('radio', { name: 'Directors' }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('role=director'))).toBe(true)
+    })
+    expect(screen.getByRole('tab', { name: /Directors/ }))
+      .toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('sends a Last Updated range as two bounds', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Last Updated/ }))
+    await user.type(screen.getByLabelText('From date'), '2026-06-01')
+    await user.type(screen.getByLabelText('To date'), '2026-06-30')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      const last = decodeURIComponent(api.get.mock.calls.at(-1)[0])
+      expect(last).toContain('filter=updated_at:gte:2026-06-01')
+      expect(last).toContain('filter=updated_at:lte:2026-06-30')
+    })
+  })
+})

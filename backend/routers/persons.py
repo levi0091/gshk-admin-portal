@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
-from services import audit_events, document_service, address_service
+from services import audit_events, document_service, address_service, table_filters as tf
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
 from services.tpsi.forms.cr_vocabularies import resolve_country
@@ -130,6 +130,26 @@ _SORTABLE = {
     "primary_id_type", "primary_id_number", "created_at", "updated_at",
 }
 
+#: `id_document_type` (migration 003). The Identity column shows the type and
+#: the number together, so its filter offers both: pick the types, or search the
+#: number.
+_ID_TYPES = {"hkid", "passport", "china_id", "other"}
+
+#: Columns the per-column header filters may narrow on. The four role flags are
+#: NOT here — the role tabs already own them, and two controls writing the same
+#: filter through different grammars is how they drift apart.
+_FILTERABLE = {
+    "full_name": tf.text(),
+    "full_name_zh": tf.text(),
+    "email": tf.text(),
+    "nationality": tf.text(),
+    "primary_id_type": tf.enum(_ID_TYPES),
+    "primary_id_number": tf.text(),
+    "date_of_birth": tf.date(),
+    "created_at": tf.timestamp(),
+    "updated_at": tf.timestamp(),
+}
+
 
 @router.get("")
 async def list_persons(
@@ -137,6 +157,10 @@ async def list_persons(
     role: Optional[str] = Query(None),
     sort: Optional[str] = Query(None),
     dir: str = Query("asc"),
+    filter_: list[str] = Query(
+        default_factory=list, alias="filter",
+        description="repeatable column:op:value — see services/table_filters",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     user=Depends(require_permission("persons", "read")),
@@ -151,12 +175,19 @@ async def list_persons(
         raise HTTPException(status_code=422, detail=f"Unknown role: {role}")
     if sort and sort not in _SORTABLE:
         raise HTTPException(status_code=422, detail=f"Cannot sort by '{sort}'")
+    try:
+        col_filters = tf.parse(filter_, _FILTERABLE)
+    except tf.FilterError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     sb = get_supabase()
 
     def base(cols: str, count: Optional[str] = None):
         q = (sb.table("person_registry").select(cols, count=count) if count
              else sb.table("person_registry").select(cols))
+        # Inside base(), so the role-tab counts and the pager describe the same
+        # set the rows are drawn from.
+        q = tf.apply(q, col_filters)
         if search:
             q = q.or_(
                 f"full_name.ilike.%{search}%,"

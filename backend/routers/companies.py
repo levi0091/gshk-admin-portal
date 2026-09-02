@@ -13,7 +13,8 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
-from services import audit_events, document_service, address_service
+from services import (
+    audit_events, document_service, address_service, table_filters as tf)
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE, COMPANY_TYPE, CURRENCY)
 from services.cr_forms.readiness import filing_problems
@@ -104,6 +105,34 @@ _SORTABLE = {
     "active_workflow", "company_type", "created_at", "updated_at",
     "incorporation_date", "is_client", "is_corporate_party",
     "days_to_anniversary",
+}
+
+#: Every entity_status the enum can hold (migration 003). Named here rather than
+#: derived from `_TAB_STATUSES`, which is the six the Dashboard tabs show —
+#: a column filter must offer every value the column can actually contain, or it
+#: silently makes `live` and `ceased` rows unreachable, and those are all 5,930
+#: of the real ones.
+_ALL_STATUSES = {
+    "pre_incorporation", "pending_aml", "pending_client", "to_verify",
+    "revision_required", "submitted_to_cr", "cr_approved", "client_approved",
+    "client_rejected", "live", "ceased",
+}
+
+#: Columns the per-column header filters may narrow on (services/table_filters).
+#: A separate whitelist from `_SORTABLE`: what you can usefully order by and
+#: what you can usefully filter by are different questions, and this one also
+#: fixes each column's KIND, which decides the ops it will accept.
+_FILTERABLE = {
+    "company_name": tf.text(),
+    "company_name_zh": tf.text(),
+    "br_number": tf.text(),
+    "cr_number": tf.text(),
+    "status": tf.enum(_ALL_STATUSES),
+    "company_type": tf.enum(_COMPANY_TYPE_CODES),
+    "days_to_anniversary": tf.number(),
+    "incorporation_date": tf.date(),
+    "created_at": tf.timestamp(),
+    "updated_at": tf.timestamp(),
 }
 
 _SECRETARY_ROLE = "company_secretary"
@@ -315,6 +344,10 @@ async def list_companies(
     dir: str = Query("asc"),
     anniv_op: Optional[str] = Query(None, description="lte | gte | eq"),
     anniv_days: Optional[int] = Query(None, description="signed day count"),
+    filter_: list[str] = Query(
+        default_factory=list, alias="filter",
+        description="repeatable column:op:value — see services/table_filters",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     user=Depends(require_permission("companies", "read")),
@@ -346,10 +379,20 @@ async def list_companies(
             detail="anniv_op and anniv_days must be supplied together",
         )
 
+    try:
+        col_filters = tf.parse(filter_, _FILTERABLE)
+    except tf.FilterError as exc:
+        # 422, never a silently dropped filter: on a paginated listing a filter
+        # the server ignored looks exactly like a filter that matched everything.
+        raise HTTPException(status_code=422, detail=str(exc))
+
     def base(cols: str, count: Optional[str] = None, f: Optional[str] = ...):
         q = (sb.table(_LIST_RELATION).select(cols, count=count) if count
              else sb.table(_LIST_RELATION).select(cols))
         q = apply_flag(q, flag if f is ... else f)
+        # Inside base() so the flag tabs and the pager count the same set the
+        # rows come from — see the note on the anniversary filter below.
+        q = tf.apply(q, col_filters)
         if search:
             q = q.or_(
                 f"company_name.ilike.%{search}%,"

@@ -32,13 +32,54 @@ def test_create_without_permission_returns_403():
 
 
 class _FakeQuery:
-    """Stands in for the person_registry view query builder."""
+    """Stands in for the person_registry view query builder.
 
-    def __init__(self, counts, rows, flag=None):
+    `log` records the predicates a column filter puts on the query, so a test
+    can assert they reached the COUNT queries as well as the page — filtering
+    only the page would leave the role tabs and the pager describing a wider
+    set than the rows come from.
+    """
+
+    def __init__(self, counts, rows, flag=None, log=None):
         self._counts, self._rows, self._flag = counts, rows, flag
+        self.log = [] if log is None else log
+
+    def _rec(self, name, *args):
+        self.log.append((name, *args))
+        return self
 
     def eq(self, col, val):
-        return _FakeQuery(self._counts, self._rows, flag=col)
+        return _FakeQuery(self._counts, self._rows, flag=col, log=self.log)
+
+    def ilike(self, col, val):
+        return self._rec("ilike", col, val)
+
+    def in_(self, col, vals):
+        return self._rec("in_", col, list(vals))
+
+    def neq(self, col, val):
+        return self._rec("neq", col, val)
+
+    def is_(self, col, val):
+        return self._rec("is_", col, val)
+
+    def lte(self, col, val):
+        return self._rec("lte", col, val)
+
+    def gte(self, col, val):
+        return self._rec("gte", col, val)
+
+    def lt(self, col, val):
+        return self._rec("lt", col, val)
+
+    @property
+    def not_(self):
+        outer = self
+
+        class _Not:
+            def is_(self, col, val):
+                return outer._rec("not_is", col, val)
+        return _Not()
 
     def or_(self, *a, **k):
         return self
@@ -60,6 +101,7 @@ class _FakeQuery:
 def _wire_registry(sb, counts, rows):
     fq = _FakeQuery(counts, rows)
     sb.table.return_value.select.side_effect = lambda cols, count=None: fq
+    return fq.log
 
 
 def test_list_persons_returns_role_counts_and_page():
@@ -101,6 +143,50 @@ def test_list_persons_rejects_unknown_role():
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.persons.get_supabase"):
         assert client.get("/persons?role=wizard", headers=H).status_code == 422
+
+
+# ---- per-column header filters ---------------------------------------------
+
+def _list(url):
+    counts = {None: 6850, "is_director": 6259}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb:
+        log = _wire_registry(msb.return_value, counts, [])
+        return client.get(url, headers=H), log
+
+
+def test_a_column_filter_reaches_the_count_queries_too():
+    """The role tabs and the pager must count the set the rows are drawn from."""
+    resp, log = _list("/persons?filter=full_name:contains:jane")
+    assert resp.status_code == 200
+    applied = [e for e in log if e[0] == "ilike"]
+    assert len(applied) >= 6            # page query + the 5 concurrent counts
+    assert all(e == ("ilike", "full_name", "%jane%") for e in applied)
+
+
+def test_identity_type_filters_as_an_enum():
+    resp, log = _list("/persons?filter=primary_id_type:in:hkid,passport")
+    assert resp.status_code == 200
+    assert ("in_", "primary_id_type", ["hkid", "passport"]) in log
+
+
+def test_persons_with_no_nationality_are_reachable():
+    """Nationality has no Viewpoint lookup and is free text, so blanks are
+    common and finding them is the point of the filter."""
+    resp, log = _list("/persons?filter=nationality:empty:")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 6850
+
+
+def test_a_filter_on_an_unlisted_column_is_refused():
+    resp, _log = _list("/persons?filter=residential_address_id:contains:x")
+    assert resp.status_code == 422
+    assert "residential_address_id" in resp.json()["detail"]
+
+
+def test_an_unknown_identity_type_is_refused():
+    resp, _log = _list("/persons?filter=primary_id_type:in:drivers_licence")
+    assert resp.status_code == 422
 
 
 def test_get_person_profile_includes_rollup_and_docs():

@@ -410,28 +410,11 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 /* anniversary passed, still inside the 42-day NAR1 filing window */
 .td-anniv-due { font-size: 11px; font-weight: 700; color: var(--carrot); }
 
-/* Days-to-anniversary filter (wireframe_v11 s9) — one control, not four loose
-   inputs: the operator and the day count are meaningless apart. */
-.anniv-bar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
-  padding: 11px 14px; border: 1px solid var(--border);
-  border-radius: var(--r-lg); background: var(--bg-card);
-}
-.anniv-lbl { font-size: 11px; font-weight: 700; color: var(--t-head); }
-.anniv-bar select, .anniv-bar input {
-  height: 32px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
-  padding: 0 9px; font-size: 12px; font-family: var(--font);
-  color: var(--t-body); background: #fff; outline: none;
-}
-.anniv-bar select:focus, .anniv-bar input:focus { border-color: var(--indigo); }
-.anniv-bar select { width: 64px; text-align: center; }
-.anniv-bar input { width: 76px; }
-.anniv-unit { font-size: 11px; color: var(--t-muted); }
-.anniv-default {
-  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--indigo); background: var(--indigo-10); padding: 3px 8px; border-radius: 20px;
-}
-.anniv-hint { flex-basis: 100%; font-size: 11px; color: var(--t-muted); }
+/* `.anniv-bar` lived here — a standalone Days-to-anniversary control pinned
+   above the registry table. It is gone (Levi 2026-09-03): the range is the
+   Days-to-anniversary column's own filter now, like every other column's, and a
+   second place to look for something the header can say was the whole problem.
+   See `.colf-pair` below for the two-bound editor that replaced it. */
 .th-inner { display: flex; align-items: center; gap: 5px; }
 .th-sort { opacity: .4; font-size: 10px; }
 thead th:hover .th-sort { opacity: .85; }
@@ -1162,3 +1145,194 @@ tbody tr.clickable { cursor: pointer; }
 /* The reason the Open case button is refusing, next to the button. */
 .filing-problems { margin: 6px 0 0; padding-left: 18px; }
 .filing-problems li { margin-top: 3px; }
+
+/* ── COLUMN FILTERS ──────────────────────────────────────────
+   The funnel in a header, the panel it opens, and the chip row that says what
+   is applied. Sorting already lives in the header (.th-inner); filtering joins
+   it there rather than claiming a toolbar of its own, because eleven columns of
+   visible filter boxes would bury the table they filter.
+
+   No new hues. Carrot is already this system's "act on me" (.filter-tab
+   .ft-action, .td-anniv-due), and a filter is the thing explaining why the row
+   count is what it is — so an applied filter is carrot, and everything dormant
+   stays at the hairline weight .th-sort already established. */
+
+.th-lbl { white-space: nowrap; }
+
+/* Dormant: the same .4 opacity the sort glyph sits at, so a header with both
+   reads as one control cluster rather than two competing marks. */
+.th-filter {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 1px; padding: 0;
+  border-radius: var(--r-xs); color: var(--t-muted); opacity: .4;
+  transition: .15s; flex-shrink: 0;
+}
+thead th:hover .th-filter { opacity: .85; }
+.th-filter:hover { opacity: 1; color: var(--indigo); background: var(--indigo-10); }
+.th-filter:focus-visible {
+  outline: none; opacity: 1;
+  box-shadow: 0 0 0 2px var(--indigo-20);
+}
+/* Applied. Solid, full opacity, and it stays that way when the header is not
+   hovered — the whole job of this state is to be findable by scanning. */
+.th-filter.is-on, thead th:hover .th-filter.is-on { color: var(--carrot); opacity: 1; }
+.th-filter.is-on:hover { background: var(--carrot-10); color: var(--carrot); }
+
+/* The filtered column itself: a tint plus a carrot rule under the header. The
+   rule is the registry-ledger detail — an underscored column heading — and it
+   survives at a glance where a pale tint alone would not. */
+th.th-filtered {
+  background: var(--carrot-10);
+  box-shadow: inset 0 -2px 0 var(--carrot);
+}
+
+/* ── the panel ── */
+.colf {
+  z-index: 1500; width: 248px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--sh-lg);
+  overflow: hidden;
+  animation: colf-in .12s cubic-bezier(.2,.7,.4,1);
+  transform-origin: top left;
+}
+@keyframes colf-in {
+  from { opacity: 0; transform: scale(.97) translateY(-2px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .colf { animation: none; } }
+
+/* The table header's own type treatment, so the panel reads as having grown
+   out of the cell that opened it. */
+.colf-hdr {
+  padding: 8px 12px; background: var(--indigo-5);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--t-muted);
+}
+.colf-body { padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; }
+.colf-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; border-top: 1px solid var(--border); background: var(--indigo-5);
+}
+.colf-clear {
+  font-size: 11px; font-weight: 600; color: var(--t-muted); padding: 4px 2px;
+  border-radius: var(--r-xs);
+}
+.colf-clear:hover { color: var(--carrot); }
+
+.colf-select, .colf-input, .colf-field input {
+  width: 100%; height: 30px; border: 1.5px solid var(--border);
+  border-radius: var(--r-sm); padding: 0 9px;
+  font-size: 12px; font-family: var(--font); color: var(--t-body);
+  background: #fff; outline: none; transition: .15s;
+}
+.colf-select {
+  appearance: none; padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' stroke='%237C80A3' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center;
+}
+.colf-select:focus, .colf-input:focus, .colf-field input:focus {
+  border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
+}
+.colf-input:disabled { background: var(--indigo-5); color: var(--t-muted); }
+
+/* ── enum list ── */
+.colf-bulk { display: flex; gap: 10px; }
+.colf-bulk button { font-size: 11px; font-weight: 600; color: var(--indigo); padding: 0; }
+.colf-bulk button:hover { text-decoration: underline; }
+.colf-list {
+  display: flex; flex-direction: column;
+  max-height: 208px; overflow-y: auto; margin: 0 -4px;
+}
+.colf-opt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 4px; border-radius: var(--r-xs); cursor: pointer; font-size: 12px;
+}
+.colf-opt:hover { background: var(--indigo-5); }
+.colf-opt input { accent-color: var(--indigo); width: 13px; height: 13px; flex-shrink: 0; }
+.colf-opt-lbl { color: var(--t-body); flex: 1; }
+.colf-opt-count { font-size: 11px; color: var(--t-muted); font-variant: tabular-nums; }
+
+/* ── range / date ── */
+.colf-pair { display: flex; align-items: flex-end; gap: 7px; }
+.colf-pair-stack { flex-direction: column; align-items: stretch; }
+.colf-field { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.colf-field > span {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--t-muted);
+}
+.colf-dash { color: var(--t-muted); padding-bottom: 8px; }
+.colf-unit { font-size: 11px; color: var(--t-muted); padding-bottom: 8px; }
+.colf-hint { font-size: 11px; line-height: 1.45; color: var(--t-muted); margin: 0; }
+
+/* ── owner ── */
+.colf-seg {
+  display: flex; border: 1px solid var(--border);
+  border-radius: var(--r-sm); overflow: hidden;
+}
+.colf-seg button {
+  flex: 1; padding: 6px 8px; font-size: 11px; font-weight: 600;
+  color: var(--t-muted); transition: .15s;
+}
+.colf-seg button:hover { background: var(--indigo-5); color: var(--indigo); }
+.colf-seg button.on { background: var(--indigo); color: #fff; }
+
+/* ── ACTIVE FILTER CHIPS ─────────────────────────────────────
+   One line naming every filter narrowing the table, each one removable. Two of
+   these screens filter before the operator touches anything, and a default that
+   hides rows without saying so cannot be told apart from missing data. Defaults
+   get the SAME chip as a hand-set filter — no "Default" badge marking them as
+   someone else's decision. */
+.fchips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.fchips-lbl {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--t-muted); margin-right: 2px;
+}
+.fchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 7px 0 9px; border-radius: 20px;
+  border: 1px solid var(--carrot-20); background: var(--carrot-10);
+  font-size: 11px; transition: .15s;
+}
+.fchip:hover { border-color: var(--carrot); background: #FDE3D7; }
+.fchip:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px var(--carrot-10); border-color: var(--carrot);
+}
+.fchip-col { font-weight: 700; color: var(--carrot); }
+/* The value is the half anyone actually reads, so it takes the high-contrast
+   ink rather than the accent. */
+.fchip-val { color: var(--t-head); }
+.fchip-x { color: var(--carrot); font-size: 14px; line-height: 1; opacity: .7; }
+.fchip:hover .fchip-x { opacity: 1; }
+.fchips-clear {
+  font-size: 11px; font-weight: 600; color: var(--t-muted);
+  padding: 4px 6px; border-radius: var(--r-xs);
+}
+.fchips-clear:hover { color: var(--indigo); text-decoration: underline; }
+
+/* ── STAT CARDS AS FILTERS ───────────────────────────────────
+   The two tiles count the cases whose next move is ours and the cases whose
+   next move is the client's. Reading a number and then hunting for the filter
+   that reproduces it was the gap; the tile IS that filter now. */
+.stat-card.is-filter { cursor: pointer; text-align: left; width: 100%; transition: .15s; }
+.stat-card.is-filter:hover { box-shadow: var(--sh-md); }
+.stat-card.is-filter:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--indigo-20); }
+.stat-card.accent-left.is-on { border-color: var(--carrot); box-shadow: 0 0 0 3px var(--carrot-10); }
+.stat-card.accent-indigo.is-on { border-color: var(--indigo); box-shadow: 0 0 0 3px var(--indigo-10); }
+/* Hidden until it has something to say. Permanently printing "CLICK TO FILTER"
+   under both tiles put a second, louder label beside the numbers the tiles
+   exist to show — so the invitation appears on hover, and the only text that
+   stays is the one describing a filter that IS applied. */
+.stat-on-note {
+  display: block; margin-top: 6px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--carrot);
+  opacity: 0; transition: opacity .15s;
+}
+.stat-card.is-filter:hover .stat-on-note,
+.stat-card.is-filter:focus-visible .stat-on-note,
+.stat-card.is-on .stat-on-note { opacity: 1; }
+.stat-card.accent-indigo .stat-on-note { color: var(--indigo); }
+
+@media (max-width: 720px) {
+  .colf { width: calc(100vw - 24px); max-width: 288px; }
+}

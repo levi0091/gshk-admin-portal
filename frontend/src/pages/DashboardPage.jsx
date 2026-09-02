@@ -1,13 +1,18 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { formatDate } from '../lib/format.js'
 import { labelForDays } from '../lib/anniversary.js'
 import useAbortableGet from '../lib/useAbortableGet.js'
 import { useAuth } from '../context/AuthContext.jsx'
-import SortableTh from '../components/SortableTh.jsx'
-import StatusBadge from '../components/StatusBadge.jsx'
-import { WorkflowBadge } from '../components/CaseStatusBadge.jsx'
+import FilterableTh from '../components/FilterableTh.jsx'
+import FilterChips from '../components/FilterChips.jsx'
+import StatusBadge, { CASE_STATUSES, statusOptions } from '../components/StatusBadge.jsx'
+import { WorkflowBadge, WORKFLOW_LABEL } from '../components/CaseStatusBadge.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
+import {
+  DATE, ENUM, OWNER, RANGE, TEXT,
+  appendTo, filtersFor, setColumn,
+} from '../lib/tableFilters.js'
 
 /**
  * Post-incorporation — the NAR1 case dashboard (wireframe_v11 `s2`).
@@ -17,80 +22,139 @@ import NewCaseModal from '../components/NewCaseModal.jsx'
  * than the company profile — the whole point of the screen is the filing, not
  * the company. Companies as such live on the Company Registry (`s9`).
  *
- * This replaced the old company dashboard, which read `/companies?scope=dashboard`
- * and could not represent two open cases against one company at all.
- *
  * Every filter, count and sort is applied SERVER-side (`GET /cases?scope=dashboard`)
  * — the page never holds the full set, so filtering here would quietly describe
  * only the current page.
+ *
+ * NARROWING IS ALL ONE MECHANISM NOW (Levi 2026-09-03). It used to be four:
+ * a phase segment, a workflow tab row, an overdue banner and a search box, each
+ * with its own state and its own way of showing what it had done. The phase
+ * segment is gone — this screen only ever listed post-incorporation cases, and
+ * "Pre-incorporation" selected an empty table with an apology in it. The
+ * workflow tab row is gone too: those seven badges are NAR1's process, and this
+ * dashboard is meant to hold every post-incorporation form, so a permanent row
+ * of one form's statuses is a filter that stops being true as soon as a second
+ * form arrives. The badges are now the Workflow column's own filter — carrying
+ * the same counts the tabs did — and everything else narrows through a column
+ * header, with `FilterChips` naming whatever is applied.
  */
 
 const PAGE_SIZE = 50
 
-// The seven workflow badges, in v11 order. Carrot = act on me, indigo = waiting
-// on someone else, red = refused, green = done. Keys are the backend's derived
-// `workflow_status` codes (services/nar1_case_status.py).
-const TABS = [
-  { key: null, label: 'All', cls: '' },
-  { key: 'data_verification', label: 'Data Verification', cls: 'ft-action' },
-  { key: 'awaiting_client', label: 'Awaiting Client', cls: 'ft-pending' },
-  { key: 'client_verification', label: 'Client Verification', cls: 'ft-action' },
-  { key: 'client_rejected', label: 'Client Rejected', cls: 'ft-danger' },
-  { key: 'signing', label: 'Signing', cls: 'ft-action' },
-  { key: 'submission', label: 'Submission', cls: 'ft-action' },
-  { key: 'completed', label: 'Completed', cls: 'ft-done' },
-]
-
 // "Action Required" vs "Pending" on the two stat cards: the split is who the
-// next move belongs to. Completed belongs to neither.
+// next move belongs to. Completed belongs to neither. Each tile IS the filter
+// for its own set, so the number and the rows can never disagree.
 const ACTION_STATUSES = ['data_verification', 'client_verification', 'client_rejected',
                          'signing', 'submission']
 const PENDING_STATUSES = ['awaiting_client']
 
-// v11 order. `null` = not sortable: the backend whitelists what may reach
+const WORKFLOW_ORDER = [
+  'data_verification', 'awaiting_client', 'client_verification',
+  'client_rejected', 'signing', 'submission', 'completed',
+]
+
+const ANNIV_HINT =
+  'A passed anniversary counts negative while the return is still inside the ' +
+  '42-day statutory window, so −42 to 0 is “overdue but still filable”.'
+
+// v11 order. `sort: null` = not sortable: the backend whitelists what may reach
 // PostgREST's order clause (nar1_cases._SORTABLE), and offering a header the
-// server would 422 on is a broken control, not a feature.
+// server would 422 on is a broken control, not a feature. `filter` likewise
+// names only columns `nar1_cases._FILTERABLE` will accept.
 //
 // v11 also draws an "Incorporation Date" column. It is NOT here, because
 // `nar1_case_registry` (migration 024) does not select it — the column would
 // render an em dash on every row forever, which reads as missing data rather
-// than as a missing feature. Restoring it is a one-line addition of
-// `e.incorporation_date` to that view (company_registry already exposes it via
-// `e.*`) plus a migration; that is backend work, not this block's.
-const COLUMNS = [
-  ['case_no', 'Case ID'],
-  [null, 'Case Type'],
-  [null, 'Entity ID'],
-  ['updated_at', 'Last Updated'],
-  ['company_name', 'Company Name'],
-  ['br_number', 'BRN'],
-  ['case_status', 'Status'],
-  ['workflow_status', 'Workflow'],
-  ['days_to_anniversary', 'Days to anniversary'],
-  ['created_at', 'Create Date'],
-  // Sorts on `created_by_name`, not the uuid — ordering the dashboard by a
-  // value nobody can read off the screen is not a sort.
-  ['created_by_name', 'Created By'],
-]
+// than as a missing feature.
+function buildColumns(meId, counts) {
+  return [
+    { col: 'case_no', label: 'Case ID', sort: 'case_no',
+      filter: { kind: TEXT, placeholder: 'NAR-2026-…' } },
+    { col: 'case_type', label: 'Case Type', sort: null,
+      filter: { kind: ENUM, options: [{ value: 'NAR1', label: 'NAR1' }] } },
+    { col: 'entity_id', label: 'Entity ID', sort: null,
+      filter: { kind: TEXT, placeholder: 'Company UUID' } },
+    { col: 'updated_at', label: 'Last Updated', sort: 'updated_at', filter: { kind: DATE } },
+    { col: 'company_name', label: 'Company Name', sort: 'company_name',
+      filter: { kind: TEXT, placeholder: 'Company name' } },
+    { col: 'br_number', label: 'BRN', sort: 'br_number',
+      filter: { kind: TEXT, placeholder: 'Business Registration No.' } },
+    { col: 'case_status', label: 'Status', sort: 'case_status',
+      filter: { kind: ENUM, options: statusOptions(CASE_STATUSES) } },
+    // The counts the removed tab row used to carry, kept where the filter now
+    // lives. Losing them would have made this change a straight downgrade for
+    // anyone who read the dashboard by scanning those numbers.
+    { col: 'workflow_status', label: 'Workflow', sort: 'workflow_status',
+      filter: {
+        kind: ENUM,
+        options: WORKFLOW_ORDER.map(value => ({
+          value, label: WORKFLOW_LABEL[value], count: counts?.[value],
+        })),
+      } },
+    { col: 'days_to_anniversary', label: 'Days to anniversary', sort: 'days_to_anniversary',
+      filter: { kind: RANGE, unit: 'days', hint: ANNIV_HINT } },
+    { col: 'created_at', label: 'Create Date', sort: 'created_at', filter: { kind: DATE } },
+    // Sorts on `created_by_name`, not the uuid — ordering the dashboard by a
+    // value nobody can read off the screen is not a sort. The FILTER is on the
+    // uuid, because "mine" is an exact identity and two people can share a name.
+    { col: 'created_by', label: 'Created By', sort: 'created_by_name',
+      filter: { kind: OWNER, meId, nameCol: 'created_by_name' } },
+  ]
+}
 
 export default function DashboardPage() {
   const navigate = useNavigate()
-  const { hasPermission, isSuperAdmin } = useAuth()
+  const { hasPermission, isSuperAdmin, profile, profileLoading } = useAuth()
   // nar1:read shows the cases; nar1:write is what opens and drives one.
   const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
+  const meId = profile?.id
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
-  const [status, setStatus] = useState(null)
-  const [phase, setPhase] = useState('all')
-  const [overdueOnly, setOverdueOnly] = useState(false)
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
   const [sort, setSort] = useState(null)
   const [dir, setDir] = useState('asc')
+  // `null` = the opening set has not been decided yet. See the effect below.
+  const [filters, setFilters] = useState(null)
+
+  // THE DASHBOARD OPENS ON YOUR OWN CASES (Levi 2026-09-03). It needs the
+  // profile to know who that is, and `RequireAuth` renders this page before
+  // /auth/me resolves — so the default is applied once, when the id arrives,
+  // rather than read during the first render where it is not there yet.
+  //
+  // If the profile settles WITHOUT an id (a failed /auth/me), open unfiltered
+  // instead of waiting forever: a dashboard showing everyone's cases is a
+  // worse default but a working screen, and the chip row will say plainly that
+  // nothing is applied.
+  useEffect(() => {
+    if (filters !== null) return
+    if (meId) setFilters([{ col: 'created_by', op: 'eq', value: meId }])
+    else if (!profileLoading) setFilters([])
+  }, [meId, profileLoading, filters])
 
   function onSort(col, nextDir) {
     setSort(col)
     setDir(nextDir)
+    setPage(1)
+  }
+
+  function onFilter(column, next) {
+    setFilters(f => {
+      let out = f || []
+      // An owner filter writes two columns (the uuid and the display name), so
+      // replacing "this column" has to clear both or the name filter survives
+      // invisibly behind a funnel that reads as off.
+      for (const c of (column.filter.kind === OWNER
+        ? [column.col, column.filter.nameCol] : [column.col])) {
+        out = out.filter(x => x.col !== c)
+      }
+      return [...out, ...next]
+    })
+    setPage(1)
+  }
+
+  function removeColumns(cols) {
+    setFilters(f => (f || []).filter(x => !cols.includes(x.col)))
     setPage(1)
   }
 
@@ -100,34 +164,56 @@ export default function DashboardPage() {
     return () => clearTimeout(t)
   }, [search])
 
+  const applied = filters || []
+  // `workflow_status` rides its own query parameter rather than the generic
+  // `filter=` grammar: it is the one column the backend must keep OUT of the
+  // count queries, because those counts are what you pick a status from.
+  const wfPicked = filtersFor(applied, 'workflow_status')[0]?.value || []
+  const colFilters = applied.filter(f => f.col !== 'workflow_status')
+
   const params = new URLSearchParams({
     scope: 'dashboard', page: String(page), page_size: String(PAGE_SIZE),
   })
   if (query) params.set('search', query)
-  if (status) params.set('workflow_status', status)
+  if (wfPicked.length) params.set('workflow_status', wfPicked.join(','))
   if (sort) { params.set('sort', sort); params.set('dir', dir) }
-  // "Review overdue" — the anniversary has passed and the return is still
-  // inside the 42-day window. The server counts negative days for exactly that
-  // state, so `≤ 0` is the whole filter. Both parameters or neither: the
-  // backend 422s on a half-supplied pair.
-  if (overdueOnly) { params.set('anniv_op', 'lte'); params.set('anniv_days', '0') }
+  appendTo(params, colFilters)
 
-  const { data, loading, error } = useAbortableGet(`/cases?${params}`)
+  // Held back until the opening filter set is decided, so the screen never
+  // fires one request for every case and a second for yours.
+  const { data, loading, error } = useAbortableGet(
+    filters === null ? null : `/cases?${params}`)
 
   const rows = data?.rows || []
   const counts = data?.counts || {}
   const total = data?.total || 0
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  const columns = useMemo(() => buildColumns(meId, counts), [meId, counts])
+
   const sum = keys => keys.reduce((n, k) => n + (counts[k] ?? 0), 0)
   const actionCount = sum(ACTION_STATUSES)
   const pendingCount = sum(PENDING_STATUSES)
+
+  const same = (a, b) => a.length === b.length && a.every(v => b.includes(v))
+  const actionOn = same(wfPicked, ACTION_STATUSES)
+  const pendingOn = same(wfPicked, PENDING_STATUSES)
+
+  /** A tile is the filter for its own set: click to apply, click again to drop. */
+  function toggleTile(statuses, on) {
+    setFilters(f => setColumn(f || [], 'workflow_status',
+      on ? [] : [{ col: 'workflow_status', op: 'in', value: statuses }]))
+    setPage(1)
+  }
 
   // Rows already past the anniversary and still filable. Counted from the page
   // in view, so the banner says "on this page" rather than implying a total it
   // has not been given — the server sends no separate overdue count.
   const overdueHere = rows.filter(r => r.days_to_anniversary != null
                                     && r.days_to_anniversary <= 0).length
+  const annivFilters = filtersFor(applied, 'days_to_anniversary')
+  const overdueOnly = annivFilters.length === 1
+    && annivFilters[0].op === 'lte' && annivFilters[0].value === 0
 
   return (
     <>
@@ -176,38 +262,40 @@ export default function DashboardPage() {
             incurs escalating registration fees and possible prosecution — review
             and file now.
           </div>
+          {/* Writes the same Days-to-anniversary filter the column header does,
+              so it shows up as a chip and the funnel lights like any other. */}
           <button className="info-banner-cta"
-                  onClick={() => { setOverdueOnly(v => !v); setPage(1) }}>
+                  onClick={() => {
+                    setFilters(f => setColumn(f || [], 'days_to_anniversary',
+                      overdueOnly ? [] : [{ col: 'days_to_anniversary', op: 'lte', value: 0 }]))
+                    setPage(1)
+                  }}>
             {overdueOnly ? 'Show all' : 'Review overdue'}
           </button>
         </div>
       )}
 
       <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(2,minmax(0,1fr))', maxWidth: 560 }}>
-        <div className="stat-card accent-left">
+        <button type="button" aria-pressed={actionOn}
+                className={`stat-card accent-left is-filter${actionOn ? ' is-on' : ''}`}
+                onClick={() => toggleTile(ACTION_STATUSES, actionOn)}>
           <div className="stat-lbl">Action Required</div>
           <div className="stat-val stat-accent">{actionCount}</div>
           <div className="stat-sub">Data Verification · Client response · Signing · Submission</div>
-        </div>
-        <div className="stat-card accent-indigo">
+          <span className="stat-on-note">
+            {actionOn ? 'Filtering — click to clear' : 'Click to filter'}
+          </span>
+        </button>
+        <button type="button" aria-pressed={pendingOn}
+                className={`stat-card accent-indigo is-filter${pendingOn ? ' is-on' : ''}`}
+                onClick={() => toggleTile(PENDING_STATUSES, pendingOn)}>
           <div className="stat-lbl">Pending</div>
           <div className="stat-val" style={{ color: 'var(--indigo)' }}>{pendingCount}</div>
           <div className="stat-sub">Awaiting client response</div>
-        </div>
-      </div>
-
-      {/* Pre-incorporation (NNC1) has no cases yet — the toggle is present
-          because v11 places it here, and selecting it says so plainly rather
-          than showing an empty table that looks like a loading failure. */}
-      <div className="seg seg-inline" role="tablist" aria-label="Incorporation phase">
-        {[['all', 'All cases'], ['post', 'Post-incorporation'], ['pre', 'Pre-incorporation']]
-          .map(([key, label]) => (
-            <button key={key} role="tab" aria-selected={phase === key}
-                    className={`seg-btn ${phase === key ? 'active' : ''}`}
-                    onClick={() => { setPhase(key); setPage(1) }}>
-              {label}
-            </button>
-          ))}
+          <span className="stat-on-note">
+            {pendingOn ? 'Filtering — click to clear' : 'Click to filter'}
+          </span>
+        </button>
       </div>
 
       <div className="search-wrap">
@@ -225,22 +313,12 @@ export default function DashboardPage() {
         />
       </div>
 
-      <div className="filter-tabs" role="tablist">
-        {TABS.map(tab => (
-          <button
-            key={tab.label}
-            role="tab"
-            aria-selected={status === tab.key}
-            className={`filter-tab ${tab.cls} ${status === tab.key ? 'active' : ''}`}
-            onClick={() => { setStatus(tab.key); setPage(1) }}
-          >
-            {tab.label}
-            <span className="filter-count">
-              {tab.key === null ? (counts.all ?? 0) : (counts[tab.key] ?? 0)}
-            </span>
-          </button>
-        ))}
-      </div>
+      <FilterChips
+        columns={columns}
+        filters={applied}
+        onRemove={removeColumns}
+        onClearAll={() => { setFilters([]); setPage(1) }}
+      />
 
       <div className="sort-note" style={{ visibility: sort ? 'hidden' : 'visible' }}>
         <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2"
@@ -257,31 +335,23 @@ export default function DashboardPage() {
         <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
           Failed to load cases: {error}
         </div>
-      ) : phase === 'pre' ? (
-        <div className="empty-state" style={{ padding: 32 }}>
-          Pre-incorporation cases (NNC1) are not built yet. Switch to
-          Post-incorporation to see NAR1 cases.
-        </div>
       ) : (
         <>
           <div className="tbl-wrap tbl-stack">
             <table>
               <thead>
                 <tr>
-                  {COLUMNS.map(([col, label]) => (
-                    col
-                      ? <SortableTh key={label} col={col} sort={sort} dir={dir} onSort={onSort}>
-                          {label}
-                        </SortableTh>
-                      : <th key={label}>{label}</th>
+                  {columns.map(column => (
+                    <FilterableTh key={column.col} column={column} sort={sort} dir={dir}
+                                  onSort={onSort} filters={applied} onFilter={onFilter} />
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
-                  <tr><td colSpan={COLUMNS.length} className="empty-state">Loading…</td></tr>
+                {loading || filters === null ? (
+                  <tr><td colSpan={columns.length} className="empty-state">Loading…</td></tr>
                 ) : rows.length === 0 ? (
-                  <tr><td colSpan={COLUMNS.length} className="empty-state">
+                  <tr><td colSpan={columns.length} className="empty-state">
                     No cases match this view.
                   </td></tr>
                 ) : rows.map(c => {

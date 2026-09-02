@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from services import (
     audit_events as ev, document_service, email_service, nar1_approvals,
-    nar1_case_status, nar1_cases, nar1_return_data,
+    nar1_case_status, nar1_cases, nar1_return_data, table_filters as tf,
 )
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
@@ -118,9 +118,14 @@ async def create_case(
 async def list_cases(
     scope: str | None = Query(None, description="dashboard"),
     search: str | None = Query(None),
-    workflow_status: str | None = Query(None, description="one of the seven badges"),
+    workflow_status: str | None = Query(
+        None, description="one badge, or several comma-separated"),
     anniv_op: str | None = Query(None, description="lte | gte | eq"),
     anniv_days: int | None = Query(None, description="signed day count"),
+    filter_: list[str] = Query(
+        default_factory=list, alias="filter",
+        description="repeatable column:op:value — see services/table_filters",
+    ),
     sort: str | None = Query(None),
     dir: str = Query("asc"),
     page: int = Query(1, ge=1),
@@ -156,16 +161,26 @@ async def list_cases(
         raise HTTPException(422, f"Unknown comparison '{anniv_op}'")
     if (anniv_op is None) != (anniv_days is None):
         raise HTTPException(422, "anniv_op and anniv_days must be supplied together")
-    if workflow_status and workflow_status not in nar1_case_status.WORKFLOW_STATUSES:
-        raise HTTPException(422, f"Unknown workflow status '{workflow_status}'")
+    # One badge or several. The two dashboard tiles each stand for a SET —
+    # "Action Required" is the five badges whose next move is ours — so the
+    # parameter that the tile writes has to be able to say all five.
+    picked = [s for s in (workflow_status or "").split(",") if s]
+    unknown = [s for s in picked if s not in nar1_case_status.WORKFLOW_STATUSES]
+    if unknown:
+        raise HTTPException(422, f"Unknown workflow status '{unknown[0]}'")
     if sort and sort not in nar1_cases._SORTABLE:
         raise HTTPException(422, f"Cannot sort by '{sort}'")
+    try:
+        col_filters = tf.parse(filter_, nar1_cases._FILTERABLE)
+    except tf.FilterError as exc:
+        raise HTTPException(422, str(exc))
 
     return await nar1_cases.list_dashboard(
         search=search,
-        workflow_status=workflow_status,
+        workflow_statuses=picked,
         anniv_op=anniv_op,
         anniv_days=anniv_days,
+        filters=col_filters,
         sort=sort,
         direction=dir,
         page=page,
