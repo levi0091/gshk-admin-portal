@@ -47,19 +47,33 @@ import io
 import logging
 import re
 import xml.etree.ElementTree as ET
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, NameObject, NumberObject, TextStringObject
 
+from services.nar1_form import appearance
 from services.nar1_form import field_map as fm
+from services.tpsi.forms.cr_vocabularies import (
+    HKG,
+    display_country,
+    display_district,
+)
 
-# pypdf warns "contains characters not supported by font encoding" for every
-# value it writes, including plain ASCII, because it cannot build an appearance
-# stream from CR's subsetted form fonts. It does not have to: the document sets
-# NeedAppearances, so the VIEWER draws the values from the form's own fonts —
-# verified by rasterising a real filled return, Chinese company names included.
-# The warning is therefore noise, and one line per field drowns real logs.
+# update_page_form_field_values() builds a pypdf-native appearance stream for
+# every field it touches, and warns whenever CR's subsetted form fonts cannot
+# encode the value -- including plain ASCII, because those fonts are
+# subsetted to only the glyphs CR's own printed form needs. That has nothing
+# to do with NeedAppearances or with what a viewer draws: the warning fires
+# regardless, one line per field, because pypdf always attempts to build the
+# stream. Restored 2026-09-01 after Task 3 baked the actual text layer
+# ourselves -- these particular streams are now built and then never used,
+# so the corruption the warning describes cannot happen here, and its
+# remedy (auto_regenerate=True) is the opposite of what this module wants:
+# that would hand rendering back to the CR-subsetted fonts this block exists
+# to stop depending on. Scoped to this one pypdf logger only -- it silences
+# this specific message and nothing else.
 logging.getLogger("pypdf.generic._appearance_stream").setLevel(logging.ERROR)
 
 #: CR's blank form, COMMITTED BESIDE THIS MODULE rather than read from
@@ -69,11 +83,83 @@ logging.getLogger("pypdf.generic._appearance_stream").setLevel(logging.ERROR)
 #: from any fresh clone. Read-only; never modified in place.
 TEMPLATE = Path(__file__).resolve().parent / "form" / "NAR1_fillable.pdf"
 
-#: Who CR contacts about the filing. GSHK, not the client.
+#: Who CR contacts about the filing. GSHK, not the client, and the SAME on
+#: every return GSHK files -- which is why it is a constant here rather than
+#: something a caller has to remember to pass.
+#:
+#: Verbatim from GSHK's own filed NAR1 (Kanenas Holding Limited, 2026). It
+#: previously carried the name and `no-reply@getstarted.hk` and nothing else,
+#: so the presenter box rendered with an empty Address, Tel and Reference and
+#: named a mailbox that does not accept replies -- on the one block of the
+#: form whose whole purpose is to tell CR where to write back.
+#:
+#: `no-reply@` is the address the portal SENDS from (see CLAUDE.md); it is not
+#: the address CR should answer. Those are different jobs and were conflated.
 DEFAULT_PRESENTER = {
     "name": "Get Started HK Limited",
-    "email": "no-reply@getstarted.hk",
+    "address": ("Suite C, Level 7, World Trust Tower, 50 Stanley Street, "
+                "Central, Hong Kong"),
+    "tel": "2813 7600",
+    "email": "info@getstarted.hk",
 }
+
+#: What CR's own returns put in a box with nothing to report, rather than
+#: leaving it blank -- on a statutory declaration an empty box reads as "not
+#: answered" and a dash reads as "none". Taken from GSHK's filed specimen,
+#: which uses BOTH and not interchangeably: "N/A" for a whole numbered section
+#: that does not apply to this company, "-" for a particular that is absent
+#: from a block otherwise filled in.
+NONE_GIVEN = "-"
+NOT_APPLICABLE = "N/A"
+
+
+#: The sizes CR uses that are not the 10pt default, keyed by the field's name
+#: on the template. Read off a real filed return rather than guessed: the BRN
+#: in the header box is 14pt on EVERY page, and the company name in field 1
+#: is 12pt.
+#:
+#: Built from field_map's own constants rather than a regex over field names.
+#: `fill_1_P.6` is a BRN header and `fill_6_P.6` is a director's surname --
+#: a pattern loose enough to catch every header also catches those.
+def _br_number_fields() -> set[str]:
+    groups = (fm.MAIN_1, fm.MAIN_2, fm.SECRETARY_INDIVIDUAL,
+              fm.SECRETARY_CORPORATE, fm.DIRECTOR_INDIVIDUAL,
+              fm.DIRECTOR_CORPORATE_HEADER, fm.RESERVE_DIRECTOR,
+              fm.MEMBERS_AND_SIGNATURE,
+              # NOT fm.SCHEDULE_1 / fm.SCHEDULE_2 -- those are row TUPLES.
+              # `"br_number" in <tuple>` is False, so naming them here fails
+              # silently and both Schedule pages print their BRN at 10pt.
+              fm.SCHEDULE_1_HEADER, fm.SCHEDULE_2_HEADER)
+    names = {group["br_number"] for group in groups if "br_number" in group}
+    for page in range(fm.PAGE_SHEET_A, fm.PAGE_SHEET_E + 1):
+        names.add(fm.sheet_header(page)["br_number"])
+    return names
+
+
+FIELD_SIZES = {name: 14.0 for name in _br_number_fields()}
+FIELD_SIZES[fm.MAIN_1["company_name"]] = 12.0
+
+#: The presenter's block is set SMALLER as well as lighter -- 9pt against the
+#: return's 12pt on GSHK's specimen. It is the one place the template's own
+#: `/DA` and CR's printed output disagree: the six widgets are a mix of 12pt,
+#: 9pt and auto, and CR sets the whole block at the size of its longest field.
+#: Rendering it at 12pt made the administrative note about who filed the
+#: return compete with the statutory values above it.
+PRESENTER_SIZE = 9.0
+
+#: The fields CR sets in the REGULAR face rather than bold. On a real filed
+#: return every statutory value is bold and the presenter's block -- who filed
+#: this, and where to write back -- is not. That contrast is how CR separates
+#: the return's content from the administrative note identifying the filer, so
+#: rendering the whole page bold loses a distinction the form is making.
+REGULAR_WEIGHT_FIELDS = frozenset(
+    fm.MAIN_1[key] for key in (
+        "presenter_name", "presenter_address", "presenter_tel",
+        "presenter_fax", "presenter_email", "presenter_reference",
+    )
+)
+
+FIELD_SIZES.update({name: PRESENTER_SIZE for name in REGULAR_WEIGHT_FIELDS})
 
 
 class FormFillError(RuntimeError):
@@ -273,14 +359,72 @@ def _company_name(model: dict) -> str:
     return "  ".join(p for p in parts if p)
 
 
+# --- numbers ---------------------------------------------------------------
+#
+# CR transmits a bare numeral and PRINTS it grouped: its own return shows
+# "10,000" shares and "10,000.00" of capital where the XML carries "10000"
+# for both. Rendering the raw string made a five-figure share capital read as
+# "10000" and made the count and the amount indistinguishable at a glance --
+# which is exactly the pair a director is being asked to check.
+
+def _decimal(value: str):
+    """`value` as a Decimal, or None if it is not a plain number.
+
+    None is the "leave it alone" signal. These fields have already been
+    accepted by CR, so a value this cannot parse is one to print verbatim, not
+    one to blank or to guess at.
+    """
+    text = (value or "").strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
+
+
+def format_count(value: str) -> str:
+    """A share COUNT: grouped, and never given decimals. "10000" -> "10,000"."""
+    number = _decimal(value)
+    if number is None:
+        return (value or "").strip()
+    if number == number.to_integral_value():
+        return f"{number.to_integral_value():,}"
+    return f"{number:,}"
+
+
+def format_amount(value: str) -> str:
+    """A money AMOUNT: grouped, and always to two decimals.
+
+    "10000" -> "10,000.00". The decimals are the point: they are what
+    distinguishes the Total Amount column from the Total Number column beside
+    it when both hold the same figure, which is the ordinary case for a
+    company whose shares were issued at $1.
+    """
+    number = _decimal(value)
+    if number is None:
+        return (value or "").strip()
+    return f"{number.quantize(Decimal('0.01')):,}"
+
+
 def _address(node: dict) -> dict:
-    """CR's stdAddress/roAddr/allotteeAddr block. One shape, three names."""
+    """CR's stdAddress/roAddr/allotteeAddr block. One shape, three names.
+
+    The district and the country are turned back into the names CR PRINTS.
+    Both travel as codes -- "CENTRAL", "SWE" -- and rendering the code put
+    block capitals on the form where GSHK's own specimen reads "Central" and
+    "Sweden". The district is only a code for a Hong Kong address; everywhere
+    else the column is free text and is left exactly as it stands.
+    """
+    country_code = _get(node, "ctryRegion")
+    district = _get(node, "dstCtyStatePostal")
     return {
         "flat_floor": _get(node, "flatFlrBlk"),
         "building": _get(node, "bldg"),
         "street": _get(node, "stEstLotVlg"),
-        "district_city_state": _get(node, "dstCtyStatePostal"),
-        "country": _get(node, "ctryRegion"),
+        "district_city_state": (display_district(district)
+                                if country_code.upper() == HKG else district),
+        "country": display_country(country_code),
     }
 
 
@@ -291,6 +435,36 @@ def _yes(value: str) -> bool:
 # ---------------------------------------------------------------------------
 # Block writers — one per repeated shape on the form
 # ---------------------------------------------------------------------------
+
+def _mark_absent(values: dict, block: dict, keys) -> None:
+    """Write "-" into the named boxes of a block that have nothing in them.
+
+    ONLY EVER CALLED ON A BLOCK THAT HAS CONTENT. CR's form is static, so a
+    company with no natural-person secretary still files page 3 -- and that
+    page is BLANK on GSHK's specimen, not a column of dashes. A dash means
+    "this officer has no Chinese name"; a blank page means "there is no such
+    officer", and the two must not be confused on a statutory return.
+    """
+    for key in keys:
+        name = block.get(key)
+        if name and not values.get(name):
+            values[name] = NONE_GIVEN
+
+
+#: The particulars GSHK's specimen dashes when a person or body has none.
+#: Deliberately NOT every empty box in the block: the free-text "Reason" for
+#: holding no TCSP licence and a member's "Remarks" are left blank there,
+#: because an empty prose box already reads as "nothing to say" while an empty
+#: NAME box reads as an omission.
+_ABSENT_INDIVIDUAL = ("name_zh", "prev_name_zh", "prev_name_en", "alias_zh",
+                      "alias_en", "addr_flat_floor", "addr_building",
+                      "hkid_partial", "passport_country", "passport_partial",
+                      "alternate_to")
+_ABSENT_CORPORATE = ("name_zh", "addr_flat_floor", "addr_building",
+                     "alternate_to")
+_ABSENT_MEMBER = ("name_zh", "name_en_corp", "surname_en", "other_names_en",
+                  "addr_flat_floor", "addr_building")
+
 
 def _individual_officer(block: dict, person: dict, *, hk_only: bool) -> dict:
     """s12A / s13A / s13C and their continuation sheets.
@@ -314,7 +488,8 @@ def _individual_officer(block: dict, person: dict, *, hk_only: bool) -> dict:
         block["addr_street"]: address["street"],
         block["email"]: _get(person, "indvEmailAddr"),
         block["hkid_partial"]: _get(person, "indvHkidNo"),
-        block["passport_country"]: _get(person, "indvPptIssCtry"),
+        block["passport_country"]: display_country(
+            _get(person, "indvPptIssCtry")),
         block["passport_partial"]: _get(person, "indvPptNo"),
     }
     if hk_only:
@@ -335,6 +510,7 @@ def _individual_officer(block: dict, person: dict, *, hk_only: bool) -> dict:
         if _yes(_get(person, "altDirInd")):
             values[block["capacity_alternate"]] = fm.CHECKBOX_ON
             values[block["alternate_to"]] = _get(person, "altTo")
+    _mark_absent(values, block, _ABSENT_INDIVIDUAL)
     return values
 
 
@@ -368,6 +544,7 @@ def _corporate_officer(block: dict, body: dict, *, hk_only: bool) -> dict:
         if _yes(_get(body, "altDirInd")):
             values[block["capacity_alternate"]] = fm.CHECKBOX_ON
             values[block["alternate_to"]] = _get(body, "altTo")
+    _mark_absent(values, block, _ABSENT_CORPORATE)
     return values
 
 
@@ -381,7 +558,7 @@ def _member(block: dict, allottee: dict, group: dict, *, listed: bool) -> dict:
     address = _address(_node(allottee, "allotteeAddr"))
     corporate = (_get(allottee, "allotteeType") or "I").upper() == "C"
     values = {
-        block["shares_held"]: _get(group, "sharesAlloted"),
+        block["shares_held"]: format_count(_get(group, "sharesAlloted")),
         block["addr_flat_floor"]: address["flat_floor"],
         block["addr_building"]: address["building"],
         block["addr_street"]: address["street"],
@@ -401,6 +578,7 @@ def _member(block: dict, allottee: dict, group: dict, *, listed: bool) -> dict:
         values[block["jointly_held"]] = fm.CHECKBOX_ON
     if listed and "percentage" in block:
         values[block["percentage"]] = _get(group, "percentage")
+    _mark_absent(values, block, _ABSENT_MEMBER)
     return values
 
 
@@ -433,10 +611,58 @@ def _chunk(items, size):
         yield items[i:i + size]
 
 
-def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
+def _share_capital_totals(capitals: list[dict]) -> dict:
+    """Section 11's "總數 Total" row: the four boxes under the class rows.
+
+    THIS ROW WAS NEVER FILLED. `field_map.SHARE_CAPITAL_TOTALS` has existed
+    since the map was written and nothing referenced it, so every generated
+    return showed its share classes above an empty Total -- on the section a
+    director checks most closely, and beside a specimen that fills it.
+
+    The three totals are SUMMED from the class rows rather than read from the
+    XML, because CR's NAR1 schema carries no total: the printed form derives
+    it, and so must this. A class whose figure will not parse makes the whole
+    column blank rather than a total that silently omits it -- an
+    under-reported share capital is a misstatement, and an absent one is
+    visibly absent.
+
+    The currency box is filled only when every class shares one currency. A
+    company with an HKD class and a USD class has no single total to state,
+    and CR's one-cell Total row cannot express one; the amounts are dropped
+    with it for the same reason, while the share COUNT still totals because a
+    share is a share whatever it was paid for in.
+    """
+    if not capitals:
+        return {}
+    totals: dict[str, str] = {}
+    counts = [_decimal(_get(c, "noOfShareIssuedOnThisCls")) for c in capitals]
+    if all(n is not None for n in counts):
+        totals[fm.SHARE_CAPITAL_TOTALS["total_number"]] = \
+            format_count(str(sum(counts)))
+
+    currencies = {_get(c, "currency") for c in capitals}
+    if len(currencies) != 1 or not next(iter(currencies)):
+        return totals
+    totals[fm.SHARE_CAPITAL_TOTALS["currency"]] = next(iter(currencies))
+    for column, tag in (("total_amount", "issuedCapital"),
+                        ("paid_up", "paidUpCapital")):
+        amounts = [_decimal(_get(c, tag)) for c in capitals]
+        if all(a is not None for a in amounts):
+            totals[fm.SHARE_CAPITAL_TOTALS[column]] = \
+                format_amount(str(sum(amounts)))
+    return totals
+
+
+def _compose(model: dict, *, company_type: str, presenter: dict,
+             signed_on: str = "") -> _Pages:
     """Lay the return out across CR's pages, overflowing where it must."""
     pages = _Pages()
     br_number = _get(model, "brNo")
+    # The date beside the signature, in the dd/mm/yyyy the box is labelled
+    # for. It is NOT in the validated XML -- CR stamps the filing itself -- so
+    # it is the caller's to supply and blank when they do not.
+    sign_dd, sign_mm, sign_yyyy = split_date(signed_on)
+    signed_date = (f"{sign_dd}/{sign_mm}/{sign_yyyy}" if sign_yyyy else "")
     dd, mm, yyyy = split_date(_get(model, "dateReturnMadeUp"))
     from_dd, from_mm, from_yyyy = split_date(_get(model, "dateReturnFrom"))
     to_dd, to_mm, to_yyyy = split_date(_get(model, "dateReturnTo"))
@@ -447,7 +673,7 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
     page1 = {
         m1["br_number"]: br_number,
         m1["company_name"]: _company_name(model),
-        m1["business_name"]: _get(model, "brName"),
+        m1["business_name"]: _get(model, "brName") or NOT_APPLICABLE,
         m1["business_nature_code"]: _get(model, "nature"),
         m1["business_nature_desc"]: _get(model, "natureDesc"),
         m1["return_date_dd"]: dd,
@@ -468,6 +694,11 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
     # "A private company needs not complete this section" -- the form says so
     # on section 5 itself. Filling it anyway would be a statement about
     # financial statements that a private company does not deliver.
+    #
+    # NOT LEFT BLANK EITHER. GSHK's specimen writes "N/A" across the section,
+    # in the month box of each date group, so the reader can tell "this
+    # company does not deliver financial statements" from "somebody forgot the
+    # accounting period". The day and year boxes stay empty, as they do there.
     if company_type != "private":
         page1.update({
             m1["fin_period_from_dd"]: from_dd,
@@ -477,18 +708,26 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
             m1["fin_period_to_mm"]: to_mm,
             m1["fin_period_to_yyyy"]: to_yyyy,
         })
+    else:
+        page1[m1["fin_period_from_mm"]] = NOT_APPLICABLE
+        page1[m1["fin_period_to_mm"]] = NOT_APPLICABLE
     pages.add(fm.PAGE_MAIN_1, page1)
 
     # ---- page 2 ----------------------------------------------------------
     m2 = fm.MAIN_2
     page2 = {
         m2["br_number"]: br_number,
-        m2["email_address"]: _get(model, "emailAddr"),
+        m2["email_address"]: _get(model, "emailAddr") or NONE_GIVEN,
         m2["phone"]: _get(model, "telNo"),
-        # The form asks for NIL rather than a blank: on a statutory
-        # declaration an empty box reads as "not answered".
-        m2["mortgages_total"]: _get(model, "totalAmountMortCharge") or "NIL",
-        m2["members_no_capital"]: _get(model, "memberNumAtDateReturn"),
+        # The form asks for a stated nil rather than a blank: on a statutory
+        # declaration an empty box reads as "not answered". Spelt "Nil" as
+        # GSHK's own return spells it, not "NIL".
+        m2["mortgages_total"]:
+            format_amount(_get(model, "totalAmountMortCharge")) or "Nil",
+        # Section 10 is for a company with NO share capital, so on the returns
+        # this portal files it is nearly always the dash.
+        m2["members_no_capital"]:
+            format_count(_get(model, "memberNumAtDateReturn")) or NONE_GIVEN,
     }
     capitals = _as_list(_node(model, "shareCapitals").get("shareCapital")) \
         or _as_list(model.get("shareCapitals"))
@@ -505,9 +744,12 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
         page2[fm.share_capital(row, "class")] = _get(capital, "clsOfShares")
         page2[fm.share_capital(row, "currency")] = _get(capital, "currency")
         page2[fm.share_capital(row, "total_number")] = \
-            _get(capital, "noOfShareIssuedOnThisCls")
-        page2[fm.share_capital(row, "total_amount")] = _get(capital, "issuedCapital")
-        page2[fm.share_capital(row, "paid_up")] = _get(capital, "paidUpCapital")
+            format_count(_get(capital, "noOfShareIssuedOnThisCls"))
+        page2[fm.share_capital(row, "total_amount")] = \
+            format_amount(_get(capital, "issuedCapital"))
+        page2[fm.share_capital(row, "paid_up")] = \
+            format_amount(_get(capital, "paidUpCapital"))
+    page2.update(_share_capital_totals(capitals))
     pages.add(fm.PAGE_MAIN_2, page2)
 
     # ---- officers, with overflow -----------------------------------------
@@ -517,32 +759,54 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
     corp_dirs = _as_list(model.get("corpDirList"))
     res_dirs = _as_list(model.get("resDirList"))
 
+    # CR's NAR1 is a STATIC form: a section's page is filed whether or not the
+    # section has content. The reference return carries an empty natural-person
+    # secretary page, an empty body-corporate director page and an empty
+    # reserve-director page, and files all three.
+    #
+    # These used to be conditional, so a typical private company rendered six
+    # pages instead of nine and every section below the gap moved. The client
+    # verification email names pages ("Page 5: Director's details"), so a page
+    # set that shifts with the officer mix points the reader at the wrong
+    # section. Continuation sheets stay conditional below -- those really are
+    # overflow, and CR's own form says so.
     if ind_secs:
         values = _individual_officer(fm.SECRETARY_INDIVIDUAL, ind_secs[0],
                                      hk_only=True)
-        values[fm.SECRETARY_INDIVIDUAL["br_number"]] = br_number
-        pages.add(fm.PAGE_SECRETARY_INDIVIDUAL, values)
+    else:
+        values = {}
+    values[fm.SECRETARY_INDIVIDUAL["br_number"]] = br_number
+    pages.add(fm.PAGE_SECRETARY_INDIVIDUAL, values)
+
     if corp_secs:
         values = _corporate_officer(fm.SECRETARY_CORPORATE, corp_secs[0],
                                     hk_only=True)
-        values[fm.SECRETARY_CORPORATE["br_number"]] = br_number
-        pages.add(fm.PAGE_SECRETARY_CORPORATE, values)
+    else:
+        values = {}
+    values[fm.SECRETARY_CORPORATE["br_number"]] = br_number
+    pages.add(fm.PAGE_SECRETARY_CORPORATE, values)
+
     if ind_dirs:
         values = _individual_officer(fm.DIRECTOR_INDIVIDUAL, ind_dirs[0],
                                      hk_only=False)
-        values[fm.DIRECTOR_INDIVIDUAL["br_number"]] = br_number
-        pages.add(fm.PAGE_DIRECTOR_INDIVIDUAL, values)
-    if corp_dirs:
-        values = {fm.DIRECTOR_CORPORATE_HEADER["br_number"]: br_number}
-        for slot, body in zip(fm.DIRECTOR_CORPORATE,
-                              corp_dirs[:fm.DIRECTOR_CORPORATE_SLOTS]):
-            values.update(_corporate_officer(slot, body, hk_only=False))
-        pages.add(fm.PAGE_DIRECTOR_CORPORATE, values)
+    else:
+        values = {}
+    values[fm.DIRECTOR_INDIVIDUAL["br_number"]] = br_number
+    pages.add(fm.PAGE_DIRECTOR_INDIVIDUAL, values)
+
+    values = {fm.DIRECTOR_CORPORATE_HEADER["br_number"]: br_number}
+    for slot, body in zip(fm.DIRECTOR_CORPORATE,
+                          corp_dirs[:fm.DIRECTOR_CORPORATE_SLOTS]):
+        values.update(_corporate_officer(slot, body, hk_only=False))
+    pages.add(fm.PAGE_DIRECTOR_CORPORATE, values)
+
     if res_dirs:
         values = _individual_officer(fm.RESERVE_DIRECTOR, res_dirs[0],
                                      hk_only=False)
-        values[fm.RESERVE_DIRECTOR["br_number"]] = br_number
-        pages.add(fm.PAGE_RESERVE_DIRECTOR, values)
+    else:
+        values = {}
+    values[fm.RESERVE_DIRECTOR["br_number"]] = br_number
+    pages.add(fm.PAGE_RESERVE_DIRECTOR, values)
 
     def sheet_header_values(page_no):
         head = fm.sheet_header(page_no)
@@ -591,15 +855,23 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
             for allottee in _as_list(group.get("allotteeRec")):
                 rows.append((share_class, total, group, allottee))
 
-    for chunk in _chunk(rows, fm.SCHEDULE_SLOTS):
+    # ALWAYS at least one chunk, even with zero members. `_chunk(rows, ...)`
+    # on an empty list yields nothing, which used to drop the Schedule page
+    # entirely -- an 8-page document that STILL ticked "members are listed on
+    # Schedule 1/2" on page 8, pointing at a sheet that was not in the file.
+    # CR's form is static the same way pages 3-7 are (see "CR'S FORM IS
+    # STATIC" below): the schedule is filed whether or not it has rows.
+    for chunk in (list(_chunk(rows, fm.SCHEDULE_SLOTS)) or [()]):
         values = {
             schedule_head["br_number"]: br_number,
             schedule_head["return_date_dd"]: dd,
             schedule_head["return_date_mm"]: mm,
             schedule_head["return_date_yyyy"]: yyyy,
-            schedule_head["share_class"]: chunk[0][0],
-            schedule_head["class_total_issued"]: chunk[0][1],
         }
+        if chunk:
+            values[schedule_head["share_class"]] = chunk[0][0]
+            values[schedule_head["class_total_issued"]] = \
+                format_count(chunk[0][1])
         for slot, (_cls, _total, group, allottee) in zip(schedule_slots, chunk):
             values.update(_member(slot, allottee, group, listed=listed))
         pages.add(schedule_page, values)
@@ -621,20 +893,29 @@ def _compose(model: dict, *, company_type: str, presenter: dict) -> _Pages:
         ms["members_in_schedule_2" if listed else "members_in_schedule_1"]:
             fm.CHECKBOX_ON,
         ms["signed_name"]: _get(model, "selectPersonName"),
+        ms["signed_date"]: signed_date,
+        # s15 is "the address where the company's records are kept IF NOT at
+        # the registered office". The validated XML carries no such address --
+        # by not carrying one it says they are kept at the registered office --
+        # so both cells state that rather than trailing off blank.
+        ms["records_description"]: NOT_APPLICABLE,
+        ms["records_address"]: NOT_APPLICABLE,
     }
     if company_type == "private":
         page8[ms["statement_private"]] = fm.CHECKBOX_ON
+    # ZERO IS AN ANSWER HERE. "This Return includes the following Continuation
+    # Sheet(s)" is a count of what is attached, and GSHK's specimen writes a 0
+    # in each of the five boxes rather than leaving them empty -- a blank
+    # count row reads as an unanswered question about whether pages are
+    # missing from the bundle.
     for name, page_no in (("count_sheet_a", fm.PAGE_SHEET_A),
                           ("count_sheet_b", fm.PAGE_SHEET_B),
                           ("count_sheet_c", fm.PAGE_SHEET_C),
                           ("count_sheet_d", fm.PAGE_SHEET_D),
                           ("count_sheet_e", fm.PAGE_SHEET_E)):
-        count = pages.count_of(page_no)
-        if count:
-            page8[ms[name]] = str(count)
-    if schedule_count:
-        page8[ms["count_schedule_2" if listed else "count_schedule_1"]] = \
-            str(schedule_count)
+        page8[ms[name]] = str(pages.count_of(page_no))
+    page8[ms["count_schedule_1"]] = str(0 if listed else schedule_count)
+    page8[ms["count_schedule_2"]] = str(schedule_count if listed else 0)
 
     pages.add(fm.PAGE_MEMBERS_AND_SIGNATURE, page8)
 
@@ -660,32 +941,51 @@ def _assert_nothing_dropped(model: dict, pages: _Pages) -> None:
     is being asked to approve and CR is being asked to register. So the counts
     are checked rather than trusted, after composition and before any bytes are
     produced.
+
+    PER OFFICER KIND, not pooled into one total. Pages 3-7 are now
+    unconditionally present (CR's form is static -- see `_compose`), so a
+    single combined "capacity of every page present" figure always includes
+    the 6 phantom slots of the four other kinds' main pages -- 1 secretary
+    (natural person) + 1 secretary (body corporate) + 1 director (natural
+    person) + 2 director (body corporate) + 1 reserve director -- whether or
+    not that kind has any officers at all. A director cannot occupy a
+    secretary's box, so that phantom capacity must not be able to cover for
+    a genuinely missing director. Demonstrated in review: a return with 4
+    individual directors and only the ONE main-page slot laid out (no Sheet C
+    added) passed the pooled check, because the other 5 phantom slots alone
+    already exceeded 4.
     """
-    expected_officers = (
-        len(_as_list(model.get("indSecList")))
-        + len(_as_list(model.get("corpSecList")))
-        + len(_as_list(model.get("indDirList")))
-        + len(_as_list(model.get("corpDirList")))
-        + len(_as_list(model.get("resDirList")))
-    )
-    capacity = {
-        fm.PAGE_SECRETARY_INDIVIDUAL: 1, fm.PAGE_SECRETARY_CORPORATE: 1,
-        fm.PAGE_DIRECTOR_INDIVIDUAL: 1,
-        fm.PAGE_DIRECTOR_CORPORATE: fm.DIRECTOR_CORPORATE_SLOTS,
-        fm.PAGE_RESERVE_DIRECTOR: 1,
-        fm.PAGE_SHEET_A: 1, fm.PAGE_SHEET_B: 1, fm.PAGE_SHEET_C: 1,
-        fm.PAGE_SHEET_D: fm.SHEET_D_SLOTS,
+    counts = {
+        "indSecList": len(_as_list(model.get("indSecList"))),
+        "corpSecList": len(_as_list(model.get("corpSecList"))),
+        "indDirList": len(_as_list(model.get("indDirList"))),
+        "corpDirList": len(_as_list(model.get("corpDirList"))),
+        "resDirList": len(_as_list(model.get("resDirList"))),
     }
-    # Capacity, not occupancy: a page with one of its two slots used still has
-    # room for the other, so this can only ever over-count -- which is the safe
-    # direction for a check whose job is to catch UNDER-provisioning.
-    provisioned = sum(capacity.get(page_no, 0) for page_no, _ in pages.items)
-    if provisioned < expected_officers:
-        raise FormFillError(
-            f"the return has {expected_officers} officers but only "
-            f"{provisioned} slots were laid out; some would be silently "
-            f"dropped from the form"
-        )
+    # Capacity, not occupancy, within each kind: a page with one of its two
+    # slots used still has room for the other, so this can only ever
+    # over-count within a kind -- the safe direction for a check whose job
+    # is to catch UNDER-provisioning. It must NOT be summed ACROSS kinds.
+    per_kind = (
+        ("secretary (natural person)", "indSecList",
+         1 + pages.count_of(fm.PAGE_SHEET_A)),
+        ("secretary (body corporate)", "corpSecList",
+         1 + pages.count_of(fm.PAGE_SHEET_B)),
+        ("director (natural person)", "indDirList",
+         1 + pages.count_of(fm.PAGE_SHEET_C)),
+        ("director (body corporate)", "corpDirList",
+         fm.DIRECTOR_CORPORATE_SLOTS
+         + pages.count_of(fm.PAGE_SHEET_D) * fm.SHEET_D_SLOTS),
+        ("reserve director", "resDirList", 1),
+    )
+    for label, key, provisioned in per_kind:
+        expected = counts[key]
+        if provisioned < expected:
+            raise FormFillError(
+                f"the return has {expected} {label} officers but only "
+                f"{provisioned} slots were laid out; some would be silently "
+                f"dropped from the form"
+            )
 
     members = sum(
         len(_as_list(group.get("allotteeRec")))
@@ -809,11 +1109,6 @@ def _render(pages: _Pages) -> bytes:
             writer.pages[-1], renamed, auto_regenerate=False
         )
 
-    # Without this most viewers draw the boxes and none of the values: pypdf
-    # writes /V but no appearance stream, and NeedAppearances asks the viewer
-    # to generate them.
-    writer.set_need_appearances_writer(True)
-
     # Read-only, because the client is being asked to APPROVE this document,
     # not to edit it. Bit 1 of /Ff is ReadOnly.
     for page in writer.pages:
@@ -830,11 +1125,24 @@ def _render(pages: _Pages) -> bytes:
 
     buffer = io.BytesIO()
     writer.write(buffer)
-    return buffer.getvalue()
+    # The values are drawn as page content in fonts we embed, and the widgets
+    # are hidden. Until this call the document still renders through CR's
+    # non-embedded /PMingLiU, which is what made the emailed copy and the
+    # portal preview disagree.
+    try:
+        return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES,
+                               regular=REGULAR_WEIGHT_FIELDS)
+    except appearance.AppearanceError as exc:
+        # Translated rather than left to propagate: every caller of
+        # `render()` already catches `FormFillError` (routers/cases.py,
+        # routers/tpsi.py) and turns it into a 422 naming the problem. An
+        # uncaught AppearanceError would surface as an opaque 500 instead of
+        # "this character on this field cannot be rendered."
+        raise FormFillError(str(exc)) from exc
 
 
 def render(validated_xml: str, *, company_type: str = "private",
-           presenter: dict | None = None) -> bytes:
+           presenter: dict | None = None, signed_on: str = "") -> bytes:
     """CR's Form NAR1, filled from the XML CR validated.
 
     `company_type` is one of "private", "public", "guarantee". It cannot be
@@ -854,6 +1162,7 @@ def render(validated_xml: str, *, company_type: str = "private",
 
     model = parse_validated_xml(validated_xml)
     pages = _compose(model, company_type=company_type,
-                     presenter=presenter or DEFAULT_PRESENTER)
+                     presenter=presenter or DEFAULT_PRESENTER,
+                     signed_on=signed_on)
     _assert_nothing_dropped(model, pages)
     return _render(pages)

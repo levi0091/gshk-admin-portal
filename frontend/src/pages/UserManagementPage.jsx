@@ -10,18 +10,51 @@ function StatusBadge({ isActive }) {
 }
 
 function AddUserModal({ roles, onClose, onCreated }) {
-  const [form, setForm] = useState({ display_name: '', email: '', role_id: '', password: '' })
+  // THREE FIELDS. The password box is GONE, not disabled (spec §7): an
+  // administrator no longer chooses a colleague's password. The portal
+  // generates one, emails it, and the account cannot do anything until its
+  // owner replaces it.
+  const [form, setForm] = useState({ display_name: '', email: '', role_id: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [warning, setWarning] = useState('')
 
   function set(field, val) { setForm(f => ({ ...f, [field]: val })) }
 
   async function submit(e) {
     e.preventDefault()
     setError('')
+    setWarning('')
     setLoading(true)
     try {
-      await api.post('/users/', form)
+      const created = await api.post('/users/', form)
+      // THE ACCOUNT EXISTS EITHER WAY. A welcome email that failed leaves a
+      // real user in Supabase Auth who has no password and no way to ask for
+      // one, so this cannot be silent — but it is not an error either, because
+      // retrying the creation would collide on the email address.
+      // ON A TEST DEPLOYMENT THE MAIL IS REDIRECTED to the four hardcoded
+      // addresses in `email_service.TEST_RECIPIENTS`. The account is real and
+      // it is locked to `must_change_password`, so unless the new user IS one
+      // of those four they can never sign in — and nothing else on this screen
+      // would say why.
+      if (created?.welcome_email_redirected) {
+        setWarning(
+          'The account was created, but this is a test environment: the '
+          + 'welcome email went to the test mailboxes, not to '
+          + `${form.email}. They cannot sign in until somebody passes them the `
+          + 'password from that mailbox.')
+        onCreated()
+        return
+      }
+      if (created?.welcome_email_sent === false) {
+        setWarning(
+          'The account was created, but the welcome email did not send'
+          + (created.welcome_email_error ? ` — ${created.welcome_email_error}` : '')
+          + '. They cannot sign in until they have their password: deactivate '
+          + 'this account and create it again once mail is working.')
+        onCreated()
+        return
+      }
       onCreated()
       onClose()
     } catch (err) {
@@ -55,11 +88,15 @@ function AddUserModal({ roles, onClose, onCreated }) {
                 {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
               </select>
             </div>
-            <div className="f-group">
-              <label className="f-label">Temporary Password <span className="f-req">*</span></label>
-              <input className="f-input" type="password" required value={form.password} onChange={e => set('password', e.target.value)} placeholder="Min 8 characters" />
-              <span className="f-hint">Share with user via secure channel. They can reset from login screen.</span>
+            <div className="f-hint">
+              G-FlowDesk emails them a password and asks them to choose their
+              own the first time they sign in. Nobody else ever sees it.
             </div>
+            {warning && (
+              <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410' }}>
+                {warning}
+              </div>
+            )}
             {error && (
               <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C' }}>
                 {error}
@@ -67,8 +104,11 @@ function AddUserModal({ roles, onClose, onCreated }) {
             )}
           </div>
           <div className="modal-footer">
-            <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={loading}>
+            <button type="button" className="btn btn-outline" onClick={onClose}>
+              {warning ? 'Close' : 'Cancel'}
+            </button>
+            <button type="submit" className="btn btn-primary"
+                    disabled={loading || Boolean(warning)}>
               {loading ? 'Creating…' : 'Create User'}
             </button>
           </div>

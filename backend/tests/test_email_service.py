@@ -263,33 +263,187 @@ def test_the_masthead_names_the_form_and_the_company_it_concerns():
     assert html.index("Form NAR1") < html.index("ACME LIMITED")
 
 
-def test_the_particulars_are_labelled_rather_than_run_together():
+def test_the_reference_line_carries_the_BR_number_and_our_own_reference():
+    """NOT in the sample letter, and kept to one small line at the end for that
+    reason. It costs almost nothing and it prevents the failure it exists for:
+    a client replying about the wrong year."""
     _, html = email_service.verification_email(CASE, ENTITY)
-    for label in ("Business Registration No.", "Return period", "Our reference"):
-        assert label in html
+    assert "BR 00000001" in html
+    assert "Ref NAR-2026-0041" in html
 
 
-def test_a_particular_with_no_value_omits_its_row_entirely():
-    """Rather than rendering an empty box the reader has to interpret."""
+def test_a_reference_with_no_value_omits_its_part_entirely():
+    """Rather than rendering "BR" with nothing after it."""
     _, html = email_service.verification_email({"case_no": "NAR-2026-0041"},
                                                {"company_name": "ACME LIMITED"})
-    assert "Business Registration No." not in html
-    assert "Our reference" in html
+    assert "BR " not in html
+    assert "Ref NAR-2026-0041" in html
 
 
-def test_the_message_carries_no_link_at_all():
-    """Nothing here is clickable, and that is a security property as much as a
-    design one: a mail about someone's company filings that contains a link is
-    the exact shape of the phishing it would train them to trust."""
+def test_the_message_carries_no_link_WHEN_NONE_IS_GIVEN():
+    """THE "NO LINK AT ALL" RULE IS REVERSED (spec section 5, Levi 2026-09-01) —
+    see `verification_email`'s docstring for what replaces its protection.
+
+    What this asserts now is the FALLBACK: a deployment that cannot build an
+    approval URL sends exactly the message that shipped before, asking for a
+    reply. That path has to keep working, because it is what a client gets when
+    PUBLIC_API_BASE_URL is unset and the request's own base URL is unusable."""
     _, html = email_service.verification_email(CASE, ENTITY)
     assert "<a " not in html
     assert "http://" not in html and "https://" not in html
+    assert "Reply to this email" in html
 
 
 def test_the_message_says_what_the_reader_has_to_do():
     _, html = email_service.verification_email(CASE, ENTITY)
-    assert "What we need from you" in html
+    assert "I enclose herewith the NAR1 for your review" in html
     assert "Reply to this email" in html
+
+
+# --- the Confirmation NAR1 Notice wording (spec section 2) ------------------
+#
+# The letter GSHK already sends by hand, transcribed from
+# docs/Confirmation NAR1 Notice.pdf. A client who has had one before gets the
+# same message from the portal — an automated mail that reads differently from
+# the one they know is an automated mail they treat as suspicious.
+
+def _letter(**over):
+    kwargs = {"attachment_name": "Explod Limited NAR1 2026.pdf",
+              "approval_url": "https://api.example.com/public/nar1-approval/t0",
+              "deadline": "2026-08-28T00:00:00+00:00",
+              "recipient_name": "Dominique", "sender_name": "Karry"}
+    kwargs.update(over)
+    return email_service.verification_email(
+        {"case_no": "NAR-2026-0041", "ar_period_year": 2026},
+        {"company_name": "Explod Limited", "br_number": "00000001"},
+        **kwargs)
+
+
+def test_the_subject_is_the_samples_own_subject_line():
+    subject, _ = _letter()
+    assert subject == "Compliance Reminder: Registration Due - Explod Limited"
+
+
+def test_the_reader_is_greeted_by_name():
+    _, html = _letter()
+    assert "Hi Dominique," in html
+
+
+def test_a_reader_with_no_name_on_record_is_still_greeted():
+    """Plenty of ETL'd directors carry no usable name. "Hi ," is worse than a
+    generic greeting."""
+    _, html = _letter(recipient_name=None)
+    assert "Hi there," in html
+
+
+def test_the_opening_line_is_verbatim():
+    _, html = _letter()
+    assert ("I enclose herewith the NAR1 for your review. Please carefully "
+            "check and confirm the following:") in html
+
+
+def test_the_heading_says_no_signature_is_required():
+    """It is the first thing a director asks, and the sample answers it in the
+    heading rather than three paragraphs down."""
+    _, html = _letter()
+    assert "1. NAR1 Form - Signature not required" in html
+
+
+@pytest.mark.parametrize("where,what", [
+    ("Page 2", "Share capital"),
+    ("Page 5", "Director&#x27;s details"),
+    ("Schedule 1", "Shareholder&#x27;s details"),
+])
+def test_the_three_page_references_are_the_samples(where, what):
+    """HARDCODED, and correct because CR's form is STATIC (spec section 1b): CR
+    keeps a section's page whether or not it has content, so Page 5 is Page 5 on
+    every NAR1 ever filed. If the renderer ever went back to dropping empty
+    pages, these three lines would quietly misdirect every client."""
+    _, html = _letter()
+    assert where in html
+    assert what in html
+
+
+def test_the_directors_duty_paragraph_is_verbatim():
+    _, html = _letter()
+    assert "the director has the duty to" in html
+    assert "ALL" in html
+    assert "information on NAR1 is correct before registration" in html
+
+
+def test_the_deadline_is_stated_and_says_what_happens_after_it():
+    _, html = _letter()
+    assert "28 August 2026" in html
+    assert "we will assume you confirm the document and proceed with filing" in html
+
+
+def test_no_deadline_still_says_what_silence_means():
+    """A blank where a legal deadline should be is worse than no date at all."""
+    _, html = _letter(deadline=None)
+    assert "we will assume you confirm the document and proceed with filing" in html
+    assert "hear from you by" not in html
+
+
+def test_the_amendment_charge_is_stated():
+    _, html = _letter()
+    assert "Any amendments later will incur a HK$1000 service cost" in html
+
+
+def test_the_case_worker_signs_it():
+    """The sample is signed by a named account manager. An automated mail signed
+    by nobody is the one a client ignores."""
+    _, html = _letter()
+    assert "Best regards" in html
+    assert "Karry" in html
+    assert "Account Manager" in html
+
+
+def test_an_unsigned_send_falls_back_to_the_company_rather_than_a_blank():
+    _, html = _letter(sender_name=None)
+    assert "Get Started HK Limited" in html
+    assert "Account Manager" in html
+
+
+def test_the_footer_is_GSHKs_own_block_verbatim():
+    _, html = _letter()
+    assert "GET STARTED HK LIMITED" in html
+    assert "+ 852 2813 7600" in html
+    assert "+852 5541 1994" in html
+    assert ("Suite C, Level 7, World Trust Tower, 50 Stanley Street, Central, "
+            "Hong Kong") in html
+    assert "Corporate Advisory | Company Formation | Accounting Services" in html
+
+
+def test_the_confirm_button_is_a_table_cell_not_a_styled_anchor():
+    """Outlook renders mail through Word, which drops padding on inline anchors
+    and leaves a bare blue link where the call to action should be."""
+    _, html = _letter()
+    assert "Confirm these particulars are correct" in html
+    assert 'bgcolor="#F36C32"' in html
+    assert "nar1-approval/t0" in html
+
+
+def test_the_message_asks_for_ONE_answer_not_two():
+    """"Reply to confirm" beside a Confirm button asks for the same thing twice,
+    and a reader who does both produces two answers for one return."""
+    _, html = _letter()
+    assert "Reply to this email to confirm it is correct" not in html
+    assert "press <strong>Confirm</strong> below" in html
+
+
+def test_the_reply_path_survives_alongside_the_button():
+    """Spec section 5 adds a "yes" path; it does not remove the human one. A
+    client who disagrees still replies, and staff still record it."""
+    _, html = _letter()
+    assert "reply to this email" in html.lower()
+
+
+def test_an_approval_url_carrying_markup_is_escaped():
+    """It is ours, not the client's — but the escaping rule in this module has
+    no exceptions: the one place a rule is relaxed is where the next injection
+    lands."""
+    _, html = _letter(approval_url='https://x/"><script>alert(1)</script>')
+    assert "<script>" not in html
 
 
 def test_the_attachment_is_named_in_the_body_when_there_is_one():

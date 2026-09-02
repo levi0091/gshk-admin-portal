@@ -272,6 +272,48 @@ describe('Client Verification', () => {
     <StageClientVerification caseRow={at(over)} canWrite
                              onChanged={onChanged} onError={onError} />)
 
+  // ── spec §5: one message per director, so a send can partly succeed ─────
+
+  async function pressSend() {
+    // Same gate the other send tests go through: the chips have to be on
+    // screen and the review ticked before the button is live.
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await user.click(screen.getByRole('button', { name: /Send to client/ }))
+    return user
+  }
+
+  it('names the directors a partial send did NOT reach', async () => {
+    // The case an operator is most likely to miss: the screen advances, the
+    // status changes, and one director was never asked.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'],
+                             failed_to: ['b@x.com'], approval_links: true })
+    await pressSend()
+    const panel = await screen.findByTestId('send-partial')
+    expect(within(panel).getByText(/b@x\.com/)).toBeInTheDocument()
+    expect(within(panel).getByText(/The others have it/)).toBeInTheDocument()
+  })
+
+  it('says nothing about a partial send when everyone got it', async () => {
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'], failed_to: [],
+                             approval_links: true })
+    await pressSend()
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+    expect(screen.queryByTestId('send-partial')).not.toBeInTheDocument()
+  })
+
+  it('says when the email went out with no Confirm button', async () => {
+    // Nobody should be waiting for a button press that is not in the email.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'], failed_to: [],
+                             approval_links: false })
+    await pressSend()
+    const panel = await screen.findByTestId('send-no-links')
+    expect(within(panel).getByText(/reply by email/)).toBeInTheDocument()
+    expect(within(panel).getByText(/PUBLIC_API_BASE_URL/)).toBeInTheDocument()
+  })
+
   // ── v11 restorations (Q3, Block C) ──────────────────────────────────────
 
   it('leads with the frozen snapshot, so a moved profile is not a mystery', () => {
@@ -310,7 +352,15 @@ describe('Client Verification', () => {
     expect(blob.mock.calls[1][0]).toBe('/tpsi/filings/f1/pdf')
   })
 
-  it('opens the return full screen — 460px cannot show a nine-page form', async () => {
+  it('gives the preview enough height to read a statutory return', async () => {
+    renderIt()
+    const frame = await screen.findByLabelText('NAR1 preview')
+    // 690px at 100% zoom. The return is nine A4 pages and the operator is
+    // checking particulars against the company record, not glancing at it.
+    expect(frame).toHaveStyle({ height: '690px' })
+  })
+
+  it('opens the return full screen — even 690px cannot show a nine-page form', async () => {
     const open = vi.fn()
     vi.stubGlobal('open', open)
     const user = userEvent.setup()
@@ -425,7 +475,7 @@ describe('Client Verification', () => {
   // ── The failure Levi hit: a refused send that looked like a dead button ──
 
   it('reports a refused send AT the button, not only through onError', async () => {
-    // The page-level banner `onError` drives sits above a 460px PDF frame —
+    // The page-level banner `onError` drives sits above a 690px PDF frame —
     // about a screen and a half from the button that was just pressed.
     post.mockRejectedValueOnce(
       Object.assign(new Error('this case was completed off-portal'), { status: 409 }))
@@ -603,6 +653,42 @@ describe('Signing', () => {
     <MemoryRouter>
       <StageSigning caseRow={at(over)} canWrite onChanged={onChanged} onError={onError} />
     </MemoryRouter>)
+
+  // ── spec §5: what authorises this signature ────────────────────────────
+
+  it('names the director who approved, on the screen that signs the return', () => {
+    renderIt({ client_approval: {
+      source: 'self_service', name: 'AH CHAN', system: false,
+      summary: 'Approved by AH CHAN using the link in the verification email',
+      responded_at: '2026-09-02T03:00:00Z' } })
+    const panel = screen.getByTestId('client-approval-provenance')
+    expect(within(panel).getByText(/AH CHAN/)).toBeInTheDocument()
+  })
+
+  it('SAYS SO when nobody answered and the system approved it', () => {
+    // The one that matters. A return nobody confirmed must not look, on the
+    // screen that signs it, exactly like one a director agreed to.
+    renderIt({ client_approval: {
+      source: 'system_timeout', name: null, system: true,
+      summary: 'System-approved — the client did not respond within 14 days',
+      responded_at: '2026-09-02T03:00:00Z' } })
+    const panel = screen.getByTestId('client-approval-provenance')
+    expect(within(panel).getByText(/did not respond within 14 days/)).toBeInTheDocument()
+    expect(within(panel).getByText(/check with the client before signing/))
+      .toBeInTheDocument()
+  })
+
+  it('distinguishes a relayed reply from a client who pressed the button', () => {
+    renderIt({ client_approval: {
+      source: 'staff_relay', name: 'BO LEE', system: false,
+      summary: 'Approved by BO LEE, recorded by a member of staff' } })
+    expect(screen.getByText(/recorded by a member of staff/)).toBeInTheDocument()
+  })
+
+  it('shows nothing at all when there is no approval to describe', () => {
+    renderIt({ client_approval: null })
+    expect(screen.queryByTestId('client-approval-provenance')).not.toBeInTheDocument()
+  })
 
   it('defaults to e-Sign — nothing switches to manual by itself', () => {
     renderIt({ signing_method: null })
@@ -975,17 +1061,111 @@ describe('Submission — e-Sign', () => {
     await user.click(await screen.findByRole('button', { name: /Download NAR1 PDF/ }))
     expect(await screen.findByText(/Could not produce the NAR1 PDF/)).toBeInTheDocument()
   })
+
+  // ── spec §6: the pre-submit drift gate ──────────────────────────────────
+
+  const DRIFT = Object.assign(
+    new Error('the validated form no longer matches the company record'),
+    {
+      status: 409,
+      differences: [
+        { path: 'indDirList/indDir/stdAddress/stEstLotVlg',
+          field: 'Director (individual) · Address · Street / estate / lot / village',
+          validated: 'Raggatan 9, Stockholm 11859',
+          current: 'Raggatan 14, Stockholm 11859' },
+        { path: 'indDirList/indDir[2]/indvEngSname',
+          field: 'Director (individual) 2 · Surname (English)',
+          validated: 'WONG', current: null },
+      ],
+    })
+
+  async function attemptDriftedSubmit() {
+    const user = userEvent.setup()
+    post.mockRejectedValue(DRIFT)
+    renderIt()
+    await screen.findByText(/Fee HK\$ 105/)
+    await user.click(screen.getByRole('button', { name: /I understand this submits NAR1 to CR/ }))
+    await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
+    return user
+  }
+
+  it('lists every field that moved, with BOTH values', async () => {
+    await attemptDriftedSubmit()
+    const panel = await screen.findByTestId('drift-panel')
+    expect(within(panel).getByText(/Raggatan 9, Stockholm 11859/)).toBeInTheDocument()
+    expect(within(panel).getByText(/Raggatan 14, Stockholm 11859/)).toBeInTheDocument()
+    // "The data differs" would leave the operator to diff a nine-page statutory
+    // form by eye.
+    expect(within(panel).getByText(/Surname \(English\)/)).toBeInTheDocument()
+  })
+
+  it('renders a field that is GONE as absent, not as blank', async () => {
+    // A director who left the board has no field at all. An empty cell would
+    // read as "unchanged, empty".
+    await attemptDriftedSubmit()
+    const panel = await screen.findByTestId('drift-panel')
+    expect(within(panel).getByText('(absent)')).toBeInTheDocument()
+  })
+
+  it('says nothing was filed and nothing was charged', async () => {
+    await attemptDriftedSubmit()
+    expect(await screen.findByText(/Nothing was sent to the Companies Registry/))
+      .toBeInTheDocument()
+    expect(screen.getByText(/Restart verification/)).toBeInTheDocument()
+  })
+
+  it('clears the acknowledgement, because it was for a stale document', async () => {
+    await attemptDriftedSubmit()
+    await screen.findByTestId('drift-panel')
+    // The operator ticked to acknowledge a charge against a return that has
+    // since been shown to be out of date. Leaving it ticked would let a second
+    // press file it without a fresh decision.
+    expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
+      .toBeDisabled()
+  })
+
+  it('does not put the drift refusal in the page banner as well', async () => {
+    // ONE error surface (Levi 2026-08-31) — and for this refusal the surface is
+    // the table at the button, because a banner cannot show two values a row.
+    await attemptDriftedSubmit()
+    await screen.findByTestId('drift-panel')
+    expect(onError).toHaveBeenLastCalledWith(null)
+  })
+
+  it('leaves an ORDINARY 409 to the page banner', async () => {
+    const user = userEvent.setup()
+    post.mockRejectedValue(Object.assign(new Error('filing is not signed'), { status: 409 }))
+    renderIt()
+    await screen.findByText(/Fee HK\$ 105/)
+    await user.click(screen.getByRole('button', { name: /I understand this submits NAR1 to CR/ }))
+    await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'filing is not signed' })))
+    expect(screen.queryByTestId('drift-panel')).not.toBeInTheDocument()
+  })
 })
 
 describe('Submission — manual', () => {
-  const manual = over => at({ signing_method: 'manual', ...over })
+  // Spec §4: the CR receipt scan is now half the gate on Record, so the default
+  // case here has one attached. Tests ABOUT the gate override it explicitly.
+  const manual = over => at({
+    signing_method: 'manual', manual_receipt_document_id: 'r1',
+    manual_receipt_document_version: 1, ...over,
+  })
   const renderIt = (over = {}, props = {}) => render(
     <StageSubmission caseRow={manual(over)} canSubmit
                      onChanged={onChanged} onError={onError} {...props} />)
 
+  /** The other half of the gate — the two figures the audit trail reads. */
+  const fillRequired = async user => {
+    await user.type(screen.getByLabelText('Case number'), '141945492')
+    await user.type(screen.getByLabelText('Total amount'), '105.00')
+  }
+
   it('NEVER calls CR — recording is not filing', async () => {
     const user = userEvent.setup()
     renderIt()
+    await fillRequired(user)
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
     // The one call is the case endpoint; nothing under /tpsi/ is touched.
@@ -996,7 +1176,7 @@ describe('Submission — manual', () => {
   it('sends CR\'s own receipt vocabulary, with the payment lines', async () => {
     const user = userEvent.setup()
     renderIt()
-    await user.type(screen.getByLabelText('Case number'), '141945492')
+    await fillRequired(user)
     await user.type(screen.getByLabelText('Receipt no.'), 'D77000418931')
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
@@ -1013,9 +1193,61 @@ describe('Submission — manual', () => {
       new Error({ message: 'receipt is incomplete', problems: ['caseNo: required', 'brNo: required'] }),
       { status: 400 }))
     renderIt()
+    await fillRequired(user)
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
     expect(await screen.findByText(/The receipt is incomplete/)).toBeInTheDocument()
+  })
+
+  // ---- spec §4: the CR receipt document ----------------------------------
+
+  it('will not record a filing until the CR receipt is attached', async () => {
+    const user = userEvent.setup()
+    renderIt({ manual_receipt_document_id: null })
+    await fillRequired(user)
+    expect(screen.getByRole('button', { name: /Record the filing/ })).toBeDisabled()
+    // AT THE BUTTON, not in a page banner a screen and a half above it.
+    expect(screen.getByTestId('manual-submit-block'))
+      .toHaveTextContent(/Attach the CR receipt/)
+  })
+
+  it('will not record a filing until the receipt figures are typed', () => {
+    renderIt()
+    expect(screen.getByRole('button', { name: /Record the filing/ })).toBeDisabled()
+    expect(screen.getByTestId('manual-submit-block'))
+      .toHaveTextContent(/Complete the receipt fields/)
+  })
+
+  it('says BOTH halves are missing when both are', () => {
+    renderIt({ manual_receipt_document_id: null })
+    expect(screen.getByTestId('manual-submit-block'))
+      .toHaveTextContent(/Attach the CR receipt and complete the receipt fields/)
+  })
+
+  it('arms Record once the receipt is attached and the figures are typed', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await fillRequired(user)
+    expect(screen.getByRole('button', { name: /Record the filing/ })).toBeEnabled()
+    expect(screen.queryByTestId('manual-submit-block')).not.toBeInTheDocument()
+  })
+
+  it('uploads the receipt to the case, not to the company', async () => {
+    const user = userEvent.setup()
+    renderIt({ manual_receipt_document_id: null })
+    const file = new File(['%PDF-1.4'], 'receipt.pdf', { type: 'application/pdf' })
+    await user.upload(screen.getByLabelText('CR filing receipt'), file)
+    await waitFor(() => expect(upload).toHaveBeenCalled())
+    expect(upload.mock.calls[0][0]).toBe('/cases/c1/manual-receipt')
+    // A receipt is evidence for one annual return. Owning it by company would
+    // have next year's upload version over this year's.
+    expect(upload.mock.calls[0][1].get('file')).toBe(file)
+  })
+
+  it('names the attached receipt by VERSION, because the case has no filename', () => {
+    renderIt({ manual_receipt_document_version: 3 })
+    expect(screen.getByText(/CR receipt attached/)).toBeInTheDocument()
+    expect(screen.getByText(/Version 3/)).toBeInTheDocument()
   })
 
   it('can add another payment line', async () => {
@@ -1080,19 +1312,28 @@ describe('Confirmation', () => {
     expect(screen.getByText(/Filed outside the portal/)).toBeInTheDocument()
   })
 
-  it('asks CR what it now holds, by the receipt case number', async () => {
-    const user = userEvent.setup()
-    get.mockResolvedValue([{ documentName: 'NAR1', documentStatus: 'Registered',
-                             submissionDate: '21/08/2026' }])
+  // The CR status check was REMOVED (Levi 2026-09-02). It could not do the job
+  // its own copy claimed: the result lived in useState and vanished on reload,
+  // nothing ever writes the `registered` stage it was looking for, and
+  // `_FINISHED` already counts `submitted`, so the case reads Completed from
+  // the moment the receipt exists. It also spent a CR AUTHENTICATION per press,
+  // and repeated CR auth failures lock the account.
+  it('ends at the receipt and asks CR for nothing', async () => {
     renderIt()
-    await user.click(screen.getByRole('button', { name: /Check CR status/ }))
-    await waitFor(() => expect(get).toHaveBeenCalledWith('/tpsi/doc-status?case_no=141945492'))
-    expect(await screen.findByText('Registered')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Check CR status/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/What CR holds now/)).not.toBeInTheDocument()
+    // The whole screen is now a read of the case. No request leaves it.
+    expect(get).not.toHaveBeenCalled()
   })
 
-  it('does not offer a CR status check with no case number to ask about', () => {
+  it('says the case is Completed rather than sending the reader off to check', () => {
+    renderIt()
+    expect(screen.getByText(/issued the receipt below/)).toBeInTheDocument()
+    expect(screen.queryByText(/Check the CR document status/)).not.toBeInTheDocument()
+  })
+
+  it('still says plainly when there is no receipt to show', () => {
     renderIt({ receipt: null })
-    expect(screen.queryByRole('button', { name: /Check CR status/ })).not.toBeInTheDocument()
     expect(screen.getByText(/No receipt recorded/)).toBeInTheDocument()
   })
 })

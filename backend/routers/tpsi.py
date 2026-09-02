@@ -17,6 +17,7 @@ from middleware.auth import require_permission, require_super_admin
 from services import audit_events as ev
 from services import nar1_cases
 from services.nar1_form import fill as nar1_form_fill
+from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
@@ -809,7 +810,7 @@ async def filing_pdf(
                 entity.get("company_type")
             ),
         )
-    except (ValueError, nar1_form_fill.FormFillError) as exc:
+    except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         # A stored payload CR accepted but we cannot parse is a data problem,
         # not an unhandled 500 that reads like a crash in the renderer.
         raise HTTPException(422, str(exc))
@@ -1079,6 +1080,22 @@ async def submit_filing(
         result = filings.submit(
             client_for(user, shared), filing_id, body.confirm, account
         )
+    except filings.DriftDetected as exc:
+        # Spec §6. Its own branch above the general gate: the operator needs the
+        # FIELDS, and `str(exc)` is only the headline. Audited with the field
+        # names but not the values — an audit row is not the place to repeat a
+        # director's residential address, and the values are one click away on
+        # the two records being compared.
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            metadata={"reason": str(exc), "gate": True, "drift": True,
+                      "fields": [d["field"] for d in exc.differences]},
+        )
+        raise HTTPException(409, {"message": str(exc),
+                                  "differences": exc.differences})
     except filings.SubmitGateError as exc:
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],

@@ -1274,6 +1274,27 @@ def test_pdf_is_a_clean_422_when_the_stored_payload_has_no_form_model(client):
     assert response.status_code == 422
 
 
+def test_pdf_is_a_clean_422_for_an_uncoverable_character(client):
+    """M5 (final review): `AppearanceError` -- raised when a character has no
+    glyph in either embedded face -- was not in this handler's except tuple,
+    so a real missing-glyph failure on Railway would have surfaced as an
+    opaque 500 instead of naming the character. `fill.render` already
+    translates `AppearanceError` into `FormFillError` internally, so this
+    also stands as a belt-and-braces check on the route itself."""
+    from services.nar1_form.appearance import AppearanceError
+    row = {"stage": "validated", "form_code": "Nar1", "validated_xml": "<x/>",
+           "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               side_effect=AppearanceError(
+                   "cannot draw '杨' (U+6768): no glyph in NAR1-CJK")), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 422
+    assert "U+6768" in response.text
+
+
 def test_pdf_without_a_token_is_rejected_before_the_db_is_touched(client):
     """The 401 half of CLAUDE.md's "401 and 403 on every route".
 

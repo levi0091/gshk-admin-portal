@@ -57,13 +57,8 @@ const CLIENT = {
     id: 'sc1', class_name: 'Ordinary', currency: 'HKD',
     total_issued: 10000, issued_amount: 10000, total_paid: 10000,
   }],
-  record_locations: [
-    { record_type: 'SM', label: 'Register of Members',
-      address: { line1: 'Unit 12A', city: 'CENTRAL', country: 'HK' },
-      address_id: 'addr-ro' },
-    { record_type: 'SC', label: 'Register of Charges', address: null,
-      address_id: null },
-  ],
+  // `record_locations` is still returned by the API and deliberately not
+  // rendered — see the note where the Statutory Records tests used to be.
   filing_problems: [],
 }
 
@@ -489,39 +484,26 @@ describe('CompanyProfilePage — the CR form fields', () => {
     expect(within(tile).getByText(/No share capital recorded/)).toBeInTheDocument()
   })
 
-  // -- Statutory records (OQ-3) --------------------------------------------
-
-  it('lists every register NAR1 s16 asks about, answered or not', async () => {
-    renderPage()
-    const tile = (await screen.findByText(/Statutory Records/)).closest('.card')
-
-    expect(within(tile).getByText('Register of Members')).toBeInTheDocument()
-    // A register with nowhere recorded is the answer s16 needs to SHOW.
-    expect(within(tile).getByText('Register of Charges')).toBeInTheDocument()
-  })
-
-  it('repoints a register and refetches', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const tile = (await screen.findByText(/Statutory Records/)).closest('.card')
-
-    const select = within(tile).getByLabelText('Register of Charges')
-    await user.selectOptions(select, 'addr-ro')
-
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
-      '/companies/e1/record-locations/SC', { address_id: 'addr-ro' }))
-  })
-
-  it('can record that a register is kept nowhere', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    const tile = (await screen.findByText(/Statutory Records/)).closest('.card')
-
-    await user.selectOptions(within(tile).getByLabelText('Register of Members'), '')
-
-    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
-      '/companies/e1/record-locations/SM', { address_id: null }))
-  })
+  // -- Statutory records: REMOVED 2026-09-02 -------------------------------
+  //
+  // The tile listed 13 registers under "Section 16 — where each register is
+  // kept". CR's NAR1 asks nothing of the sort:
+  //
+  //   * the question is at s15, not s16 — s16 is the private-company
+  //     STATEMENT (`field_map.py`: "statement_private": "cb_4_P.8");
+  //   * it is ONE description and ONE address (`records_description`,
+  //     `records_address`), not thirteen — CR's XML schema carries exactly two
+  //     fields, `companyRecord` and `address`;
+  //   * and it is asked ONLY when the records are NOT kept at the registered
+  //     office. Every GSHK client keeps them at GSHK, which IS their
+  //     registered office, so the honest answer for this book is to leave it
+  //     blank.
+  //
+  // Levi 2026-09-02: "i dont think the statutory records are required." The
+  // `entity_record_locations` table and its endpoints are LEFT IN PLACE — the
+  // s15 concept is real for the minority of companies whose records sit
+  // elsewhere, and dropping an applied migration to tidy a screen would cost
+  // more than it saves.
 
   // -- Party tiles (B3, B4, B10) -------------------------------------------
 

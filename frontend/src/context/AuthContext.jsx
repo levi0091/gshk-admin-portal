@@ -57,6 +57,13 @@ export function AuthProvider({ children }) {
 
   const isSuperAdmin = profile?.role_name === 'super_admin'
 
+  // Strict `=== true` for the same reason `isTestEnv` is: a profile that has
+  // not loaded, or a backend too old to send the field, must not lock a
+  // working account out of the portal. The API refuses independently, so
+  // failing open HERE costs a confusing 409, while failing closed would show
+  // a set-password screen to everyone the moment /auth/me hiccuped.
+  const mustChangePassword = profile?.must_change_password === true
+
   // Strict `=== true`, so a profile that has not loaded yet, or a backend too
   // old to send the field, does NOT light the TEST badge. A missing badge on a
   // test deployment is a smaller lie than a TEST badge on production, which
@@ -76,7 +83,10 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ session, profile, isSuperAdmin, isTestEnv, envUnknown, hasPermission, profileLoading, signIn, signOut }}>
+    <AuthContext.Provider value={{ session, profile, isSuperAdmin, isTestEnv,
+                                   envUnknown, hasPermission, profileLoading,
+                                   mustChangePassword, refreshProfile: fetchProfile,
+                                   signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )

@@ -219,3 +219,20 @@ def party_code(relation: str, operation: str) -> Optional[str]:
 #   NAR1-only code would split one concept across two vocabularies.
 EMAIL_SENT = "EMAIL_SENT"
 CLIENT_APPROVAL_RECEIVED = "CLIENT_APPROVAL_RECEIVED"
+
+# ---- Client SELF-approval (spec §5) ----------------------------------------
+#   Seeded by migration 030 with origin='g_flowdesk' and category='nar1'. Unlike
+#   the two above these are NOT in migration 012's _NATIVE list, and there is no
+#   FK from audit_log to audit_event_types -- an unseeded code writes fine and
+#   then renders unlabelled in the trail, which is what migration 022 exists to
+#   repair. If these ever appear without a label, that migration did not run.
+#
+#   CLIENT_APPROVAL_RECEIVED above is UNCHANGED and still fires for the
+#   staff-relayed reply. Three codes for three routes, because the remedy when
+#   one of them is wrong differs in each case: a self-service approval can be
+#   checked against an IP, a relayed one against a mailbox, and an auto-approval
+#   against nothing at all -- which is exactly why it must be distinguishable at
+#   a glance rather than merged into "client approved".
+CLIENT_APPROVAL_LINK_SENT = "CLIENT_APPROVAL_LINK_SENT"
+CLIENT_APPROVAL_SELF_SERVICE = "CLIENT_APPROVAL_SELF_SERVICE"
+CLIENT_APPROVAL_AUTO_APPROVED = "CLIENT_APPROVAL_AUTO_APPROVED"

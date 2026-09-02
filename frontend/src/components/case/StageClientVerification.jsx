@@ -76,6 +76,11 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   const [reviewed, setReviewed] = useState(Boolean(caseRow.verification_sent_at))
   const [busy, setBusy] = useState(null)
   const [sendError, setSendError] = useState(null)
+  // What the send REPORTED, as distinct from what it refused. A partly
+  // successful send is not an error — some directors have the return — but it
+  // is not a success either, and the difference decides whether the operator
+  // needs to do anything.
+  const [sendReport, setSendReport] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
   const [pdfError, setPdfError] = useState(null)
   const [recipients, setRecipients] = useState([])
@@ -147,17 +152,24 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   }, [filingId])
 
   async function send() {
-    onError(null); setSendError(null); setBusy('send')
+    onError(null); setSendError(null); setSendReport(null); setBusy('send')
     try {
       // Always explicit, never `{}`. The chips on screen are what the operator
       // agreed to send to; letting the server re-derive the list would mail a
       // director they had just removed, and the two answers can differ the
       // moment someone edits the company in another tab.
-      await api.post(`/cases/${caseRow.id}/verification/send`, { to })
+      const result = await api.post(
+        `/cases/${caseRow.id}/verification/send`, { to })
+      // ONE MESSAGE PER DIRECTOR now, so a send can partly succeed. The
+      // response names the addresses that failed; showing only a green tick
+      // would leave a director unasked with nothing on screen saying so.
+      if (result?.failed_to?.length || result?.approval_links === false) {
+        setSendReport(result)
+      }
       onChanged()
     } catch (e) {
       // Reported HERE, next to the button, and NOT bubbled to `onError`. The
-      // page-level banner sits above a 460px PDF frame, so a failure raised
+      // page-level banner sits above a 690px PDF frame, so a failure raised
       // there is off-screen at the moment the operator is looking at the
       // button they just pressed.
       setSendError(describeSendError(e))
@@ -208,8 +220,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               {saving ? 'Preparing…' : 'Download PDF'}
             </button>
             {/* A tab, not a modal: the operator is checking this against the
-                company record in another window, and 460px of embedded viewer
-                is not enough to read a nine-page statutory return. */}
+                company record in another window, and even 690px of embedded
+                viewer is not a whole nine-page statutory return. */}
             <button type="button" className="btn btn-outline btn-sm"
                     disabled={!pdfUrl}
                     onClick={() => window.open(pdfUrl, '_blank', 'noopener')}>
@@ -246,7 +258,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
                 frame is what the embedded viewer actually reads as bigger. */}
             <object data={pdfUrl} type="application/pdf" aria-label="NAR1 preview"
                     className="pdf-frame"
-                    style={{ height: Math.round(460 * zoom / 100) }}>
+                    style={{ height: Math.round(690 * zoom / 100) }}>
               {/* Some browsers refuse to embed; a link is not a dead end. */}
               <a href={pdfUrl} target="_blank" rel="noreferrer">Open the NAR1 preview</a>
             </object>
@@ -327,7 +339,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
         {/* THE ERROR LIVES HERE, beside the button that caused it. It used to
             be reported only through `onError`, which renders at the top of the
-            page — roughly a screen and a half above this button, past a 460px
+            page — roughly a screen and a half above this button, past a 690px
             PDF frame. A refused send therefore looked exactly like a dead
             button, which is how it was reported on 2026-08-30. */}
         {sendError && (
@@ -338,6 +350,43 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               {sendError.hint && (
                 <div style={{ marginTop: 4 }}>{sendError.hint}</div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Beside the button, for the same reason the error is. A partial send
+            is the case an operator is most likely to miss: the screen advances,
+            the status changes, and one director was never asked. */}
+        {sendReport?.failed_to?.length > 0 && (
+          <div className="alert al-warn" role="alert" style={{ marginTop: 14 }}
+               data-testid="send-partial">
+            <span className="al-icon">⚠</span>
+            <div className="al-body">
+              <b>The return did not reach everyone.</b>
+              <div style={{ marginTop: 4 }}>
+                {sendReport.failed_to.join(', ')} — send again to just{' '}
+                {sendReport.failed_to.length === 1 ? 'that address' : 'those addresses'}.
+                {' '}The others have it and their links are live.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* A deployment that cannot build an approval URL sends the message
+            that shipped before the Confirm button existed. The client can still
+            reply — but nobody should be waiting for a button press that is not
+            in the email. */}
+        {sendReport?.approval_links === false && (
+          <div className="alert al-warn" role="status" style={{ marginTop: 14 }}
+               data-testid="send-no-links">
+            <span className="al-icon">⚠</span>
+            <div className="al-body">
+              <b>Sent without a Confirm button.</b>
+              <div style={{ marginTop: 4 }}>
+                This deployment could not build the approval link, so the client
+                has to reply by email and you record the answer below.{' '}
+                <code>PUBLIC_API_BASE_URL</code> needs setting on the backend.
+              </div>
             </div>
           </div>
         )}
@@ -385,8 +434,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <div>
             <div className="card-title">Client's answer</div>
             <div className="card-sub">
-              Recorded by you from the client's reply — the portal does not read
-              inbound mail.
+              The client can confirm from the link in their email, or reply and
+              have you record it here — the portal does not read inbound mail.
             </div>
           </div>
         </div>
@@ -395,8 +444,17 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <div className={`alert ${caseRow.client_approved ? 'al-success' : 'al-danger'}`} role="status">
             <span className="al-icon">{caseRow.client_approved ? '✓' : '⚠'}</span>
             <div className="al-body">
-              <b>{caseRow.client_approved ? 'Client approved' : 'Client declined'}</b>{' '}
+              {/* HOW it was approved, never a bare "Client approved" (spec §5).
+                  A case the 14-day job approved on the client's silence must not
+                  read the same as one a named director agreed to — the evidence
+                  behind them is completely different, and the difference is
+                  exactly what somebody reviewing a filing needs to see. */}
+              <b>{caseRow.client_approved
+                ? (caseRow.client_approval?.summary || 'Client approved')
+                : 'Client declined'}</b>{' '}
               on {formatDateTime(caseRow.client_response_at)}.
+              {caseRow.client_approval?.system
+                && ' Nobody replied; the return is being filed as prepared.'}
               {!caseRow.client_approved
                 && ' Correct the return, restart verification and send it again.'}
             </div>

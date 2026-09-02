@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from db.supabase import get_supabase
-from services import nar1_case_status
+from services import nar1_approvals, nar1_case_status
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.filings import form_status
 
@@ -491,7 +491,18 @@ def composite(case_id: str) -> dict:
         # key unconditionally. A missing key and a null version are different
         # failures to debug.
         "manual_signed_document_version": case.get("manual_signed_document_version"),
+        # Same reasoning for the CR receipt scan (spec §4, migration 029): the
+        # Submission stage reads these unconditionally to decide whether the
+        # manual submit button is armed, and "key absent" and "null" are
+        # different failures to debug.
+        "manual_receipt_document_id": case.get("manual_receipt_document_id"),
+        "manual_receipt_document_version": case.get("manual_receipt_document_version"),
         "filing_id": (filing or {}).get("id"),
+        # HOW the client decision arrived (spec §5). None when there is none.
+        # The workflow screen and the audit trail both read this rather than
+        # rendering a bare "Approved": a case the 14-day job approved on the
+        # client's silence must never look like one a director agreed to.
+        "client_approval": nar1_approvals.provenance(case),
         "workflow_status": nar1_case_status.derive(case, filing),
         "form_status": form_status(filing) if filing else None,
         "receipt": (filing or {}).get("receipt") or case.get("manual_receipt"),
@@ -635,17 +646,22 @@ def default_recipients(entity_id: str) -> list[dict]:
 
     person_ids = [o["person_id"] for o in officers if o.get("person_id")]
     names: dict[str, str] = {}
+    given: dict[str, str] = {}
     if person_ids:
         for row in (
             get_supabase()
             .table("persons")
-            .select("id,full_name")
+            # `given_names` too: the verification letter greets the reader by
+            # name, and splitting `full_name` on whitespace would greet a
+            # surname-first Hong Kong record as "Hi CHAN".
+            .select("id,full_name,given_names")
             .in_("id", person_ids)
             .execute()
             .data
             or []
         ):
             names[row["id"]] = row.get("full_name") or ""
+            given[row["id"]] = (row.get("given_names") or "").strip() or None
     emails = _person_emails(person_ids)
 
     out = []
@@ -668,6 +684,9 @@ def default_recipients(entity_id: str) -> list[dict]:
         out.append({
             "person_id": person_id,
             "name": name,
+            # None for a corporate officer and for a person with no given names
+            # on record. The email falls back to the full name.
+            "given_names": None if corporate else given.get(person_id or ""),
             "email": email,
             "role": officer.get("role") or "director",
             "party_type": "corporate" if corporate else "individual",

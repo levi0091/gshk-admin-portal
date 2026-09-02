@@ -25,13 +25,36 @@ from services import audit_events
 BUCKET = "gflowdesk-documents"
 _SIGNED_URL_TTL = 3600  # seconds
 
-_OWNER_KINDS = {"entity", "person"}
+#: `receipt` is a NAR1 CASE, not a company and not a person (migration 029).
+#: A CR filing receipt belongs to one annual return: owning it by entity would
+#: make next year's upload version over this year's evidence, because
+#: upload_document versions in place on (owner, document_type).
+_OWNER_KINDS = {"entity", "person", "receipt"}
+
+#: Owner kinds whose id is a `nar1_cases.id`. Kept as a set rather than an
+#: `== "receipt"` test so a second case-owned section does not have to find
+#: every branch again.
+_CASE_OWNER_KINDS = {"receipt"}
+
+_OWNER_COLUMN = {
+    "entity": "entity_id",
+    "person": "person_id",
+    "receipt": "nar1_case_id",
+}
 
 
 def _storage_path(owner_kind: str, owner_id: str, document_type_code: str,
                   version: int, file_name: str) -> str:
-    """Path convention (OQ-5): /{entity|person}/{id}/{document_type}/{version}/{file}."""
+    """Path convention (OQ-5): /{entity|person}/{id}/{document_type}/{version}/{file}.
+
+    `receipt` is the exception spec §4 specifies literally:
+    `receipt/{nar1_case_id}/{version}/{file}` — no type segment, because a case
+    section carries exactly one document type (`cr_receipt`) and a constant
+    directory between the id and the version says nothing.
+    """
     safe_name = (file_name or "file").replace("/", "_")
+    if owner_kind in _CASE_OWNER_KINDS:
+        return f"{owner_kind}/{owner_id}/{version}/{safe_name}"
     return f"{owner_kind}/{owner_id}/{document_type_code}/{version}/{safe_name}"
 
 
@@ -46,12 +69,28 @@ def _upload_bytes(sb, path: str, content: bytes, mime_type: Optional[str]) -> No
         raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}")
 
 
+def _case_entity_id(sb, case_id: str) -> Optional[str]:
+    """The company a NAR1 case is for. `audit_log.case_id` holds an ENTITY id
+    (routers/cases.py::_audit_target), so a case-owned document has to resolve
+    through to the entity or its audit row lands in an id space no company
+    query returns — the defect _audit_target exists to document."""
+    try:
+        row = (sb.table("nar1_cases").select("entity_id")
+               .eq("id", case_id).single().execute()).data
+        return (row or {}).get("entity_id")
+    except Exception:
+        return None
+
+
 def _owner_name(sb, owner_kind: str, owner_id: Optional[str]) -> Optional[str]:
     """The company or person the document belongs to — recorded on the audit row
     so the trail names the subject without a join."""
     if not owner_id:
         return None
     try:
+        if owner_kind in _CASE_OWNER_KINDS:
+            entity_id = _case_entity_id(sb, owner_id)
+            return _owner_name(sb, "entity", entity_id) if entity_id else None
         if owner_kind == "entity":
             row = (sb.table("entities").select("company_name")
                    .eq("id", owner_id).single().execute()).data
@@ -63,8 +102,25 @@ def _owner_name(sb, owner_kind: str, owner_id: Optional[str]) -> Optional[str]:
         return None
 
 
+def _audit_case_id(sb, owner_kind: str, owner_id: str) -> Optional[str]:
+    """What goes in `audit_log.case_id`: always an ENTITY id, never a case id."""
+    if owner_kind == "entity":
+        return owner_id
+    if owner_kind in _CASE_OWNER_KINDS:
+        return _case_entity_id(sb, owner_id)
+    return None
+
+
 def _owner_columns(owner_kind: str, owner_id: str) -> dict:
-    return {"entity_id": owner_id} if owner_kind == "entity" else {"person_id": owner_id}
+    return {_OWNER_COLUMN[owner_kind]: owner_id}
+
+
+def _owner_kind_of(doc: dict) -> str:
+    """Which of the three owner columns a stored row actually uses."""
+    for kind, column in _OWNER_COLUMN.items():
+        if doc.get(column):
+            return kind
+    return "entity"
 
 
 async def upload_document(
@@ -92,10 +148,7 @@ async def upload_document(
         .eq("document_type_code", document_type_code)
         .eq("status", "active")
     )
-    if owner_kind == "entity":
-        q = q.eq("entity_id", owner_id)
-    else:
-        q = q.eq("person_id", owner_id)
+    q = q.eq(_OWNER_COLUMN[owner_kind], owner_id)
     existing = (q.execute().data) or []
 
     if existing:
@@ -132,7 +185,7 @@ async def upload_document(
         ).data[0]
 
         await log_event(
-            case_id=owner_id if owner_kind == "entity" else None,
+            case_id=_audit_case_id(sb, owner_kind, owner_id),
             user_id=user["id"],
             user_display_name=user["display_name"],
             action_type="DOCUMENT_VERSION_ADDED",
@@ -181,7 +234,7 @@ async def upload_document(
     }).execute()
 
     await log_event(
-        case_id=owner_id if owner_kind == "entity" else None,
+        case_id=_audit_case_id(sb, owner_kind, owner_id),
         user_id=user["id"],
         user_display_name=user["display_name"],
         action_type="DOCUMENT_UPLOADED",
@@ -208,10 +261,7 @@ def list_documents(*, owner_kind: str, owner_id: str) -> list[dict]:
         .select("*, document_versions(*), document_types(code, label, category)")
         .neq("status", "deleted")
     )
-    if owner_kind == "entity":
-        q = q.eq("entity_id", owner_id)
-    else:
-        q = q.eq("person_id", owner_id)
+    q = q.eq(_OWNER_COLUMN[owner_kind], owner_id)
     return (q.order("document_type_code").execute().data) or []
 
 
@@ -254,10 +304,13 @@ async def soft_delete_document(*, document_id: str, user: dict) -> dict:
         sb.table("documents").update({"status": "deleted"}).eq("id", document_id).execute()
     ).data[0]
 
-    owner_kind = "entity" if doc.get("entity_id") else "person"
-    owner_id = doc.get("entity_id") or doc.get("person_id")
+    # Read back off the row, so a case-owned receipt (migration 029) is named
+    # and filed under its company like every other document rather than
+    # logging a null owner.
+    owner_kind = _owner_kind_of(doc)
+    owner_id = doc.get(_OWNER_COLUMN[owner_kind])
     await log_event(
-        case_id=doc.get("entity_id"),
+        case_id=_audit_case_id(sb, owner_kind, owner_id),
         user_id=user["id"],
         user_display_name=user["display_name"],
         action_type="DOCUMENT_DELETED",

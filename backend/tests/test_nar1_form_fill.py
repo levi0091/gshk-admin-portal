@@ -289,7 +289,11 @@ def test_a_single_director_stays_on_the_main_form():
     values = values_of(fill.render(build_xml(directors=("CHAN",))))
     assert values[fm.DIRECTOR_INDIVIDUAL["surname_en"]] == ["CHAN"]
     assert fm.SHEET_C["surname_en"] not in values
-    assert fm.MEMBERS_AND_SIGNATURE["count_sheet_c"] not in values
+    # The COUNT still prints, as a nought. "This Return includes the following
+    # Continuation Sheet(s)" is a question about what is attached, and a blank
+    # box there reads as "nobody said" rather than "none" -- CR's own returns
+    # write 0 in all five.
+    assert values[fm.MEMBERS_AND_SIGNATURE["count_sheet_c"]] == ["0"]
 
 
 def test_three_directors_produce_two_continuation_sheets_and_lose_nobody():
@@ -365,6 +369,39 @@ def test_more_share_classes_than_the_printed_table_is_refused():
         fill.render(build_xml(share_classes=fm.SHARE_CAPITAL_ROWS + 1))
 
 
+def test_the_officer_guard_checks_each_kind_separately_not_pooled():
+    """Pages 3-7 are now UNCONDITIONALLY present (CR's form is static -- see
+    'CR'S FORM IS STATIC' below), so a return with zero secretaries and zero
+    corporate directors still has those pages' capacity sitting in the
+    document: 1 secretary (natural person) + 1 secretary (body corporate) +
+    1 director (natural person) + 2 director (body corporate) + 1 reserve
+    director = 6 slots that exist whether or not anything occupies them. A
+    combined 'total capacity >= total officers' check cannot tell a director
+    from a secretary, so those 6 phantom slots can cover for a genuinely
+    missing director. This builds the exact failure by hand: 4 individual
+    directors in the model, but only the ONE main-page slot laid out and no
+    Sheet C added -- the return the pooled guard let through."""
+    model = {"indDirList": [{"indvEngSname": n} for n in ("A", "B", "C", "D")]}
+    pages = fill._Pages()
+    for page_no in (fm.PAGE_MAIN_1, fm.PAGE_MAIN_2,
+                    fm.PAGE_SECRETARY_INDIVIDUAL, fm.PAGE_SECRETARY_CORPORATE,
+                    fm.PAGE_DIRECTOR_INDIVIDUAL, fm.PAGE_DIRECTOR_CORPORATE,
+                    fm.PAGE_RESERVE_DIRECTOR, fm.PAGE_MEMBERS_AND_SIGNATURE,
+                    fm.PAGE_SCHEDULE_1):
+        pages.add(page_no, {})
+    with pytest.raises(fill.FormFillError,
+                       match=r"4 director \(natural person\) officers"):
+        fill._assert_nothing_dropped(model, pages)
+
+
+def test_the_officer_guard_still_passes_a_correctly_laid_out_return():
+    """The other half of the same fix: per-kind counting must not become
+    per-kind OVER-strict. Four individual directors laid out correctly --
+    one on the main page, three on Sheet C -- must still pass."""
+    pdf = fill.render(build_xml(directors=("A", "B", "C", "D")))
+    assert pdf  # did not raise
+
+
 # ---------------------------------------------------------------------------
 # Content lands where CR prints it
 # ---------------------------------------------------------------------------
@@ -374,7 +411,11 @@ def test_the_registered_office_fills_its_four_lines():
     assert values[fm.MAIN_1["ro_flat_floor_block"]] == ["Flat A, 12/F"]
     assert values[fm.MAIN_1["ro_building"]] == ["Test Tower"]
     assert values[fm.MAIN_1["ro_street"]] == ["1 Test Street"]
-    assert values[fm.MAIN_1["ro_district"]] == ["CENTRAL"]
+    # CR TRANSMITS A CODE AND PRINTS A NAME. The XML says "CENTRAL" -- the
+    # district name with its spaces removed, which is the only spelling CR
+    # accepts -- and CR's own form shows "Central". Rendering the code put
+    # block capitals on the printed return.
+    assert values[fm.MAIN_1["ro_district"]] == ["Central"]
 
 
 def test_both_company_names_appear_on_the_name_line():
@@ -384,11 +425,11 @@ def test_both_company_names_appear_on_the_name_line():
     assert "測試有限公司" in line
 
 
-def test_no_mortgages_reads_NIL_rather_than_blank():
+def test_no_mortgages_reads_Nil_rather_than_blank():
     """On a statutory declaration an empty box reads as "not answered"; the
-    form asks for NIL."""
+    form asks for a stated nil. Spelt as GSHK's own filed return spells it."""
     values = values_of(fill.render(build_xml()))
-    assert values[fm.MAIN_2["mortgages_total"]] == ["NIL"]
+    assert values[fm.MAIN_2["mortgages_total"]] == ["Nil"]
 
 
 def test_a_director_address_uses_the_overseas_line_not_the_district_line():
@@ -396,10 +437,10 @@ def test_a_director_address_uses_the_overseas_line_not_the_district_line():
     gives it a combined District/City/Province/State/Postal Code line where the
     secretary gets a plain District. They are different boxes."""
     values = values_of(fill.render(build_xml()))
-    assert values[fm.DIRECTOR_INDIVIDUAL["addr_district_city_state"]] == ["CENTRAL"]
-    assert values[fm.DIRECTOR_INDIVIDUAL["addr_country"]] == ["HKG"]
+    assert values[fm.DIRECTOR_INDIVIDUAL["addr_district_city_state"]] == ["Central"]
+    assert values[fm.DIRECTOR_INDIVIDUAL["addr_country"]] == ["Hong Kong"]
     # The secretary's plain District carries the same value on ITS block.
-    assert values[fm.SECRETARY_INDIVIDUAL["addr_district"]] == ["CENTRAL"]
+    assert values[fm.SECRETARY_INDIVIDUAL["addr_district"]] == ["Central"]
 
 
 def test_the_document_is_small_enough_to_email():
@@ -408,3 +449,71 @@ def test_the_document_is_small_enough_to_email():
     pdf = fill.render(build_xml(directors=("A", "B", "C"),
                                 members=("A", "B", "C", "D")))
     assert len(pdf) < 4_000_000, f"{len(pdf)} bytes is too big to attach"
+
+
+# ---------------------------------------------------------------------------
+# CR's form is STATIC (client-confirmed 2026-09-01)
+# ---------------------------------------------------------------------------
+
+def test_the_return_is_always_CRs_nine_pages():
+    """CR does not drop a section's page when the section is empty. The
+    reference return carries an empty natural-person secretary page, an empty
+    body-corporate director page and an empty reserve-director page, and files
+    all three. Dropping them moved every later section's page number, which is
+    what made the client's page references disagree with ours."""
+    assert len(PdfReader(io.BytesIO(fill.render(build_xml()))).pages) == 9
+
+
+def test_a_memberless_return_still_carries_a_schedule_page():
+    """`_chunk(rows, ...)` on zero members yields nothing, which used to skip
+    the Schedule page entirely -- an 8-page document that STILL ticked
+    'members are shown on Schedule 1' on page 8 (see
+    `test_a_listed_company_uses_schedule_2_and_a_private_one_schedule_1`),
+    pointing at a sheet that was not in the file it was ticked on. Spec §1b:
+    every return is pages 1-8 PLUS Schedule 1 or 2, always."""
+    pdf = fill.render(build_xml(members=()))
+    reader = PdfReader(io.BytesIO(pdf))
+    assert len(reader.pages) == 9
+    values = values_of(pdf)
+    assert fm.SCHEDULE_1_HEADER["br_number"] in values, \
+        "the Schedule 1 header page was dropped for having no member rows"
+    assert values[fm.MEMBERS_AND_SIGNATURE["count_schedule_1"]] == ["1"]
+
+
+def test_the_page_set_does_not_move_with_the_officer_mix():
+    """The email tells the client 'Page 5: Director's details'. That is only
+    true if page 5 is the director page for every company."""
+    one = PdfReader(io.BytesIO(fill.render(build_xml()))).pages
+    corp = PdfReader(io.BytesIO(fill.render(
+        build_xml(corporate_directors=("ALPHA LTD",))))).pages
+    assert len(one) == len(corp) == 9
+
+
+def test_share_capital_is_on_page_2_and_directors_on_page_5():
+    """The two page numbers hardcoded into the client email.
+
+    Text is whitespace-normalised before matching: CR's own template renders
+    "Director  (Natural Person)" with a double space between the words (a
+    kerning artefact of the static artwork, present before this change and
+    unrelated to it), which a literal single-space match would miss."""
+    pages = PdfReader(io.BytesIO(fill.render(build_xml()))).pages
+    page2_text = re.sub(r"\s+", " ", pages[1].extract_text() or "")
+    page5_text = re.sub(r"\s+", " ", pages[4].extract_text() or "")
+    assert "Share Capital" in page2_text
+    assert "Director (Natural Person)" in page5_text
+
+
+def test_continuation_sheets_are_still_conditional():
+    """Those genuinely ARE overflow -- CR's form says 'Use Continuation Sheet
+    C if more than 1 director is a natural person'.
+
+    The exact count, not merely '> 9': `len(overflow) > 9` would pass for a
+    40-page document just as happily as the correct 11-page one, and would
+    not have caught a Sheet C page silently duplicated or dropped."""
+    plain = PdfReader(io.BytesIO(fill.render(build_xml()))).pages
+    overflow = PdfReader(io.BytesIO(fill.render(
+        build_xml(directors=("CHAN", "LEE", "WONG"))))).pages
+    assert len(plain) == 9
+    # 9 base pages (main 1-8 + one Schedule 1 page) + 2 extra Sheet C pages
+    # for LEE and WONG, the directors beyond the one CHAN occupies on page 5.
+    assert len(overflow) == 11

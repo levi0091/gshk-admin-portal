@@ -253,19 +253,12 @@ export default function CompanyProfilePage() {
     }
   }
 
-  /** Point one statutory register at an address, or at nothing (OQ-3). */
-  async function setRecordLocation(recordType, addressId) {
-    setBusy(true)
-    try {
-      await api.put(`/companies/${companyId}/record-locations/${recordType}`,
-                    { address_id: addressId || null })
-      load()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
+  // No `setRecordLocation` here on purpose. The Statutory Records tile was
+  // removed on 2026-09-02 — it claimed to be NAR1 s16 (it is s15), listed
+  // thirteen registers (CR's schema carries two), and s15 is only asked when
+  // the records are NOT at the registered office, which for this whole book
+  // they are. The table, endpoints and ETL backfill are still there for the
+  // minority of companies whose records sit elsewhere.
 
   if (loading) return <div className="empty-state">Loading…</div>
   if (error) {
@@ -483,12 +476,6 @@ export default function CompanyProfilePage() {
             <ShareCapitalTile classes={company.share_classes}
                               lookups={lookups} warnFor={warnFor} busy={busy}
                               onSave={saveShareClass} onCreate={createShareClass} />
-          )}
-
-          {/* NAR1 section 16 (OQ-3). */}
-          {isClient && (
-            <RecordLocationsTile company={company} busy={busy}
-                                 onSet={setRecordLocation} />
           )}
 
           {/* Client-only party tiles */}
@@ -762,77 +749,6 @@ function ShareCapitalTile({ classes, lookups, warnFor, busy, onSave, onCreate })
           )}
         </div>
       ))}
-    </div>
-  )
-}
-
-/**
- * Where each statutory register is kept — NAR1 section 16 (OQ-3).
- *
- * Every register CR asks about is listed, answered or not: a register with
- * nowhere recorded is the answer the return has to show, and omitting the row
- * would render an unanswered question as an answered one.
- *
- * THE EDITOR IS A CHOICE AMONG ADDRESSES THIS COMPANY ALREADY HAS, plus "not
- * recorded". That is deliberate rather than a shortcut: addresses are created
- * by copy-on-write through the company and person address endpoints, and there
- * is no endpoint that mints a free-standing one. In practice a register is
- * kept at the registered office or at GSHK's, both of which are already here.
- */
-function RecordLocationsTile({ company, busy, onSet }) {
-  const rows = company.record_locations || []
-
-  // Every distinct address the company already knows about, by id.
-  const options = new Map()
-  const offer = (id, address) => {
-    if (id && address && !options.has(id)) options.set(id, addressText(address))
-  }
-  offer(company.registered_address?.id, company.registered_address)
-  for (const row of rows) offer(row.address_id, row.address)
-
-  const recorded = rows.filter(r => r.address_id).length
-
-  return (
-    <div className="card mb-16">
-      <div className="card-hdr">
-        <div>
-          <div className="card-title">
-            Statutory Records <span className="count-pill">{recorded}/{rows.length}</span>
-          </div>
-          <div className="card-sub">
-            Section 16 — where each register is kept
-          </div>
-        </div>
-      </div>
-      {rows.length === 0 ? (
-        <div className="empty-state" style={{ padding: '16px 0' }}>
-          No registers recorded.
-        </div>
-      ) : (
-        <div className="kv-list">
-          {rows.map(row => (
-            <div className="kv-row" key={row.record_type}>
-              <span className="kv-key">
-                <label htmlFor={`rl_${row.record_type}`}>{row.label}</label>
-              </span>
-              <span className="kv-val">
-                <select
-                  id={`rl_${row.record_type}`}
-                  className="f-select"
-                  disabled={busy}
-                  value={row.address_id || ''}
-                  onChange={e => onSet(row.record_type, e.target.value)}
-                >
-                  <option value="">Not recorded</option>
-                  {[...options.entries()].map(([id, label]) => (
-                    <option key={id} value={id}>{label}</option>
-                  ))}
-                </select>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
