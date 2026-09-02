@@ -102,7 +102,7 @@ def test_tinos_bold_is_metric_identical_to_times_new_roman(tmp_path):
 
 def test_a_value_that_fits_keeps_its_nominal_size():
     ap.register_fonts()
-    assert ap.fit_size("N/A", width=200.0) == 12.0
+    assert ap.fit_size("N/A", width=200.0) == 10.0
 
 
 def test_an_overlong_value_is_shrunk_to_fit_not_clipped():
@@ -350,8 +350,8 @@ def test_every_br_number_in_field_map_is_registered_at_14pt():
 # ---------------------------------------------------------------------------
 
 def test_a_centred_field_is_actually_centred():
-    """CR sets /Q=1 on the company name and the BRN header, and its own filed
-    returns render both centred in their boxes. Drawing every value hard
+    """CR centres the company name and the BR-number header in their boxes and
+    its own filed returns render both that way. Drawing every value hard
     against the left edge is visibly not CR's form -- and no test above could
     see it, because they all assert on values and fonts rather than position.
     """
@@ -361,38 +361,41 @@ def test_a_centred_field_is_actually_centred():
     centre = ap.draw_position("ABC", rect, size=10.0, quadding=1)
     right = ap.draw_position("ABC", rect, size=10.0, quadding=2)
     width = ap.measure("ABC", 10.0)
-    assert left == 2.0
+    assert left == ap._INSET
     assert abs(centre - (200.0 - width) / 2) < 0.01
-    assert abs(right - (200.0 - 2.0 - width)) < 0.01
+    assert abs(right - (200.0 - ap._INSET - width)) < 0.01
     assert left < centre < right
 
 
 def test_quadding_falls_back_to_left_when_the_field_does_not_say():
-    """Most of CR's fields carry no /Q at all; those are left-aligned."""
+    """Left is the default, and the caller passes no quadding for it."""
     ap.register_fonts()
     rect = (0.0, 0.0, 200.0, 20.0)
-    assert ap.draw_position("ABC", rect, size=10.0, quadding=None) == 2.0
+    assert ap.draw_position("ABC", rect, size=10.0, quadding=None) == ap._INSET
 
 
-def test_the_company_name_and_BRN_are_centred_on_the_rendered_form():
-    """The two fields CR quads centre, checked end to end rather than in
-    isolation -- this is what the reference return shows."""
-    import io as _io
-    from pypdf import PdfReader as _R
+def test_the_alignment_list_is_the_specimens_and_not_the_templates():
+    """This used to read each widget's own `/Q` back off the rendered form,
+    which proved nothing: `/Q` is the TEMPLATE's, unchanged by anything the
+    renderer does, and Acrobat set it to centre on 287 of 298 widgets. CR
+    left-aligns most of those. So assert on the list the renderer is actually
+    given, and on both sides of the distinction it draws."""
     from services.nar1_form import fill
     from services.nar1_form import field_map as fm
-    from tests.test_nar1_form_fill import build_xml
-    reader = _R(_io.BytesIO(fill.render(build_xml())))
-    centred = {fm.MAIN_1["company_name"], fm.MAIN_1["br_number"]}
-    seen = 0
-    for page in reader.pages:
-        for annot in (page.get("/Annots") or []):
-            obj = annot.get_object()
-            name = str(obj.get("/T") or "").split("__p")[0]
-            if name in centred:
-                assert int(obj.get("/Q", 0)) == 1, f"{name} lost its quadding"
-                seen += 1
-    assert seen >= 2, "expected the company name and the BRN header"
+
+    for key in ("company_name", "br_number", "return_date_dd"):
+        assert fm.MAIN_1[key] in fill.CENTRED_FIELDS, f"{key} should centre"
+    assert fm.share_capital(0, "class") in fill.CENTRED_FIELDS
+    assert fm.MEMBERS_AND_SIGNATURE["signed_name"] in fill.CENTRED_FIELDS
+
+    # The specimen left-aligns every one of these, and the template's /Q says
+    # centre for all of them.
+    for name in (fm.MAIN_1["business_name"], fm.MAIN_1["ro_street"],
+                 fm.MAIN_2["email_address"], fm.MAIN_2["mortgages_total"],
+                 fm.DIRECTOR_INDIVIDUAL["surname_en"],
+                 fm.SECRETARY_CORPORATE["name_en"],
+                 fm.SCHEDULE_1_HEADER["share_class"]):
+        assert name not in fill.CENTRED_FIELDS,             f"{name} is left-aligned on CR's own filed return"
 
 
 def _field_rect(reader, page_index, field_name):
@@ -462,7 +465,7 @@ def test_the_baked_fidelity_wiring_is_actually_applied():
     full_name = "TEST COMPANY LIMITED  測試有限公司"     # what fill._company_name
                                                           # actually joins
     rect = _field_rect(reader, 0, fm2.MAIN_1["company_name"])
-    left_pad = rect[0] + 2.0
+    left_pad = rect[0] + ap._INSET
     centred_x = ap.draw_position(full_name, rect, size=name_size, quadding=1,
                                  bold=True)
     assert abs(name_x - left_pad) > 5.0, \

@@ -17,7 +17,6 @@ asserts on it -- but no viewer is asked to interpret it any more.
 from __future__ import annotations
 
 import io
-import re
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
@@ -34,6 +33,19 @@ FONT_LATIN_BOLD = "NAR1-Bold"
 FONT_LATIN = "NAR1-Regular"
 FONT_CJK = "NAR1-CJK"
 FONT_CJK_SC = "NAR1-CJK-SC"
+
+#: The page FOOTER's face. CR sets the whole of "附表一第 _ 頁 Schedule 1
+#: Page _" in Arial 8pt, the two page numbers in it included, so those two
+#: values are the one place on the form CR does not use the return's Times.
+#:
+#: NOT EMBEDDED, and that is deliberate rather than an oversight. Helvetica is
+#: one of the PDF standard 14 faces: every conforming viewer is required to
+#: have it, and it is metrically identical to Arial. The reason this module
+#: exists is that `/PMingLiU` had NEITHER property -- a Traditional Chinese
+#: face with no such guarantee, which is why the same bytes rendered as two
+#: different documents. Do not extend this to anything else, and never to
+#: anything that could carry a Chinese character.
+FONT_SANS = "Helvetica"
 
 _FILES = {
     FONT_LATIN_BOLD: "Tinos-Bold.ttf",
@@ -164,6 +176,12 @@ def _is_cjk(char: str) -> bool:
 def _uncoverable(font: str, text: str) -> list[str]:
     """Characters in `text` the registered `font` has no glyph for, in the
     order they first appear and without repeats."""
+    if font == FONT_SANS:
+        # A standard-14 face has no TTF to read a cmap out of. It is only ever
+        # selected for a schedule's page number, so the coverage question is
+        # answered here instead: WinAnsi, and refuse anything outside it rather
+        # than let the standard-14 path become a hole in the guard below.
+        return [char for char in dict.fromkeys(text) if ord(char) > 0xFF]
     cmap = _CMAPS.get(font)
     if cmap is None:
         # register_fonts() has not run yet on this process -- callers all
@@ -188,13 +206,19 @@ def _cjk_face_for(char: str) -> str:
     return _CJK_FACES[-1]
 
 
-def split_runs(text: str, *, bold: bool = True) -> list[tuple[str, str]]:
+def split_runs(text: str, *, bold: bool = True, latin: str | None = None
+               ) -> list[tuple[str, str]]:
     """Split `text` into consecutive (font name, chunk) runs.
 
     Per character, because a Hong Kong address is routinely half English and
     half Chinese and a single font for the whole value would drop one half.
+
+    `latin` overrides the face used for everything that is not CJK -- the one
+    caller is the schedule page numbers, which CR sets in the footer's sans
+    face. CJK routing is untouched by it: `FONT_SANS` has no Chinese glyphs,
+    and quietly dropping a character is the failure this module exists to end.
     """
-    latin = FONT_LATIN_BOLD if bold else FONT_LATIN
+    latin = latin or (FONT_LATIN_BOLD if bold else FONT_LATIN)
     runs: list[tuple[str, str]] = []
     for char in text:
         face = _cjk_face_for(char) if _is_cjk(char) else latin
@@ -208,70 +232,97 @@ def split_runs(text: str, *, bold: bool = True) -> list[tuple[str, str]]:
 #: /F bit 2 on an annotation: Hidden.
 _ANNOT_HIDDEN = 2
 
-#: Left and right breathing room inside a widget box, in points.
+#: Top and bottom breathing room inside a widget box, in points.
 _PAD = 2.0
+
+#: How far inside the printed rule a left-aligned value starts.
+#:
+#: MEASURED ON CR'S OWN FILED RETURN, not chosen. Across 30 values on pages 1,
+#: 2, 4, 5 and 8 of `docs/Kanenas Holding Limited NAR1 2026.pdf` CR leaves
+#: 10.32pt to 10.56pt between the rule and the first glyph, and never anything
+#: else. This template's widget `/Rect` sits 0.95pt inside its own rule (284
+#: widgets, standard deviation 0.15pt), so drawing 9.4pt inside the /Rect puts
+#: the glyph 10.35pt inside the rule -- where CR puts it.
+#:
+#: It was 2.0, which is Acrobat's form padding rather than CR's, and it put
+#: every address line a visible eight points left of the specimen's.
+_INSET = 9.4
 
 #: Below this the value is a smudge, and an unreadable particular is worse
 #: than one that visibly overflows its box.
 _MIN_SIZE = 4.0
 
-#: CR'S OWN SIZE, read out of the template rather than guessed: 287 of the
-#: form's 318 text widgets carry `/DA = "/PMingLiU 12 Tf 0 g"`, and the rest
-#: are 9pt, 10pt, or 0 (auto). Nothing on Form NAR1 is set at 10pt by default.
+#: THE SIZE CR PRINTS. Measured off the filed specimen by comparing the
+#: advance of every glyph CR drew against the same string set in Tinos: 10.0pt
+#: for every ordinary value, on all nine pages. The exceptions are listed in
+#: `fill.FIELD_SIZES` -- 12pt for the company name, 14pt for the BR number in
+#: each page header.
 #:
-#: THIS WAS 10.0 AND THAT WAS THE "the fonts look different" BUG. Every value
-#: on every page rendered a sixth smaller than CR sets it, which beside GSHK's
-#: own specimen reads as a different typeface rather than as a smaller one --
-#: the face itself was never wrong. Measured 2026-09-02: Tinos-Bold's advance
-#: widths are identical to Times New Roman Bold's to within 0.001pt on every
-#: sample string, and at 12pt the two are not visually separable, so the
-#: metric-compatible substitute stays. Do not "fix" the typography here; if a
-#: value looks wrong, check the size it was drawn at first.
-DEFAULT_SIZE = 12.0
+#: DO NOT TAKE THIS FROM THE TEMPLATE'S `/DA` AGAIN. 287 of the blank form's
+#: 298 text widgets carry an identical `/DA "/PMingLiU 12 Tf"`, which is
+#: Acrobat's default appearance for typing into the form and is not what CR's
+#: filing system prints. It is demonstrably wrong in BOTH directions: the same
+#: 12pt sits on the BR-number header CR prints at 14, and on the presenter's
+#: block CR prints at 10 in the regular face. Reading it made every value on
+#: every page a fifth larger than the specimen -- which, laid beside the real
+#: return, reads as a different typeface rather than a larger one, and was
+#: reported as exactly that.
+#:
+#: The face is NOT the thing to change if a value looks wrong. Over 648 glyph
+#: advances on the specimen, Tinos differs from CR's embedded Times New Roman
+#: by at most 0.15pt and on average 0.03pt -- the rounding in CR's own
+#: `/Widths` array. Check the size first.
+DEFAULT_SIZE = 10.0
 
 #: Baseline-to-baseline distance as a multiple of the point size, for the
 #: fields CR sizes to hold more than one line.
 _LEADING = 1.15
 
 
-def measure(text: str, size: float, *, bold: bool = True) -> float:
+def measure(text: str, size: float, *, bold: bool = True,
+            latin: str | None = None) -> float:
     """Advance width of `text` at `size`, summed across its script runs."""
     return sum(pdfmetrics.stringWidth(chunk, font, size)
-               for font, chunk in split_runs(text, bold=bold))
+               for font, chunk in split_runs(text, bold=bold, latin=latin))
 
 
 def fit_size(text: str, width: float, *, start: float = DEFAULT_SIZE,
              minimum: float = _MIN_SIZE, bold: bool = True) -> float:
     """The largest size at or below `start` whose text fits `width`."""
     size = start
-    usable = width - 2 * _PAD
+    usable = width - 2 * _INSET
     while size > minimum and measure(text, size, bold=bold) > usable:
         size -= 0.25
     return round(max(size, minimum), 2)
 
 
 def draw_position(text: str, rect, *, size: float, quadding=None,
-                  bold: bool = True) -> float:
-    """The x the text starts at, honouring the field's /Q alignment.
+                  bold: bool = True, latin: str | None = None) -> float:
+    """The x the text starts at, for a field aligned per `quadding`.
 
-    CR quads the company name and the BRN header CENTRE (`/Q = 1`) and its own
-    filed returns render them that way. Everything else carries no `/Q` and is
-    left-aligned. Getting this wrong is invisible to every value-and-font
-    assertion in this file and obvious the moment anyone lays the two
-    documents side by side -- which is how it was found.
+    `quadding` follows the PDF `/Q` vocabulary -- 0 left, 1 centre, 2 right --
+    but the caller does NOT read it off the widget. The template's own `/Q` is
+    Acrobat's, not CR's: it says centre for the business name, the mortgages
+    box, every officer's name and every address line, and CR left-aligns all
+    of them. `fill.CENTRED_FIELDS` lists the fields CR actually centres,
+    measured off the filed specimen, and `bake()` passes that in instead.
+
+    Getting this wrong is invisible to every value-and-font assertion in this
+    module and obvious the moment anyone lays the two documents side by side --
+    which is how it was found, twice.
     """
     x0, _, x1, _ = (float(v) for v in rect)
-    width = measure(text, size, bold=bold)
+    width = measure(text, size, bold=bold, latin=latin)
     quad = int(quadding) if quadding is not None else 0
     if quad == 1:                      # centred
         return x0 + ((x1 - x0) - width) / 2
     if quad == 2:                      # right-aligned
-        return x1 - _PAD - width
-    return x0 + _PAD                   # left, and the default
+        return x1 - _INSET - width
+    return x0 + _INSET                 # left, and the default
 
 
-def wrap(text: str, width: float, size: float, *, bold: bool = True
-         ) -> list[str]:
+def wrap(text: str, width: float, size: float, *, bold: bool = True,
+         latin: str | None = None) -> list[str]:
     """`text` broken into lines that each fit `width`, greedily on spaces.
 
     A word longer than the whole line is left on a line of its own and
@@ -284,13 +335,14 @@ def wrap(text: str, width: float, size: float, *, bold: bool = True
     deliberately puts between the English and Chinese names -- so the one
     thing this function must not do to a value it is not wrapping is touch it.
     """
-    if measure(text, size, bold=bold) <= width:
+    if measure(text, size, bold=bold, latin=latin) <= width:
         return [text]
     lines: list[str] = []
     current = ""
     for word in text.split():
         candidate = f"{current} {word}" if current else word
-        if current and measure(candidate, size, bold=bold) > width:
+        if current and measure(candidate, size, bold=bold,
+                               latin=latin) > width:
             lines.append(current)
             current = word
         else:
@@ -306,8 +358,8 @@ def _lines_that_fit(height: float, size: float) -> int:
     return max(1, int((height - _PAD) // (size * _LEADING)))
 
 
-def layout(text: str, rect, *, size: float = DEFAULT_SIZE, bold: bool = True
-           ) -> tuple[list[str], float]:
+def layout(text: str, rect, *, size: float = DEFAULT_SIZE, bold: bool = True,
+           latin: str | None = None) -> tuple[list[str], float]:
     """The lines to draw and the size to draw them at.
 
     Shrinking is the LAST resort, not the first. CR sizes several boxes to
@@ -319,21 +371,21 @@ def layout(text: str, rect, *, size: float = DEFAULT_SIZE, bold: bool = True
     even that will not fit.
     """
     x0, y0, x1, y1 = (float(v) for v in rect)
-    usable = (x1 - x0) - 2 * _PAD
+    usable = (x1 - x0) - 2 * _INSET
     height = y1 - y0
     current = size
     while current > _MIN_SIZE:
-        lines = wrap(text, usable, current, bold=bold)
+        lines = wrap(text, usable, current, bold=bold, latin=latin)
         if len(lines) <= _lines_that_fit(height, current):
             return lines, round(current, 2)
         current -= 0.25
     # At the floor, take whatever the box holds and let it overflow visibly.
-    return wrap(text, usable, _MIN_SIZE, bold=bold), _MIN_SIZE
+    return wrap(text, usable, _MIN_SIZE, bold=bold, latin=latin), _MIN_SIZE
 
 
 def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
-               bold: bool = True, quadding=None, field: str | None = None
-               ) -> float:
+               bold: bool = True, quadding=None, field: str | None = None,
+               latin: str | None = None) -> float:
     """Draw one value inside its widget rectangle. Returns the size used.
 
     Raises `AppearanceError` if the face `split_runs` selected for some
@@ -349,7 +401,7 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
     a half-drawn value on the page.
     """
     x0, y0, x1, y1 = (float(v) for v in rect)
-    for font, chunk in split_runs(text, bold=bold):
+    for font, chunk in split_runs(text, bold=bold, latin=latin):
         missing = _uncoverable(font, chunk)
         if missing:
             codepoints = ", ".join(
@@ -360,7 +412,7 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
                 f"it. reportlab would silently substitute nothing rather "
                 f"than raise, which is how this went unnoticed before."
             )
-    lines, size = layout(text, rect, size=size, bold=bold)
+    lines, size = layout(text, rect, size=size, bold=bold, latin=latin)
 
     leading = size * _LEADING
     if len(lines) > 1:
@@ -370,15 +422,22 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
         # Address:", not floating in the middle of the panel below it.
         y = y1 - _PAD - size * 0.82
     else:
-        # A single line is centred, which is what the tall one-value cells
-        # want: section 11's Total row is 108pt deep and holds one figure,
-        # and CR prints it in the middle.
-        y = y0 + ((y1 - y0) - size * 0.72) / 2 + size * 0.06
+        # A single line has its CAP HEIGHT centred in the box, which is what
+        # the tall one-value cells want: section 11's Total row is 108pt deep
+        # and holds one figure, and CR prints it in the middle.
+        #
+        # Checked against seven box heights on the filed specimen, from a
+        # 21.9pt date cell to that 107.9pt Total row: this formula lands
+        # within 0.15pt of CR's baseline in every one. It used to carry a
+        # further `+ size * 0.06`, which lifted every value on the form six
+        # tenths of a point off the line CR sets it on.
+        y = y0 + ((y1 - y0) - size * 0.72) / 2
 
     canvas.setFillColorRGB(0, 0, 0)
     for line in lines:
-        x = draw_position(line, rect, size=size, quadding=quadding, bold=bold)
-        for font, chunk in split_runs(line, bold=bold):
+        x = draw_position(line, rect, size=size, quadding=quadding,
+                          bold=bold, latin=latin)
+        for font, chunk in split_runs(line, bold=bold, latin=latin):
             canvas.setFont(font, size)
             canvas.drawString(x, y, chunk)
             x += pdfmetrics.stringWidth(chunk, font, size)
@@ -386,38 +445,18 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
     return size
 
 
-#: `/DA` looks like "/PMingLiU 12 Tf 0 g" -- the operand before `Tf`.
-_DA_SIZE = re.compile(r"/\S+\s+([\d.]+)\s+Tf")
-
-
-def da_size(da) -> float | None:
-    """The point size CR set on this field, or None for "CR did not say".
-
-    A `/DA` size of **0** is the PDF spec's auto-size, which is also None
-    here: the caller has the box and works it out. Anything unparseable is
-    None too, so a template CR re-issues with a different `/DA` syntax falls
-    back to the form's own 12pt rather than to nothing.
-    """
-    match = _DA_SIZE.search(str(da or ""))
-    if not match:
-        return None
-    try:
-        size = float(match.group(1))
-    except ValueError:
-        return None
-    return size or None
-
-
-def _auto_size(rect) -> float:
-    """The starting size for a field CR marked auto (`0 Tf`).
-
-    Capped at the form's own 12pt rather than filling the box: `fill_11_P.8`
-    is the 25pt-tall signature rule, and a height-derived size would set the
-    signatory's name at 20pt beside a 12pt return.
-    """
-    _, y0, _, y1 = (float(v) for v in rect)
-    return min(DEFAULT_SIZE, max(_MIN_SIZE, (float(y1) - float(y0) - _PAD)
-                                 / _LEADING))
+# THE TEMPLATE'S `/DA` IS NOT READ, AND MUST NOT BE READ AGAIN.
+#
+# There used to be a `da_size()` here that pulled the point size out of each
+# widget's `/DA`, plus an `_auto_size()` for the `0 Tf` fields. Both are gone.
+# `/DA` is the appearance Acrobat gives a field for someone TYPING into the
+# blank form; it is not what CR's filing system prints, and on this template it
+# is provably wrong in both directions -- the same `/PMingLiU 12 Tf` sits on
+# 287 of 298 widgets, covering the BR-number header CR prints at 14pt and the
+# presenter's block CR prints at 10pt regular.
+#
+# Sizes come from `DEFAULT_SIZE` and `fill.FIELD_SIZES`, which are measured off
+# a filed return, and a value too wide for its box is shrunk by `layout()`.
 
 
 #: The tick CR asks for -- "請在適用的空格內加上 ✓ 號" -- as a stroked path
@@ -469,22 +508,36 @@ def _is_ticked(obj) -> bool:
 
 
 def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
-         regular: frozenset[str] | set[str] | None = None) -> bytes:
+         regular: frozenset[str] | set[str] | None = None,
+         centred: frozenset[str] | set[str] | None = None,
+         faces: dict[str, str] | None = None) -> bytes:
     """Draw every field value as page content and hide the widgets.
 
-    `sizes` maps a field's ORIGINAL template name to a point size, overriding
-    the field's own `/DA` for the handful read off a real filed return rather
-    than off the template -- the BRN at 14pt and the company name at 12pt.
-    Names carry the renderer's per-page suffix, so the lookup is on the part
-    before `__p`. Everything else takes the size CR set on the field itself.
+    Every one of these four is keyed on a field's ORIGINAL template name, and
+    every one of them was measured off GSHK's filed NAR1 rather than read off
+    the blank template -- because the template's own `/DA` and `/Q` are what
+    Acrobat wrote for someone typing into the form, and they disagree with what
+    CR prints. Names carry the renderer's per-page suffix, so each lookup is on
+    the part before `__p`.
 
-    `regular` names the fields CR sets in the REGULAR face rather than bold --
-    the presenter's block, which identifies who filed the return rather than
-    stating anything about the company. Everything else is bold.
+    `sizes`   -- the point sizes that are not `DEFAULT_SIZE`: the BR number at
+                 14pt and the company name at 12pt.
+    `regular` -- the fields CR sets in the REGULAR face rather than bold: the
+                 presenter's block, which identifies who filed the return
+                 rather than stating anything about the company.
+    `centred` -- the fields CR centres in their box. Everything else is left
+                 aligned, which is the opposite of what the template's `/Q`
+                 claims for the business name, the mortgages box, every
+                 officer's name and every address line.
+    `faces`   -- a non-default Latin face, for the one group CR does not set in
+                 the return's Times: a schedule's page numbers, which belong to
+                 the page footer and are set in its sans face.
     """
     register_fonts()
     sizes = sizes or {}
     regular = regular or frozenset()
+    centred = centred or frozenset()
+    faces = faces or {}
     reader = PdfReader(io.BytesIO(pdf_bytes))
     # clone_from, rather than building a writer and adding pages to it one at a
     # time. `merge_page` on a page that is not yet attached to a writer is
@@ -519,11 +572,12 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
             if value is None or not str(value).strip():
                 continue
             name = str(obj.get("/T") or "").split("__p")[0]
-            size = sizes.get(name) or da_size(obj.get("/DA"))
             draw_value(layer, str(value), obj["/Rect"],
-                       size=size or _auto_size(obj["/Rect"]),
+                       size=sizes.get(name, DEFAULT_SIZE),
                        bold=name not in regular,
-                       quadding=obj.get("/Q"),
+                       # NOT `obj.get("/Q")`. See `draw_position`.
+                       quadding=1 if name in centred else 0,
+                       latin=faces.get(name),
                        field=name)
             obj[NameObject("/F")] = NumberObject(
                 int(obj.get("/F", 0)) | _ANNOT_HIDDEN)

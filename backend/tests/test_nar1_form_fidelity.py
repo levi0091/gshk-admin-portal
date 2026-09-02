@@ -148,13 +148,13 @@ def test_the_presenter_block_carries_GSHKs_whole_address_not_just_a_name():
 
 
 def test_the_presenter_address_wraps_rather_than_shrinking_to_a_smear():
-    """CR's box is 185pt wide, 66pt tall and set at 9pt -- sized for more than
-    one line. Fitting GSHK's address across it on a single line drove the
-    renderer to its 4pt floor, which is unreadable."""
+    """CR's box is 185pt wide and 66pt tall -- sized for more than one line,
+    and CR's own return does wrap it across two. Fitting GSHK's address across
+    it on a single line drove the renderer to its 4pt floor, unreadable."""
     ap.register_fonts()
     rect = (0.0, 0.0, 185.5, 66.5)
     lines, size = ap.layout(fill.DEFAULT_PRESENTER["address"], rect,
-                            size=fill.PRESENTER_SIZE, bold=False)
+                            size=ap.DEFAULT_SIZE, bold=False)
     assert len(lines) > 1, "the address did not wrap"
     assert size >= 8.0, f"the address was shrunk to {size}pt instead of wrapped"
     assert " ".join(lines) == fill.DEFAULT_PRESENTER["address"]
@@ -316,11 +316,20 @@ def test_a_tick_is_drawn_into_the_page_and_not_left_to_the_widget():
     assert total >= 4, f"only {total} ticks found; the discovery broke"
 
 
-def test_values_are_drawn_at_CRs_own_size_not_two_points_smaller():
-    """THE "the fonts still look different" BUG. Every value on every page
-    drew at 10pt where CR's template sets 12 -- a sixth smaller than the
-    specimen, which beside it reads as a different typeface rather than a
-    smaller one. The face was never wrong.
+def test_values_are_drawn_at_the_size_CR_PRINTS_not_the_size_it_types():
+    """THE REPORT THAT REOPENED THIS: "the font looks smaller on the real form
+    and the family looks different too."
+
+    The size was the whole of it. Every value drew at the template's `/DA` 12pt
+    where CR's own filed return prints 10, and a fifth too large is not read as
+    a larger typeface -- it is read as a different one.
+
+    `/DA` was the wrong source, not a misread one. Acrobat put the same
+    `/PMingLiU 12 Tf` on 287 of the form's 298 text widgets, the BR-number
+    header CR prints at 14pt and the presenter's block CR prints at 10pt
+    regular among them. It is the appearance for TYPING into the blank form.
+    The sizes now come from `appearance.DEFAULT_SIZE` and `fill.FIELD_SIZES`,
+    both measured off the specimen.
     """
     pdf = fill.render(build_xml())
     page1 = PdfReader(io.BytesIO(pdf)).pages[0]
@@ -333,19 +342,17 @@ def test_values_are_drawn_at_CRs_own_size_not_two_points_smaller():
     page1.extract_text(visitor_text=visitor)
     drawn = next((size for text, size in sizes.items()
                   if "Flat A, 12/F" in text), None)
-    assert drawn == 12.0, f"the registered office drew at {drawn}pt, not 12pt"
+    assert drawn == 10.0, f"the registered office drew at {drawn}pt, not 10pt"
 
 
-def test_the_form_default_size_is_the_one_CRs_template_declares():
-    """287 of the template's 318 text widgets carry `/DA "/PMingLiU 12 Tf"`.
-    Nothing on Form NAR1 is set at 10pt by default."""
-    assert ap.DEFAULT_SIZE == 12.0
-    assert ap.da_size("/PMingLiU 12 Tf 0 g") == 12.0
-    assert ap.da_size("/TimesNewRoman 9 Tf 0 g") == 9.0
-    # 0 is the spec's auto-size, which is "CR did not say" -- the caller works
-    # it out from the box.
-    assert ap.da_size("/PMingLiU 0 Tf 0 g") is None
-    assert ap.da_size(None) is None
+def test_the_templates_DA_is_not_consulted_for_the_size():
+    """`da_size()` and `_auto_size()` were deleted rather than left unused: an
+    unreferenced reader of `/DA` is an invitation to wire it back in, and
+    wiring it back in is exactly the regression this file's specimen tests
+    exist to catch."""
+    assert ap.DEFAULT_SIZE == 10.0
+    assert not hasattr(ap, "da_size")
+    assert not hasattr(ap, "_auto_size")
 
 
 def test_wrapping_never_rewrites_a_value_that_already_fits():

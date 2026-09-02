@@ -337,6 +337,29 @@ await log_event(
 
 `scripts/registry_reconciliation.py` (read-only, needs `.env`, never CI) prints what GSHK has to fix by hand: the blocked companies, the 31 identity documents whose number is not what its type says, and the fields that ship empty because nobody has the data. **It calls `filing_problems()` rather than reimplementing the rule in SQL** — a report that counts blocked companies differently from the code that blocks them is worse than no report.
 
+### 4. The rendered NAR1's typography comes from a FILED return, never from the template
+
+**`docs/Kanenas Holding Limited NAR1 2026.pdf` is the authority for how the generated form looks, and the blank `NAR1_fillable.pdf`'s widget properties are not.** That specimen is **not committed** — `docs/` is gitignored and it carries a real director's name, address and passport number — so the measurements are transcribed into the tests as constants rather than read from it at test time. CI never needs the file. `/DA` and `/Q` on that template are what Acrobat wrote for someone typing into the form by hand. They are not what CR's filing system prints, and taking them as a measurement has now cost two round-trips with the client.
+
+The proof is in the template itself: **287 of its 298 text widgets carry an identical `/DA "/PMingLiU 12 Tf"`** — including the BR-number header CR prints at **14pt** and the presenter's block CR prints at **10pt regular**. A default wrong in both directions is not a measurement. `/Q 1` (centre) is on the business name, the mortgages box, every officer's name and every address line; CR **left-aligns all of them**.
+
+What was measured off the filed return, and is now asserted end-to-end in `tests/test_nar1_specimen_geometry.py`:
+
+| | |
+|---|---|
+| every ordinary value | Times New Roman **Bold, 10pt** |
+| section 1, the company name | 12pt |
+| the BR number in each page header | 14pt |
+| the presenter's block | 10pt, **regular** — weight is the whole difference |
+| a schedule's page numbers | the page FOOTER's **sans** face at 8pt, the only values not in Times |
+| a left-aligned value | starts **10.3pt inside the printed rule** (9.4pt inside the widget `/Rect`, which sits 0.95pt inside its rule) |
+| a centred value | centred on the box, for the fields in `fill.CENTRED_FIELDS` and no others |
+| a single line's baseline | `y0 + (box height − 0.72 × size) / 2` |
+
+**The face was never the problem.** Over 648 glyph advances on the specimen, Tinos differs from CR's embedded Times New Roman by at most 0.15pt and on average 0.03pt — the rounding in CR's own `/Widths`. If a value looks wrong, check the **size** first. `appearance.da_size()` and `_auto_size()` were deleted rather than left unused, precisely so nobody wires `/DA` back in.
+
+**There is no rule to derive for alignment** — the same word, "Ordinary", is centred in section 11's table and left-aligned in Schedule 1's header. `fill.CENTRED_FIELDS` lists CR's layout group by group; extend it from the specimen, never from `/Q`.
+
 ### PRD requirement for new PBIs
 
 Every PRD for a new PBI must include:

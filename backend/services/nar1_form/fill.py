@@ -113,10 +113,10 @@ NONE_GIVEN = "-"
 NOT_APPLICABLE = "N/A"
 
 
-#: The sizes CR uses that are not the 10pt default, keyed by the field's name
-#: on the template. Read off a real filed return rather than guessed: the BRN
-#: in the header box is 14pt on EVERY page, and the company name in field 1
-#: is 12pt.
+#: The sizes CR uses that are not `appearance.DEFAULT_SIZE`, keyed by the
+#: field's name on the template. Read off a real filed return rather than off
+#: the template's `/DA`, which is Acrobat's and disagrees: the BR number in the
+#: header box is 14pt on EVERY page, and the company name in field 1 is 12pt.
 #:
 #: Built from field_map's own constants rather than a regex over field names.
 #: `fill_1_P.6` is a BRN header and `fill_6_P.6` is a director's surname --
@@ -139,19 +139,30 @@ def _br_number_fields() -> set[str]:
 FIELD_SIZES = {name: 14.0 for name in _br_number_fields()}
 FIELD_SIZES[fm.MAIN_1["company_name"]] = 12.0
 
-#: The presenter's block is set SMALLER as well as lighter -- 9pt against the
-#: return's 12pt on GSHK's specimen. It is the one place the template's own
-#: `/DA` and CR's printed output disagree: the six widgets are a mix of 12pt,
-#: 9pt and auto, and CR sets the whole block at the size of its longest field.
-#: Rendering it at 12pt made the administrative note about who filed the
-#: return compete with the statutory values above it.
-PRESENTER_SIZE = 9.0
+#: A schedule's page numbers belong to the page FOOTER rather than to the
+#: return, and CR fills them in the footer's own face and size -- Arial 8pt
+#: regular, measured at 8.04pt on the specimen's Schedule 1, against the
+#: 9.96pt Times New Roman Bold of the statutory values above it. They are the
+#: only two values on the whole form CR does not set in Times.
+FOOTER_SIZE = 8.0
+FOOTER_FIELDS = frozenset(
+    tuple(fm.SCHEDULE_1_PAGING.values()) + tuple(fm.SCHEDULE_2_PAGING.values())
+)
+FIELD_SIZES.update({name: FOOTER_SIZE for name in FOOTER_FIELDS})
+
+#: The Latin face for the fields not set in the return's Times.
+FIELD_FACES = {name: appearance.FONT_SANS for name in FOOTER_FIELDS}
 
 #: The fields CR sets in the REGULAR face rather than bold. On a real filed
 #: return every statutory value is bold and the presenter's block -- who filed
 #: this, and where to write back -- is not. That contrast is how CR separates
 #: the return's content from the administrative note identifying the filer, so
 #: rendering the whole page bold loses a distinction the form is making.
+#:
+#: WEIGHT IS THE WHOLE OF IT. The block is set at the return's own 10pt: all
+#: six of its values measure 9.96pt on the specimen, the same as the statutory
+#: values above them. Rendering it a point smaller as well turned CR's
+#: contrast into a footnote CR does not print.
 REGULAR_WEIGHT_FIELDS = frozenset(
     fm.MAIN_1[key] for key in (
         "presenter_name", "presenter_address", "presenter_tel",
@@ -159,7 +170,73 @@ REGULAR_WEIGHT_FIELDS = frozenset(
     )
 )
 
-FIELD_SIZES.update({name: PRESENTER_SIZE for name in REGULAR_WEIGHT_FIELDS})
+
+#: THE FIELDS CR CENTRES. Everything not named here is left-aligned.
+#:
+#: This does NOT come from the template's `/Q`, and must not be rebuilt from
+#: it. Acrobat put `/Q 1` on 287 of the form's 298 text widgets, the business
+#: name, the mortgages box, every officer's name and every address line among
+#: them -- and CR's own filed return left-aligns all of those. Honouring `/Q`
+#: put a director's surname in the middle of its box, which is the most
+#: visible single difference between the two documents.
+#:
+#: There is no rule to derive: the same word, "Ordinary", is centred in
+#: section 11's table and left-aligned in Schedule 1's header. It is CR's
+#: layout, so every group below was read off the specimen and is listed.
+def _centred_fields() -> set[str]:
+    names = set(_br_number_fields())              # the header box, at 14pt
+    names.add(fm.MAIN_1["company_name"])          # section 1
+    # Sections 4 and 5 -- one digit-pair per ruled cell.
+    names.update(fm.MAIN_1[key] for key in (
+        "return_date_dd", "return_date_mm", "return_date_yyyy",
+        "fin_period_from_dd", "fin_period_from_mm", "fin_period_from_yyyy",
+        "fin_period_to_dd", "fin_period_to_mm", "fin_period_to_yyyy",
+    ))
+    # Sections 8 and 10. Section 7's email and section 9's mortgages total are
+    # deliberately NOT here: CR sets "Nil" against the left of a 492pt box.
+    names.update(fm.MAIN_2[key] for key in ("phone", "members_no_capital"))
+    # Section 11 -- every cell of the table and of the Total row.
+    for row in range(fm.SHARE_CAPITAL_ROWS):
+        for column in ("class", "currency", "total_number", "total_amount",
+                       "paid_up"):
+            names.add(fm.share_capital(row, column))
+    names.update(fm.SHARE_CAPITAL_TOTALS.values())
+    # A registration or identity number in its own ruled cell, wherever an
+    # officer block appears -- the main form and every continuation sheet.
+    officer_blocks = (
+        fm.SECRETARY_INDIVIDUAL, fm.SECRETARY_CORPORATE,
+        fm.DIRECTOR_INDIVIDUAL, fm.RESERVE_DIRECTOR,
+        *fm.DIRECTOR_CORPORATE,
+        fm.SHEET_A, fm.SHEET_B, fm.SHEET_C, *fm.SHEET_D,
+    )
+    for block in officer_blocks:
+        names.update(block[key]
+                     for key in ("hkid_partial", "tcsp_licence",
+                                 "own_br_number")
+                     if key in block)
+    # Page 8 -- the continuation-sheet counts and the signature block.
+    names.update(fm.MEMBERS_AND_SIGNATURE[key] for key in (
+        "count_sheet_a", "count_sheet_b", "count_sheet_c", "count_sheet_d",
+        "count_sheet_e", "count_schedule_1", "count_schedule_2",
+        "signed_name", "signed_date",
+    ))
+    # The schedules. `share_class` is deliberately absent -- see above.
+    for header in (fm.SCHEDULE_1_HEADER, fm.SCHEDULE_2_HEADER):
+        names.update(header[key] for key in (
+            "return_date_dd", "return_date_mm", "return_date_yyyy",
+            "br_number", "class_total_issued",
+        ))
+    for slot in (*fm.SCHEDULE_1, *fm.SCHEDULE_2):
+        names.update(slot[key] for key in ("shares_held", "percentage")
+                     if key in slot)
+    names.update(FOOTER_FIELDS)
+    # Every continuation sheet's own date-and-BR header.
+    for page in range(fm.PAGE_SHEET_A, fm.PAGE_SHEET_E + 1):
+        names.update(fm.sheet_header(page).values())
+    return names
+
+
+CENTRED_FIELDS = frozenset(_centred_fields())
 
 
 class FormFillError(RuntimeError):
@@ -1131,7 +1208,8 @@ def _render(pages: _Pages) -> bytes:
     # portal preview disagree.
     try:
         return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES,
-                               regular=REGULAR_WEIGHT_FIELDS)
+                               regular=REGULAR_WEIGHT_FIELDS,
+                               centred=CENTRED_FIELDS, faces=FIELD_FACES)
     except appearance.AppearanceError as exc:
         # Translated rather than left to propagate: every caller of
         # `render()` already catches `FormFillError` (routers/cases.py,
