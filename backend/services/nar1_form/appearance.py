@@ -17,6 +17,7 @@ asserts on it -- but no viewer is asked to interpret it any more.
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
@@ -214,8 +215,23 @@ _PAD = 2.0
 #: than one that visibly overflows its box.
 _MIN_SIZE = 4.0
 
-#: Sizes read off CR's own returns.
-DEFAULT_SIZE = 10.0
+#: CR'S OWN SIZE, read out of the template rather than guessed: 287 of the
+#: form's 318 text widgets carry `/DA = "/PMingLiU 12 Tf 0 g"`, and the rest
+#: are 9pt, 10pt, or 0 (auto). Nothing on Form NAR1 is set at 10pt by default.
+#:
+#: THIS WAS 10.0 AND THAT WAS THE "the fonts look different" BUG. Every value
+#: on every page rendered a sixth smaller than CR sets it, which beside GSHK's
+#: own specimen reads as a different typeface rather than as a smaller one --
+#: the face itself was never wrong. Measured 2026-09-02: Tinos-Bold's advance
+#: widths are identical to Times New Roman Bold's to within 0.001pt on every
+#: sample string, and at 12pt the two are not visually separable, so the
+#: metric-compatible substitute stays. Do not "fix" the typography here; if a
+#: value looks wrong, check the size it was drawn at first.
+DEFAULT_SIZE = 12.0
+
+#: Baseline-to-baseline distance as a multiple of the point size, for the
+#: fields CR sizes to hold more than one line.
+_LEADING = 1.15
 
 
 def measure(text: str, size: float, *, bold: bool = True) -> float:
@@ -254,6 +270,67 @@ def draw_position(text: str, rect, *, size: float, quadding=None,
     return x0 + _PAD                   # left, and the default
 
 
+def wrap(text: str, width: float, size: float, *, bold: bool = True
+         ) -> list[str]:
+    """`text` broken into lines that each fit `width`, greedily on spaces.
+
+    A word longer than the whole line is left on a line of its own and
+    overflows rather than being hyphenated or cut: it is somebody's building
+    name or email address, and a statutory return must not invent a break in
+    one.
+
+    A value that already fits comes back VERBATIM, whitespace and all. Going
+    through `split()` unconditionally cost `_company_name` the double space it
+    deliberately puts between the English and Chinese names -- so the one
+    thing this function must not do to a value it is not wrapping is touch it.
+    """
+    if measure(text, size, bold=bold) <= width:
+        return [text]
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}" if current else word
+        if current and measure(candidate, size, bold=bold) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _lines_that_fit(height: float, size: float) -> int:
+    """How many lines of `size` CR's box has room for. At least one, because a
+    box too short for its own nominal size still has to show its value."""
+    return max(1, int((height - _PAD) // (size * _LEADING)))
+
+
+def layout(text: str, rect, *, size: float = DEFAULT_SIZE, bold: bool = True
+           ) -> tuple[list[str], float]:
+    """The lines to draw and the size to draw them at.
+
+    Shrinking is the LAST resort, not the first. CR sizes several boxes to
+    hold two or three lines -- the presenter's address is 185pt wide and 66pt
+    tall at 9pt -- and the single-line renderer shrank GSHK's full address to
+    about 4pt to fit it across, which is the "reduced to a grey smear" end of
+    `_MIN_SIZE` rather than the two tidy lines CR's own form shows. So the
+    value is WRAPPED into the lines the box can hold, and only shrunk when
+    even that will not fit.
+    """
+    x0, y0, x1, y1 = (float(v) for v in rect)
+    usable = (x1 - x0) - 2 * _PAD
+    height = y1 - y0
+    current = size
+    while current > _MIN_SIZE:
+        lines = wrap(text, usable, current, bold=bold)
+        if len(lines) <= _lines_that_fit(height, current):
+            return lines, round(current, 2)
+        current -= 0.25
+    # At the floor, take whatever the box holds and let it overflow visibly.
+    return wrap(text, usable, _MIN_SIZE, bold=bold), _MIN_SIZE
+
+
 def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
                bold: bool = True, quadding=None, field: str | None = None
                ) -> float:
@@ -272,8 +349,7 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
     a half-drawn value on the page.
     """
     x0, y0, x1, y1 = (float(v) for v in rect)
-    runs = split_runs(text, bold=bold)
-    for font, chunk in runs:
+    for font, chunk in split_runs(text, bold=bold):
         missing = _uncoverable(font, chunk)
         if missing:
             codepoints = ", ".join(
@@ -284,27 +360,123 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
                 f"it. reportlab would silently substitute nothing rather "
                 f"than raise, which is how this went unnoticed before."
             )
-    size = fit_size(text, x1 - x0, start=size, bold=bold)
-    # Vertically centre the glyph box. 0.72 approximates cap height for both
-    # faces; the correction keeps a 10pt value off the rule beneath it.
-    y = y0 + ((y1 - y0) - size * 0.72) / 2 + size * 0.06
-    x = draw_position(text, rect, size=size, quadding=quadding, bold=bold)
+    lines, size = layout(text, rect, size=size, bold=bold)
+
+    leading = size * _LEADING
+    if len(lines) > 1:
+        # A WRAPPED value starts at the TOP of its box, because CR's tall
+        # boxes are tall to hold several lines and its own returns begin them
+        # against the caption -- the presenter's address sits beside "地址
+        # Address:", not floating in the middle of the panel below it.
+        y = y1 - _PAD - size * 0.82
+    else:
+        # A single line is centred, which is what the tall one-value cells
+        # want: section 11's Total row is 108pt deep and holds one figure,
+        # and CR prints it in the middle.
+        y = y0 + ((y1 - y0) - size * 0.72) / 2 + size * 0.06
+
     canvas.setFillColorRGB(0, 0, 0)
-    for font, chunk in runs:
-        canvas.setFont(font, size)
-        canvas.drawString(x, y, chunk)
-        x += pdfmetrics.stringWidth(chunk, font, size)
+    for line in lines:
+        x = draw_position(line, rect, size=size, quadding=quadding, bold=bold)
+        for font, chunk in split_runs(line, bold=bold):
+            canvas.setFont(font, size)
+            canvas.drawString(x, y, chunk)
+            x += pdfmetrics.stringWidth(chunk, font, size)
+        y -= leading
     return size
+
+
+#: `/DA` looks like "/PMingLiU 12 Tf 0 g" -- the operand before `Tf`.
+_DA_SIZE = re.compile(r"/\S+\s+([\d.]+)\s+Tf")
+
+
+def da_size(da) -> float | None:
+    """The point size CR set on this field, or None for "CR did not say".
+
+    A `/DA` size of **0** is the PDF spec's auto-size, which is also None
+    here: the caller has the box and works it out. Anything unparseable is
+    None too, so a template CR re-issues with a different `/DA` syntax falls
+    back to the form's own 12pt rather than to nothing.
+    """
+    match = _DA_SIZE.search(str(da or ""))
+    if not match:
+        return None
+    try:
+        size = float(match.group(1))
+    except ValueError:
+        return None
+    return size or None
+
+
+def _auto_size(rect) -> float:
+    """The starting size for a field CR marked auto (`0 Tf`).
+
+    Capped at the form's own 12pt rather than filling the box: `fill_11_P.8`
+    is the 25pt-tall signature rule, and a height-derived size would set the
+    signatory's name at 20pt beside a 12pt return.
+    """
+    _, y0, _, y1 = (float(v) for v in rect)
+    return min(DEFAULT_SIZE, max(_MIN_SIZE, (float(y1) - float(y0) - _PAD)
+                                 / _LEADING))
+
+
+#: The tick CR asks for -- "請在適用的空格內加上 ✓ 號" -- as a stroked path
+#: rather than a glyph, given as (x, y) fractions of the widget box.
+_TICK = ((0.18, 0.46), (0.42, 0.20), (0.86, 0.78))
+
+
+def draw_tick(canvas, rect) -> None:
+    """Draw a checkmark inside a checkbox widget's rectangle.
+
+    WHY THIS IS DRAWN AND NOT LEFT TO THE WIDGET. CR's template does carry a
+    complete `/On` appearance stream -- it sets ZapfDingbats '4' -- so a
+    viewer that renders form widgets shows the tick correctly, and one that
+    does not shows an UNTICKED box. That is not a cosmetic difference: the
+    unticked boxes are section 3's company type, section 14's "members are
+    listed in Schedule 1" and section 16's statement, so the same bytes read
+    as a different statutory declaration depending on the renderer. It is the
+    identical failure `bake()` exists to end for text, left in place for the
+    ticks because they are annotations rather than values.
+    """
+    x0, y0, x1, y1 = (float(v) for v in rect)
+    width, height = x1 - x0, y1 - y0
+    canvas.saveState()
+    canvas.setStrokeColorRGB(0, 0, 0)
+    canvas.setLineWidth(max(0.9, min(width, height) * 0.12))
+    canvas.setLineCap(1)
+    canvas.setLineJoin(1)
+    path = canvas.beginPath()
+    (ax, ay), (bx, by), (cx, cy) = _TICK
+    path.moveTo(x0 + ax * width, y0 + ay * height)
+    path.lineTo(x0 + bx * width, y0 + by * height)
+    path.lineTo(x0 + cx * width, y0 + cy * height)
+    canvas.drawPath(path, stroke=1, fill=0)
+    canvas.restoreState()
+
+
+def _is_ticked(obj) -> bool:
+    """Whether this button widget is in an ON state.
+
+    `/AS` is what a viewer draws and `/V` is what the field holds; a widget
+    that has one without the other is still ticked as far as the return is
+    concerned, so either counts. `/Off` never does.
+    """
+    for key in ("/AS", "/V"):
+        state = obj.get(key)
+        if state is not None and str(state) not in ("/Off", "Off", ""):
+            return True
+    return False
 
 
 def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
          regular: frozenset[str] | set[str] | None = None) -> bytes:
     """Draw every field value as page content and hide the widgets.
 
-    `sizes` maps a field's ORIGINAL template name to a point size, for the
-    handful CR sets larger than the rest -- the BRN at 14pt and the company
-    name at 12pt. Names carry the renderer's per-page suffix, so the lookup
-    is on the part before `__p`.
+    `sizes` maps a field's ORIGINAL template name to a point size, overriding
+    the field's own `/DA` for the handful read off a real filed return rather
+    than off the template -- the BRN at 14pt and the company name at 12pt.
+    Names carry the renderer's per-page suffix, so the lookup is on the part
+    before `__p`. Everything else takes the size CR set on the field itself.
 
     `regular` names the fields CR sets in the REGULAR face rather than bold --
     the presenter's block, which identifies who filed the return rather than
@@ -332,14 +504,24 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
 
         for annot in (page.get("/Annots") or []):
             obj = annot.get_object()
-            if obj.get("/FT") != "/Tx":
+            kind = obj.get("/FT")
+            if kind == "/Btn":
+                if not _is_ticked(obj):
+                    continue
+                draw_tick(layer, obj["/Rect"])
+                obj[NameObject("/F")] = NumberObject(
+                    int(obj.get("/F", 0)) | _ANNOT_HIDDEN)
+                drew = True
+                continue
+            if kind != "/Tx":
                 continue
             value = obj.get("/V")
             if value is None or not str(value).strip():
                 continue
             name = str(obj.get("/T") or "").split("__p")[0]
+            size = sizes.get(name) or da_size(obj.get("/DA"))
             draw_value(layer, str(value), obj["/Rect"],
-                       size=sizes.get(name, DEFAULT_SIZE),
+                       size=size or _auto_size(obj["/Rect"]),
                        bold=name not in regular,
                        quadding=obj.get("/Q"),
                        field=name)

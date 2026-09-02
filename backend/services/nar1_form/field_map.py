@@ -339,8 +339,15 @@ MEMBERS_AND_SIGNATURE = {
     "count_schedule_1":       "fill_9_P.8",
     "count_schedule_2":       "fill_10_P.8",
 
-    "signed":                 "fill_11_P.8",
-    "signed_name":            "fill_12_P.8",
+    # The signature block. THESE TWO WERE THE WRONG WAY ROUND until 2026-09-02:
+    # the signatory's name was written to fill_12, which is the DATE box, so
+    # every rendered return showed "Get Started HK Limited" sitting above
+    # "日DD / 月MM / 年YYYY" and left the "姓名 Name" line blank. The give-away
+    # in the template is that fill_12 is the one field on page 8 CR sets in
+    # `/TimesNewRoman 12 Tf` and quads centre in a 136pt box, while fill_11 is
+    # the 231pt auto-sized rule that follows "姓名 Name :".
+    "signed_name":            "fill_11_P.8",
+    "signed_date":            "fill_12_P.8",
 }
 
 #: The printed line reads "董事 Director／公司秘書 Company Secretary *" with

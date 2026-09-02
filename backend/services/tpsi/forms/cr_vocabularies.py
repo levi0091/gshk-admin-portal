@@ -35,6 +35,7 @@ WHY A COMMITTED TABLE AND NOT AN ISO LIBRARY
 
     GG -> GBR1, JE -> GBR2, IM -> GBR3. Never GBR.
 """
+import re
 
 #: (CR code, CR English description, ISO 3166-1 alpha-2). Verbatim from the
 #: "Country & Region" sheet; the Chinese description column is not used because
@@ -459,6 +460,226 @@ def resolve_district(value: str | None) -> str | None:
         return None
     key = _district_key(str(value))
     return key if key in DISTRICT_CODES else None
+
+
+# ---------------------------------------------------------------------------
+# Display names — what a HUMAN reads, never what is filed
+#
+# CR takes a code and PRINTS a name. Its own Form NAR1 shows "Central" in
+# section 6 and "Sweden" in a director's Country/Region, while the XML that
+# produced it carries "CENTRAL" and "SWE". Rendering the code onto the printed
+# form is what made every generated return read in block capitals where GSHK's
+# own specimen reads in words.
+#
+# These are for RENDERING ONLY. Nothing here may ever reach `_address`,
+# `nar1_mapper`, or a lookup the operator picks from: the code is what CR
+# accepts, and a second name->code path is exactly the drift `resolve_district`
+# refuses to carry. The mapping is one-way on purpose.
+# ---------------------------------------------------------------------------
+
+#: District code -> the name CR prints for it. Spelled out rather than derived,
+#: because the code is the name with its separators removed and that is not
+#: reversible: "WANCHAI" is "Wan Chai", "MAONSHAN" is "Ma On Shan", and no
+#: rule recovers the word breaks. `test_cr_vocabularies` asserts that this
+#: covers DISTRICT_CODES exactly and that `_district_key` of every name
+#: reproduces its key, so a typo here cannot silently invent a district.
+DISTRICT_NAMES: dict[str, str] = {
+    "ABERDEEN": "Aberdeen",
+    "ADMIRALTY": "Admiralty",
+    "APLEICHAU": "Ap Lei Chau",
+    "BEACONHILL": "Beacon Hill",
+    "BRAEMARHILL": "Braemar Hill",
+    "CAUSEWAYBAY": "Causeway Bay",
+    "CENTRAL": "Central",
+    "CHAIWAN": "Chai Wan",
+    "CHEUNGCHAU": "Cheung Chau",
+    "CHEUNGMUKTAU": "Cheung Muk Tau",
+    "CHEUNGSHAWAN": "Cheung Sha Wan",
+    "CHUNGHOMKOK": "Chung Hom Kok",
+    "CLEARWATERBAY": "Clear Water Bay",
+    "DIAMONDHILL": "Diamond Hill",
+    "FANLING": "Fanling",
+    "FOTAN": "Fo Tan",
+    "HANGHAU": "Hang Hau",
+    "HAPPYVALLEY": "Happy Valley",
+    "HATSUEN": "Ha Tsuen",
+    "HOMANTIN": "Ho Man Tin",
+    "HUNGHOM": "Hung Hom",
+    "HUNGSHUIKIU": "Hung Shui Kiu",
+    "JARDINESLOOKOUT": "Jardine's Lookout",
+    "JORDANVALLEY": "Jordan Valley",
+    "KAITAK": "Kai Tak",
+    "KAMTIN": "Kam Tin",
+    "KEILINGHA": "Kei Ling Ha",
+    "KENNEDYTOWN": "Kennedy Town",
+    "KINGSPARK": "King's Park",
+    "KOWLOONBAY": "Kowloon Bay",
+    "KOWLOONCITY": "Kowloon City",
+    "KOWLOONTONG": "Kowloon Tong",
+    "KWAICHUNG": "Kwai Chung",
+    "KWUNTONG": "Kwun Tong",
+    "LAICHIKOK": "Lai Chi Kok",
+    "LAMMAISLAND": "Lamma Island",
+    "LAMTEI": "Lam Tei",
+    "LAMTIN": "Lam Tin",
+    "LANTAUISLAND": "Lantau Island",
+    "LAUFAUSHAN": "Lau Fau Shan",
+    "LOKFU": "Lok Fu",
+    "LOKMACHAU": "Lok Ma Chau",
+    "LUENWOHUI": "Luen Wo Hui",
+    "LUKKENG": "Luk Keng",
+    "MALIUSHUI": "Ma Liu Shui",
+    "MAONSHAN": "Ma On Shan",
+    "MATAUKOK": "Ma Tau Kok",
+    "MATAUWAI": "Ma Tau Wai",
+    "MAWAN": "Ma Wan",
+    "MAYAUTONG": "Ma Yau Tong",
+    "MEIFOO": "Mei Foo",
+    "MIDLEVELS": "Mid-Levels",
+    "MONGKOK": "Mong Kok",
+    "NGAUCHIWAN": "Ngau Chi Wan",
+    "NGAUTAUKOK": "Ngau Tau Kok",
+    "NORTHPOINT": "North Point",
+    "PATHEUNG": "Pat Heung",
+    "PEAK": "Peak",
+    "PENGCHAU": "Peng Chau",
+    "PINGSHEK": "Ping Shek",
+    "POKFULAM": "Pok Fu Lam",
+    "QUARRYBAY": "Quarry Bay",
+    "REPULSEBAY": "Repulse Bay",
+    "SAIKUNG": "Sai Kung",
+    "SAIWANHO": "Sai Wan Ho",
+    "SAIYINGPUN": "Sai Ying Pun",
+    "SANPOKONG": "San Po Kong",
+    "SANTIN": "San Tin",
+    "SAUMAUPING": "Sau Mau Ping",
+    "SHAMSHUIPO": "Sham Shui Po",
+    "SHAMTSENG": "Sham Tseng",
+    "SHATAUKOK": "Sha Tau Kok",
+    "SHATIN": "Sha Tin",
+    "SHAUKEIWAN": "Shau Kei Wan",
+    "SHEKKIPMEI": "Shek Kip Mei",
+    "SHEKKONG": "Shek Kong",
+    "SHEKO": "Shek O",
+    "SHEKTONGTSUI": "Shek Tong Tsui",
+    "SHEKWUHUI": "Shek Wu Hui",
+    "SHEUNGKWAICHUNG": "Sheung Kwai Chung",
+    "SHEUNGSHUI": "Sheung Shui",
+    "SHEUNGWAN": "Sheung Wan",
+    "SHOUSONHILL": "Shouson Hill",
+    "SHUENWAN": "Shuen Wan",
+    "SIUSAIWAN": "Siu Sai Wan",
+    "SOKONPO": "So Kon Po",
+    "SOKWUNWAT": "So Kwun Wat",
+    "STANLEY": "Stanley",
+    "STONECUTTERSISLAND": "Stonecutters Island",
+    "SUNNYBAY": "Sunny Bay",
+    "TAIHANG": "Tai Hang",
+    "TAIKOKTSUI": "Tai Kok Tsui",
+    "TAILAMCHUNG": "Tai Lam Chung",
+    "TAIMEITUK": "Tai Mei Tuk",
+    "TAIMONGTSAI": "Tai Mong Tsai",
+    "TAIPO": "Tai Po",
+    "TAIPOKAU": "Tai Po Kau",
+    "TAIPOMARKET": "Tai Po Market",
+    "TAITAM": "Tai Tam",
+    "TAIWAI": "Tai Wai",
+    "TAIWOPING": "Tai Wo Ping",
+    "TINGKAU": "Ting Kau",
+    "TINHAU": "Tin Hau",
+    "TINSHUIWAI": "Tin Shui Wai",
+    "TIUKENGLENG": "Tiu Keng Leng",
+    "TOKWAWAN": "To Kwa Wan",
+    "TSEUNGKWANO": "Tseung Kwan O",
+    "TSIMSHATSUI": "Tsim Sha Tsui",
+    "TSINGLUNGTAU": "Tsing Lung Tau",
+    "TSINGYI": "Tsing Yi",
+    "TSUENWAN": "Tsuen Wan",
+    "TSZWANSHAN": "Tsz Wan Shan",
+    "TUENMUN": "Tuen Mun",
+    "TUNGTAU": "Tung Tau",
+    "WANCHAI": "Wan Chai",
+    "WANGTAUHOM": "Wang Tau Hom",
+    "WESTKOWLOONCULTURALDISTRICT": "West Kowloon Cultural District",
+    "WONGCHUKHANG": "Wong Chuk Hang",
+    "WONGTAISIN": "Wong Tai Sin",
+    "WUKAISHA": "Wu Kai Sha",
+    "WUKAUTANG": "Wu Kau Tang",
+    "YAUMATEI": "Yau Ma Tei",
+    "YAUTONG": "Yau Tong",
+    "YAUYATTSUEN": "Yau Yat Tsuen",
+    "YUENLONG": "Yuen Long",
+}
+
+
+def display_district(value: str | None) -> str:
+    """A stored district -> the name CR prints, or the value unchanged.
+
+    Unchanged is the right fallback, not an error: outside Hong Kong this
+    column is free text (`"Stockholm 11859"`), and a renderer must never
+    discard a line of somebody's address because it is not on CR's list.
+    """
+    text = (value or "").strip()
+    return DISTRICT_NAMES.get(_district_key(text), text) if text else ""
+
+
+#: Words CR's country descriptions carry that do not take a capital in the
+#: middle of a name — "ANTIGUA AND BARBUDA" is printed "Antigua and Barbuda".
+_COUNTRY_LOWER_WORDS = frozenset({"and", "of", "the", "d", "da", "des", "du"})
+
+
+def _titlecase_word(word: str) -> str:
+    """One word of a country description, capitalised the way a name is.
+
+    Dotted initialisms stay as they are: CR writes "U.S. VIRGIN ISLANDS", and
+    `str.title()` would render that "U.S. Virgin Islands" only by accident and
+    "U.s." in general.
+
+    An apostrophe only starts a new capital when it follows a SINGLE letter --
+    the elision in "COTE D'IVOIRE" -- and not otherwise, because `str.title()`
+    turns CR's "LAO PEOPLE'S DEMOCRATIC REPUBLIC" into "People'S".
+    """
+    if re.fullmatch(r"(?:[A-Za-z]\.)+", word):
+        return word.upper()
+    out, capitalise, run = [], True, 0
+    for char in word:
+        if char.isalpha():
+            out.append(char.upper() if capitalise else char.lower())
+            capitalise = False
+            run += 1
+        elif char == "'":
+            out.append(char)
+            capitalise = run == 1
+            run = 0
+        else:
+            out.append(char)
+            capitalise = True
+            run = 0
+    return "".join(out)
+
+
+def display_country(value: str | None) -> str:
+    """A ctryRegion code -> the country name CR prints, or the value unchanged.
+
+    "SWE" becomes "Sweden" and "HKG" becomes "Hong Kong". A value CR has no
+    code for is returned as it stands: this runs on data already validated and
+    filed, so refusing here would blank a box on a return CR has accepted.
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    description = CR_COUNTRY_CODES.get(text.upper())
+    if description is None:
+        code = resolve_country(text)
+        description = CR_COUNTRY_CODES.get(code) if code else None
+    if description is None:
+        return text
+    words = [_titlecase_word(word) for word in description.split()]
+    return " ".join(
+        word if index == 0 or word.lower() not in _COUNTRY_LOWER_WORDS
+        else word.lower()
+        for index, word in enumerate(words)
+    )
 
 
 CAPACITY_INDIVIDUAL = frozenset({

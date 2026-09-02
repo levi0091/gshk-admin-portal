@@ -289,7 +289,11 @@ def test_a_single_director_stays_on_the_main_form():
     values = values_of(fill.render(build_xml(directors=("CHAN",))))
     assert values[fm.DIRECTOR_INDIVIDUAL["surname_en"]] == ["CHAN"]
     assert fm.SHEET_C["surname_en"] not in values
-    assert fm.MEMBERS_AND_SIGNATURE["count_sheet_c"] not in values
+    # The COUNT still prints, as a nought. "This Return includes the following
+    # Continuation Sheet(s)" is a question about what is attached, and a blank
+    # box there reads as "nobody said" rather than "none" -- CR's own returns
+    # write 0 in all five.
+    assert values[fm.MEMBERS_AND_SIGNATURE["count_sheet_c"]] == ["0"]
 
 
 def test_three_directors_produce_two_continuation_sheets_and_lose_nobody():
@@ -407,7 +411,11 @@ def test_the_registered_office_fills_its_four_lines():
     assert values[fm.MAIN_1["ro_flat_floor_block"]] == ["Flat A, 12/F"]
     assert values[fm.MAIN_1["ro_building"]] == ["Test Tower"]
     assert values[fm.MAIN_1["ro_street"]] == ["1 Test Street"]
-    assert values[fm.MAIN_1["ro_district"]] == ["CENTRAL"]
+    # CR TRANSMITS A CODE AND PRINTS A NAME. The XML says "CENTRAL" -- the
+    # district name with its spaces removed, which is the only spelling CR
+    # accepts -- and CR's own form shows "Central". Rendering the code put
+    # block capitals on the printed return.
+    assert values[fm.MAIN_1["ro_district"]] == ["Central"]
 
 
 def test_both_company_names_appear_on_the_name_line():
@@ -417,11 +425,11 @@ def test_both_company_names_appear_on_the_name_line():
     assert "測試有限公司" in line
 
 
-def test_no_mortgages_reads_NIL_rather_than_blank():
+def test_no_mortgages_reads_Nil_rather_than_blank():
     """On a statutory declaration an empty box reads as "not answered"; the
-    form asks for NIL."""
+    form asks for a stated nil. Spelt as GSHK's own filed return spells it."""
     values = values_of(fill.render(build_xml()))
-    assert values[fm.MAIN_2["mortgages_total"]] == ["NIL"]
+    assert values[fm.MAIN_2["mortgages_total"]] == ["Nil"]
 
 
 def test_a_director_address_uses_the_overseas_line_not_the_district_line():
@@ -429,10 +437,10 @@ def test_a_director_address_uses_the_overseas_line_not_the_district_line():
     gives it a combined District/City/Province/State/Postal Code line where the
     secretary gets a plain District. They are different boxes."""
     values = values_of(fill.render(build_xml()))
-    assert values[fm.DIRECTOR_INDIVIDUAL["addr_district_city_state"]] == ["CENTRAL"]
-    assert values[fm.DIRECTOR_INDIVIDUAL["addr_country"]] == ["HKG"]
+    assert values[fm.DIRECTOR_INDIVIDUAL["addr_district_city_state"]] == ["Central"]
+    assert values[fm.DIRECTOR_INDIVIDUAL["addr_country"]] == ["Hong Kong"]
     # The secretary's plain District carries the same value on ITS block.
-    assert values[fm.SECRETARY_INDIVIDUAL["addr_district"]] == ["CENTRAL"]
+    assert values[fm.SECRETARY_INDIVIDUAL["addr_district"]] == ["Central"]
 
 
 def test_the_document_is_small_enough_to_email():

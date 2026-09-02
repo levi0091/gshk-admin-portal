@@ -102,7 +102,7 @@ def test_tinos_bold_is_metric_identical_to_times_new_roman(tmp_path):
 
 def test_a_value_that_fits_keeps_its_nominal_size():
     ap.register_fonts()
-    assert ap.fit_size("N/A", width=200.0) == 10.0
+    assert ap.fit_size("N/A", width=200.0) == 12.0
 
 
 def test_an_overlong_value_is_shrunk_to_fit_not_clipped():
