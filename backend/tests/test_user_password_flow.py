@@ -395,3 +395,117 @@ def test_a_user_with_no_role_still_gets_a_usable_email():
     assert subject
     assert "Your role" not in html
     assert "Sign in to G-FlowDesk" in html
+
+
+# --------------------------------------------------------------------------- #
+#  The deploy-before-migrate gap — the 2026-09-01 DEV outage
+# --------------------------------------------------------------------------- #
+#
+# Railway redeploys the API the moment `dev` is pushed; alembic is run by hand
+# afterwards. Between the two the new column DOES NOT EXIST, and PostgREST
+# answers a select naming it with 42703 rather than ignoring it.
+#
+# Adding `must_change_password` to the identity select therefore 500'd EVERY
+# authenticated request on DEV — `/auth/me` included, so the portal could not
+# even say what was wrong. These tests reproduce that state.
+
+import middleware.auth as auth_module
+
+_MISSING_COLUMN = Exception(
+    '{"code":"42703","message":"column users.must_change_password does not exist"}')
+
+
+def _users_table(*, missing_column: bool, row=None):
+    """A `users` table that refuses the new column the way PostgREST does."""
+    table = MagicMock()
+
+    def select(columns):
+        if missing_column and "must_change_password" in columns:
+            chain = MagicMock()
+            chain.eq.return_value.single.return_value.execute.side_effect = \
+                _MISSING_COLUMN
+            return chain
+        chain = MagicMock()
+        chain.eq.return_value.single.return_value.execute.return_value = \
+            MagicMock(data=row or {"display_name": "Roy", "is_active": True,
+                                   "role_id": "role-cm",
+                                   "roles": {"name": "case_manager", "id": "role-cm"}})
+        return chain
+
+    table.select.side_effect = select
+    return table
+
+
+@pytest.fixture(autouse=True)
+def _reset_column_probe():
+    """The fallback is remembered per process, so one test must not decide the
+    next one's behaviour."""
+    auth_module._profile_columns_ok = None
+    yield
+    auth_module._profile_columns_ok = None
+
+
+def _resolve_with(table):
+    sb = MagicMock()
+    sb.auth.get_user.return_value = MagicMock(
+        user=MagicMock(id="u9", email="roy@x.com"))
+    sb.table.return_value = table
+    with patch("middleware.auth.get_supabase", return_value=sb):
+        return auth_module._resolve_user("tok")
+
+
+def test_a_deployment_ahead_of_its_migrations_still_authenticates():
+    """THE OUTAGE. Before this, every route 500'd until somebody ran alembic."""
+    user = _resolve_with(_users_table(missing_column=True))
+    assert user["display_name"] == "Roy"
+    assert user["role_name"] == "case_manager"
+
+
+def test_the_flag_reads_as_unset_when_the_column_is_not_there_yet():
+    """Not a guess — it is the state of the database. Before migration 031 no
+    account can be flagged, so reading it as unset is the truth, and it is the
+    safe direction: nobody is locked out of a portal by a column that does not
+    exist."""
+    assert _resolve_with(_users_table(missing_column=True))[
+        "must_change_password"] is False
+
+
+def test_the_column_is_read_normally_once_the_migration_has_run():
+    table = _users_table(missing_column=False, row={
+        "display_name": "Roy", "is_active": True, "role_id": "role-cm",
+        "must_change_password": True,
+        "roles": {"name": "case_manager", "id": "role-cm"}})
+    assert _resolve_with(table)["must_change_password"] is True
+
+
+def test_the_fallback_is_remembered_rather_than_retried_every_request():
+    """Identity resolution is on every request. Paying a failed round trip each
+    time would double the latency of the whole portal during the gap."""
+    table = _users_table(missing_column=True)
+    for _ in range(5):
+        _resolve_with(table)
+    attempted = [c.args[0] for c in table.select.call_args_list
+                 if "must_change_password" in c.args[0]]
+    assert len(attempted) == 1
+
+
+def test_a_real_database_fault_is_NOT_swallowed_as_a_missing_column():
+    """Otherwise this turns every database fault into a silently degraded
+    identity — a dropped connection would read as "no flag" and let a user
+    straight past a control that is supposed to stop them."""
+    table = MagicMock()
+    table.select.return_value.eq.return_value.single.return_value \
+        .execute.side_effect = RuntimeError("connection reset by peer")
+    with pytest.raises(RuntimeError, match="connection reset"):
+        _resolve_with(table)
+
+
+def test_an_inactive_account_is_still_refused_during_the_gap():
+    """The fallback must not become a way past the checks that were already
+    there."""
+    table = _users_table(missing_column=True, row={
+        "display_name": "Roy", "is_active": False, "role_id": "role-cm",
+        "roles": {"name": "case_manager", "id": "role-cm"}})
+    with pytest.raises(Exception) as exc:
+        _resolve_with(table)
+    assert getattr(exc.value, "status_code", None) == 403
