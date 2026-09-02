@@ -1312,19 +1312,28 @@ describe('Confirmation', () => {
     expect(screen.getByText(/Filed outside the portal/)).toBeInTheDocument()
   })
 
-  it('asks CR what it now holds, by the receipt case number', async () => {
-    const user = userEvent.setup()
-    get.mockResolvedValue([{ documentName: 'NAR1', documentStatus: 'Registered',
-                             submissionDate: '21/08/2026' }])
+  // The CR status check was REMOVED (Levi 2026-09-02). It could not do the job
+  // its own copy claimed: the result lived in useState and vanished on reload,
+  // nothing ever writes the `registered` stage it was looking for, and
+  // `_FINISHED` already counts `submitted`, so the case reads Completed from
+  // the moment the receipt exists. It also spent a CR AUTHENTICATION per press,
+  // and repeated CR auth failures lock the account.
+  it('ends at the receipt and asks CR for nothing', async () => {
     renderIt()
-    await user.click(screen.getByRole('button', { name: /Check CR status/ }))
-    await waitFor(() => expect(get).toHaveBeenCalledWith('/tpsi/doc-status?case_no=141945492'))
-    expect(await screen.findByText('Registered')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Check CR status/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/What CR holds now/)).not.toBeInTheDocument()
+    // The whole screen is now a read of the case. No request leaves it.
+    expect(get).not.toHaveBeenCalled()
   })
 
-  it('does not offer a CR status check with no case number to ask about', () => {
+  it('says the case is Completed rather than sending the reader off to check', () => {
+    renderIt()
+    expect(screen.getByText(/issued the receipt below/)).toBeInTheDocument()
+    expect(screen.queryByText(/Check the CR document status/)).not.toBeInTheDocument()
+  })
+
+  it('still says plainly when there is no receipt to show', () => {
     renderIt({ receipt: null })
-    expect(screen.queryByRole('button', { name: /Check CR status/ })).not.toBeInTheDocument()
     expect(screen.getByText(/No receipt recorded/)).toBeInTheDocument()
   })
 })
