@@ -219,20 +219,6 @@ export default function CompanyProfilePage() {
     }
   }
 
-  /** Point one statutory register at an address, or at nothing (OQ-3). */
-  async function setRecordLocation(recordType, addressId) {
-    setBusy(true)
-    try {
-      await api.put(`/companies/${companyId}/record-locations/${recordType}`,
-                    { address_id: addressId || null })
-      load()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   if (loading) return <div className="empty-state">Loading…</div>
   if (error) {
     return (
@@ -450,12 +436,6 @@ export default function CompanyProfilePage() {
                               warnFor={warnFor} />
           )}
 
-          {/* NAR1 section 16 (OQ-3). */}
-          {isClient && (
-            <RecordLocationsTile company={company} busy={busy}
-                                 onSet={setRecordLocation} />
-          )}
-
           {/* Client-only party tiles */}
           {isClient && (
             <>
@@ -661,77 +641,6 @@ function ShareCapitalTile({ classes, warnFor }) {
           </div>
         </div>
       ))}
-    </div>
-  )
-}
-
-/**
- * Where each statutory register is kept — NAR1 section 16 (OQ-3).
- *
- * Every register CR asks about is listed, answered or not: a register with
- * nowhere recorded is the answer the return has to show, and omitting the row
- * would render an unanswered question as an answered one.
- *
- * THE EDITOR IS A CHOICE AMONG ADDRESSES THIS COMPANY ALREADY HAS, plus "not
- * recorded". That is deliberate rather than a shortcut: addresses are created
- * by copy-on-write through the company and person address endpoints, and there
- * is no endpoint that mints a free-standing one. In practice a register is
- * kept at the registered office or at GSHK's, both of which are already here.
- */
-function RecordLocationsTile({ company, busy, onSet }) {
-  const rows = company.record_locations || []
-
-  // Every distinct address the company already knows about, by id.
-  const options = new Map()
-  const offer = (id, address) => {
-    if (id && address && !options.has(id)) options.set(id, addressText(address))
-  }
-  offer(company.registered_address?.id, company.registered_address)
-  for (const row of rows) offer(row.address_id, row.address)
-
-  const recorded = rows.filter(r => r.address_id).length
-
-  return (
-    <div className="card mb-16">
-      <div className="card-hdr">
-        <div>
-          <div className="card-title">
-            Statutory Records <span className="count-pill">{recorded}/{rows.length}</span>
-          </div>
-          <div className="card-sub">
-            Section 16 — where each register is kept
-          </div>
-        </div>
-      </div>
-      {rows.length === 0 ? (
-        <div className="empty-state" style={{ padding: '16px 0' }}>
-          No registers recorded.
-        </div>
-      ) : (
-        <div className="kv-list">
-          {rows.map(row => (
-            <div className="kv-row" key={row.record_type}>
-              <span className="kv-key">
-                <label htmlFor={`rl_${row.record_type}`}>{row.label}</label>
-              </span>
-              <span className="kv-val">
-                <select
-                  id={`rl_${row.record_type}`}
-                  className="f-select"
-                  disabled={busy}
-                  value={row.address_id || ''}
-                  onChange={e => onSet(row.record_type, e.target.value)}
-                >
-                  <option value="">Not recorded</option>
-                  {[...options.entries()].map(([id, label]) => (
-                    <option key={id} value={id}>{label}</option>
-                  ))}
-                </select>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
