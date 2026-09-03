@@ -201,16 +201,26 @@ def normalise_country_columns(sb, apply: bool) -> dict:
     other way.
 
     "Hong Kong" and "HKG" both FILE correctly -- `resolve_country` takes
-    either -- so this is not a correctness fix for CR. It is a fix for the
+    either -- so that part is not a correctness fix for CR. It is a fix for the
     screen: the dropdowns are keyed by alpha-2, so 251 companies holding the
     literal "Hong Kong" rendered as "Hong Kong (not in list)", which invites
     an operator to "correct" a value that was never wrong.
 
-    Values CR cannot resolve at all are LEFT ALONE, deliberately. 'HK-CH' is
-    not a spelling of anything -- it is Viewpoint's code for a country CR has
-    no code for, and it needs a human to re-pick it, not a guess from here.
+    IT NOW ALSO REWRITES THE UNFILABLE ONES (Levi 2026-09-03). This paragraph
+    used to read "Values CR cannot resolve at all are LEFT ALONE, deliberately
+    ... it needs a human to re-pick it, not a guess from here". The caution was
+    right and the conclusion was wrong: `canonical_country` does not guess, it
+    reads a table in which every entry is a Viewpoint code whose own label
+    names a place inside exactly one row of CR's sheet. Waiting for a human
+    meant a NAR1 blocked at Data Verification while the profile looked fine --
+    which is what happened to CGAHCHBAABBG DIRECTOR COMPANY LIMITED.
+
+    Anything with no justified parent is STILL left alone; it is simply absent
+    from `VIEWPOINT_SUBDIVISIONS`, and `registry_reconciliation` still names it.
     """
-    from services.tpsi.forms.cr_vocabularies import to_alpha2
+    from services.tpsi.forms.cr_vocabularies import (
+        canonical_country, resolve_country,
+    )
 
     changed, unresolvable = [], []
     with sb.connect() as conn:
@@ -220,11 +230,13 @@ def normalise_country_columns(sb, apply: bool) -> dict:
                 f"WHERE coalesce(btrim({column}), '') <> ''"
             ))
             for row in rows:
-                alpha2 = to_alpha2(row.value)
-                if alpha2 is None:
-                    unresolvable.append((table, column, row.value))
-                elif alpha2 != (row.value or "").strip():
+                alpha2 = canonical_country(row.value)
+                if alpha2 is not None:
                     changed.append((table, column, str(row.id), alpha2))
+                elif resolve_country(row.value) is None:
+                    # No CR code AND no justified parent — a human really does
+                    # have to re-pick this one.
+                    unresolvable.append((table, column, row.value))
 
         if apply and changed:
             for table, column in _COUNTRY_COLUMNS:

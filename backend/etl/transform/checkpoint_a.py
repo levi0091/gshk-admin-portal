@@ -1,5 +1,6 @@
 from etl.reference_data import decode_id_type, decode_officer_role, AMBIGUOUS_OFFICER_CODES
 from etl.reconciliation import ReconciliationReport
+from services.tpsi.forms.cr_vocabularies import canonical_country
 
 
 def _pack_address_lines(*parts: str | None) -> list[str | None]:
@@ -36,9 +37,27 @@ def _pack_address_lines(*parts: str | None) -> list[str | None]:
     return lines + [None] * (3 - len(lines))
 
 
+def _country(value):
+    """Viewpoint's country code, rewritten to the one CR can file.
+
+    Viewpoint carries sub-national and renamed codes CR has no entry for --
+    'HK-CH' (its Chinese-labelled Hong Kong), 'GB-ENG', 'US-DE', 'ZR'. Passed
+    through untouched, they load cleanly, pass every check on the profile, and
+    kill the NAR1 weeks later at Data Verification with "no CR region code is
+    known for country 'HK-CH'".
+
+    Normalising HERE and not only in a backfill is the difference between
+    fixing it once and fixing it after every reimport -- `reimport_addresses`
+    rewrites this column from source. `canonical_country` returns None for
+    anything it has no justified parent for, and those are left exactly as
+    Viewpoint has them for the reconciliation report to name.
+    """
+    return canonical_country(value) or value
+
+
 def transform_address(row: dict) -> dict:
     """VP Addresses row -> addresses insert dict."""
-    country = (row.get("Country") or "").strip().upper()
+    country = (_country(row.get("Country")) or "").strip().upper()
     line1, line2, line3 = _pack_address_lines(
         row.get("Address"), row.get("Address2"), row.get("Address3"),
         row.get("Address4"), row.get("Address5"),
@@ -50,7 +69,7 @@ def transform_address(row: dict) -> dict:
         "line3": line3,
         "city": row.get("City"),
         "state_region": row.get("State"),
-        "country": row.get("Country"),
+        "country": _country(row.get("Country")),
         "postal_code": row.get("PostalCode"),
         "line1_zh": row.get("AddressLoc1"),
         "line2_zh": row.get("AddressLoc2"),
@@ -116,7 +135,11 @@ def transform_entity(row: dict, bus_name: dict | None) -> dict:
         "created_at": row.get("DateEntered"),
         "registered_address_id": None,  # backfilled in Checkpoint C from RefAddress
         "incorporation_date": row.get("IncorpDate"),
-        "incorporation_place": row.get("IncorpPlace") or "Hong Kong",
+        # Canonicalised on the way in. The default used to be the literal
+        # "Hong Kong", which FILES but cannot be selected in a dropdown
+        # keyed by alpha-2 -- 251 companies rendered as "Hong Kong (not in
+        # list)" and a backfill had to go back for them.
+        "incorporation_place": _country(row.get("IncorpPlace")) or "HK",
         "ar_last_date": row.get("DateLastAnRe"),
         "ar_next_date": row.get("DateNextAnRe"),
         "ar_due_date": row.get("DateDueAnRe"),
@@ -155,7 +178,7 @@ def transform_identity_document(
         "person_id": person_id,
         "id_type": decode_id_type(row.get("IdType")),
         "id_number": id_number,
-        "issuing_country": row.get("Country"),
+        "issuing_country": _country(row.get("Country")),
         "issue_date": row.get("FromDate"),
         "expiry_date": row.get("ToDate"),
         "is_primary": False,
@@ -193,7 +216,7 @@ def transform_compliance_identity_documents(
             "person_id": person_id,
             "id_type": "passport",
             "id_number": row["PassportNr"],
-            "issuing_country": row.get("PasPlaceIssue"),
+            "issuing_country": _country(row.get("PasPlaceIssue")),
             "issue_date": row.get("PasDateIssue"),
             "expiry_date": row.get("PasDateExpire"),
             "is_primary": False,

@@ -241,6 +241,34 @@ def test_cr_country_is_crs_own_list_keyed_by_what_we_store():
     assert not (codes & {"HK-CH", "MO-CH", "TW-CH", "GB-ENG", "US-DE", "ZR"})
 
 
+def test_not_one_country_option_is_labelled_in_chinese():
+    """Levi, 2026-09-03: "when i select the chinese words from the dropdown ..
+    it is not registering with CR portal".
+
+    Stronger than naming the three known codes above, because the defect was
+    never about those three strings — it was that a Chinese-labelled option
+    existed AT ALL in a list feeding a form CR reads in English. The NAR1 is
+    filed with language "E"; an option nobody can file is a trap whatever it
+    is keyed by.
+    """
+    import re
+
+    cjk = re.compile(r"[　-鿿＀-￯]")
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.lookups.get_supabase") as msb:
+        _lookup_rows(msb)
+        resp = client.get("/lookups/cr_country", headers=H)
+
+    offenders = [v for v in resp.json()
+                 if cjk.search(v["label"]) or cjk.search(v["code"])]
+    assert not offenders, f"Chinese-labelled country options offered: {offenders}"
+    # And the English ones an operator reaches for instead are all there.
+    labels = {v["code"]: v["label"] for v in resp.json()}
+    assert labels["HK"] == "Hong Kong"
+    assert labels["MO"] == "Macau"
+    assert labels["TW"] == "Taiwan"
+
+
 def test_every_cr_country_option_resolves_to_a_code_cr_accepts():
     """The dropdown must not be able to offer a value the mapper refuses --
     that is the entire defect. Asserted through the SAME resolver

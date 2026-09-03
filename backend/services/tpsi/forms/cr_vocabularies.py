@@ -320,6 +320,61 @@ _ALIASES: dict[str, str] = {
 }
 
 
+#: Viewpoint's SUB-NATIONAL and renamed country codes -> the ISO alpha-2 of the
+#: country CR actually files them as.
+#:
+#: WHY THIS IS SEPARATE FROM `_ALIASES`. An alias makes `resolve_country`
+#: accept a spelling. These must NOT be accepted: `address_service.validate`
+#: and the Open case gate both refuse a country CR has no code for, and that
+#: refusal is the thing standing between an operator and a rejected filing they
+#: have already paid for. This table is for CORRECTING STORED DATA — a
+#: migration and the ETL rewrite the value on the way in, so the column ends up
+#: holding what the rest of the book holds and the dropdown can select it.
+#:
+#: THIS REVERSES "left for a human" (Levi 2026-09-03).
+#: `backfill_cr_form_fields.normalise_country_columns` used to leave these
+#: alone on the grounds that 'HK-CH' "is not a spelling of anything ... it
+#: needs a human to re-pick it, not a guess from here". That was right about
+#: guessing and wrong about what these are. None of them is a guess: every key
+#: is a Viewpoint code whose own label names a place that sits inside exactly
+#: one row of CR's Country & Region sheet, and the cost of waiting for a human
+#: was a NAR1 stuck at Data Verification with nothing on the profile looking
+#: wrong. Anything genuinely ambiguous is still left alone — it simply is not
+#: in this table.
+#:
+#: Each entry, and why it is the only answer CR allows:
+#:   HK-CH MO-CH TW-CH  Viewpoint's Chinese-labelled twins of HK / MO / TW.
+#:                      香港 IS Hong Kong; the codes are two spellings of one
+#:                      place and the English one is what 826 other addresses
+#:                      already hold.
+#:   GB-ENG SCT WLS NIR CR carries UNITED KINGDOM and no constituent country.
+#:   GB-EAW             "England & Wales" — a legal jurisdiction, not a place
+#:                      CR has a code for. Same parent.
+#:   GB-ALD GB-SAR      Alderney and Sark are in the Bailiwick of GUERNSEY,
+#:                      which CR carries as GBR1 — deliberately NOT GBR, which
+#:                      is a different CR code for a different jurisdiction.
+#:   MY-15              Labuan is a Malaysian federal territory.
+#:   ZR                 Zaire was renamed in 1997. Its successor is the
+#:                      DEMOCRATIC REPUBLIC OF THE CONGO (CD/COD) — NOT
+#:                      'CONGO' (CG/COG), which is the other country entirely.
+#:   US-*               CR carries UNITED STATES and no states.
+#:
+#: These are ISO alpha-2 targets, not CR codes, because alpha-2 is what
+#: `addresses.country`, `entities.incorporation_place` and
+#: `person_identity_documents.issuing_country` store and what the dropdowns are
+#: keyed by. `_build` checks every target resolves.
+VIEWPOINT_SUBDIVISIONS: dict[str, str] = {
+    "HK-CH": "HK", "MO-CH": "MO", "TW-CH": "TW",
+    "GB-ALD": "GG", "GB-SAR": "GG",
+    "GB-EAW": "GB", "GB-ENG": "GB", "GB-NIR": "GB",
+    "GB-SCT": "GB", "GB-WLS": "GB",
+    "MY-15": "MY",
+    "ZR": "CD",
+    "US-CA": "US", "US-CT": "US", "US-DE": "US", "US-FL": "US",
+    "US-NV": "US", "US-NY": "US", "US-UT": "US", "US-WY": "US",
+}
+
+
 def _normalise(value: str) -> str:
     """Case, spacing and punctuation folded away.
 
@@ -363,6 +418,21 @@ def _build() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
                 f"cr_vocabularies: alias {alias!r} points at {code!r}, which is "
                 "not a code CR's Country & Region sheet carries"
             )
+    # Same guard for the subdivision table, and for the same reason: a typo in
+    # a parent alpha-2 would rewrite stored addresses to a value CR refuses,
+    # which is worse than the unfilable code it replaced — the operator would
+    # have no reason to look at it again. Caught at import.
+    for source, alpha2 in VIEWPOINT_SUBDIVISIONS.items():
+        if alpha2 not in by_alpha2:
+            raise ValueError(
+                f"cr_vocabularies: {source!r} maps to alpha-2 {alpha2!r}, which "
+                "is not on CR's Country & Region sheet"
+            )
+        if source.upper() in by_alpha2 or source.upper() in codes:
+            raise ValueError(
+                f"cr_vocabularies: {source!r} is itself a code CR carries — it "
+                "must not be rewritten"
+            )
     return codes, by_alpha2, by_description
 
 
@@ -392,6 +462,29 @@ def to_alpha2(value: str | None) -> str | None:
     """
     cr_code = resolve_country(value)
     return _CR_CODE_TO_ALPHA2.get(cr_code) if cr_code else None
+
+
+def canonical_country(value: str | None) -> str | None:
+    """The alpha-2 this country should be STORED as, or None to leave it alone.
+
+    Two jobs in one answer, because a caller fixing a column wants both:
+
+      "Hong Kong" -> "HK"    already filable, but not what a dropdown keyed by
+                             alpha-2 can select
+      "HK-CH"     -> "HK"    not filable at all, and the reason a NAR1 dies at
+                             Data Verification
+
+    None means LEAVE IT: either it is already the right alpha-2, or CR has no
+    code for it and this table has no justified parent — in which case a human
+    really does have to re-pick it, and `registry_reconciliation` lists it.
+    """
+    if not value:
+        return None
+    current = value.strip()
+    if not current:
+        return None
+    target = VIEWPOINT_SUBDIVISIONS.get(current.upper()) or to_alpha2(current)
+    return target if target and target != current else None
 
 
 def _readable(description: str) -> str:

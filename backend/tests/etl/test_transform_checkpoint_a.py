@@ -304,7 +304,11 @@ def test_transform_compliance_identity_documents_returns_passport_and_hkid():
     hkid = next(r for r in result if r["id_type"] == "hkid")
     assert passport["person_id"] == "11111111-1111-1111-1111-111111111111"
     assert passport["id_number"] == "K1234567"
-    assert passport["issuing_country"] == "Hong Kong"
+    # "HK", not "Hong Kong": the transform now stores the canonical alpha-2 the
+    # profile dropdowns are keyed by, instead of leaving a backfill to come back
+    # for it (2026-09-03). Both FILE with CR; only one can be selected on the
+    # profile, and the other rendered as "Hong Kong (not in list)".
+    assert passport["issuing_country"] == "HK"
     assert passport["issue_date"] == "2018-01-01"
     assert passport["expiry_date"] == "2028-01-01"
     assert passport["vp_source_key"] == "LEUNGP:compliance-passport"
@@ -573,3 +577,50 @@ def test_person_created_at_comes_from_viewpoint():
            "DateEntered": datetime(2020, 1, 2)}
     out = transform_person(row)
     assert out["created_at"] == datetime(2020, 1, 2)
+
+
+# --------------------------------------------------------------------------- #
+#  Country normalisation at import (2026-09-03)
+#
+#  A reimport rewrites `addresses.country` from source, so fixing these rows in
+#  a migration and not here means fixing them again after every reimport --
+#  `reimport_addresses` is a routine operation, not a one-off.
+# --------------------------------------------------------------------------- #
+
+def test_transform_address_rewrites_the_chinese_hong_kong():
+    """Viewpoint's 'HK-CH' is 香港. CR has no such code, and an address loaded
+    with it kills the NAR1 at Data Verification weeks later."""
+    result = transform_address(_address_row(Country="HK-CH"))
+    assert result["country"] == "HK"
+    # And it is still recognised as a Hong Kong address, which is what drives
+    # the district validation.
+    assert result["is_hk_address"] is True
+
+
+def test_transform_address_rewrites_the_other_subdivisions():
+    for source, expected in (("GB-ENG", "GB"), ("US-DE", "US"),
+                             ("TW-CH", "TW"), ("ZR", "CD")):
+        assert transform_address(_address_row(Country=source))["country"] == expected
+
+
+def test_transform_address_leaves_a_country_cr_already_takes_alone():
+    assert transform_address(_address_row(Country="VN"))["country"] == "VN"
+
+
+def test_transform_address_passes_an_unknown_country_through_untouched():
+    """Never invented. An unmapped value loads as Viewpoint has it, for the
+    reconciliation report to name and a human to re-pick."""
+    assert transform_address(_address_row(Country="ZZ"))["country"] == "ZZ"
+    assert transform_address(_address_row(Country=None))["country"] is None
+
+
+def test_identity_documents_normalise_their_issuing_country_too():
+    """`indvPptIssCtry` is a CR-validated field on the NAR1, exactly like an
+    address country — a passport issued in 'GB-SCT' is as unfilable."""
+    report = ReconciliationReport()
+    doc = transform_identity_document(
+        {"RefCode": "R1", "SeqNr": 1, "IdType": "P", "IdCode": "P123",
+         "Country": "GB-SCT", "FromDate": None, "ToDate": None},
+        {"R1": "person-1"}, report,
+    )
+    assert doc["issuing_country"] == "GB"

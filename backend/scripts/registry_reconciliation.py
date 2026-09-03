@@ -239,10 +239,20 @@ def unfilable_vocabulary(conn, out):
     """Values stored in a CR-validated field that CR has no code for.
 
     These are the ones that used to pass every check and die at Data
-    Verification, because "present" was mistaken for "filable". They cannot
-    be normalised automatically -- 'HK-CH' is not a misspelling of anything,
-    it is Viewpoint's code for a country CR does not have -- so each needs a
-    human to re-pick it.
+    Verification, because "present" was mistaken for "filable".
+
+    THE TWENTY KNOWN ONES ARE NOW FIXED AUTOMATICALLY (migration 032,
+    2026-09-03). This docstring used to say they "cannot be normalised
+    automatically -- 'HK-CH' is not a misspelling of anything". True as far as
+    it went, and it drew the wrong conclusion: 'HK-CH' is Viewpoint's
+    Chinese-labelled Hong Kong, which sits inside exactly one row of CR's
+    sheet, so `VIEWPOINT_SUBDIVISIONS` rewrites it rather than parking a
+    filing until somebody notices a profile that looks correct.
+
+    What this report lists is therefore what is LEFT: a value with no
+    justified parent, which really does need a human to re-pick it. It should
+    normally print zero, and a non-zero count means Viewpoint has grown a code
+    nobody has classified yet.
     """
     out("VALUES CR HAS NO CODE FOR")
 
