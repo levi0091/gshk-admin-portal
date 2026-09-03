@@ -12,6 +12,8 @@ The suite that existed before this one asserted that values reached the right
 FIELDS. These assert what the reader of the page actually sees.
 """
 import io
+import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -105,15 +107,55 @@ def test_the_signatory_name_is_on_the_name_line_not_in_the_date_box():
     blank."""
     values = values_of(fill.render(build_xml()))
     assert values[fm.MEMBERS_AND_SIGNATURE["signed_name"]] == ["Wong Mei Ling"]
-    assert fm.MEMBERS_AND_SIGNATURE["signed_date"] not in values
+    assert values[fm.MEMBERS_AND_SIGNATURE["signed_name"]] != \
+        values[fm.MEMBERS_AND_SIGNATURE["signed_date"]]
 
 
 def test_a_supplied_signing_date_lands_in_the_date_box():
     """It is not in the validated XML -- CR does not hand one back -- so it is
-    the caller's to supply, and blank when they do not. A date printed beside
-    an unsigned signature block would assert something untrue."""
+    the caller's to supply."""
     values = values_of(fill.render(build_xml(), signed_on="2026-07-25"))
     assert values[fm.MEMBERS_AND_SIGNATURE["signed_date"]] == ["25/07/2026"]
+
+
+def test_the_date_box_is_never_left_empty():
+    """IT WAS EMPTY ON EVERY RETURN THE PORTAL HAS EVER PRODUCED (Levi
+    2026-09-04). `signed_on` defaulted to "" and neither caller passed one, so
+    the box beside the signature went to directors, and would have gone to CR,
+    blank -- while CR's own filed return has it filled. This reverses the rule
+    that a missing date should print as nothing."""
+    values = values_of(fill.render(build_xml()))
+    printed = values[fm.MEMBERS_AND_SIGNATURE["signed_date"]]
+    assert printed == [fill.signature_date("")]
+    assert re.fullmatch(r"\d{2}/\d{2}/\d{4}", printed[0]), printed
+
+
+def test_an_absent_date_is_todays_in_hong_kong_not_in_utc():
+    """Railway and Supabase both run UTC. A return generated at 02:00 in the
+    Hong Kong office is 18:00 the day before in UTC, and a statutory form
+    dated the day before it was made is a printed misstatement."""
+    hk_today = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime(
+        "%d/%m/%Y")
+    assert fill.signature_date("") == hk_today
+
+
+def test_a_real_signing_timestamp_beats_todays_date():
+    """`tpsi_filings.signed_at` is what both routers pass once CR's PIN
+    signing has succeeded, so a return downloaded a week later carries the day
+    it was SIGNED rather than the day it was printed. It arrives as a UTC
+    timestamptz and is converted, not truncated: 17:00 UTC is the next day in
+    Hong Kong."""
+    assert fill.signature_date("2026-07-25T02:30:00+00:00") == "25/07/2026"
+    assert fill.signature_date("2026-07-25T17:00:00+00:00") == "26/07/2026"
+    assert fill.signature_date("2026-07-25T17:00:00Z") == "26/07/2026"
+
+
+def test_a_plain_date_is_taken_verbatim_and_never_shifted():
+    """A date somebody typed is already in the terms they meant. Only a
+    TIMESTAMP gets a timezone applied -- shifting "2026-07-25" would move it."""
+    assert fill.signature_date("2026-07-25") == "25/07/2026"
+    assert fill.signature_date("25/07/2026") == "25/07/2026"
+    assert fill.signature_date("5/7/2026") == "05/07/2026"
 
 
 def test_the_continuation_sheet_counts_are_all_answered():
@@ -145,6 +187,86 @@ def test_the_presenter_block_carries_GSHKs_whole_address_not_just_a_name():
     assert values[m1["presenter_tel"]] == ["2813 7600"]
     assert values[m1["presenter_email"]] == ["info@getstarted.hk"]
     assert "no-reply" not in address + values[m1["presenter_email"]][0]
+
+
+def test_the_reference_is_the_form_the_year_and_the_company():
+    """`NAR1/<year>/<company name>` (Levi 2026-09-04). The box rendered EMPTY
+    -- `DEFAULT_PRESENTER` carries no reference and nothing derived one -- on
+    the only line of the form that tells CR which of GSHK's files a piece of
+    correspondence belongs to."""
+    values = values_of(fill.render(build_xml()))
+    assert values[fm.MAIN_1["presenter_reference"]] == \
+        ["NAR1/2026/TEST COMPANY LIMITED"]
+
+
+def test_the_reference_year_is_the_returns_own_not_the_calendar_year():
+    """A 2025 return filed late is still the 2025 return. Stamping it with the
+    year it happened to be printed would give two different references to one
+    filing."""
+    values = values_of(fill.render(build_xml(date="01/02/2025")))
+    assert values[fm.MAIN_1["presenter_reference"]].pop().startswith(
+        "NAR1/2025/")
+
+
+def test_the_reference_box_is_the_width_the_fitter_assumes():
+    """`PRESENTER_REFERENCE_WIDTH` is transcribed from CR's template, so it can
+    drift if the template is ever replaced. Re-measure it here rather than let
+    a new revision overflow the box in silence."""
+    pymupdf = pytest.importorskip("pymupdf")
+    page = pymupdf.open(str(fill.TEMPLATE))[0]
+    for widget in page.widgets():
+        if widget.field_name != fm.MAIN_1["presenter_reference"]:
+            continue
+        rect = widget.rect
+        assert rect.width - 2 * ap._INSET == pytest.approx(
+            fill.PRESENTER_REFERENCE_WIDTH, abs=0.5)
+        # ONE line. If a future template makes this box taller the fitter can
+        # be relaxed, but until then a two-line reference would overflow.
+        assert ap._lines_that_fit(
+            rect.height, fill.PRESENTER_REFERENCE_MIN_SIZE) == 1
+        return
+    pytest.fail("the Reference widget is not on page 1 of CR's template")
+
+
+def test_a_long_company_name_is_shortened_rather_than_shrunk_to_nothing():
+    """The box is one line of 158pt. `layout()` would take a 65-character name
+    down toward its 4pt floor -- the same grey smear the presenter's address
+    was rescued from, except this box cannot wrap out of it. So the NAME is
+    shortened, on a word boundary, and the prefix that makes it a reference
+    survives."""
+    long_name = "A VERY LONG HONG KONG COMPANY NAME (INTERNATIONAL) LIMITED"
+    xml = build_xml().replace("TEST COMPANY LIMITED", long_name)
+    reference = values_of(fill.render(xml))[
+        fm.MAIN_1["presenter_reference"]].pop()
+
+    assert reference.startswith("NAR1/2026/")
+    assert reference.endswith("...")
+    assert long_name.startswith(reference[len("NAR1/2026/"):-len("...")].strip())
+    ap.register_fonts()
+    assert ap.measure(reference, fill.PRESENTER_REFERENCE_MIN_SIZE,
+                      bold=False) <= fill.PRESENTER_REFERENCE_WIDTH
+
+
+def test_the_reference_is_never_drawn_below_the_legible_floor():
+    """Shortening is pointless if the renderer then shrinks it anyway. What is
+    actually drawn has to be at least `PRESENTER_REFERENCE_MIN_SIZE`."""
+    ap.register_fonts()
+    long_name = "A VERY LONG HONG KONG COMPANY NAME (INTERNATIONAL) LIMITED"
+    xml = build_xml().replace("TEST COMPANY LIMITED", long_name)
+    reference = values_of(fill.render(xml))[
+        fm.MAIN_1["presenter_reference"]].pop()
+    rect = (0.0, 0.0, fill.PRESENTER_REFERENCE_WIDTH + 2 * ap._INSET, 14.02)
+    lines, size = ap.layout(reference, rect, size=ap.DEFAULT_SIZE, bold=False)
+    assert len(lines) == 1
+    assert size >= fill.PRESENTER_REFERENCE_MIN_SIZE, \
+        f"the reference drew at {size}pt"
+
+
+def test_a_caller_with_its_own_reference_scheme_still_wins():
+    values = values_of(fill.render(
+        build_xml(),
+        presenter=dict(fill.DEFAULT_PRESENTER, reference="GS/2026/0042")))
+    assert values[fm.MAIN_1["presenter_reference"]] == ["GS/2026/0042"]
 
 
 def test_the_presenter_address_wraps_rather_than_shrinking_to_a_smear():

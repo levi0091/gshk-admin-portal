@@ -809,6 +809,10 @@ async def filing_pdf(
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
+            # The day CR's PIN signing succeeded, where it has. A preview taken
+            # before signing is dated today in Hong Kong rather than left with
+            # an empty Date box beside the signature.
+            signed_on=row.get("signed_at") or "",
         )
     except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         # A stored payload CR accepted but we cannot parse is a data problem,

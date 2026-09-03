@@ -931,6 +931,11 @@ async def send_verification(
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
+            # The day CR's PIN signing succeeded, where it has. Before that
+            # there is no signing date and the renderer dates the copy today
+            # in Hong Kong -- what it must NOT do is leave the box empty, which
+            # is how every verification attachment went out until 2026-09-04.
+            signed_on=filing.get("signed_at") or "",
         )
     except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         raise HTTPException(

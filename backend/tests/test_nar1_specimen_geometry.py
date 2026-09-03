@@ -257,12 +257,13 @@ def test_a_share_capital_cell_is_centred_but_the_schedules_class_is_not(rendered
 
 
 def test_the_signatory_name_and_date_are_centred(rendered):
+    """BOTH are always drawn. The date box used to be allowed to come back
+    empty, and this test skipped it when it did -- which is how a form whose
+    Date box was blank on every return ever generated passed a suite that
+    claimed to measure the signature block."""
     for field in ("signed_name", "signed_date"):
         name = fm.MEMBERS_AND_SIGNATURE[field]
-        try:
-            text, x, _, size, _ = drawn(rendered, name)
-        except AssertionError:
-            continue                       # unsigned returns leave it blank
+        text, x, _, size, _ = drawn(rendered, name)
         left, _, right, _ = box(rendered, name)
         assert x == pytest.approx(
             left + (right - left - ap.measure(text, size)) / 2, abs=0.6)

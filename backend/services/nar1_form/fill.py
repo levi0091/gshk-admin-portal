@@ -47,6 +47,7 @@ import io
 import logging
 import re
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -380,6 +381,66 @@ def _as_list(value):
 _ISO_DATE = re.compile(r"^(\d{4})-?(\d{2})-?(\d{2})$")
 _HK_DATE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
 
+#: Hong Kong keeps a fixed UTC+8 and has had no summer time since 1979, so a
+#: fixed offset is EXACT here rather than an approximation -- and it needs no
+#: `tzdata` wheel on the image, which a `ZoneInfo("Asia/Hong_Kong")` would on
+#: both Windows and a slim Linux base. Same constant and same reason as
+#: `services/tpsi/forms/nar1_mapper.py`.
+_HKT = timezone(timedelta(hours=8))
+
+
+def _hk_date(moment: datetime) -> str:
+    """`moment` as the dd/mm/yyyy of the day it was in Hong Kong.
+
+    A naive datetime is read as UTC, which is what Railway and Supabase both
+    run and what `tpsi_filings.signed_at` is stored in. The conversion is the
+    whole point: a return generated at 02:00 in the Hong Kong office is
+    18:00 the previous day in UTC, and a statutory form dated the day before
+    it was made is a small, permanent, printed lie.
+    """
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(_HKT).strftime("%d/%m/%Y")
+
+
+def signature_date(signed_on) -> str:
+    """The date beside the signature, in the dd/mm/yyyy its boxes are labelled
+    for.
+
+    THIS REVERSES "blank when the caller supplies nothing" (Levi 2026-09-04).
+    That rule was written because "a date printed beside an unsigned signature
+    block would assert something untrue" -- but NEITHER caller ever supplied
+    one, so every NAR1 the portal has produced went to a director, and would
+    have gone to CR, with an empty Date box. On CR's own filed return that box
+    is filled, and an empty one reads as an unfinished form rather than as a
+    scrupulous abstention. So an absent value now means TODAY IN HONG KONG:
+    the day this copy of the return was made.
+
+    A real signing date still wins where one exists -- `tpsi_filings.signed_at`
+    is passed by both callers once CR's PIN signing has succeeded -- so a
+    return downloaded a week after it was signed carries the day it was signed,
+    not the day it was printed.
+
+    Accepts a datetime, a CR date in either of `split_date`'s two formats, or
+    an ISO timestamp. Anything else falls back to today rather than to blank:
+    blank is the failure being fixed here.
+    """
+    if isinstance(signed_on, datetime):
+        return _hk_date(signed_on)
+    text = str(signed_on or "").strip()
+    if not text:
+        return datetime.now(_HKT).strftime("%d/%m/%Y")
+    # A plain date is already expressed in whatever terms the caller meant, so
+    # it is taken verbatim -- shifting "2026-07-25" by a timezone would move a
+    # date somebody typed. Only a TIMESTAMP gets converted.
+    dd, mm, yyyy = split_date(text)
+    if yyyy:
+        return f"{dd}/{mm}/{yyyy}"
+    try:
+        return _hk_date(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except ValueError:
+        return datetime.now(_HKT).strftime("%d/%m/%Y")
+
 
 def split_date(value: str) -> tuple[str, str, str]:
     """A CR date into the form's DD, MM, YYYY boxes.
@@ -434,6 +495,84 @@ def _company_name(model: dict) -> str:
     """English and Chinese on one line, as CR's own specimen prints them."""
     parts = [_get(model, "compNameE"), _get(model, "compNameC")]
     return "  ".join(p for p in parts if p)
+
+
+#: The presenter's Reference box, measured off CR's template: 176.9pt wide and
+#: 14.0pt tall -- ONE line, of which 158.1pt is inside `appearance._INSET`.
+#: `test_the_reference_box_is_the_width_the_fitter_assumes` re-measures it, so
+#: a new template revision fails a test rather than quietly overflowing.
+PRESENTER_REFERENCE_WIDTH = 158.1
+
+#: The smallest the reference may be set. `layout()` will shrink a value to a
+#: 4pt floor, which its own docstring calls a grey smear; nothing CR prints on
+#: this form is smaller than the 8pt page footer. 7pt is the point below which
+#: a reference stops being something a person can read back over the telephone
+#: to CR, which is the only thing this box is for.
+PRESENTER_REFERENCE_MIN_SIZE = 7.0
+
+#: `NAR1/<year>/<company name>` (Levi 2026-09-04). GSHK's own handle on the
+#: filing -- CR quotes it back on any correspondence about the return -- and it
+#: was rendering EMPTY because `DEFAULT_PRESENTER` carries no reference and
+#: nothing derived one. The year is the return's own made-up-to year, not the
+#: calendar year: a 2026 return filed late in 2027 is still the 2026 return,
+#: and the reference has to agree with the form it is printed on.
+PRESENTER_REFERENCE_PREFIX = "NAR1"
+
+#: What a shortened name ends with. Three ASCII full stops rather than U+2026:
+#: `draw_value` raises on a codepoint the face cannot draw, and a reference is
+#: not worth a chance of failing to render a whole statutory return over.
+_ELLIPSIS = "..."
+
+
+def _reference_fits(text: str) -> bool:
+    """Whether `text` fits the Reference box at the smallest size it may use.
+
+    Measured in the REGULAR face, because the presenter's block is the one
+    group CR does not set in bold (`REGULAR_WEIGHT_FIELDS`), and measuring the
+    bold one would shorten names that would have fitted.
+    """
+    appearance.register_fonts()
+    return appearance.measure(
+        text, PRESENTER_REFERENCE_MIN_SIZE, bold=False
+    ) <= PRESENTER_REFERENCE_WIDTH
+
+
+def _presenter_reference(model: dict, year: str) -> str:
+    """`NAR1/<year>/<company name>`, shortened to fit its one-line box.
+
+    The ENGLISH name, and the Chinese one only when there is no English: the
+    box holds about 46 characters at the floor size and `_company_name`'s
+    "English  中文" pair would be truncated to the point of naming neither.
+
+    The NAME is what gets shortened, never the prefix -- "NAR1/2026/" is what
+    makes this a reference rather than a company name, and a reference missing
+    its year is worse than one missing the last word of "... HOLDINGS LIMITED".
+    Whole words go first, so the result still reads as a name.
+    """
+    name = (_get(model, "compNameE") or _get(model, "compNameC") or "").strip()
+    # A return with no made-up-to date is malformed and `_assert_nothing_dropped`
+    # will say so; the reference should not be the thing that fails first.
+    prefix = f"{PRESENTER_REFERENCE_PREFIX}/{year or datetime.now(_HKT).year}/"
+    if not name:
+        return prefix.rstrip("/")
+    if _reference_fits(prefix + name):
+        return prefix + name
+
+    words = name.split()
+    while len(words) > 1:
+        words.pop()
+        candidate = f"{prefix}{' '.join(words)}{_ELLIPSIS}"
+        if _reference_fits(candidate):
+            return candidate
+    # One word wider than the whole box -- a Chinese name, or a run-on. Cut it
+    # a character at a time rather than give up and print nothing.
+    stem = words[0]
+    while stem:
+        stem = stem[:-1]
+        candidate = f"{prefix}{stem}{_ELLIPSIS}"
+        if _reference_fits(candidate):
+            return candidate
+    return prefix.rstrip("/")
 
 
 # --- numbers ---------------------------------------------------------------
@@ -735,11 +874,11 @@ def _compose(model: dict, *, company_type: str, presenter: dict,
     """Lay the return out across CR's pages, overflowing where it must."""
     pages = _Pages()
     br_number = _get(model, "brNo")
-    # The date beside the signature, in the dd/mm/yyyy the box is labelled
-    # for. It is NOT in the validated XML -- CR stamps the filing itself -- so
-    # it is the caller's to supply and blank when they do not.
-    sign_dd, sign_mm, sign_yyyy = split_date(signed_on)
-    signed_date = (f"{sign_dd}/{sign_mm}/{sign_yyyy}" if sign_yyyy else "")
+    # The date beside the signature. NOT in the validated XML -- CR hands none
+    # back -- so it is the caller's to supply, and TODAY IN HONG KONG when they
+    # supply nothing. See `signature_date`: it used to be blank, and blank is
+    # what every return the portal has ever produced carried.
+    signed_date = signature_date(signed_on)
     dd, mm, yyyy = split_date(_get(model, "dateReturnMadeUp"))
     from_dd, from_mm, from_yyyy = split_date(_get(model, "dateReturnFrom"))
     to_dd, to_mm, to_yyyy = split_date(_get(model, "dateReturnTo"))
@@ -765,7 +904,11 @@ def _compose(model: dict, *, company_type: str, presenter: dict,
         m1["presenter_tel"]: presenter.get("tel", ""),
         m1["presenter_fax"]: presenter.get("fax", ""),
         m1["presenter_email"]: presenter.get("email", ""),
-        m1["presenter_reference"]: presenter.get("reference", ""),
+        # Derived, not blank, and derived from THIS return: the year is the
+        # one in section 4 above it. A caller that keeps its own reference
+        # scheme can still pass one.
+        m1["presenter_reference"]: (presenter.get("reference")
+                                    or _presenter_reference(model, yyyy)),
         m1[f"type_{company_type}"]: fm.CHECKBOX_ON,
     }
     # "A private company needs not complete this section" -- the form says so
@@ -1230,6 +1373,10 @@ def render(validated_xml: str, *, company_type: str = "private",
     made, and whether members go on Schedule 1 or Schedule 2. Defaulting it to
     "private" matches essentially all of GSHK's book; a caller that knows
     better should say so.
+
+    `signed_on` is the date beside the signature -- `tpsi_filings.signed_at`
+    once CR's PIN signing has succeeded, and nothing before that. Empty means
+    TODAY IN HONG KONG, not an empty box; see `signature_date`.
     """
     if company_type not in COMPANY_TYPES:
         raise FormFillError(

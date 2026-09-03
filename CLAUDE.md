@@ -360,6 +360,11 @@ What was measured off the filed return, and is now asserted end-to-end in `tests
 
 **There is no rule to derive for alignment** — the same word, "Ordinary", is centred in section 11's table and left-aligned in Schedule 1's header. `fill.CENTRED_FIELDS` lists CR's layout group by group; extend it from the specimen, never from `/Q`.
 
+**Two boxes CR fills that the renderer used to leave empty** (Levi 2026-09-04). Both are now filled by `fill.py` rather than by a caller that has to remember:
+
+- **The Date beside the signature.** `render(signed_on=...)` used to default to blank on the reasoning that *"a date printed beside an unsigned signature block would assert something untrue"* — but **neither caller ever passed one**, so every return the portal has produced went to a director, and would have gone to CR, with an empty Date box, which reads as an unfinished form. `fill.signature_date()` now returns **today in Hong Kong** for an absent value. A real signature still wins: both routers pass `tpsi_filings.signed_at` once CR's PIN signing has succeeded, so a copy downloaded a week later carries the day it was *signed*. **Hong Kong, not UTC** — Railway and Supabase both run UTC, and a return generated at 02:00 in the office is 18:00 the previous day there.
+- **The presenter's Reference.** Now `NAR1/<year>/<company name>`, where the year is the **return's own made-up-to year** and not the calendar year — a 2026 return filed late in 2027 is still the 2026 return. The box is one line, 158.1pt usable, so a long name is **shortened on a word boundary with `...`** rather than handed to `layout()`, which would shrink it toward its 4pt floor with no second line to escape into. `PRESENTER_REFERENCE_MIN_SIZE = 7.0` is the floor for that fitting; a test re-measures the box off the template so a new revision fails rather than overflows.
+
 ### PRD requirement for new PBIs
 
 Every PRD for a new PBI must include:
