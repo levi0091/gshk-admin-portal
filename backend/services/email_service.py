@@ -737,6 +737,97 @@ def portal_url() -> str:
     return _PORTAL_URLS[app_env.is_production()]
 
 
+def _credential_shell(headline: str, inner: str, footer_note: str) -> str:
+    """The card both credential mails are set in: masthead, sheet, footer.
+
+    Extracted so the welcome mail and the password-reset mail cannot drift
+    apart. They arrive at the same person, days or months apart, and two
+    slightly different renderings of the same envelope is how a reader learns
+    to doubt which one is real. The masthead is the one the client-facing mail
+    wears, so all three read as one system.
+    """
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" bgcolor="{_GROUND}" '
+        f'style="background:{_GROUND};margin:0;padding:0">'
+        f'<tr><td align="center" style="padding:28px 12px">'
+
+        f'<table role="presentation" width="600" cellpadding="0" '
+        f'cellspacing="0" border="0" style="width:600px;max-width:600px;'
+        f'border-collapse:separate;border-radius:10px;overflow:hidden;'
+        f'border:1px solid {_BORDER}">'
+
+        f'<tr><td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
+        f'padding:24px 32px">'
+        f'<div style="{_LABEL}color:{_ON_INDIGO};padding-bottom:7px">'
+        f"G-FlowDesk &middot; Admin Portal</div>"
+        f'<div style="font-family:{_FONT};font-size:20px;font-weight:600;'
+        f'color:#FFFFFF;line-height:1.25;letter-spacing:-0.01em">'
+        f"{headline}</div>"
+        f"</td></tr>"
+
+        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
+        f"{inner}"
+        f"</td></tr>"
+
+        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};'
+        f'padding:18px 32px 22px;border-top:1px solid {_BORDER}">'
+        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
+        f'color:{_T_MUTED}">'
+        f'<span style="color:{_T_HEAD};font-weight:600">G-FlowDesk</span> '
+        f"&middot; Get Started HK Limited<br>"
+        f"{footer_note}"
+        f"</div></td></tr>"
+
+        f"</table></td></tr></table>"
+    )
+
+
+def _password_specimen(password: str) -> str:
+    """THE SPECIMEN. The one place a credential mail spends any boldness.
+
+    A bordered, letter-spaced, monospaced block with its own label — never a
+    password dropped into a sentence. The reader's whole job is to carry these
+    characters to a login box, and a credential they have to hunt for in a
+    paragraph is one they will mistype.
+    """
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" style="border-collapse:separate;'
+        f'margin:24px 0 0"><tr>'
+        f'<td bgcolor="{_CARROT_TINT}" style="background:{_CARROT_TINT};'
+        f'border:1px solid {_CARROT};border-radius:8px;padding:18px 22px">'
+        f'<div style="{_LABEL}padding-bottom:8px">Temporary password</div>'
+        f'<div style="font-family:{_MONO};font-size:22px;font-weight:700;'
+        f'letter-spacing:0.06em;color:{_T_HEAD};word-break:break-all;'
+        f'line-height:1.35">{_html.escape(password)}</div>'
+        f"</td></tr></table>"
+    )
+
+
+def _signin_action(url: str) -> str:
+    """The button, and the URL in full underneath it.
+
+    A reader on a client that strips anchors, or one who does not press links
+    in email on principle, still has something they can type.
+    """
+    return (
+        f'<table role="presentation" cellpadding="0" cellspacing="0" '
+        f'border="0" style="margin:24px 0 0"><tr>'
+        f'<td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
+        f'border-radius:6px" align="center">'
+        f'<a href="{_html.escape(url, quote=True)}" '
+        f'style="display:inline-block;padding:13px 26px;font-family:{_FONT};'
+        f'font-size:15px;font-weight:600;color:#FFFFFF;text-decoration:none">'
+        f"Sign in to G-FlowDesk</a>"
+        f"</td></tr></table>"
+
+        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
+        f'color:{_T_MUTED};padding-top:10px;word-break:break-all">'
+        f"{_html.escape(url)}</div>"
+    )
+
+
 def welcome_email(display_name: str, role_name: str | None,
                   password: str) -> tuple[str, str]:
     """The message a newly created user receives: subject and HTML body.
@@ -773,85 +864,73 @@ def welcome_email(display_name: str, role_name: str | None,
             f"portal you can open. Ask an administrator if you need more.</div>"
         )
 
-    body = (
-        f'<table role="presentation" width="100%" cellpadding="0" '
-        f'cellspacing="0" border="0" bgcolor="{_GROUND}" '
-        f'style="background:{_GROUND};margin:0;padding:0">'
-        f'<tr><td align="center" style="padding:28px 12px">'
+    body = _credential_shell(
+        headline="Your account is ready",
+        inner=(
+            f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+            f'color:{_T_BODY}">'
+            f'Hi {_html.escape(name) or "there"}, an administrator has created '
+            f"your G-FlowDesk account. Sign in with the password below.</div>"
 
-        f'<table role="presentation" width="600" cellpadding="0" '
-        f'cellspacing="0" border="0" style="width:600px;max-width:600px;'
-        f'border-collapse:separate;border-radius:10px;overflow:hidden;'
-        f'border:1px solid {_BORDER}">'
+            f"{_password_specimen(password)}"
 
-        # Masthead — the same one the client mail wears, so the two read as one
-        # system rather than as two products.
-        f'<tr><td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
-        f'padding:24px 32px">'
-        f'<div style="{_LABEL}color:{_ON_INDIGO};padding-bottom:7px">'
-        f"G-FlowDesk &middot; Admin Portal</div>"
-        f'<div style="font-family:{_FONT};font-size:20px;font-weight:600;'
-        f'color:#FFFFFF;line-height:1.25;letter-spacing:-0.01em">'
-        f"Your account is ready</div>"
-        f"</td></tr>"
+            f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
+            f'color:{_T_MUTED};padding-top:10px">'
+            f"Use it for your first sign-in only. You will be asked to choose "
+            f"your own password straight away, and nothing else in the portal "
+            f"opens until you do.</div>"
 
-        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
+            f"{_signin_action(url)}"
+            f"{role_line}"
+        ),
+        footer_note=("If you were not expecting this, tell your administrator "
+                     "and do not sign in."),
+    )
+    return subject, body
 
-        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY}">'
-        f'Hi {_html.escape(name) or "there"}, an administrator has created your '
-        f"G-FlowDesk account. Sign in with the password below.</div>"
 
-        # THE SPECIMEN. The one place this message spends any boldness.
-        f'<table role="presentation" width="100%" cellpadding="0" '
-        f'cellspacing="0" border="0" style="border-collapse:separate;'
-        f'margin:24px 0 0"><tr>'
-        f'<td bgcolor="{_CARROT_TINT}" style="background:{_CARROT_TINT};'
-        f'border:1px solid {_CARROT};border-radius:8px;padding:18px 22px">'
-        f'<div style="{_LABEL}padding-bottom:8px">Temporary password</div>'
-        f'<div style="font-family:{_MONO};font-size:22px;font-weight:700;'
-        f'letter-spacing:0.06em;color:{_T_HEAD};word-break:break-all;'
-        f'line-height:1.35">{_html.escape(password)}</div>'
-        f"</td></tr></table>"
+def password_reset_email(display_name: str, password: str) -> tuple[str, str]:
+    """The message a user receives when an administrator resets them.
 
-        f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
-        f'color:{_T_MUTED};padding-top:10px">'
-        f"Use it for your first sign-in only. You will be asked to choose your "
-        f"own password straight away, and nothing else in the portal opens "
-        f"until you do.</div>"
+    SAME CONSTRAINTS AS THE WELCOME MAIL, and for the same reasons: the
+    password exists in exactly two places — this message and Supabase Auth's
+    hash of it — and it is never in an API response, a log line or an audit
+    row. See `routers/users.reset_user_password`.
 
-        # The action.
-        f'<table role="presentation" cellpadding="0" cellspacing="0" '
-        f'border="0" style="margin:24px 0 0"><tr>'
-        f'<td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
-        f'border-radius:6px" align="center">'
-        f'<a href="{_html.escape(url, quote=True)}" '
-        f'style="display:inline-block;padding:13px 26px;font-family:{_FONT};'
-        f'font-size:15px;font-weight:600;color:#FFFFFF;text-decoration:none">'
-        f"Sign in to G-FlowDesk</a>"
-        f"</td></tr></table>"
+    WHAT THIS SAYS THAT THE WELCOME MAIL DOES NOT: that somebody *else* did
+    this. A person who did not ask for a reset and receives one has either a
+    confused colleague or a compromised portal, and the only way they can tell
+    the difference is by asking — so the footer tells them to ask, in place of
+    the welcome mail's "do not sign in", which is the wrong instruction here
+    (their old password is already gone; refusing to sign in just leaves them
+    locked out).
+    """
+    name = (display_name or "").strip()
+    url = portal_url()
 
-        # The URL in full, under the button. A reader on a client that strips
-        # anchors, or one who does not press links in email on principle, still
-        # has something they can type.
-        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
-        f'color:{_T_MUTED};padding-top:10px;word-break:break-all">'
-        f"{_html.escape(url)}</div>"
+    subject = "Your G-FlowDesk password has been reset"
 
-        f"{role_line}"
-        f"</td></tr>"
+    body = _credential_shell(
+        headline="Your password has been reset",
+        inner=(
+            f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+            f'color:{_T_BODY}">'
+            f'Hi {_html.escape(name) or "there"}, an administrator has reset '
+            f"the password on your G-FlowDesk account. Your previous password "
+            f"no longer works. Sign in with the one below.</div>"
 
-        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};'
-        f'padding:18px 32px 22px;border-top:1px solid {_BORDER}">'
-        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
-        f'color:{_T_MUTED}">'
-        f'<span style="color:{_T_HEAD};font-weight:600">G-FlowDesk</span> '
-        f"&middot; Get Started HK Limited<br>"
-        f"If you were not expecting this, tell your administrator and do not "
-        f"sign in."
-        f"</div></td></tr>"
+            f"{_password_specimen(password)}"
 
-        f"</table></td></tr></table>"
+            f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
+            f'color:{_T_MUTED};padding-top:10px">'
+            f"Use it for this sign-in only. You will be asked to choose your "
+            f"own password straight away, and nothing else in the portal opens "
+            f"until you do.</div>"
+
+            f"{_signin_action(url)}"
+        ),
+        footer_note=("If you did not ask for this, contact your administrator "
+                     "straight away &mdash; somebody else requested it."),
     )
     return subject, body
 

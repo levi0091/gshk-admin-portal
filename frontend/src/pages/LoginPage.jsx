@@ -1,12 +1,38 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import { api } from '../lib/api.js'
 
 // Self-service reset and access requests are not built (out of PBI-39 scope).
 // The wireframe shows both links, so they are present and say what to do rather
 // than being dead controls.
-const RESET_NOTICE = 'Password resets are handled by a Super Admin — contact levi@zenexflow.com.'
-const ACCESS_NOTICE = 'Accounts are created by a Super Admin — contact levi@zenexflow.com to request access.'
+//
+// THEY NAME THE PORTAL'S ACTUAL SUPER ADMINS, read from `/auth/super-admins`.
+// Both strings used to name `levi@zenexflow.com` — the delivery contractor,
+// not GSHK's administrators — so a locked-out GSHK user wrote to the wrong
+// company, and promoting somebody to super_admin changed nothing on the screen.
+//
+// The fallback below is what shows when that list cannot be reached. It names
+// nobody on purpose: an address that is wrong is worse than no address, because
+// the reader stops looking once they have one.
+const FALLBACK_CONTACT = 'a Super Admin'
+const RESET_NOTICE = contacts =>
+  `Password resets are handled by a Super Admin — contact ${contacts}.`
+const ACCESS_NOTICE = contacts =>
+  `Accounts are created by a Super Admin — contact ${contacts} to request access.`
+
+/**
+ * "brian@getstarted.hk", "brian@… or vanis@…", "a@…, b@… or c@…".
+ *
+ * Addresses, not names: the reader's next action is to open a mail client, and
+ * a name they then have to look up is a step this screen can spend for them.
+ */
+export function joinContacts(superAdmins) {
+  const emails = (superAdmins || []).map(a => a?.email).filter(Boolean)
+  if (emails.length === 0) return FALLBACK_CONTACT
+  if (emails.length === 1) return emails[0]
+  return `${emails.slice(0, -1).join(', ')} or ${emails[emails.length - 1]}`
+}
 
 export default function LoginPage() {
   const { signIn } = useAuth()
@@ -14,13 +40,33 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  // WHICH notice is showing, not the sentence itself. The contact list arrives
+  // a round trip after the screen does, and a reader who pressed the link in
+  // that window would otherwise be left holding the fallback wording for as
+  // long as they looked at it.
+  const [noticeKey, setNoticeKey] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [contacts, setContacts] = useState(FALLBACK_CONTACT)
+  const notice = noticeKey === 'reset' ? RESET_NOTICE(contacts)
+    : noticeKey === 'access' ? ACCESS_NOTICE(contacts)
+      : ''
+
+  // Fetched on mount rather than when a link is pressed: the notice has to
+  // appear the instant somebody clicks "Forgot password?", and a request fired
+  // at that moment would show them the fallback for as long as the round trip
+  // takes. A failure is silent — the fallback wording is already correct.
+  useEffect(() => {
+    let live = true
+    api.publicGet('/auth/super-admins')
+      .then(data => { if (live) setContacts(joinContacts(data?.super_admins)) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [])
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
-    setNotice('')
+    setNoticeKey(null)
     setLoading(true)
     try {
       await signIn(email, password)
@@ -102,7 +148,7 @@ export default function LoginPage() {
           </div>
 
           <div className="forgot-row">
-            <span className="forgot-link" onClick={() => setNotice(RESET_NOTICE)}>
+            <span className="forgot-link" onClick={() => setNoticeKey('reset')}>
               Forgot password?
             </span>
           </div>
@@ -144,7 +190,7 @@ export default function LoginPage() {
 
         <div className="login-footer">
           Don&apos;t have an account?{' '}
-          <span className="login-lnk" onClick={() => setNotice(ACCESS_NOTICE)}>
+          <span className="login-lnk" onClick={() => setNoticeKey('access')}>
             Request access
           </span>
         </div>

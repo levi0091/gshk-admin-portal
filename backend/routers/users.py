@@ -215,6 +215,130 @@ async def set_own_password(
     return {"must_change_password": False}
 
 
+@router.post("/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: str,
+    current_user=Depends(require_super_admin()),
+):
+    """Issue a new generated password to a user who cannot sign in.
+
+    The same shape as creation (§7), and for the same reasons: the portal
+    generates the password, mails it to its owner, and the account can do
+    nothing until its owner replaces it. THE PASSWORD IS NOT IN THE RESPONSE —
+    an administrator resets an account, they do not learn how to sign in as it.
+
+    ORDER MATTERS AND IS DELIBERATE. Auth first, then the flag, then the mail:
+
+      * Auth first because it is the irreversible half. Everything after it is
+        recoverable by pressing the button again, which is why this route is
+        safe to retry — unlike creation, a second reset collides with nothing.
+      * The flag next, best-effort. If it fails the user can still sign in on
+        the mailed password; they simply are not forced to change it. Raising
+        here would abort the mail and leave a real person locked out of an
+        account whose password had already changed.
+      * The mail last, best-effort and REPORTED, because it is the half that
+        actually fails: Railway DEV has no `RESEND_API_KEY`, and a reset whose
+        mail silently vanished is indistinguishable, from the administrator's
+        chair, from one that worked.
+
+    NOT AUDITED, deliberately. `audit_log` covers NAR1/NNC1 workflow and entity
+    data (CLAUDE.md, "Audit scope"); user-management events are out of scope
+    and have no seeded `action_type`, and an unseeded code renders unlabelled
+    in the trail rather than failing loudly.
+    """
+    sb = get_supabase()
+
+    # Read the row first. This is what makes 404 mean "no such user" rather
+    # than a password change against an id that only exists in Supabase Auth,
+    # and it is where the email address in the response comes from — the
+    # screen tells the administrator which mailbox to chase, and it must be
+    # the address the mail was actually sent to.
+    #
+    # `.limit(1)`, NOT `.single()`: PostgREST raises when `.single()` matches no
+    # rows, so the not-found path would have to be a bare `except` — and that
+    # same `except` would turn a database outage into "User not found", which
+    # sends the administrator hunting for a user who is sitting right there. A
+    # list distinguishes the two: empty is a 404, and a real failure raises.
+    rows = (sb.table("users")
+            .select("id, display_name, email, is_active")
+            .eq("id", user_id).limit(1).execute()).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="User not found")
+    target = rows[0]
+
+    if not target.get("is_active"):
+        # A deactivated account is banned in Auth. Mailing it a working-looking
+        # password would put a live credential in a mailbox for an account that
+        # cannot sign in, and tell the administrator the opposite of the truth.
+        raise HTTPException(
+            status_code=409,
+            detail="This account is deactivated. Reassign a role to restore "
+                   "access before resetting the password.",
+        )
+
+    email = (target.get("email") or "").strip()
+    if not email:
+        # The password only leaves by one route. No route, no reset.
+        raise HTTPException(
+            status_code=409,
+            detail="This account has no email address on record, so the new "
+                   "password could not be delivered to anybody.",
+        )
+
+    password = generate_password()
+
+    try:
+        sb.auth.admin.update_user_by_id(user_id, {"password": password})
+    except Exception as exc:  # noqa: BLE001
+        # Supabase's own refusal. Reported WITHOUT the password — it was never
+        # part of the message and nothing here puts it there.
+        raise HTTPException(status_code=400,
+                            detail=f"Password reset failed: {exc}")
+
+    must_change = True
+    try:
+        (sb.table("users").update({"must_change_password": True})
+         .eq("id", user_id).execute())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[users] WARN: reset flag not set for {email}: {exc}",
+              file=sys.stderr)
+        must_change = False
+
+    # Identities are cached for 30 seconds. Without this the user keeps their
+    # old session's cached identity — and, worse, is not sent to the
+    # choose-a-password screen — for half a minute after the reset.
+    clear_auth_cache()
+
+    subject, html = email_service.password_reset_email(
+        target.get("display_name") or "", password)
+
+    delivery = {"reset_email_sent": False, "reset_email_error": None,
+                "reset_email_redirected": False}
+    try:
+        # Off the event loop: email_service.send is a synchronous httpx.post
+        # with a 15-second timeout, so a hung Resend would stall the whole
+        # worker rather than this one request.
+        sent = await asyncio.to_thread(
+            email_service.send, to=[email], subject=subject, html=html)
+        delivery["reset_email_sent"] = True
+        delivery["reset_email_redirected"] = bool(sent.get("redirected"))
+    except Exception as exc:  # noqa: BLE001
+        # THE PASSWORD HAS ALREADY CHANGED. Raising here would tell the
+        # administrator the reset failed while the user's old password had in
+        # fact stopped working — the worst of both. So it is reported, and the
+        # screen turns it into "press it again once mail is working", which is
+        # an action that can actually be taken.
+        print(f"[users] WARN: reset email failed for {email}: {exc}",
+              file=sys.stderr)
+        delivery["reset_email_error"] = str(exc)
+
+    # NO PASSWORD IN THE RESPONSE, exactly as on creation. A response body ends
+    # up in the browser's network log, and an administrator who can read a
+    # colleague's password can sign in as them.
+    return {"user_id": user_id, "email": email,
+            "must_change_password": must_change, **delivery}
+
+
 @router.patch("/{user_id}")
 async def update_user(
     user_id: str,

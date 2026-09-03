@@ -1,4 +1,7 @@
-"""Spec §5 — the client's approval page, the only unauthenticated route.
+"""Spec §5 — the client's approval page, the only unauthenticated route that
+writes. (`GET /auth/super-admins` is the other one; it is a read, and
+`test_super_admin_contacts.py` holds its boundaries.)
+
 
 The two things this file exists to hold in place:
 

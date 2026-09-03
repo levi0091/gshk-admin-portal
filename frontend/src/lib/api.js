@@ -162,10 +162,34 @@ async function apiBlob(path, options = {}) {
   return resp.blob()
 }
 
+/**
+ * GET a route that has no token — currently `/auth/super-admins`, read by the
+ * login screen.
+ *
+ * Separate from `api.get` rather than a flag on it: `getAuthHeaders` THROWS
+ * when there is no session, which is the correct behaviour everywhere else in
+ * the app and exactly wrong on the one screen that runs before sign-in. A
+ * caller cannot reach an authenticated route through this by accident — it
+ * sends no Authorization header at all, so the backend refuses it.
+ */
+export async function apiPublicGet(path) {
+  const resp = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+    const e = describeApiError(err.detail, resp.statusText)
+    e.status = resp.status
+    throw e
+  }
+  return resp.json()
+}
+
 export const api = {
   // `options` carries the AbortSignal from useAbortableGet; apiFetch already
   // spreads it into fetch(), so nothing else needs to change.
   get: (path, options) => apiFetch(path, options),
+  publicGet: apiPublicGet,
   post: (path, body) => apiFetch(path, { method: 'POST', body: JSON.stringify(body) }),
   put: (path, body) => apiFetch(path, { method: 'PUT', body: JSON.stringify(body) }),
   patch: (path, body) => apiFetch(path, { method: 'PATCH', body: JSON.stringify(body) }),

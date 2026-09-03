@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api.js'
+import { useAuth } from '../context/AuthContext.jsx'
 
 function StatusBadge({ isActive }) {
   return (
@@ -177,6 +178,139 @@ function EditUserModal({ user, roles, onClose, onSaved }) {
   )
 }
 
+function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState(null)
+
+  async function confirm() {
+    setError('')
+    setLoading(true)
+    try {
+      // THE RESPONSE CARRIES NO PASSWORD, deliberately — an administrator
+      // resets an account, they do not learn how to sign in as it. What comes
+      // back is whether the mail carrying it actually went.
+      setResult(await api.post(`/users/${user.id}/reset-password`, {}))
+      onReset()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Everything below the first branch is the AFTER state. The password has
+  // already changed by the time any of it renders, so none of it offers to
+  // cancel — the only remaining question is whether the mail arrived.
+  const sent = result && result.reset_email_sent && !result.reset_email_redirected
+  const redirected = result && result.reset_email_redirected
+  const failed = result && result.reset_email_sent === false
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-hdr">
+          <span className="modal-title">Reset Password</span>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+
+        <div className="modal-body">
+          {!result && (
+            <>
+              <p style={{ fontSize: 13, color: 'var(--t-body)', lineHeight: 1.6, margin: 0 }}>
+                Reset the password for <strong>{user.display_name}</strong>?
+                G-FlowDesk will email a new temporary password and require them
+                to choose their own the next time they sign in. Their current
+                password stops working immediately.
+              </p>
+
+              {/* THE ADDRESS, SET AS A SPECIMEN. Two rows in this table can
+                  carry the same display name, and the whole point of the
+                  confirmation is that the administrator resets the account
+                  they meant to — so the identifier that is actually unique is
+                  the one worth reading, and it does not belong buried in the
+                  sentence above. */}
+              <div style={{
+                background: 'var(--indigo-5)', border: '1px solid var(--border)',
+                borderRadius: 6, padding: '12px 14px', marginTop: 14,
+              }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 600, letterSpacing: '.04em',
+                  textTransform: 'uppercase', color: 'var(--t-muted)', marginBottom: 4,
+                }}>
+                  The new password will be emailed to
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t-head)', wordBreak: 'break-all' }}>
+                  {user.email}
+                </div>
+              </div>
+
+              {isSelf && (
+                <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410', marginTop: 14 }}>
+                  This is your own account. You will be asked to choose a new
+                  password straight away, and nothing else in the portal opens
+                  until you do.
+                </div>
+              )}
+            </>
+          )}
+
+          {sent && (
+            <p style={{ fontSize: 13, color: 'var(--t-body)', lineHeight: 1.6, margin: 0 }}>
+              Done. A temporary password is on its way to <strong>{result.email}</strong>.
+              Nobody else can read it — it exists only in that mailbox.
+              {result.must_change_password === false && (
+                <> They were <strong>not</strong> required to change it on sign-in:
+                that flag did not save. Reset again to retry.</>
+              )}
+            </p>
+          )}
+
+          {/* The test-environment lock (email_service.TEST_RECIPIENTS) sends
+              every message to four hardcoded mailboxes. The reset is real and
+              the old password is gone, so unless this user is one of those
+              four they are now locked out — and nothing else on this screen
+              would say why. */}
+          {redirected && (
+            <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410' }}>
+              The password was reset, but this is a test environment: the email
+              went to the test mailboxes, not to {result.email}. They cannot
+              sign in until somebody passes them the password from that mailbox.
+            </div>
+          )}
+
+          {failed && (
+            <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410' }}>
+              The password was reset, but the email did not send
+              {result.reset_email_error ? ` — ${result.reset_email_error}` : ''}.
+              Their old password has already stopped working, so they are locked
+              out until this is delivered: press Reset Password again once mail
+              is working.
+            </div>
+          )}
+
+          {error && (
+            <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C', marginTop: 14 }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="modal-footer">
+          <button className="btn btn-outline" onClick={onClose}>
+            {result ? 'Close' : 'Cancel'}
+          </button>
+          {!result && (
+            <button className="btn btn-primary" disabled={loading} onClick={confirm}>
+              {loading ? 'Resetting…' : 'Reset Password'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DeactivateModal({ user, onClose, onDeactivated }) {
   const [loading, setLoading] = useState(false)
 
@@ -215,12 +349,14 @@ function DeactivateModal({ user, onClose, onDeactivated }) {
 }
 
 export default function UserManagementPage() {
+  const { profile } = useAuth()
   const [users, setUsers] = useState([])
   const [roles, setRoles] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [deactivateTarget, setDeactivateTarget] = useState(null)
+  const [resetTarget, setResetTarget] = useState(null)
 
   async function load() {
     setLoading(true)
@@ -282,6 +418,18 @@ export default function UserManagementPage() {
                     <button className="btn btn-outline btn-sm" onClick={() => setEditTarget(u)}>
                       Edit
                     </button>
+                    {/* Offered for super admins too, unlike Deactivate: a
+                        reset does not remove anybody's access, and the account
+                        that can file statutory returns is the one most worth
+                        being able to recover. Hidden for deactivated accounts,
+                        which are banned in Auth — the backend refuses those
+                        with a 409, and a button that always fails is worse
+                        than no button. */}
+                    {u.is_active && (
+                      <button className="btn btn-ghost btn-sm" onClick={() => setResetTarget(u)}>
+                        Reset password
+                      </button>
+                    )}
                     {u.is_active && u.roles?.name !== 'super_admin' && (
                       <button
                         className="btn btn-ghost btn-sm"
@@ -312,6 +460,14 @@ export default function UserManagementPage() {
           roles={roles}
           onClose={() => setEditTarget(null)}
           onSaved={load}
+        />
+      )}
+      {resetTarget && (
+        <ResetPasswordModal
+          user={resetTarget}
+          isSelf={Boolean(profile?.id) && profile.id === resetTarget.id}
+          onClose={() => setResetTarget(null)}
+          onReset={load}
         />
       )}
       {deactivateTarget && (

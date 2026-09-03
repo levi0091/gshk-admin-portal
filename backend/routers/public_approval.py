@@ -1,4 +1,10 @@
-"""The client's approval page — the only unauthenticated route in this API.
+"""The client's approval page — the only unauthenticated route that WRITES.
+
+(`GET /auth/super-admins` is the other unauthenticated route: a read of two or
+three staff addresses for the login screen, with no token, no parameter and
+nothing it can change. Everything below is about this one, which does change
+something.)
+
 
 Spec §5. A director opens the link in their verification email, sees the return
 they were asked about, and presses one button.
