@@ -50,8 +50,8 @@ WORKFLOW_LABELS = {
 _FINISHED = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE)
 
 #: 42 days after the anniversary the statutory filing window closes. Negative
-#: days_to_anniversary counts UP from a passed anniversary (migration 019), so
-#: anything below this is out of time.
+#: days_to_anniversary counts UP from a passed anniversary (migration 019, floor
+#: removed by 033), so anything below this is out of time.
 FILING_WINDOW_DAYS = 42
 
 
@@ -128,17 +128,19 @@ def derive(case: dict, filing: dict | None) -> dict:
         # step. Meaningless once filed -- whether it was filed LATE is a
         # different question this badge does not answer.
         #
-        # PERMANENTLY FALSE, AND THAT IS THE DECISION, NOT A BUG.
-        # migration 019 floors days_to_anniversary at -FILING_WINDOW_DAYS, so
-        # `days < -42` can never hold: verified on DEV, 5,998 rows, range
-        # exactly [-42, 322], zero matches. Levi 2026-08-22: the overdue badge
-        # is not needed, so the floor stays and this stays dead.
+        # LIVE since migration 033, having been permanently false before it.
+        # 019 floored days_to_anniversary at -FILING_WINDOW_DAYS, so `days <
+        # -42` could not hold -- verified on DEV at the time, 5,998 rows, range
+        # exactly [-42, 322], zero matches. Levi 2026-09-04 asked for the floor
+        # to go ("we should not floor the days to anniversary at -42"), 033
+        # removed it, and this comparison started meaning what it says.
         #
-        # Left in place deliberately rather than deleted -- the flag is part of
-        # the response shape and of nar1_case_registry (migration 024). If you
-        # are here because you want an overdue badge, the change is to the
-        # CLAMP in migration 019, not to this comparison; raising the threshold
-        # here alone would still never fire.
+        # It fires on a case that is not complete more than 42 days after its
+        # anniversary. It does NOT say the return was filed late -- that needs
+        # a filed date, which DEV holds on 2 of 7,959 rows.
+        #
+        # nar1_case_registry (024, restated by 033) carries the identical
+        # predicate; the two must not diverge.
         "overdue": (
             code != COMPLETED
             and days is not None

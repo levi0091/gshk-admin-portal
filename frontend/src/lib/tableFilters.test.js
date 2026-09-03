@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
-  DATE, ENUM, OWNER, RANGE, TEXT,
+  DATE, ENUM, ID, ID_OPS, OWNER, RANGE, TEXT, TEXT_OPS,
   appendTo, chipsFor, columnsTouched, draftFromFilters, filtersFromDraft,
-  setColumn, toParams,
+  opsFor, setColumn, toParams,
 } from './tableFilters.js'
 
 const NAME = { col: 'company_name', label: 'Company Name', filter: { kind: TEXT } }
@@ -183,5 +183,43 @@ describe('the chip row', () => {
   it('says "No value" rather than showing an empty filter as blank', () => {
     expect(chipsFor([NAME], [{ col: 'company_name', op: 'empty', value: '' }])[0].text)
       .toBe('No value')
+  })
+})
+
+// A uuid column is text-shaped in the editor and nothing like text on the wire.
+// `contains` on one reaches PostgREST as an ilike, which Postgres refuses on a
+// uuid — the 500 that reached the dashboard as "Failed to fetch".
+describe('uuid columns', () => {
+  const ENTITY = { col: 'entity_id', label: 'Entity ID', filter: { kind: ID } }
+  const UUID = '4a20786b-7b50-4f35-8e4d-c3e342766db9'
+
+  it('offers only the ops the server will run', () => {
+    expect(opsFor(ID)).toBe(ID_OPS)
+    expect(ID_OPS.map(o => o.value)).toEqual(['eq', 'empty', 'notempty'])
+    expect(ID_OPS.map(o => o.value)).not.toContain('contains')
+  })
+
+  it('leaves every other kind on the full text op list', () => {
+    expect(opsFor(TEXT)).toBe(TEXT_OPS)
+    expect(opsFor(undefined)).toBe(TEXT_OPS)
+  })
+
+  it('defaults to exact match, where a text column defaults to contains', () => {
+    expect(draftFromFilters(ENTITY, []).op).toBe('eq')
+    expect(draftFromFilters(NAME, []).op).toBe('contains')
+  })
+
+  it('writes an eq filter from a bare value', () => {
+    expect(filtersFromDraft(ENTITY, { op: '', value: UUID }))
+      .toEqual([{ col: 'entity_id', op: 'eq', value: UUID }])
+  })
+
+  it('is still no filter when the box is empty', () => {
+    expect(filtersFromDraft(ENTITY, { op: 'eq', value: '   ' })).toEqual([])
+  })
+
+  it('describes itself as an exact match in the chip row', () => {
+    expect(chipsFor([ENTITY], [{ col: 'entity_id', op: 'eq', value: UUID }])[0].text)
+      .toBe(`is “${UUID}”`)
   })
 })

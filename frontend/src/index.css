@@ -252,6 +252,26 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .empty-state {
   text-align: center; padding: 40px 20px; color: var(--t-muted); font-size: 13px;
 }
+/* An empty table states the fact, then offers the way out of it. The heading
+   carries the weight because it is the answer; the button is the only thing
+   here worth clicking, so nothing else competes with it.
+
+   STICKY, and that is the whole trick. This cell spans eleven columns, so it is
+   as wide as the TABLE — and `text-align: center` then centres the message in
+   the table rather than in the part of it anyone can see. On the dashboard that
+   put "No records found" a full screen to the right of the scroll position:
+   the operator gets a blank white box and has to scroll sideways to be told
+   why. `position: sticky; left: 0` with `width: fit-content` pins the block to
+   the left edge of the scrollport instead, so it is legible at every scroll
+   position, on every one of these tables, whatever their width. */
+.empty-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  position: sticky; left: 0; width: fit-content;
+  padding-left: 4px; text-align: left;
+}
+.empty-row-hd { font-size: 14px; font-weight: 600; color: var(--t-head); }
+.empty-row-sub { color: var(--t-muted); max-width: 42ch; }
+.empty-row .btn { margin-top: 6px; }
 .tag { display: inline-flex; padding: 2px 8px; background: var(--indigo-10); color: var(--indigo-80); font-size: 11px; font-weight: 600; border-radius: var(--r-xs); }
 
 /* ── LOGIN (wireframe_v7 s1) ─────────────────────────────── */
@@ -415,8 +435,25 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
    Days-to-anniversary column's own filter now, like every other column's, and a
    second place to look for something the header can say was the whole problem.
    See `.colf-pair` below for the two-bound editor that replaced it. */
-.th-inner { display: flex; align-items: center; gap: 5px; }
-.th-sort { opacity: .4; font-size: 10px; }
+/* Levi 2026-09-04: "make the filter and sorting buttons bigger, it is very
+   difficult to click on these super small buttons". The GLYPHS stay small — a
+   header of eleven columns cannot carry eleven loud controls — because the
+   target was never the glyph. Both marks now sit in a 26px box: 324px² of
+   clickable area becomes 676px², comfortably past the 24px minimum for a
+   pointer target.
+
+   The negative block margin is what keeps that free. Without it a 26px control
+   inside a 9px-padded header grows every table's head from 31px to 44px, which
+   is a visible change to eight screens nobody asked to redesign. -6px puts the
+   row back where it was while the targets stay large. */
+.th-inner { display: flex; align-items: center; gap: 2px; margin: -6px 0; }
+.th-sort {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; margin-left: 4px;
+  border-radius: var(--r-xs);
+  opacity: .4; font-size: 13px; line-height: 1; flex-shrink: 0;
+  transition: .15s;
+}
 thead th:hover .th-sort { opacity: .85; }
 tbody tr.clickable { cursor: pointer; }
 .filing-tag {
@@ -1163,7 +1200,7 @@ tbody tr.clickable { cursor: pointer; }
    reads as one control cluster rather than two competing marks. */
 .th-filter {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; margin-left: 1px; padding: 0;
+  width: 26px; height: 26px; margin-left: 0; padding: 0;
   border-radius: var(--r-xs); color: var(--t-muted); opacity: .4;
   transition: .15s; flex-shrink: 0;
 }

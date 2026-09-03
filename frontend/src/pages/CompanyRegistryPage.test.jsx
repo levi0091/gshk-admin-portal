@@ -148,7 +148,21 @@ describe('CompanyRegistryPage', () => {
   it('renders an empty state when nothing matches', async () => {
     api.get.mockResolvedValue({ ...PAYLOAD, companies: [], total: 0 })
     renderPage()
-    expect(await screen.findByText('No companies match this view.')).toBeInTheDocument()
+    expect(await screen.findByText('No records found')).toBeInTheDocument()
+  })
+
+  it('offers a way out when the emptiness is the default filter’s doing', async () => {
+    // This screen filters itself on first paint (−42..60 days). "No records
+    // found" on its own would read as "there is no data" rather than "you are
+    // looking through a filter you did not set".
+    const user = userEvent.setup()
+    api.get.mockResolvedValue({ ...PAYLOAD, companies: [], total: 0 })
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Clear all filters' }))
+    await waitFor(() => {
+      const last = decodeURIComponent(api.get.mock.calls.at(-1)[0])
+      expect(last).not.toContain('days_to_anniversary')
+    })
   })
 
   it('renders an error state when the request fails', async () => {
@@ -214,6 +228,40 @@ describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
     renderPage()   // PAYLOAD carries no days_to_anniversary
     const row = (await screen.findByText('Get Started HK Limited')).closest('tr')
     expect(within(row).getByText('in 34 days')).toBeInTheDocument()
+  })
+
+  it('shows a company whose filing window has shut, past the old −42 floor', async () => {
+    // Migration 033. Under 019 this company reported +322 and was indexed among
+    // the ones with a year in hand, so clearing the filter's lower bound found
+    // nothing — the number below −42 did not exist to be found.
+    api.get.mockResolvedValue({
+      ...PAYLOAD,
+      companies: [{ ...PAYLOAD.companies[0], days_to_anniversary: -120 }],
+    })
+    renderPage()
+    const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
+    expect(within(row).getByText('120 days ago')).toBeInTheDocument()
+  })
+
+  it('highlights the 42-day window, and only that', async () => {
+    // 2,262 of DEV's client companies sit between −43 and −182. Painting all of
+    // them carrot would be an alarm about 38% of the register, for a fact that
+    // is not a deadline: inside the window the return can still be filed today,
+    // outside it the cell is stating a date relationship.
+    api.get.mockResolvedValue({
+      ...PAYLOAD,
+      companies: [
+        { ...PAYLOAD.companies[0], id: 'in', company_name: 'Inside Window Ltd.',
+          days_to_anniversary: -42 },
+        { ...PAYLOAD.companies[0], id: 'out', company_name: 'Window Shut Ltd.',
+          days_to_anniversary: -43 },
+      ],
+    })
+    renderPage()
+    const inside = (await screen.findByText('Inside Window Ltd.')).closest('tr')
+    const outside = screen.getByText('Window Shut Ltd.').closest('tr')
+    expect(within(inside).getByText('42 days ago')).toHaveClass('td-anniv-due')
+    expect(within(outside).getByText('43 days ago')).not.toHaveClass('td-anniv-due')
   })
 
   it('renders an em dash when the server says null', async () => {
@@ -446,7 +494,25 @@ describe('CompanyRegistryPage — column filters', () => {
     })
   })
 
-  it('offers every status the column can hold, not just the six the tabs showed', async () => {
+  it('offers the statuses a COMPANY can be, not the whole enum', async () => {
+    // Levi 2026-09-04: "this is company status so some of these values dont
+    // make sense". `entity_status` is one column doing two jobs — three values
+    // describe a company, eight describe an incorporation in flight. On DEV:
+    // 5,985 live, 12 ceased, 1 pre-incorporation, none of the other eight.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Status/ }))
+
+    const boxes = screen.getAllByRole('checkbox').map(b => b.getAttribute('aria-label')
+      ?? b.closest('label')?.textContent?.trim())
+    expect(boxes).toEqual(['Live', 'Pre-Incorporation', 'Ceased'])
+    for (const gone of ['Pending AML', 'To Verify', 'Submitted to CR', 'CR Approved']) {
+      expect(screen.queryByRole('checkbox', { name: gone })).not.toBeInTheDocument()
+    }
+  })
+
+  it('still filters by the status it does offer', async () => {
     // `live` and `ceased` are all 5,930 of the real rows. A filter that could
     // not name them would be a filter over nothing.
     const user = userEvent.setup()

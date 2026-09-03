@@ -98,7 +98,11 @@ describe('PersonsRegistryPage', () => {
   it('renders empty and error states', async () => {
     api.get.mockResolvedValue({ ...PAYLOAD, persons: [], total: 0 })
     renderPage()
-    expect(await screen.findByText('No persons match this view.')).toBeInTheDocument()
+    expect(await screen.findByText('No records found')).toBeInTheDocument()
+    // Nothing to clear — this screen opens unfiltered, so offering the button
+    // would blame a filter for an empty database.
+    expect(screen.queryByRole('button', { name: 'Clear all filters' }))
+      .not.toBeInTheDocument()
 
     api.get.mockRejectedValue(new Error('boom'))
     renderPage()

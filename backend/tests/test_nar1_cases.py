@@ -423,15 +423,50 @@ async def test_column_filters_reach_the_count_queries_too():
     assert all(("lte", "days_to_anniversary", 60) in q["cmp"] for q in sb.queries)
 
 
+#: A real one. `created_by` is `uuid REFERENCES users(id)` (migration 021), and
+#: the shape is load-bearing in every test below.
+_ME = "1acce7d7-b733-4278-92bf-60ad5b910de1"
+
+
 async def test_created_by_filters_the_dashboard_to_one_user():
     """The dashboard opens on your own cases. That has to be a real server-side
     filter — narrowing the 50 rows that arrived would show you a page of
     somebody else's work with your own cases missing from it."""
     sb = _FakeSupabase(rows=[_registry_row()], count=1)
-    filters = tf.parse(["created_by:eq:u-1"], nar1_cases._FILTERABLE)
+    filters = tf.parse([f"created_by:eq:{_ME}"], nar1_cases._FILTERABLE)
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         await nar1_cases.list_dashboard(filters=filters)
-    assert all(("created_by", "u-1") in q["ilike"] for q in sb.queries)
+    assert all(("created_by", _ME) in q["eq"] for q in sb.queries)
+
+
+async def test_created_by_is_matched_with_eq_and_never_ilike():
+    """The bug this test exists for: `created_by` was declared as a TEXT column,
+    so `eq` resolved to `ilike` — and Postgres has no `uuid ~~* unknown`
+    operator. Every dashboard request carrying the default "my cases" filter
+    came back 500, which the browser reports as a bare "Failed to fetch". Levi
+    saw an error banner where his eight cases should have been."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    filters = tf.parse([f"created_by:eq:{_ME}"], nar1_cases._FILTERABLE)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(filters=filters)
+    for q in sb.queries:
+        assert not [c for c in q["ilike"] if c[0] in ("created_by", "entity_id")]
+
+
+async def test_a_uuid_column_refuses_a_value_that_is_not_a_uuid():
+    """422 at the edge, not 500 at the database. A malformed id is a mistake
+    someone can read and correct; `invalid input syntax for type uuid` arrives
+    with no CORS headers and reaches the screen as "Failed to fetch"."""
+    for bad in ("u-1", "", "not-a-uuid", _ME[:-1]):
+        with pytest.raises(tf.FilterError, match="must be a UUID"):
+            tf.parse([f"created_by:eq:{bad}"], nar1_cases._FILTERABLE)
+
+
+async def test_a_uuid_column_refuses_contains():
+    """Half a uuid identifies nothing, and the op would reach PostgREST as an
+    `ilike` — the exact 500 above."""
+    with pytest.raises(tf.FilterError, match="Cannot apply 'contains'"):
+        tf.parse([f"entity_id:contains:{_ME[:8]}"], nar1_cases._FILTERABLE)
 
 
 async def test_the_anniversary_filter_reaches_the_count_queries_too():

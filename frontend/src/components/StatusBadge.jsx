@@ -32,12 +32,30 @@ export const CASE_STATUSES = [
   'ready_to_submit', 'submitted', 'approved', 'rejected',
 ]
 
-/** Every `entity_status` the enum can hold. */
-export const ENTITY_STATUSES = [
-  'pre_incorporation', 'pending_aml', 'pending_client', 'to_verify',
-  'revision_required', 'submitted_to_cr', 'cr_approved', 'client_approved',
-  'client_rejected', 'live', 'ceased',
-]
+/**
+ * What a COMPANY's status can be, as opposed to what the column can hold.
+ *
+ * Levi 2026-09-04: "this is company status so some of these values dont make
+ * sense". He is right — `entity_status` is one column doing two jobs. Three of
+ * its values describe a company (not yet incorporated, on the register, struck
+ * off); the other eight describe how far an INCORPORATION got, and a company
+ * only wears one of those before it exists. Offering "Pending AML" as a company
+ * status invites a question the register cannot answer.
+ *
+ * The picker shows these three. The SERVER still accepts all eleven
+ * (`routers/companies._ALL_STATUSES`), because they are the column's real
+ * domain and refusing a legal value would make a stored row unfindable through
+ * an API that has no other way to name it. Measured on DEV the day this
+ * shipped: 5,985 live, 12 ceased, 1 pre-incorporation, and not one row in any
+ * of the other eight.
+ *
+ * `ENTITY_STATUSES` — a second copy of all eleven — used to sit here and went
+ * with this change: nothing read it once the picker narrowed, and a duplicated
+ * enum domain is a list that goes stale unnoticed. `STATUS_LABEL` above still
+ * labels all eleven, because a company stored in one of them must still render
+ * its badge.
+ */
+export const COMPANY_STATUSES = ['live', 'pre_incorporation', 'ceased']
 
 /** `[{ value, label }]` for a column filter's checkbox list. */
 export function statusOptions(codes) {

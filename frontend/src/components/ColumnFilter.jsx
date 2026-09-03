@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  DATE, ENUM, OWNER, RANGE, TEXT_OPS, VALUELESS,
-  draftFromFilters, filtersFromDraft,
+  DATE, ENUM, OWNER, RANGE, VALUELESS,
+  draftFromFilters, filtersFromDraft, opsFor,
 } from '../lib/tableFilters.js'
 
 /**
@@ -83,7 +83,7 @@ export default function ColumnFilter({ column, filters, onApply }) {
 
 function FunnelIcon({ filled }) {
   return (
-    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"
+    <svg width="13" height="13" viewBox="0 0 12 12" aria-hidden="true"
          fill={filled ? 'currentColor' : 'none'} stroke="currentColor"
          strokeWidth="1.4" strokeLinejoin="round">
       <path d="M1.2 2.4h9.6L7 6.7v3.6L5 9.3V6.7z" />
@@ -189,11 +189,13 @@ function Editor({ column, draft, setDraft }) {
 
 function TextEditor({ column, draft, setDraft }) {
   const needsValue = !VALUELESS.includes(draft.op)
+  // A uuid column gets the same editor with a shorter op list — see ID_OPS.
+  const ops = opsFor(column.filter.kind)
   return (
     <>
       <select className="colf-select" aria-label="Condition" value={draft.op}
               onChange={e => setDraft({ ...draft, op: e.target.value })}>
-        {TEXT_OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        {ops.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
       {needsValue && (
         <input className="colf-input" type="text" aria-label={`${column.label} value`}

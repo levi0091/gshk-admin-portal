@@ -341,26 +341,31 @@ def test_days_to_anniversary_comes_from_the_company_registry_view(registry_rows)
     assert all(v is not None for v in values)
 
 
-def test_the_overdue_flag_is_unreachable_by_construction():
-    """A PIN ON A DEFECT, not an endorsement — DELETE THIS TEST WHEN IT IS FIXED.
+def test_the_overdue_flag_is_reachable():
+    """THE INVERSE OF THE TEST THAT USED TO STAND HERE, which read: "A PIN ON A
+    DEFECT, not an endorsement — DELETE THIS TEST WHEN IT IS FIXED."
 
-    `nar1_case_status.derive()` sets overdue when days_to_anniversary <
-    -FILING_WINDOW_DAYS (-42). Migration 019 CLAMPS that column at exactly -42:
-    past the window it stops counting up and switches to counting down to the
-    NEXT anniversary. So the value can never be below -42 and the overdue badge
-    can never fire — measured on DEV: min(days_to_anniversary) = -42, zero rows
-    below it, over 5,998 companies.
+    It pinned the fact that `derive()` sets overdue when days_to_anniversary <
+    -42 while migration 019 floored that column at exactly -42, so the badge
+    could never fire. Its own note said the fix was to change 019's floor rather
+    than derive()'s threshold. Migration 033 did precisely that, at Levi's
+    request on 2026-09-04 and for a different reason entirely — the registry
+    filter's lower bound had nothing below -42 to find.
 
-    The view mirrors derive() rather than inventing a working rule, because a
-    view that disagreed with the case detail would be a worse defect than one
-    that agrees on a flag neither can raise. Fixing it means changing 019's
-    clamp or derive()'s threshold — both Task 5/6 code, out of scope here.
+    So the assertion inverts: the column must now REACH the region the predicate
+    tests. Asserting a count of overdue cases would instead be asserting a fact
+    about today's DEV book, which is nobody's invariant.
     """
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM company_registry "
-                    "WHERE days_to_anniversary < %s", (-st.FILING_WINDOW_DAYS,))
-        assert cur.fetchone()[0] == 0
-        cur.execute(f"SELECT count(*) FROM {VIEW} WHERE workflow_overdue")
+        cur.execute("SELECT min(days_to_anniversary) FROM company_registry")
+        floor = cur.fetchone()[0]
+        assert floor is not None
+        assert floor < -st.FILING_WINDOW_DAYS, (
+            f"days_to_anniversary bottoms out at {floor}; the overdue predicate "
+            f"tests < {-st.FILING_WINDOW_DAYS} and is unreachable again"
+        )
+        # The flag still has to COMPUTE, whatever it currently evaluates to.
+        cur.execute(f"SELECT count(*) FROM {VIEW} WHERE workflow_overdue IS NULL")
         assert cur.fetchone()[0] == 0
 
 

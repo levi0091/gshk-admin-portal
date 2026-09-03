@@ -316,7 +316,9 @@ _SORTABLE = {
 #: zero.
 _FILTERABLE = {
     "case_no": tf.text(),
-    "entity_id": tf.text(),
+    # uuid, not text — see table_filters._OPS_FOR_KIND. Declaring either of
+    # these as text made the whole dashboard 500 the moment a filter touched it.
+    "entity_id": tf.uuid(),
     "company_name": tf.text(),
     "company_name_zh": tf.text(),
     "br_number": tf.text(),
@@ -326,7 +328,7 @@ _FILTERABLE = {
         "draft", "pending_aml", "pending_client", "to_verify",
         "revision_required", "ready_to_submit", "submitted", "approved", "rejected",
     }),
-    "created_by": tf.text(),
+    "created_by": tf.uuid(),
     "created_by_name": tf.text(),
     "days_to_anniversary": tf.number(),
     "created_at": tf.timestamp(),

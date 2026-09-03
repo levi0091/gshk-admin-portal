@@ -84,6 +84,13 @@ const COMPANIES = {
     { id: 'e3', company_name: 'IZY AIR INTERNATIONAL LIMITED', company_name_zh: '易飛國際有限公司',
       br_number: '72074859 - 000', cr_number: '2962507', status: 'live',
       is_client: true, is_corporate_party: true, days_to_anniversary: 17 },
+    // Past the old -42 floor (migration 033). Here to check that the row reads
+    // as a plain date fact and does NOT pick up the carrot "act on me" weight —
+    // 2,262 of DEV's companies live in this band and highlighting them all
+    // would be an alarm about 38% of the register.
+    { id: 'e4', company_name: 'WINDOW SHUT HOLDINGS LIMITED', company_name_zh: null,
+      br_number: '61200341 - 000', cr_number: '2119887', status: 'ceased',
+      is_client: true, is_corporate_party: false, days_to_anniversary: -120 },
   ],
 }
 
@@ -157,5 +164,20 @@ describe.runIf(SHOOT)('tables visual harness', () => {
 
   it('persons · identity filter open', async () => {
     await dump('t8-persons-identity-open', <PersonsRegistryPage />, { open: 'Identity' })
+  })
+
+  // The two shots the 2026-09-04 round of fixes is actually about.
+  it('registry · status list, company statuses only', async () => {
+    await dump('t9-registry-status-narrowed', <CompanyRegistryPage />, { open: 'Status' })
+  })
+
+  it('dashboard · nothing matches', async () => {
+    get.mockImplementation(url => Promise.resolve(
+      url.startsWith('/cases') ? { ...CASES, rows: [], total: 0 } : COMPANIES))
+    const { container } = render(<MemoryRouter><DashboardPage /></MemoryRouter>)
+    await screen.findByText('No records found')
+    fs.mkdirSync(OUT, { recursive: true })
+    fs.writeFileSync(path.join(OUT, 't10-dashboard-empty.html'),
+      container.innerHTML, 'utf8')
   })
 })

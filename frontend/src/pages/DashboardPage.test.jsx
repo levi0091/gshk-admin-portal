@@ -365,7 +365,21 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
   it('renders an empty state when no cases match', async () => {
     api.get.mockResolvedValue({ ...PAYLOAD, rows: [], total: 0 })
     renderPage()
-    expect(await screen.findByText('No cases match this view.')).toBeInTheDocument()
+    expect(await screen.findByText('No records found')).toBeInTheDocument()
+  })
+
+  it('offers a way out when the default “my cases” filter is what emptied it', async () => {
+    // Levi filtered to his own cases, got nothing, and read "Failed to load
+    // cases: Failed to fetch". The 500 behind that is fixed in table_filters;
+    // this is the other half — an empty table has to say so, and say what to do.
+    const user = userEvent.setup()
+    api.get.mockResolvedValue({ ...PAYLOAD, rows: [], total: 0 })
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Clear all filters' }))
+    await waitFor(() => {
+      const last = decodeURIComponent(api.get.mock.calls.at(-1)[0])
+      expect(last).not.toContain('created_by')
+    })
   })
 
   it('renders an error state when the request fails', async () => {
@@ -492,5 +506,63 @@ describe('DashboardPage — the primary action opens a case', () => {
     renderPage()
     await screen.findByText('NAR-2025-0028')
     expect(screen.queryByRole('button', { name: /Open Case/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('DashboardPage — the two id columns and the two date columns', () => {
+  it('puts Last Updated beside Create Date, third from the end', async () => {
+    // Levi 2026-09-04. The two dates answer the same question — when did this
+    // case move — and reading them a screen apart meant scrolling between
+    // halves of one answer.
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    const headers = screen.getAllByRole('columnheader').map(th => th.textContent)
+    expect(headers.slice(-3).map(h => h.replace(/[⇅↑↓]/g, '').trim()))
+      .toEqual(['Last Updated', 'Create Date', 'Created By'])
+    expect(headers[headers.length - 4]).toContain('Days to anniversary')
+  })
+
+  it('renders each row’s cells in the same order as its headers', async () => {
+    // Moving a <th> without its <td> silently shifts every value one column.
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    const headers = screen.getAllByRole('columnheader')
+      .map(th => th.textContent.replace(/[⇅↑↓]/g, '').trim())
+    const row = screen.getByText('NAR-2025-0028').closest('tr')
+    const labels = within(row).getAllByRole('cell').map(td => td.getAttribute('data-label'))
+    expect(labels).toEqual(headers)
+  })
+
+  it('filters Entity ID by exact uuid, and offers no “contains”', async () => {
+    // entity_id is a uuid column. `contains` would reach PostgREST as an ilike,
+    // which Postgres refuses on a uuid — a 500 the browser shows as "Failed to
+    // fetch". The op is not offered at all rather than offered and rejected.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('button', { name: /^Filter Entity ID/ }))
+    const condition = screen.getByLabelText('Condition')
+    expect(within(condition).queryByRole('option', { name: 'contains' }))
+      .not.toBeInTheDocument()
+
+    const id = '4a20786b-7b50-4f35-8e4d-c3e342766db9'
+    await user.type(screen.getByLabelText('Entity ID value'), id)
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      const urls = api.get.mock.calls.map(c => decodeURIComponent(c[0]))
+      expect(urls.some(u => u.includes(`filter=entity_id:eq:${id}`))).toBe(true)
+    })
+  })
+
+  it('sends the signed-in user’s uuid, not their name, as the default filter', async () => {
+    // The bug: `created_by` was filtered with ilike and every first request
+    // 500'd. The uuid has to be what goes on the wire — two people can share a
+    // display name, and "mine" is an exact identity.
+    renderPage()
+    await waitFor(() => {
+      const first = decodeURIComponent(api.get.mock.calls[0][0])
+      expect(first).toContain('filter=created_by:eq:u-1')
+      expect(first).not.toContain('created_by:contains')
+    })
   })
 })

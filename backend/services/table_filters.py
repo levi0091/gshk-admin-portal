@@ -47,6 +47,14 @@ _OPS_FOR_KIND = {
     "text": {"contains", "eq", "empty", "notempty"},
     "enum": {"in", "empty", "notempty"},
     "bool": {"eq"},
+    # A uuid column is NOT text, and declaring one as text is not a cosmetic
+    # slip: `text` resolves `eq` to `ilike`, and Postgres has no `uuid ~~*
+    # unknown` operator, so the whole listing 500s. The browser reports that as
+    # a bare "Failed to fetch" (the error response carries no CORS headers), so
+    # the symptom names neither the column nor the filter — the dashboard's
+    # "created by me" default simply broke the page. Exact match only; there is
+    # no useful sense in which a uuid "contains" a fragment.
+    "uuid": {"eq", "empty", "notempty"},
     "number": {"gte", "lte", "eq", "empty", "notempty"},
     "date": {"gte", "lte", "eq", "empty", "notempty"},
     "timestamp": {"gte", "lte", "empty", "notempty"},
@@ -57,6 +65,10 @@ _MAX_FILTERS = 24
 _MAX_VALUE = 200
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +106,10 @@ def date() -> Column:
 
 def timestamp() -> Column:
     return Column("timestamp")
+
+
+def uuid() -> Column:
+    return Column("uuid")
 
 
 def boolean() -> Column:
@@ -155,6 +171,16 @@ def parse(raw: list[str] | None, spec: dict[str, Column]) -> list[Filter]:
                     f"Unknown value for '{column}': {', '.join(sorted(unknown))}"
                 )
             out.append(Filter(column, op, picked, col.kind))
+            continue
+
+        if col.kind == "uuid":
+            # Refused HERE rather than at the database, because Postgres's
+            # refusal is a 500 and this one is a 422 naming the column. The
+            # shape is the whole validation: a well-formed uuid that matches
+            # nothing is an empty table, which is a true answer.
+            if not _UUID_RE.match(value):
+                raise FilterError(f"Filter on '{column}' must be a UUID")
+            out.append(Filter(column, op, value, col.kind))
             continue
 
         if col.kind == "number":

@@ -15,7 +15,11 @@ SPEC = {
     "days_to_anniversary": tf.number(),
     "updated_at": tf.timestamp(),
     "incorporation_date": tf.date(),
+    "created_by": tf.uuid(),
 }
+
+#: A real uuid. The shape is the entire validation for a uuid column.
+UUID = "1acce7d7-b733-4278-92bf-60ad5b910de1"
 
 
 class FakeQuery:
@@ -198,3 +202,52 @@ def test_a_plain_date_column_is_compared_as_written():
     assert apply(["incorporation_date:lte:2026-06-01"]) == [
         ("lte", "incorporation_date", "2026-06-01")
     ]
+
+
+# ── uuid columns ──────────────────────────────────────────────────────────
+#
+# A uuid is not text, and the difference is not cosmetic. `text` resolves `eq`
+# to `ilike`; Postgres has no `uuid ~~* unknown` operator; the listing 500s; and
+# the browser, handed an error response carrying no CORS headers, reports only
+# "Failed to fetch". That was the whole of the dashboard's "created by me"
+# default for the first day it existed.
+
+
+def test_a_uuid_is_matched_exactly_never_with_ilike():
+    assert apply([f"created_by:eq:{UUID}"]) == [("eq", "created_by", UUID)]
+
+
+def test_a_uuid_column_refuses_contains():
+    # Half a uuid identifies nothing, and the op would reach PostgREST as the
+    # ilike above.
+    with pytest.raises(tf.FilterError, match="Cannot apply 'contains'"):
+        tf.parse([f"created_by:contains:{UUID[:8]}"], SPEC)
+
+
+@pytest.mark.parametrize("bad", [
+    "u-1", "not-a-uuid", "", UUID[:-1], UUID + "0", UUID.replace("-", ""),
+    "1acce7d7-b733-4278-92bf-60ad5b910d3g",          # g is not hex
+])
+def test_a_malformed_uuid_is_refused_here_not_by_postgres(bad):
+    # A 422 naming the column beats `invalid input syntax for type uuid`
+    # arriving as a 500 with no CORS headers.
+    with pytest.raises(tf.FilterError, match="must be a UUID"):
+        tf.parse([f"created_by:eq:{bad}"], SPEC)
+
+
+def test_a_uuid_keeps_the_casing_it_arrived_with():
+    # Postgres compares uuids by value, so case is irrelevant to the match --
+    # but rewriting the caller's text would make the round trip lossy for no
+    # reason.
+    upper = UUID.upper()
+    assert apply([f"created_by:eq:{upper}"]) == [("eq", "created_by", upper)]
+
+
+def test_empty_on_a_uuid_is_null_only():
+    # There is no empty-string uuid, and `col.eq.` against one is a PG error —
+    # the same reasoning as the number column above.
+    assert apply(["created_by:empty:"]) == [("is_", "created_by", "null")]
+
+
+def test_notempty_on_a_uuid_does_not_also_compare_with_empty_string():
+    assert apply(["created_by:notempty:"]) == [("not.is_", "created_by", "null")]

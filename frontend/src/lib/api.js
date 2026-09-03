@@ -8,13 +8,42 @@ async function getAuthHeaders() {
   return { Authorization: `Bearer ${session.access_token}` }
 }
 
+/**
+ * `fetch`, with its one useless failure message replaced.
+ *
+ * When the request never completes — the network is down, or the server
+ * answered with an error that carried no CORS headers, which is what a FastAPI
+ * 500 looks like from the browser — `fetch` REJECTS rather than resolving, and
+ * every screen prints the browser's own words: "Failed to fetch". Levi read
+ * that on the dashboard on 2026-09-04 and reasonably took it for an empty
+ * table. It named neither the request nor anything to do about it, and the
+ * actual cause (a uuid column filtered with `ilike`, fixed in
+ * `services/table_filters.py`) was three layers away.
+ *
+ * An AbortError is left exactly as it is — every listing aborts superseded
+ * requests on purpose, and `useAbortableGet` recognises it by name.
+ */
+async function sendOrExplain(url, init) {
+  try {
+    return await fetch(url, init)
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e
+    const err = new Error(
+      'Could not reach the server. Check your connection and try again — if it '
+      + 'keeps happening the API may be down or still starting up.')
+    err.cause = e
+    err.offline = true
+    throw err
+  }
+}
+
 export async function apiFetch(path, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     ...(await getAuthHeaders()),
     ...(options.headers || {}),
   }
-  const resp = await fetch(`${BASE}${path}`, { ...options, headers })
+  const resp = await sendOrExplain(`${BASE}${path}`, { ...options, headers })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
     // The status rides on the error because the NAR1 workflow has to tell four

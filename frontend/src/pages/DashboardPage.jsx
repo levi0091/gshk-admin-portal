@@ -6,11 +6,12 @@ import useAbortableGet from '../lib/useAbortableGet.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
+import EmptyRow from '../components/EmptyRow.jsx'
 import StatusBadge, { CASE_STATUSES, statusOptions } from '../components/StatusBadge.jsx'
 import { WorkflowBadge, WORKFLOW_LABEL } from '../components/CaseStatusBadge.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import {
-  DATE, ENUM, OWNER, RANGE, TEXT,
+  DATE, ENUM, ID, OWNER, RANGE, TEXT,
   appendTo, filtersFor, setColumn,
 } from '../lib/tableFilters.js'
 
@@ -54,8 +55,9 @@ const WORKFLOW_ORDER = [
 ]
 
 const ANNIV_HINT =
-  'A passed anniversary counts negative while the return is still inside the ' +
-  '42-day statutory window, so −42 to 0 is “overdue but still filable”.'
+  'Negative once the anniversary has passed, positive counting down to the ' +
+  'next one. −42 to 0 is the statutory filing window — still filable. Below ' +
+  '−42 the window has shut.'
 
 // v11 order. `sort: null` = not sortable: the backend whitelists what may reach
 // PostgREST's order clause (nar1_cases._SORTABLE), and offering a header the
@@ -73,8 +75,7 @@ function buildColumns(meId, counts) {
     { col: 'case_type', label: 'Case Type', sort: null,
       filter: { kind: ENUM, options: [{ value: 'NAR1', label: 'NAR1' }] } },
     { col: 'entity_id', label: 'Entity ID', sort: null,
-      filter: { kind: TEXT, placeholder: 'Company UUID' } },
-    { col: 'updated_at', label: 'Last Updated', sort: 'updated_at', filter: { kind: DATE } },
+      filter: { kind: ID, placeholder: 'Company UUID' } },
     { col: 'company_name', label: 'Company Name', sort: 'company_name',
       filter: { kind: TEXT, placeholder: 'Company name' } },
     { col: 'br_number', label: 'BRN', sort: 'br_number',
@@ -93,6 +94,11 @@ function buildColumns(meId, counts) {
       } },
     { col: 'days_to_anniversary', label: 'Days to anniversary', sort: 'days_to_anniversary',
       filter: { kind: RANGE, unit: 'days', hint: ANNIV_HINT } },
+    // Levi 2026-09-04: Last Updated belongs beside Create Date, not between the
+    // identifiers and the company. The two dates answer the same question —
+    // when did this case move — and reading them a screen apart meant scrolling
+    // between halves of one answer.
+    { col: 'updated_at', label: 'Last Updated', sort: 'updated_at', filter: { kind: DATE } },
     { col: 'created_at', label: 'Create Date', sort: 'created_at', filter: { kind: DATE } },
     // Sorts on `created_by_name`, not the uuid — ordering the dashboard by a
     // value nobody can read off the screen is not a sort. The FILTER is on the
@@ -352,7 +358,10 @@ export default function DashboardPage() {
                   <tr><td colSpan={columns.length} className="empty-state">Loading…</td></tr>
                 ) : rows.length === 0 ? (
                   <tr><td colSpan={columns.length} className="empty-state">
-                    No cases match this view.
+                    <EmptyRow
+                      filtered={applied.length > 0}
+                      onClear={() => { setFilters([]); setPage(1) }}
+                    />
                   </td></tr>
                 ) : rows.map(c => {
                   const { text, due } = labelForDays(c.days_to_anniversary)
@@ -364,7 +373,6 @@ export default function DashboardPage() {
                         <span className="badge b-inactive">{c.case_type || 'NAR1'}</span>
                       </td>
                       <td data-label="Entity ID"><span className="td-id">{c.entity_id || '—'}</span></td>
-                      <td data-label="Last Updated"><span className="td-muted">{formatDate(c.updated_at)}</span></td>
                       <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>
                       <td data-label="BRN"><span className="td-muted">{c.br_number || '—'}</span></td>
                       <td data-label="Status"><StatusBadge status={c.case_status} /></td>
@@ -380,6 +388,7 @@ export default function DashboardPage() {
                       <td data-label="Days to anniversary" aria-label="Days to anniversary">
                         <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>
                       </td>
+                      <td data-label="Last Updated"><span className="td-muted">{formatDate(c.updated_at)}</span></td>
                       <td data-label="Create Date"><span className="td-muted">{formatDate(c.created_at)}</span></td>
                       {/* Cases opened before migration 021 added the column carry
                           no author. An em dash says "not recorded"; the user's

@@ -24,6 +24,8 @@ export const ENUM = 'enum'
 export const RANGE = 'range'
 export const DATE = 'date'
 export const OWNER = 'owner'
+/** A uuid column. Text-shaped in the editor, but exact-match only. */
+export const ID = 'id'
 
 export const TEXT_OPS = [
   { value: 'contains', label: 'contains' },
@@ -31,6 +33,26 @@ export const TEXT_OPS = [
   { value: 'empty', label: 'is empty' },
   { value: 'notempty', label: 'has any value' },
 ]
+
+/**
+ * A uuid has no useful "contains": half an id identifies nothing, and the
+ * server refuses the op outright (`table_filters._OPS_FOR_KIND`) because
+ * Postgres has no `uuid ~~* unknown` operator and asking for one 500s the whole
+ * listing. Offering the op and letting the server reject it would be a control
+ * that is broken by design.
+ */
+export const ID_OPS = [
+  { value: 'eq', label: 'is' },
+  { value: 'empty', label: 'is empty' },
+  { value: 'notempty', label: 'has any value' },
+]
+
+/** The op list a text-shaped editor should offer for `kind`. */
+export function opsFor(kind) {
+  return kind === ID ? ID_OPS : TEXT_OPS
+}
+
+const defaultOp = kind => (kind === ID ? 'eq' : 'contains')
 
 /** Ops that stand alone — the value box is meaningless beside them. */
 export const VALUELESS = ['empty', 'notempty']
@@ -90,7 +112,10 @@ export function draftFromFilters(column, filters) {
     }
     default: {
       const f = mine[0]
-      return { op: f?.op || 'contains', value: f && !VALUELESS.includes(f.op) ? String(f.value) : '' }
+      return {
+        op: f?.op || defaultOp(column.filter.kind),
+        value: f && !VALUELESS.includes(f.op) ? String(f.value) : '',
+      }
     }
   }
 }
@@ -127,7 +152,7 @@ export function filtersFromDraft(column, draft) {
     default: {
       if (VALUELESS.includes(draft.op)) return [{ col, op: draft.op, value: '' }]
       const v = (draft.value || '').trim()
-      return v ? [{ col, op: draft.op || 'contains', value: v }] : []
+      return v ? [{ col, op: draft.op || defaultOp(column.filter.kind), value: v }] : []
     }
   }
 }

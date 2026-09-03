@@ -57,6 +57,34 @@ describe('api.get', () => {
     await expect(api.get('/companies?anniv_op=nope'))
       .rejects.toThrow('anniv_op must be one of lte, gte, eq')
   })
+
+  // When the request never completes at all — the network is down, or the
+  // server answered with an error carrying no CORS headers, which is what a
+  // FastAPI 500 looks like from the browser — fetch REJECTS. Its message is
+  // "Failed to fetch", which every screen then printed verbatim. Levi read that
+  // on the dashboard and took it for an empty table.
+  it('replaces the browser’s "Failed to fetch" with something actionable', async () => {
+    global.fetch = vi.fn(async () => { throw new TypeError('Failed to fetch') })
+    await expect(api.get('/cases?scope=dashboard'))
+      .rejects.toThrow(/Could not reach the server/)
+  })
+
+  it('keeps the original failure as the cause, so it is still debuggable', async () => {
+    const underlying = new TypeError('Failed to fetch')
+    global.fetch = vi.fn(async () => { throw underlying })
+    await expect(api.get('/cases')).rejects.toMatchObject({
+      offline: true, cause: underlying,
+    })
+  })
+
+  it('leaves an AbortError exactly as it is', async () => {
+    // Every listing aborts superseded requests on purpose, and useAbortableGet
+    // recognises the error BY NAME. Rewriting it would turn each of those into
+    // a visible "could not reach the server" banner on a request the user
+    // themselves replaced.
+    global.fetch = vi.fn(async () => { throw new DOMException('Aborted', 'AbortError') })
+    await expect(api.get('/cases')).rejects.toMatchObject({ name: 'AbortError' })
+  })
 })
 
 describe('describeApiError — the drift refusal (spec §6)', () => {

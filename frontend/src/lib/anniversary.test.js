@@ -98,11 +98,32 @@ describe('anniversaryLabel', () => {
       .toEqual({ text: '42 days ago', due: true })
   })
 
-  it('goes back to counting down once the 42-day window has closed', () => {
-    // 43 days past — the filing window is shut, so the live fact is the next one
+  it('keeps counting up once the 42-day window has closed, but stops flagging', () => {
+    // 43 days past. Until migration 033 this jumped to "in 322 days", which is
+    // why no value below -42 existed and clearing the registry's lower bound
+    // revealed nothing (Levi 2026-09-04). It now states the elapsed fact — and
+    // `due` goes false, because past the window the row is no longer a filing
+    // that can be made today, and highlighting 2,262 companies carrot would be
+    // an alarm about nothing.
     const label = anniversaryLabel('2023-07-03', on('2026-08-15'))
+    expect(label.text).toBe('43 days ago')
     expect(label.due).toBe(false)
-    expect(label.text).toBe('in 322 days')
+  })
+
+  it('counts down again only once the NEXT anniversary is the nearer one', () => {
+    // 183 days past out of 365 — the next one is closer, so the column returns
+    // to counting down. Without this the number would run to -364 and "days to
+    // anniversary" would name something that never counts to anything.
+    const label = anniversaryLabel('2023-02-13', on('2026-08-15'))
+    expect(label.text).toBe('in 182 days')
+    expect(label.due).toBe(false)
+  })
+
+  it('reaches its most negative near the middle of the year', () => {
+    // The floor, such as it is: about half a year, not 42 days.
+    const label = anniversaryLabel('2023-02-16', on('2026-08-15'))
+    expect(label.text).toBe('180 days ago')
+    expect(label.due).toBe(false)
   })
 
   it('renders an em dash when there is no incorporation date', () => {

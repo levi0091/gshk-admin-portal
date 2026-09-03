@@ -6,6 +6,7 @@ import RoleTags, { initials } from '../components/RoleTags.jsx'
 import AddPersonModal from '../components/AddPersonModal.jsx'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
+import EmptyRow from '../components/EmptyRow.jsx'
 import {
   DATE, ENUM, TEXT, appendTo, filtersFor, setColumn,
 } from '../lib/tableFilters.js'
@@ -187,7 +188,10 @@ export default function PersonsRegistryPage() {
                   <tr><td colSpan={COLUMNS.length} className="empty-state">Loading…</td></tr>
                 ) : persons.length === 0 ? (
                   <tr><td colSpan={COLUMNS.length} className="empty-state">
-                    No persons match this view.
+                    <EmptyRow
+                      filtered={filters.length > 0}
+                      onClear={() => { setFilters([]); setPage(1) }}
+                    />
                   </td></tr>
                 ) : persons.map(p => (
                   <tr key={p.id} className="clickable" onClick={() => navigate(`/persons/${p.id}`)}>

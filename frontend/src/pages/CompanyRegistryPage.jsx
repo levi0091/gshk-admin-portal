@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAbortableGet from '../lib/useAbortableGet.js'
 import StatusBadge, {
-  ENTITY_STATUSES, FlagBadges, statusOptions,
+  COMPANY_STATUSES, FlagBadges, statusOptions,
 } from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
+import EmptyRow from '../components/EmptyRow.jsx'
 import { labelForDays, signedDaysToAnniversary } from '../lib/anniversary.js'
 import {
   ENUM, RANGE, TEXT, appendTo, filtersFor, setColumn,
@@ -46,9 +47,9 @@ const ANNIV_DEFAULT = [
 ]
 
 const ANNIV_HINT =
-  'A passed anniversary counts negative while the return is still inside the ' +
-  '42-day statutory window, so −42 to 0 is “overdue but still filable”. ' +
-  'Clear both bounds to see every company.'
+  'Negative once the anniversary has passed, positive counting down to the ' +
+  'next one. −42 to 0 is the statutory filing window — still filable. Below ' +
+  '−42 the window has shut. Clear both bounds to see every company.'
 
 const COLUMNS = [
   { col: 'company_name', label: 'Company Name', sort: 'company_name',
@@ -69,8 +70,10 @@ const COLUMNS = [
       kind: ENUM, single: true,
       options: TABS.filter(t => t.key).map(t => ({ value: t.key, label: t.label })),
     } },
+  // The three a COMPANY can be, not the eleven the column can hold — see
+  // COMPANY_STATUSES. The eight left out belong to an incorporation in flight.
   { col: 'status', label: 'Status', sort: 'status',
-    filter: { kind: ENUM, options: statusOptions(ENTITY_STATUSES) } },
+    filter: { kind: ENUM, options: statusOptions(COMPANY_STATUSES) } },
   // Sortable since migration 019: the company_registry view exposes
   // days_to_anniversary, so the server orders all 5,930 rows. Sorting the
   // visible 50 would have looked right and been wrong.
@@ -219,7 +222,10 @@ export default function CompanyRegistryPage() {
                   <tr><td colSpan={COLUMNS.length} className="empty-state">Loading…</td></tr>
                 ) : companies.length === 0 ? (
                   <tr><td colSpan={COLUMNS.length} className="empty-state">
-                    No companies match this view.
+                    <EmptyRow
+                      filtered={filters.length > 0}
+                      onClear={() => { setFilters([]); setPage(1) }}
+                    />
                   </td></tr>
                 ) : companies.map(c => (
                   <tr key={c.id} className="clickable" onClick={() => navigate(`/companies/${c.id}`)}>
