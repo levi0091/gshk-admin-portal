@@ -12,7 +12,8 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../lib/api.js', () => ({
-  api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), put: vi.fn(), upload: vi.fn() },
+  api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), put: vi.fn(), del: vi.fn(),
+         upload: vi.fn() },
 }))
 import { api } from '../lib/api.js'
 import { _resetLookups } from '../lib/lookups.js'
@@ -52,6 +53,14 @@ const PERSON = {
 }
 
 const renderPage = () => render(<MemoryRouter><PersonProfilePage /></MemoryRouter>)
+
+// Document History tags each group with its SECTION, so a heading like
+// "Proof of Address" appears twice on the page. The section card is the one
+// whose match is a `.card-title`.
+const sectionCard = label =>
+  screen.getAllByText(label)
+    .filter(el => el.classList.contains('card-title')
+                  || el.closest('.card-title'))[0].closest('.card')
 
 // The profile forms now read their dropdowns from /lookups, so api.get has to
 // answer per-URL rather than returning the same payload for everything.
@@ -439,7 +448,7 @@ describe('PersonProfilePage — document sections', () => {
     expect(screen.getByText('Other Documents')).toBeInTheDocument()
     // Nothing has been uploaded as proof of address, and the section is still
     // there — an empty section with a button is how the first one gets added.
-    const proof = screen.getByText('Proof of Address').closest('.card')
+    const proof = sectionCard('Proof of Address')
     expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
     expect(within(proof).getByRole('button', { name: 'Upload Document' })).toBeInTheDocument()
   })
@@ -477,7 +486,8 @@ describe('PersonProfilePage — document sections', () => {
   it('opens a section upload scoped to that section only', async () => {
     const user = userEvent.setup()
     renderPage()
-    const proof = (await screen.findByText('Proof of Address')).closest('.card')
+    await screen.findByText('Document History')
+    const proof = sectionCard('Proof of Address')
 
     await user.click(within(proof).getByRole('button', { name: 'Upload Document' }))
     await screen.findByRole('dialog', { name: 'Upload Document' })
@@ -549,7 +559,158 @@ describe('PersonProfilePage — the identity card and the history', () => {
     })
     renderPage()
     const card = (await screen.findByText(/Identity Documents/)).closest('.card')
-    expect(within(card).getByRole('button', { name: 'Scan' })).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Download scan' })).toBeInTheDocument()
+  })
+
+  it('offers no scan download where there is no scan', async () => {
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+    expect(within(card).queryByRole('button', { name: 'Download scan' })).toBeNull()
+  })
+
+  // -- The primary document (Levi 2026-09-04) ------------------------------
+  //
+  // "if there is only one identity document then that identity document is the
+  // primary document by default. if there is a second one then the user can
+  // choose which is the primary one".
+
+  it('offers no primary choice when there is only one document', async () => {
+    mockGet({
+      ...PERSON,
+      identity_documents: [{ id: 'i1', id_type: 'hkid', id_number: 'A123456(3)',
+                             is_primary: false }],
+    })
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    // It IS the primary one — there is nothing else it could be — so the pill
+    // shows and the button that could not change anything does not.
+    expect(within(card).getByText('PRIMARY')).toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Make primary' })).toBeNull()
+  })
+
+  it('lets the operator choose between two, and promotes the one they pick', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    // PERSON's HKID is flagged primary; the passport is the one on offer.
+    const promote = within(card).getAllByRole('button', { name: 'Make primary' })
+    expect(promote).toHaveLength(1)
+    await user.click(promote[0])
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/persons/p1/identity-documents/i2', { is_primary: true }))
+  })
+
+  it('marks the document the SYSTEM quotes, not just the flagged column', async () => {
+    // 483 of DEV's HKID rows carry no primary flag at all, and the registry
+    // still quotes the oldest. A screen showing no primary would disagree with
+    // the Identity column beside it.
+    mockGet({
+      ...PERSON,
+      identity_documents: [
+        { id: 'i1', id_type: 'hkid', id_number: 'A123456(3)', is_primary: false,
+          created_at: '2024-01-01' },
+        { id: 'i2', id_type: 'passport', id_number: '987654321', is_primary: false,
+          issuing_country: 'GB', created_at: '2025-01-01' },
+      ],
+    })
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    expect(within(card).getAllByText('PRIMARY')).toHaveLength(1)
+    const hkidCard = within(card).getByText('Hong Kong Identity Card').closest('.id-doc-group')
+    expect(within(hkidCard).getByText('PRIMARY')).toBeInTheDocument()
+  })
+
+  // -- Removing (Levi 2026-09-04) -------------------------------------------
+
+  it('removes an identity document, naming what goes and what stays', async () => {
+    const user = userEvent.setup()
+    api.del.mockResolvedValue({ deleted: true })
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    await user.click(within(card).getAllByRole('button', { name: 'Remove' })[0])
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove identity document' })
+    expect(within(dialog).getByText(/A123456\(3\)/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/recorded in the audit trail/)).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith(
+      '/persons/p1/identity-documents/i1'))
+  })
+
+  it('does not remove anything until the dialog is confirmed', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    await user.click(within(card).getAllByRole('button', { name: 'Remove' })[0])
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    expect(api.del).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('downloads and removes an uploaded document from its own section', async () => {
+    // "we should also be able to download the document from the documents
+    // section not just the history section."
+    const user = userEvent.setup()
+    api.del.mockResolvedValue({})
+    mockGet({
+      ...PERSON,
+      documents: [{
+        id: 'd10', document_type_code: 'addr_utility_bill', current_version: 1,
+        status: 'active', file_name: 'clp.pdf',
+        document_types: { code: 'addr_utility_bill', label: 'Utility Bill',
+                          category: 'address_proof' },
+        document_versions: [{ id: 'v1', version_number: 1, file_name: 'clp.pdf',
+                              created_at: '2026-08-11T01:05:00Z' }],
+      }],
+    })
+    renderPage()
+    await screen.findByText('Document History')
+    const proof = sectionCard('Proof of Address')
+
+    expect(within(proof).getByRole('button', { name: 'Download' })).toBeInTheDocument()
+    await user.click(within(proof).getByRole('button', { name: 'Remove' }))
+
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove document' })
+    expect(within(dialog).getByText(/stays in Document History/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
+
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith('/documents/d10'))
+  })
+
+  it('a removed document leaves its section and stays in the history', async () => {
+    mockGet({
+      ...PERSON,
+      documents: [{
+        id: 'd11', document_type_code: 'addr_utility_bill', current_version: 1,
+        status: 'deleted', file_name: 'wrong-client.pdf',
+        document_types: { code: 'addr_utility_bill', label: 'Utility Bill',
+                          category: 'address_proof' },
+        document_versions: [{ id: 'v1', version_number: 1,
+                              file_name: 'wrong-client.pdf',
+                              created_at: '2026-08-12T03:00:00Z' }],
+      }],
+    })
+    renderPage()
+    await screen.findByText('Document History')
+    const proof = sectionCard('Proof of Address')
+    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
+
+    const history = sectionCard('Document History')
+    // Twice: on the group, and on the version that was live when it went.
+    expect(within(history).getAllByText('REMOVED')).toHaveLength(2)
+    expect(within(history).getByText(/wrong-client\.pdf/)).toBeInTheDocument()
+    // Not "SUPERSEDED": nothing replaced it, and not downloadable, because
+    // `create_signed_url` 404s a deleted document.
+    expect(within(history).queryByText('SUPERSEDED')).toBeNull()
+    expect(within(history).queryByRole('button', { name: 'Download' })).toBeNull()
   })
 
   it('names the section and the exact upload time in Document History', async () => {

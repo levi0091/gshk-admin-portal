@@ -5,6 +5,10 @@ import { formatDate, formatDateTime } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import IdentityDocumentModal from '../components/IdentityDocumentModal.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import {
+  DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
+} from '../components/DocumentSections.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import AddressBlock from '../components/AddressBlock.jsx'
 import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
@@ -80,6 +84,13 @@ function addressText(a) {
   return [a.line1, a.line2, a.line3, a.city, a.country].filter(Boolean).join(', ') || null
 }
 
+const ID_TYPE_LABEL = {
+  hkid: 'Hong Kong Identity Card',
+  passport: 'Passport',
+  china_id: 'Mainland China Identity Card',
+  other: 'Other Identity Document',
+}
+
 /**
  * One identity document, and the only place the HKID check digit can bite.
  *
@@ -92,15 +103,13 @@ function addressText(a) {
  * 'hkid'`, and freezing those records would punish the people least able to
  * fix them. The check only refuses a number somebody is typing right now —
  * which is also what the API does, so the two agree.
+ *
+ * `isPrimary` is the EFFECTIVE primary, not the column: see the page body.
  */
-const ID_TYPE_LABEL = {
-  hkid: 'Hong Kong Identity Card',
-  passport: 'Passport',
-  china_id: 'Mainland China Identity Card',
-  other: 'Other Identity Document',
-}
-
-function IdentityDocument({ doc, identityFields, lookups, busy, onSave }) {
+function IdentityDocument({
+  doc, identityFields, lookups, busy, isPrimary, canChoosePrimary,
+  onSave, onMakePrimary, onRemove,
+}) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
 
@@ -130,14 +139,8 @@ function IdentityDocument({ doc, identityFields, lookups, busy, onSave }) {
     <div className="id-doc-group">
       <div className="id-doc-head">
         {ID_TYPE_LABEL[doc.id_type] || (doc.id_type || '').toUpperCase()}
-        {doc.is_primary && <span className="pri-pill">PRIMARY</span>}
-        {doc.scan_document_id && (
-          <button className="id-doc-scan"
-                  onClick={() => downloadDocument(doc.scan_document_id)}>
-            Scan
-          </button>
-        )}
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        {isPrimary && <span className="pri-pill">PRIMARY</span>}
+        <span className="id-doc-actions">
           {editing ? (
             <>
               <button className="btn-edit" onClick={() => setEditing(false)} disabled={busy}>
@@ -149,7 +152,26 @@ function IdentityDocument({ doc, identityFields, lookups, busy, onSave }) {
               </button>
             </>
           ) : (
-            <button className="btn-edit" onClick={start}>Edit</button>
+            <>
+              {/* Only where there is a choice to make. One document is the
+                  primary one by definition, and a button that cannot change
+                  anything is noise. */}
+              {canChoosePrimary && (
+                <button className="btn-edit" onClick={onMakePrimary} disabled={busy}>
+                  Make primary
+                </button>
+              )}
+              {doc.scan_document_id && (
+                <button className="btn-edit"
+                        onClick={() => downloadDocument(doc.scan_document_id)}>
+                  Download scan
+                </button>
+              )}
+              <button className="btn-edit" onClick={start}>Edit</button>
+              <button className="btn-edit btn-edit-danger" onClick={onRemove} disabled={busy}>
+                Remove
+              </button>
+            </>
           )}
         </span>
       </div>
@@ -186,97 +208,6 @@ function IdentityDocument({ doc, identityFields, lookups, busy, onSave }) {
       )}
     </div>
   )
-}
-
-/** The current file held under each type in one section. */
-function SectionDocuments({ documents }) {
-  return documents.map(doc => (
-    <div className="sec-doc" key={doc.id}>
-      <div className="sec-doc-l">
-        <div className="sec-doc-type">
-          {doc.document_types?.label || doc.document_type_code}
-        </div>
-        <div className="sec-doc-sub">
-          {[doc.title, doc.file_name,
-            doc.current_version > 1 && `v${doc.current_version}`,
-            formatDateTime(doc.updated_at || doc.created_at)]
-            .filter(Boolean).join(' · ')}
-        </div>
-      </div>
-      <button className="dv-dl" onClick={() => downloadDocument(doc.id)}>Download</button>
-    </div>
-  ))
-}
-
-/**
- * One document section — a heading, its documents, and its own upload button.
- *
- * RENDERED WHETHER OR NOT IT HOLDS ANYTHING. An empty section with a button is
- * how the first document gets added; the previous screen had one button in the
- * page header for every kind of document at once, which is how a passport ended
- * up filed as an "Identity Document Scan".
- */
-function DocumentSection({ section, count, children, onAdd }) {
-  return (
-    <div className="card mb-16">
-      <div className="card-hdr">
-        <div>
-          <div className="card-title">
-            {section.label} <span className="count-pill">{count}</span>
-          </div>
-          <div className="card-sub">{section.description}</div>
-        </div>
-        <button className="btn btn-outline btn-sm" onClick={onAdd}>
-          {section.is_identity ? 'Add Identity Document' : 'Upload Document'}
-        </button>
-      </div>
-      {children}
-    </div>
-  )
-}
-
-/**
- * Document history: every upload, grouped by type, newest version current.
- *
- * Each group names its SECTION as well as its type (Levi 2026-09-04) — "Passport"
- * alone does not say whether it was filed as identity or as proof of address,
- * and the two now live in different sections. The timestamp is the upload's own
- * datetime, in Hong Kong, because two uploads on one day are otherwise
- * indistinguishable.
- */
-function DocumentHistory({ documents, sectionLabels }) {
-  if (!documents?.length) {
-    return <div className="empty-state" style={{ padding: '16px 0' }}>No documents uploaded yet.</div>
-  }
-  return documents.map(doc => {
-    const versions = [...(doc.document_versions || [])]
-      .sort((a, b) => b.version_number - a.version_number)
-    const section = sectionLabels[doc.document_types?.category]
-    return (
-      <div key={doc.id}>
-        <div className="doc-hist-type">
-          {section && <span className="doc-hist-cat">{section}</span>}
-          {doc.document_types?.label || doc.document_type_code}
-          <span className="cnt">{versions.length} version{versions.length === 1 ? '' : 's'}</span>
-        </div>
-        {versions.map(v => {
-          const isCurrent = v.version_number === doc.current_version
-          return (
-            <div className="doc-ver" key={v.id}>
-              <span className="dv-l">
-                <span className={`dv-tag ${isCurrent ? 'dv-cur' : 'dv-old'}`}>
-                  {isCurrent ? 'CURRENT' : 'SUPERSEDED'}
-                </span>
-                <span>v{v.version_number} · {v.file_name}</span>
-                <span className="dv-meta">{formatDateTime(v.created_at)}</span>
-              </span>
-              <button className="dv-dl" onClick={() => downloadDocument(doc.id)}>Download</button>
-            </div>
-          )
-        })}
-      </div>
-    )
-  })
 }
 
 export default function PersonProfilePage() {
@@ -353,6 +284,27 @@ export default function PersonProfilePage() {
     }
   }
 
+  // What the Remove dialog is about, or null. One piece of state for both kinds
+  // of removal — an identity record and an uploaded file are removed
+  // differently, and `kind` is what the confirm text and the request key off.
+  const [removing, setRemoving] = useState(null)
+
+  async function confirmRemove() {
+    setBusy(true)
+    try {
+      await (removing.kind === 'identity'
+        ? api.del(`/persons/${personId}/identity-documents/${removing.doc.id}`)
+        : api.del(`/documents/${removing.doc.id}`))
+      setRemoving(null)
+      load()
+    } catch (err) {
+      setRemoving(null)
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (loading) return <div className="empty-state">Loading…</div>
   if (error) {
     return (
@@ -368,8 +320,21 @@ export default function PersonProfilePage() {
   const primary = idDocs.find(d => d.is_primary) || idDocs[0]
 
   // Uploads filed under the section their type belongs to (migration 036).
-  const bySection = groupBySection(person.documents, sections)
+  // Removed ones are dropped here and kept in Document History, which is what a
+  // soft delete is for.
+  const live = (person.documents || []).filter(d => d.status !== 'deleted')
+  const bySection = groupBySection(live, sections)
   const sectionLabels = Object.fromEntries(sections.map(s => [s.key, s.label]))
+
+  // WHICH DOCUMENT THE SYSTEM ACTUALLY QUOTES. `person_registry` and
+  // `audit_subject.primary_id_number` both order on `is_primary DESC,
+  // created_at ASC`, so a person with no primary flagged at all — 483 of DEV's
+  // HKID rows are in that state — is still quoted by their oldest document.
+  // Marking that one PRIMARY is the truth; marking none would be a screen
+  // disagreeing with the registry beside it.
+  const primaryDoc = idDocs.find(d => d.is_primary)
+    || [...idDocs].sort((a, b) =>
+      String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
 
   // What CR would refuse, read off the same contract the API enforces (§5.3).
   const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
@@ -428,6 +393,44 @@ export default function PersonProfilePage() {
           onClose={() => setUploadInto(null)}
           onSaved={() => { setUploadInto(null); load() }}
         />
+      )}
+
+      {/* The two removals are not the same act and the dialog says which one
+          this is. A file is soft-deleted and stays in the history; an identity
+          record is deleted outright, because `nar1_mapper` reads that table and
+          would go on FILING a number the operator had removed. */}
+      {removing?.kind === 'identity' && (
+        <ConfirmDialog
+          title="Remove identity document"
+          busy={busy}
+          onCancel={() => setRemoving(null)}
+          onConfirm={confirmRemove}
+        >
+          <p>
+            Removing the{' '}
+            <b>{ID_TYPE_LABEL[removing.doc.id_type] || removing.doc.id_type}</b>{' '}
+            <b>{removing.doc.id_number}</b> from {person.full_name}.
+          </p>
+          <p className="confirm-note">
+            The number is deleted — it is recorded in the audit trail and nowhere
+            else. {removing.doc.scan_document_id
+              ? 'The scan is kept, and stays in Document History.'
+              : 'There is no scan attached.'}
+            {' '}NAR1 and NNC1 carry an HKID or passport number for every
+            individual, so a person left holding neither blocks their return.
+          </p>
+        </ConfirmDialog>
+      )}
+
+      {removing?.kind === 'document' && (
+        <ConfirmDialog
+          title="Remove document"
+          busy={busy}
+          onCancel={() => setRemoving(null)}
+          onConfirm={confirmRemove}
+        >
+          <RemoveDocumentBody doc={removing.doc} />
+        </ConfirmDialog>
       )}
 
       {uploadInto && !uploadInto.is_identity && (
@@ -547,7 +550,11 @@ export default function PersonProfilePage() {
                   identityFields={identityFields}
                   lookups={lookups}
                   busy={busy}
+                  isPrimary={d.id === primaryDoc?.id}
+                  canChoosePrimary={idDocs.length > 1 && d.id !== primaryDoc?.id}
                   onSave={changed => saveIdentityDocument(d.id, changed)}
+                  onMakePrimary={() => saveIdentityDocument(d.id, { is_primary: true })}
+                  onRemove={() => setRemoving({ kind: 'identity', doc: d })}
                 />
               ))}
             </DocumentSection>
@@ -560,7 +567,11 @@ export default function PersonProfilePage() {
                   Nothing uploaded yet.
                 </div>
               ) : (
-                <SectionDocuments documents={bySection[section.key]} />
+                <SectionDocuments
+                  documents={bySection[section.key]}
+                  busy={busy}
+                  onRemove={doc => setRemoving({ kind: 'document', doc })}
+                />
               )}
             </DocumentSection>
           ))}

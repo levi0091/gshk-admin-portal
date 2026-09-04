@@ -300,18 +300,27 @@ async def upload_document(
     return created
 
 
-def list_documents(*, owner_kind: str, owner_id: str) -> list[dict]:
-    """Active + superseded documents for an owner, with version history.
+def list_documents(*, owner_kind: str, owner_id: str,
+                   include_deleted: bool = False) -> list[dict]:
+    """Documents for an owner, with version history.
 
     Embeds document_types so the UI can say WHAT the document is ("Certificate of
     Incorporation") and not just the uploaded file name.
+
+    `include_deleted` is what makes "remove it from the section, keep it in the
+    history" possible (Levi 2026-09-04). A soft delete retains the object and
+    the row on purpose (OQ-2); filtering the row out of every read as well threw
+    away the half of that decision the trail depends on. A profile asks for
+    everything and shows removed documents only in Document History, marked;
+    every other caller still gets the live set by default.
     """
     sb = get_supabase()
     q = (
         sb.table("documents")
         .select("*, document_versions(*), document_types(code, label, category)")
-        .neq("status", "deleted")
     )
+    if not include_deleted:
+        q = q.neq("status", "deleted")
     q = q.eq(_OWNER_COLUMN[owner_kind], owner_id)
     return (q.order("document_type_code").execute().data) or []
 

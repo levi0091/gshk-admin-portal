@@ -115,100 +115,30 @@ describe('AddPersonModal — the fields that were missing', () => {
     expect(screen.getByLabelText('Place of Birth')).toBeInTheDocument()
   })
 
-  it('offers an identity document, with the types the server names', async () => {
+  it('does NOT ask for an identity document', async () => {
+    // Levi 2026-09-04, reversing the block added earlier the same day: "there
+    // is no need for document type selection in add person action since we are
+    // able to upload the documents in identity documents already". Creating a
+    // person now does one thing.
     renderModal()
-    expect(await screen.findByRole('option', { name: 'Passport' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Hong Kong Identity Card' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Document Type')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/ID Number/)).not.toBeInTheDocument()
   })
 
-  it('shows only the fields the chosen type carries', async () => {
-    const user = userEvent.setup()
+  it('says where the ID number IS recorded, so nobody hunts for it here', async () => {
     renderModal()
-    await screen.findByRole('option', { name: 'Passport' })
-
-    // An HKID takes a number and nothing else — CR has no country box beside
-    // <hkid>, and the card does not expire.
-    await user.selectOptions(screen.getByLabelText('Document Type'), 'id_hkid')
-    expect(screen.getByLabelText(/^ID Number/)).toBeInTheDocument()
-    expect(screen.queryByLabelText(/Issuing Country/)).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Expiry Date')).not.toBeInTheDocument()
-
-    await user.selectOptions(screen.getByLabelText('Document Type'), 'id_passport')
-    expect(screen.getByLabelText(/Issuing Country/)).toBeInTheDocument()
-    expect(screen.getByLabelText('Expiry Date')).toBeInTheDocument()
+    expect(screen.getByText(/under Identity Documents/)).toBeInTheDocument()
   })
 
-  it('posts the identity document alongside the person', async () => {
+  it('posts only the person', async () => {
     const user = userEvent.setup()
     renderModal()
-    await screen.findByRole('option', { name: 'Passport' })
-
     await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
-    await user.selectOptions(screen.getByLabelText('Document Type'), 'id_hkid')
-    await user.type(screen.getByLabelText(/^ID Number/), GOOD_HKID)
+    await user.type(screen.getByLabelText('Previous Names (English)'), 'Chan Tai')
     await user.click(screen.getByRole('button', { name: 'Create Person' }))
 
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/persons', {
-      full_name: 'Chan Tai Man',
-      identity_document: { id_type: 'hkid', id_number: GOOD_HKID, is_primary: true },
+      full_name: 'Chan Tai Man', former_name: 'Chan Tai',
     }))
-  })
-
-  it('creates a person with no identity document at all', async () => {
-    // Optional: a person can be recorded before their documents arrive.
-    const user = userEvent.setup()
-    renderModal()
-    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
-    await user.click(screen.getByRole('button', { name: 'Create Person' }))
-
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith('/persons', { full_name: 'Chan Tai Man' }))
-  })
-
-  it('refuses an HKID whose check digit does not match', async () => {
-    const user = userEvent.setup()
-    renderModal()
-    await screen.findByRole('option', { name: 'Passport' })
-
-    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
-    await user.selectOptions(screen.getByLabelText('Document Type'), 'id_hkid')
-    await user.type(screen.getByLabelText(/^ID Number/), 'Z351007(9)')
-    await user.click(screen.getByRole('button', { name: 'Create Person' }))
-
-    expect(await screen.findByText(/check digit does not match/)).toBeInTheDocument()
-    expect(api.post).not.toHaveBeenCalled()
-  })
-
-  it('will not take a passport number without its issuing country', async () => {
-    // `nar1_mapper` refuses a passport number whose issuing country has no CR
-    // code, so an empty one is a filing blocked long after this screen.
-    const user = userEvent.setup()
-    renderModal()
-    await screen.findByRole('option', { name: 'Passport' })
-
-    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
-    await user.selectOptions(screen.getByLabelText('Document Type'), 'id_passport')
-    await user.type(screen.getByLabelText(/^ID Number/), '987654321')
-    await user.click(screen.getByRole('button', { name: 'Create Person' }))
-
-    expect(await screen.findByText(/without its issuing country/)).toBeInTheDocument()
-    expect(api.post).not.toHaveBeenCalled()
-  })
-
-  it('will not silently drop a number typed against no type', async () => {
-    const user = userEvent.setup()
-    renderModal()
-    await screen.findByRole('option', { name: 'Passport' })
-
-    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
-    await user.selectOptions(screen.getByLabelText('Document Type'), 'id_hkid')
-    await user.type(screen.getByLabelText(/^ID Number/), GOOD_HKID)
-    await user.selectOptions(screen.getByLabelText('Document Type'), '')
-    // Clearing the type resets the block, so nothing half-typed is submitted.
-    expect(screen.queryByLabelText(/^ID Number/)).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Create Person' }))
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith('/persons', { full_name: 'Chan Tai Man' }))
   })
 })

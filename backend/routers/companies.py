@@ -549,7 +549,10 @@ async def get_company(
                    .eq("entity_id", company_id).execute().data) or []),
         q(lambda: (sb.table("contacts").select("*")
                    .eq("entity_id", company_id).execute().data) or []),
-        q(lambda: document_service.list_documents(owner_kind="entity", owner_id=company_id)),
+        # Removed documents come back too — dropped from their section, kept in
+        # Document History, marked (Levi 2026-09-04).
+        q(lambda: document_service.list_documents(
+            owner_kind="entity", owner_id=company_id, include_deleted=True)),
         # CR's section 11 in its own right, not just the class names hanging
         # off each shareholding: the return states the company's share capital
         # whether or not anyone currently holds it.

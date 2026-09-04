@@ -6,7 +6,12 @@ import { formatDate } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
+import { useDocumentSections, groupBySection } from '../lib/documentSections.js'
+import {
+  DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
+} from '../components/DocumentSections.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import AddressBlock from '../components/AddressBlock.jsx'
 import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
@@ -91,24 +96,12 @@ function FlagToggle({ on, label, sub, onToggle, busy }) {
   )
 }
 
-function DocumentList({ documents }) {
-  if (!documents?.length) {
-    return <div className="empty-state" style={{ padding: '16px 0' }}>No documents uploaded yet.</div>
-  }
-  return documents.map(d => (
-    <div className="doc-item" key={d.id}>
-      <span className="doc-name">
-        {/* What the document IS, not just the file it happened to be uploaded as. */}
-        {d.document_types?.label || d.document_type_code}
-        {d.current_version > 1 && <span className="filing-tag">v{d.current_version}</span>}
-        <span className="td-muted" style={{ display: 'block', fontSize: 11, fontWeight: 400 }}>
-          {d.title && d.title !== d.file_name ? `${d.title} · ` : ''}{d.file_name}
-        </span>
-      </span>
-      <button className="doc-dl" onClick={() => downloadDocument(d.id)}>Download</button>
-    </div>
-  ))
-}
+// `DocumentList` was here: one flat list of every company document with a
+// Download and nothing else. It is now the shared `SectionDocuments` under one
+// card per category, with Remove beside Download — the same shape as the person
+// profile, because a company's documents are filed exactly the same way
+// (Levi 2026-09-04: "this is the same for the body corporation upload document
+// features").
 
 export default function CompanyProfilePage() {
   const { companyId } = useParams()
@@ -124,13 +117,20 @@ export default function CompanyProfilePage() {
   //: The live-case warning, held until the operator decides. null = no
   //: conflict, or already acknowledged.
   const [conflict, setConflict] = useState(null)
-  const [showUpload, setShowUpload] = useState(false)
+  // The section whose upload dialog is open, or null. One piece of state
+  // rather than one flag per section.
+  const [uploadInto, setUploadInto] = useState(null)
+  // The document the Remove dialog is about, or null.
+  const [removing, setRemoving] = useState(null)
   const [newCase, setNewCase] = useState(false)
   const { hasPermission, isSuperAdmin } = useAuth()
   // nar1:read shows cases; nar1:write is what opens one.
   const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
   const [linkModal, setLinkModal] = useState(null)
+  const {
+    sections, ready: sectionsReady, error: sectionsError,
+  } = useDocumentSections('company')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -162,6 +162,20 @@ export default function CompanyProfilePage() {
     setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, company[f.key] ?? ''])))
     setAddrDraft({ ...EMPTY_ADDRESS, ...(company.registered_address || {}) })
     setEditing(true)
+  }
+
+  async function confirmRemoveDocument() {
+    setBusy(true)
+    try {
+      await api.del(`/documents/${removing.id}`)
+      setRemoving(null)
+      load()
+    } catch (err) {
+      setRemoving(null)
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function unlinkParty(relation, linkId) {
@@ -273,6 +287,13 @@ export default function CompanyProfilePage() {
   const isClient = !!company.is_client
   const isCorp = !!company.is_corporate_party
 
+  // Uploads filed under the section their type belongs to (migration 036).
+  // Removed ones are dropped here and kept in Document History — that is what a
+  // soft delete is for.
+  const liveDocs = (company.documents || []).filter(d => d.status !== 'deleted')
+  const bySection = groupBySection(liveDocs, sections)
+  const sectionLabels = Object.fromEntries(sections.map(s => [s.key, s.label]))
+
   // What CR would refuse, read off the same contract the API enforces.
   const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
   const addressWarnings = Object.fromEntries(
@@ -319,9 +340,9 @@ export default function CompanyProfilePage() {
                         onToggle={() => toggleFlag('is_corporate_party')} />
           </div>
         </div>
-        <div className="pg-actions">
-          <button className="btn btn-outline" onClick={() => setShowUpload(true)}>Upload Document</button>
-        </div>
+        {/* No page-level Upload button: it offered every document type at
+            once from a place that named no section. Each section carries its
+            own. */}
       </div>
 
       {newCase && (
@@ -332,15 +353,28 @@ export default function CompanyProfilePage() {
         />
       )}
 
-      {showUpload && (
+      {uploadInto && (
         <UploadDocumentModal
           ownerKind="entity"
           ownerId={companyId}
           ownerName={company.company_name}
-          existingTypes={(company.documents || []).map(d => d.document_type_code)}
-          onClose={() => setShowUpload(false)}
-          onUploaded={() => { setShowUpload(false); load() }}
+          category={uploadInto.key}
+          sectionLabel={uploadInto.label}
+          existingTypes={(bySection[uploadInto.key] || []).map(d => d.document_type_code)}
+          onClose={() => setUploadInto(null)}
+          onUploaded={() => { setUploadInto(null); load() }}
         />
+      )}
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove document"
+          busy={busy}
+          onCancel={() => setRemoving(null)}
+          onConfirm={confirmRemoveDocument}
+        >
+          <RemoveDocumentBody doc={removing} />
+        </ConfirmDialog>
       )}
 
       {linkModal && (
@@ -444,8 +478,60 @@ export default function CompanyProfilePage() {
               </div>
             )}
 
-            <div className="tile-sec-lbl">Filings &amp; Company Documents</div>
-            <DocumentList documents={company.documents} />
+          </div>
+
+          {/* Documents, one card per section — the same shape as the person
+              profile. "Unavailable" is not "none": if the catalogue could not
+              be loaded, say so rather than rendering empty sections. */}
+          {!sectionsReady && (
+            <div className="card mb-16">
+              <div className="empty-state" style={{ padding: '16px 0' }}>Loading documents…</div>
+            </div>
+          )}
+          {sectionsReady && sectionsError && (
+            <div className="card mb-16">
+              <div className="card-hdr">
+                <div>
+                  <div className="card-title">Documents</div>
+                  <div className="card-sub">Sections could not be loaded</div>
+                </div>
+              </div>
+              <div className="reveal-note" style={{ color: '#B91C1C', background: '#FEE2E2' }}>
+                {sectionsError} — this company’s documents are not shown below
+                because the section list is unavailable, not because there are
+                none. Reload the page.
+              </div>
+            </div>
+          )}
+
+          {sections.map(section => (
+            <DocumentSection key={section.key} section={section}
+                             count={(bySection[section.key] || []).length}
+                             onAdd={() => setUploadInto(section)}>
+              {(bySection[section.key] || []).length === 0 ? (
+                <div className="empty-state" style={{ padding: '16px 0' }}>
+                  Nothing uploaded yet.
+                </div>
+              ) : (
+                <SectionDocuments
+                  documents={bySection[section.key]}
+                  busy={busy}
+                  onRemove={doc => setRemoving(doc)}
+                />
+              )}
+            </DocumentSection>
+          ))}
+
+          <div className="card mb-16">
+            <div className="card-hdr">
+              <div>
+                <div className="card-title">Document History</div>
+                <div className="card-sub">
+                  Every upload, by section and type · newest version is current, older versions preserved
+                </div>
+              </div>
+            </div>
+            <DocumentHistory documents={company.documents} sectionLabels={sectionLabels} />
           </div>
 
           {/* Corporate Party Details — gated on is_corporate_party */}

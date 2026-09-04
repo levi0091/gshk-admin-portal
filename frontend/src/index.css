@@ -74,7 +74,18 @@ a { text-decoration: none; color: inherit; }
   height: 36px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
   padding: 0 11px; font-size: 13px; color: var(--t-body);
   background: #fff; transition: .15s; outline: none; font-family: var(--font);
+  /* A control fills its column and is never wider than it.
+     WHY BOTH: a <select> takes its min-content width from its LONGEST OPTION
+     and a date <input> from its dd/mm/yyyy spinner, and min-width defaults to
+     `auto`, so either will refuse to shrink and push itself out through the
+     side of the modal. `cr_country` alone offers names like "United Kingdom of
+     Great Britain and Northern Ireland"; two of those side by side blew a
+     520px dialog out to roughly 740. */
+  width: 100%; min-width: 0;
 }
+/* A long option truncates instead of being clipped mid-glyph. `appearance:
+   none` below means the browser draws no ellipsis of its own. */
+.f-select { text-overflow: ellipsis; }
 .f-input:focus, .f-select:focus {
   border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
 }
@@ -157,7 +168,19 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   background: #fff; border-radius: var(--r-xl);
   width: 100%; max-width: 520px; margin: 20px; box-shadow: var(--sh-lg);
   position: relative;
+  /* A tall form scrolls inside the dialog; the page behind it never does. */
+  max-height: calc(100vh - 40px); display: flex; flex-direction: column;
 }
+.modal-body { overflow-y: auto; }
+.modal-hdr, .modal-footer { flex-shrink: 0; }
+/* Sixteen fields in two columns. At 520px a country name had ~230px and the
+   dialog read as a wall; the extra 120px is what makes the pairs legible. */
+.modal-lg { max-width: 640px; }
+/* One question, two buttons. */
+.modal-sm { max-width: 420px; }
+.confirm-body { font-size: 13px; color: var(--t-body); line-height: 1.55; }
+.confirm-body p + p { margin-top: 10px; }
+.confirm-note { font-size: 12px; color: var(--t-muted); }
 .modal-hdr {
   display: flex; align-items: center; justify-content: space-between;
   padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
@@ -571,8 +594,15 @@ tbody tr.clickable { cursor: pointer; }
 .case-acc-id { font-size: 10px; color: var(--t-muted); letter-spacing: .02em; margin-top: 1px; }
 .case-acc-body { padding: 14px 14px 4px; }
 
-/* Add Company form grid */
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+/* Two-column form grid — Add Company, Add Person, both profile editors.
+   `minmax(0, 1fr)` rather than `1fr`: a bare `1fr` is `minmax(auto, 1fr)`, and
+   an `auto` minimum is the track's MIN-CONTENT width, which a <select> takes
+   from its longest option. The track then refuses to shrink and the grid
+   overflows its container — the modal, in every case where this bit. The
+   `> *` rule reaches the plain wrapper <div>s the add-person modal puts around
+   each field to carry its error hint, which `.f-group` does not match. */
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.form-grid > * { min-width: 0; }
 .form-grid .full { grid-column: 1 / -1; }
 
 /* ── PERSONS REGISTRY + PERSON PROFILE (wireframe_v7 s10/s11) ── */
@@ -597,13 +627,14 @@ tbody tr.clickable { cursor: pointer; }
 .id-doc-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--t-head); margin-bottom: 8px; }
 .id-doc-head .pri-pill { font-size: 9.5px; font-weight: 700; color: var(--bang); background: var(--bang-10); padding: 2px 7px; border-radius: 8px; letter-spacing: .03em; }
 
-/* The scan attached to an identity document — evidence for the number beside
-   it, so it sits in the same head rather than in a section of its own. */
-.id-doc-head .id-doc-scan {
-  font-size: 9.5px; font-weight: 700; letter-spacing: .03em; cursor: pointer;
-  color: var(--indigo); background: var(--indigo-10); border: none;
-  padding: 2px 7px; border-radius: 8px;
+/* The card's actions sit right, wrap on a narrow column rather than pushing
+   the document type out of the card. */
+.id-doc-head .id-doc-actions {
+  margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px;
 }
+/* Destructive, and only on hover — a Remove that is red at rest reads as a
+   warning about the document rather than an action on it. */
+.btn-edit-danger:hover { border-color: #F2B8B8; color: #C53030; }
 
 /* One current document per type inside a section (the versions are in
    Document History, which is the only place that needs to show them). */
@@ -611,8 +642,15 @@ tbody tr.clickable { cursor: pointer; }
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; margin-bottom: 8px;
 }
+.sec-doc-l { min-width: 0; }
 .sec-doc-type { font-size: 12.5px; font-weight: 700; color: var(--t-head); }
-.sec-doc-sub { font-size: 11px; color: var(--t-muted); margin-top: 2px; }
+.sec-doc-sub {
+  font-size: 11px; color: var(--t-muted); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sec-doc-actions { display: flex; gap: 12px; flex-shrink: 0; }
+.dv-rm { color: var(--t-muted) !important; }
+.dv-rm:hover { color: #C53030 !important; }
 
 .doc-hist-type { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: var(--t-head); margin: 14px 0 6px; }
 .doc-hist-type .cnt { font-size: 10px; font-weight: 600; color: var(--t-muted); background: var(--bg-page); border: 1px solid var(--border); border-radius: 8px; padding: 1px 7px; }
@@ -629,8 +667,15 @@ tbody tr.clickable { cursor: pointer; }
 }
 .doc-ver .dv-l { display: flex; align-items: center; gap: 8px; color: var(--t-body); }
 .doc-ver .dv-tag { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 7px; }
-.dv-cur { color: var(--bang); background: var(--bang-10); }
-.dv-old { color: var(--t-muted); background: var(--bg-page); }
+.dv-current { color: var(--bang); background: var(--bang-10); }
+.dv-superseded { color: var(--t-muted); background: var(--bg-page); }
+/* A removed document keeps its whole history and loses its emphasis: it is a
+   record of what happened, not something on file any more. The badge does that
+   work; a strikethrough on top of it was a second way of saying the same
+   thing, and it drew itself straight through the section tag beside it. */
+.dv-removed, .dv-rmv { color: #C53030; background: #FDECEC; }
+.dv-rmv { margin-left: 2px; }
+.doc-hist-removed { opacity: .72; }
 .doc-ver .dv-meta { color: var(--t-muted); }
 .doc-ver .dv-dl { color: var(--indigo); font-weight: 600; cursor: pointer; background: none; border: none; }
 

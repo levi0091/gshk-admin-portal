@@ -21,7 +21,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
 from main import app
-from services import document_sections
+from services import document_sections, document_service
 
 client = TestClient(app)
 
@@ -165,102 +165,24 @@ def test_the_type_picker_can_be_scoped_to_one_section():
     q.in_.return_value.eq.assert_called_once_with("category", "identity")
 
 
-# ── creating a person WITH their identity number ──────────────────────────────
+# ── creating a person ─────────────────────────────────────────────────────────
 
-def test_a_person_can_be_created_with_their_identity_number():
-    tables = _Tables(
-        persons=_persons_table({"id": "p-new", "full_name": "Jane"}),
-        person_identity_documents=MagicMock(),
-    )
-    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
-         patch("routers.persons.get_supabase") as msb, \
-         patch("routers.persons.log_event", new=AsyncMock()) as audit:
+def test_creating_a_person_does_not_take_an_identity_document():
+    """Levi 2026-09-04, reversing the block added earlier the same day: "there
+    is no need for document type selection in add person action since we are
+    able to upload the documents in identity documents already". The profile's
+    Identity Documents section is the one way in, so the create request refuses
+    the field rather than quietly ignoring it."""
+    tables = _Tables(persons=_persons_table({"id": "p-new", "full_name": "Jane"}))
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN),          patch("routers.persons.get_supabase") as msb:
         msb.return_value.table.side_effect = tables
         resp = client.post("/persons", headers=H, json={
             "full_name": "Jane",
             "identity_document": {"id_type": "hkid", "id_number": GOOD_HKID},
         })
 
-    assert resp.status_code == 201
-    inserted = tables["person_identity_documents"].insert.call_args.args[0]
-    assert inserted["person_id"] == "p-new"
-    assert inserted["id_type"] == "hkid"
-    assert inserted["id_number"] == GOOD_HKID
-    # The audit row can finally quote the number, because one now exists at
-    # creation. Before this it could not — there was no field to type it into.
-    assert GOOD_HKID in str(audit.await_args.kwargs)
-
-
-def test_a_bad_hkid_refuses_the_whole_creation():
-    """Validated BEFORE the person is inserted. A 422 after the insert would
-    leave a person behind with no identity document and an error the operator
-    has already navigated away from."""
-    tables = _Tables(persons=_persons_table({"id": "p-new", "full_name": "Jane"}))
-    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
-         patch("routers.persons.get_supabase") as msb, \
-         patch("routers.persons.log_event", new=AsyncMock()):
-        msb.return_value.table.side_effect = tables
-        resp = client.post("/persons", headers=H, json={
-            "full_name": "Jane",
-            "identity_document": {"id_type": "hkid", "id_number": "Z351007(9)"},
-        })
-
     assert resp.status_code == 422
-    assert "check digit" in resp.text.lower()
     tables["persons"].insert.assert_not_called()
-
-
-def test_a_passport_without_an_issuing_country_is_refused_in_crs_words():
-    tables = _Tables(persons=_persons_table({"id": "p-new", "full_name": "Jane"}))
-    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
-         patch("routers.persons.get_supabase") as msb, \
-         patch("routers.persons.log_event", new=AsyncMock()):
-        msb.return_value.table.side_effect = tables
-        resp = client.post("/persons", headers=H, json={
-            "full_name": "Jane",
-            "identity_document": {"id_type": "passport", "id_number": "987654321"},
-        })
-
-    assert resp.status_code == 422
-    assert "issuing country" in resp.text.lower()
-    tables["persons"].insert.assert_not_called()
-
-
-def test_an_hkid_does_not_store_fields_cr_has_no_box_for():
-    tables = _Tables(
-        persons=_persons_table({"id": "p-new", "full_name": "Jane"}),
-        person_identity_documents=MagicMock(),
-    )
-    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
-         patch("routers.persons.get_supabase") as msb, \
-         patch("routers.persons.log_event", new=AsyncMock()):
-        msb.return_value.table.side_effect = tables
-        resp = client.post("/persons", headers=H, json={
-            "full_name": "Jane",
-            "identity_document": {
-                "id_type": "hkid", "id_number": GOOD_HKID,
-                "issuing_country": "GB", "expiry_date": "2031-01-27",
-            },
-        })
-
-    assert resp.status_code == 201
-    inserted = tables["person_identity_documents"].insert.call_args.args[0]
-    assert "issuing_country" not in inserted
-    assert "expiry_date" not in inserted
-
-
-def test_an_unknown_identity_type_is_refused_by_name():
-    tables = _Tables(persons=_persons_table({"id": "p-new", "full_name": "Jane"}))
-    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
-         patch("routers.persons.get_supabase") as msb:
-        msb.return_value.table.side_effect = tables
-        resp = client.post("/persons", headers=H, json={
-            "full_name": "Jane",
-            "identity_document": {"id_type": "drivers_licence", "id_number": "X"},
-        })
-
-    assert resp.status_code == 422
-    assert "passport" in resp.text     # names what it WOULD have accepted
 
 
 def test_nationality_origin_can_be_set_at_creation():
@@ -447,6 +369,192 @@ def test_saving_an_identity_document_needs_write_permission():
                            data=PASSPORT)
 
     assert resp.status_code == 403
+
+
+# ── choosing the primary document ─────────────────────────────────────────────
+#
+# Levi 2026-09-04: "if there is only one identity document then that identity
+# document is the primary document by default. if there is a second one then the
+# user can choose which is the primary one".
+
+def _patch_identity(current, body, held=None):
+    tables = _Tables(
+        persons=_persons_table({"id": "p1", "full_name": "Jane"}),
+        person_identity_documents=MagicMock(),
+    )
+    idt = tables["person_identity_documents"]
+    (idt.select.return_value.eq.return_value.eq.return_value.single.return_value
+     .execute.return_value.data) = current
+    idt.update.return_value.eq.return_value.execute.return_value.data = [
+        {**current, **body}]
+    idt.select.return_value.eq.return_value.execute.return_value.data = held or []
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.log_events", new=AsyncMock()):
+        msb.return_value.table.side_effect = tables
+        resp = client.patch("/persons/p1/identity-documents/i2", headers=H, json=body)
+    return resp, tables
+
+
+def test_promoting_one_document_demotes_the_others():
+    """Without this the button appeared to do nothing: `person_registry` and
+    `audit_subject.primary_id_number` both order on `is_primary DESC,
+    created_at ASC`, so a SECOND primary left the person quoted by whichever
+    row was older."""
+    current = {"id": "i2", "person_id": "p1", "id_type": "passport",
+               "id_number": "987654321", "is_primary": False}
+    resp, tables = _patch_identity(current, {"is_primary": True})
+
+    assert resp.status_code == 200
+    idt = tables["person_identity_documents"]
+    demote = idt.update.call_args_list[-1].args[0]
+    assert demote == {"is_primary": False}
+    # every row EXCEPT the one just promoted
+    assert idt.update.return_value.eq.call_args_list[-1].args == ("person_id", "p1")
+    idt.update.return_value.eq.return_value.neq.assert_called_with("id", "i2")
+
+
+def test_an_ordinary_edit_demotes_nothing():
+    current = {"id": "i2", "person_id": "p1", "id_type": "passport",
+               "id_number": "OLD", "is_primary": False}
+    _resp, tables = _patch_identity(current, {"id_number": "987654321"})
+
+    idt = tables["person_identity_documents"]
+    assert idt.update.call_count == 1
+    idt.update.return_value.eq.return_value.neq.assert_not_called()
+
+
+# ── removing one ──────────────────────────────────────────────────────────────
+
+def _delete_identity(current, survivors=()):
+    tables = _Tables(
+        persons=_persons_table({"id": "p1", "full_name": "Jane"}),
+        person_identity_documents=MagicMock(),
+    )
+    idt = tables["person_identity_documents"]
+    (idt.select.return_value.eq.return_value.eq.return_value.single.return_value
+     .execute.return_value.data) = current
+    (idt.select.return_value.eq.return_value.order.return_value.limit.return_value
+     .execute.return_value.data) = list(survivors)
+    soft = AsyncMock(return_value={"id": "doc-9", "status": "deleted"})
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.document_service.soft_delete_document", new=soft), \
+         patch("routers.persons.log_event", new=AsyncMock()) as audit:
+        msb.return_value.table.side_effect = tables
+        resp = client.delete("/persons/p1/identity-documents/i1", headers=H)
+    return resp, tables, soft, audit
+
+
+def test_removing_an_identity_document_soft_deletes_its_scan():
+    """The RECORD goes and the FILE stays. `nar1_mapper._identity` reads
+    `person_identity_documents` and knows nothing about a deleted flag, so a
+    soft-deleted row would go on being filed with CR after an operator had
+    removed it — the record is deleted outright for exactly that reason. The
+    scan follows the documents rule and keeps its place in the history."""
+    current = {"id": "i1", "person_id": "p1", "id_type": "passport",
+               "id_number": "987654321", "is_primary": False,
+               "scan_document_id": "doc-9"}
+    resp, tables, soft, _audit = _delete_identity(current)
+
+    assert resp.status_code == 200
+    soft.assert_awaited_once()
+    assert soft.await_args.kwargs["document_id"] == "doc-9"
+    tables["person_identity_documents"].delete.assert_called_once()
+
+
+def test_removing_a_document_with_no_scan_touches_no_file():
+    current = {"id": "i1", "person_id": "p1", "id_type": "hkid",
+               "id_number": GOOD_HKID, "is_primary": False}
+    resp, _tables, soft, _audit = _delete_identity(current)
+
+    assert resp.status_code == 200
+    soft.assert_not_awaited()
+
+
+def test_removing_the_primary_promotes_the_oldest_survivor():
+    """Otherwise the person has no primary at all and is quoted by whichever row
+    a query happens to return first — the header and the audit reference would
+    then disagree with each other."""
+    current = {"id": "i1", "person_id": "p1", "id_type": "hkid",
+               "id_number": GOOD_HKID, "is_primary": True}
+    resp, tables, _soft, _audit = _delete_identity(current, survivors=[{"id": "i2"}])
+
+    assert resp.status_code == 200
+    idt = tables["person_identity_documents"]
+    assert idt.update.call_args.args[0] == {"is_primary": True}
+    idt.update.return_value.eq.assert_called_with("id", "i2")
+
+
+def test_removing_a_non_primary_promotes_nothing():
+    current = {"id": "i1", "person_id": "p1", "id_type": "hkid",
+               "id_number": GOOD_HKID, "is_primary": False}
+    _resp, tables, _soft, _audit = _delete_identity(current, survivors=[{"id": "i2"}])
+
+    tables["person_identity_documents"].update.assert_not_called()
+
+
+def test_the_removed_number_is_recorded_in_the_trail_and_nowhere_else():
+    current = {"id": "i1", "person_id": "p1", "id_type": "passport",
+               "id_number": "987654321", "issuing_country": "GB",
+               "is_primary": False}
+    _resp, _tables, _soft, audit = _delete_identity(current)
+
+    kwargs = audit.await_args.kwargs
+    assert kwargs["old_value"] == "passport 987654321"
+    assert kwargs["new_value"] == "removed"
+    # The whole row: this entry is the only record of what the number was.
+    assert kwargs["before_state"]["id_number"] == "987654321"
+    assert kwargs["before_state"]["issuing_country"] == "GB"
+
+
+def test_removing_an_identity_document_404s_when_it_is_not_theirs():
+    resp, _tables, _soft, _audit = _delete_identity(None)
+    assert resp.status_code == 404
+
+
+def test_removing_an_identity_document_needs_write_permission():
+    regular = {"id": "u-2", "display_name": "Staff", "role_name": "staff",
+               "role_id": "role-x"}
+    with patch("middleware.auth._resolve_user", return_value=regular), \
+         patch("middleware.auth.get_supabase") as msb:
+        (msb.return_value.table.return_value.select.return_value.eq.return_value
+         .eq.return_value.execute.return_value.data) = []
+        resp = client.delete("/persons/p1/identity-documents/i1", headers=H)
+
+    assert resp.status_code == 403
+
+
+# ── removed documents stay in the history ─────────────────────────────────────
+
+def test_a_profile_asks_for_removed_documents_too():
+    """"we should also be able to remove the document if we want to, but it is a
+    soft delete, and the old document should be still in the history." Filtering
+    the row out of the read as well threw away the half of the soft delete the
+    trail depends on."""
+    person = {"id": "p1", "full_name": "Jane", "residential_address_id": None}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.document_service.list_documents",
+               return_value=[]) as docs:
+        sb = msb.return_value
+        (sb.table.return_value.select.return_value.eq.return_value.single
+         .return_value.execute.return_value.data) = person
+        sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        resp = client.get("/persons/p1", headers=H)
+
+    assert resp.status_code == 200
+    assert docs.call_args.kwargs["include_deleted"] is True
+
+
+def test_list_documents_still_hides_removed_ones_by_default():
+    """Every other caller gets the live set. Only a profile, which renders a
+    history, asks for more."""
+    with patch("services.document_service.get_supabase") as msb:
+        q = msb.return_value.table.return_value.select.return_value
+        q.neq.return_value.eq.return_value.order.return_value.execute.return_value.data = []
+        document_service.list_documents(owner_kind="person", owner_id="p1")
+        q.neq.assert_called_once_with("status", "deleted")
 
 
 # ── the field nobody asked for ────────────────────────────────────────────────

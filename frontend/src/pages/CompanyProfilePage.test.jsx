@@ -21,6 +21,7 @@ let auth
 vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { _resetLookups } from '../lib/lookups.js'
 import { _resetFormContract } from '../lib/formContract.js'
+import { _resetDocumentSections } from '../lib/documentSections.js'
 
 const CLIENT = {
   id: 'e1', company_name: 'Skyline Capital', vp_source_key: 'SKYLINE01',
@@ -32,9 +33,13 @@ const CLIENT = {
   registered_address: { line1: 'Unit 12A', city: 'Central', country: 'HK' },
   contacts: [{ id: 'c1', contact_type: 'phone', contact_value: '+852 3500 1234' }],
   documents: [{
-    id: 'd1', document_type_code: 'coi', current_version: 1,
-    file_name: 'brand-guideline-v3.pdf',
-    document_types: { code: 'coi', label: 'Certificate of Incorporation' },
+    id: 'd1', document_type_code: 'coi', current_version: 1, status: 'active',
+    file_name: 'brand-guideline-v3.pdf', updated_at: '2026-06-04T09:30:00Z',
+    document_types: { code: 'coi', label: 'Certificate of Incorporation',
+                      category: 'certificate' },
+    document_versions: [{ id: 'v1', version_number: 1,
+                          file_name: 'brand-guideline-v3.pdf',
+                          created_at: '2026-06-04T09:30:00Z' }],
   }],
   officers: [{
     id: 'o1', role: 'director', appointed_date: '2024-05-20', is_current: true,
@@ -113,17 +118,45 @@ const CONTRACT = {
   },
 }
 
+// A company's documents are filed under sections exactly as a person's are
+// (migration 036). `certificate` is the one the fixture document lands in.
+const SECTIONS = {
+  sections: [
+    { key: 'certificate', label: 'Certificates', is_identity: false,
+      description: 'Certificates issued for this company', file_required: true,
+      types: [{ code: 'coi', label: 'Certificate of Incorporation', id_type: null }] },
+    { key: 'address_proof', label: 'Proof of Address', is_identity: false,
+      description: 'Evidence of the registered address on file', file_required: true,
+      types: [{ code: 'addr_utility_bill', label: 'Utility Bill', id_type: null }] },
+  ],
+  identity_fields: {},
+}
+
 const mockGet = (data) =>
   api.get.mockImplementation(url => {
     if (url === '/lookups') return Promise.resolve(LOOKUPS)
     if (url === '/form-contract') return Promise.resolve(CONTRACT)
+    if (url.startsWith('/documents/sections')) return Promise.resolve(SECTIONS)
+    if (url.startsWith('/documents/types')) {
+      const category = new URL(url, 'http://x').searchParams.get('category')
+      return Promise.resolve(
+        SECTIONS.sections.find(s => s.key === category)?.types || [])
+    }
     return Promise.resolve(data)
   })
+
+// Document History tags each group with its SECTION, so a heading appears
+// twice on the page. The section card is the one whose match is a `.card-title`.
+const sectionCard = label =>
+  screen.getAllByText(label)
+    .filter(el => el.classList.contains('card-title') || el.closest('.card-title'))[0]
+    .closest('.card')
 
 beforeEach(() => {
   vi.clearAllMocks()
   _resetLookups()
   _resetFormContract()
+  _resetDocumentSections()
   mockGet(CLIENT)
   api.patch.mockResolvedValue({})
   api.put.mockResolvedValue({})
@@ -221,9 +254,53 @@ describe('CompanyProfilePage', () => {
     renderPage()
     // the file name alone ("brand-guideline-v3.pdf") does not say what the
     // document IS — the type must be shown
-    await screen.findByText('Certificate of Incorporation')
-    expect(screen.getByText(/brand-guideline-v3\.pdf/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument()
+    await screen.findByText('Document History')
+    const certs = sectionCard('Certificates')
+    expect(within(certs).getByText('Certificate of Incorporation')).toBeInTheDocument()
+    expect(within(certs).getByText(/brand-guideline-v3\.pdf/)).toBeInTheDocument()
+    expect(within(certs).getByRole('button', { name: 'Download' })).toBeInTheDocument()
+  })
+
+  // Levi 2026-09-04: "this is the same for the body corporation upload document
+  // features" — download and remove from the section, not only the history.
+  it('files company documents into sections, empty ones included', async () => {
+    renderPage()
+    await screen.findByText('Document History')
+
+    expect(sectionCard('Certificates')).toBeInTheDocument()
+    const proof = sectionCard('Proof of Address')
+    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
+    expect(within(proof).getByRole('button', { name: 'Upload Document' })).toBeInTheDocument()
+
+    // The page-header button offered every type at once and is gone.
+    const header = document.querySelector('.pg-hdr')
+    expect(within(header).queryByRole('button', { name: 'Upload Document' })).toBeNull()
+  })
+
+  it('soft-deletes a company document from its section', async () => {
+    const user = userEvent.setup()
+    api.del.mockResolvedValue({})
+    renderPage()
+    await screen.findByText('Document History')
+
+    await user.click(within(sectionCard('Certificates')).getByRole('button', { name: 'Remove' }))
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove document' })
+    expect(within(dialog).getByText(/stays in Document History/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
+
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith('/documents/d1'))
+  })
+
+  it('scopes the upload picker to the section it was opened from', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Document History')
+
+    await user.click(
+      within(sectionCard('Proof of Address')).getByRole('button', { name: 'Upload Document' }))
+    await screen.findByRole('dialog', { name: 'Upload Document' })
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
+      '/documents/types?owner_type=company&category=address_proof'))
   })
 
   // -- Editing under a live case (wireframe_v11 "Edit conflicts with a live

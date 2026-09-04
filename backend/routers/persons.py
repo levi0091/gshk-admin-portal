@@ -37,14 +37,13 @@ _EDITABLE_FIELDS = {
 
 
 class IdentityDocumentIn(BaseModel):
-    """An identity document supplied alongside a new person.
+    """One identity document, as `POST /persons/{id}/identity-documents` takes it.
 
-    THE FIELD THAT WAS MISSING. A person could be created with names, a
-    nationality and a date of birth, and no way at all to record the number CR
-    files them by — the profile could only EDIT identity documents, so a person
-    created here had none and no screen offered to add one. Both NAR1 and NNC1
-    carry an individual's HKID or passport number for every director; a person
-    without one blocks the return at `nar1_mapper._individual_id`.
+    Both NAR1 and NNC1 carry an individual's HKID or passport number for every
+    director; a person without one blocks the return at
+    `nar1_mapper._individual_id`. The number is recorded on the PROFILE, in the
+    Identity Documents section, where the scan and the type-specific fields
+    live — creating a person does not ask for one (Levi 2026-09-04).
     """
 
     class Config:
@@ -59,6 +58,13 @@ class IdentityDocumentIn(BaseModel):
 
 
 class CreatePersonRequest(BaseModel):
+    # Matches `UpdatePersonRequest`. A field this model does not declare is
+    # REFUSED rather than dropped on the floor: `identity_document` used to be
+    # here and is not any more, and a caller still sending one has to be told
+    # so, not have the number silently discarded on the way to the database.
+    class Config:
+        extra = "forbid"
+
     full_name: str
     given_names: Optional[str] = None
     surname: Optional[str] = None
@@ -82,7 +88,6 @@ class CreatePersonRequest(BaseModel):
     place_of_birth: Optional[str] = None
     marital_status: Optional[str] = None
     residential_address_id: Optional[str] = None
-    identity_document: Optional[IdentityDocumentIn] = None
 
 
 class UpdatePersonRequest(BaseModel):
@@ -306,7 +311,10 @@ async def get_person(
         ).data
         if address:
             address["shared_by"] = address_service.count_references(sb, address["id"])
-    documents = document_service.list_documents(owner_kind="person", owner_id=person_id)
+    # Removed documents come back too — they are dropped from their section and
+    # kept, marked, in Document History.
+    documents = document_service.list_documents(
+        owner_kind="person", owner_id=person_id, include_deleted=True)
 
     return {
         **person,
@@ -322,39 +330,26 @@ async def create_person(
     body: CreatePersonRequest,
     user=Depends(require_permission("persons", "write")),
 ):
-    # Validated BEFORE the person is inserted: a mistyped HKID must refuse the
-    # whole creation, not leave a person behind with no identity document and
-    # an error message the operator has already navigated away from.
-    id_doc = _validated_identity_row(body.identity_document) if body.identity_document else None
-
     sb = get_supabase()
-    row = {k: v for k, v in body.model_dump(exclude={"identity_document"}).items()
-           if v is not None}
+    row = {k: v for k, v in body.model_dump().items() if v is not None}
     created = sb.table("persons").insert(row).execute().data
     if not created:
         raise HTTPException(status_code=400, detail="Person insert failed")
     person = created[0]
-
-    if id_doc:
-        sb.table("person_identity_documents").insert(
-            {**id_doc, "person_id": person["id"]}).execute()
 
     await log_event(
         case_id=None, user_id=user["id"],
         user_display_name=user["display_name"], action_type="PERSON_CREATED",
         event_code=audit_events.VP_NEW_MASTER_FILE,   # Viewpoint: New Master File
         company_name=person["full_name"],             # subject of the event
-        # A person is quoted by their identity number, which now exists at
-        # creation when one was supplied — previously it could not, because
-        # there was no field to type it into.
-        **audit_subject.for_person(
-            person, id_number=(id_doc or {}).get("id_number")),
+        # A person is quoted by an identity number, and a brand-new record has
+        # none: their documents are added on the profile, in the section that
+        # owns them. The reference fills itself in on the first one.
+        **audit_subject.for_person(person),
         entity_type="person", entity_id=str(person["id"]),
-        new_value=person["full_name"],
-        after_state={**row, **({"identity_document": id_doc} if id_doc else {})},
+        new_value=person["full_name"], after_state=row,
     )
-    # The screen needs the document back to render the card it just created.
-    return {**person, "identity_documents": [id_doc] if id_doc else []}
+    return person
 
 
 @router.patch("/{person_id}")
@@ -569,6 +564,16 @@ async def update_identity_document(
         .eq("id", document_id).execute()
     ).data[0]
 
+    # Promoting one demotes the rest. Without this, "Make primary" produced a
+    # SECOND primary: `person_registry` and `audit_subject.primary_id_number`
+    # both order on `is_primary DESC, created_at ASC`, so the person would keep
+    # being quoted by whichever row was older — the button would appear to do
+    # nothing. Demotion is never written directly; it is only ever a
+    # consequence of a promotion.
+    if updates.get("is_primary"):
+        (sb.table("person_identity_documents").update({"is_primary": False})
+         .eq("person_id", person_id).neq("id", document_id).execute())
+
     # WHOSE document. These rows carried no subject name at all, so an edit to
     # a passport number read as "Change Compliance Details" against nothing.
     # The number quoted is the one AFTER the edit — the trail says which record
@@ -730,6 +735,78 @@ async def save_identity_document(
     if entries:
         await log_events(entries)
     return {**saved, "scan": scan}
+
+
+@router.delete("/{person_id}/identity-documents/{document_id}")
+async def delete_identity_document(
+    person_id: str,
+    document_id: str,
+    user=Depends(require_permission("persons", "write")),
+):
+    """Remove one identity document. Its scan is kept, in Document History.
+
+    THE RECORD IS DELETED OUTRIGHT AND THAT IS THE SAFE OPTION, which is worth
+    saying because everything else in this repo soft-deletes. A
+    `person_identity_documents` row is read by `nar1_mapper._identity`, by the
+    `person_registry` view and by `audit_subject.primary_id_number`, none of
+    which know about a deleted flag — a soft-deleted row would go on being FILED
+    WITH CR after an operator had removed it, which is the failure this is
+    avoiding, not risking. The row's full before-state goes to the audit log,
+    which is insert-only, so the number is recoverable from the trail.
+
+    The SCAN is a document like any other and follows the documents rule: soft
+    deleted (`status='deleted'`, object retained), so it leaves the section and
+    stays in Document History marked as removed.
+    """
+    sb = get_supabase()
+    current = (
+        sb.table("person_identity_documents").select("*")
+        .eq("id", document_id).eq("person_id", person_id).single().execute()
+    ).data
+    if not current:
+        raise HTTPException(status_code=404, detail="Identity document not found")
+
+    person = _person_subject(sb, person_id)
+
+    # The scan first. If Storage or the documents table refuses, the identity
+    # row is still here and the operator retries one action — rather than
+    # finding the number gone and the file still listed as current.
+    if current.get("scan_document_id"):
+        await document_service.soft_delete_document(
+            document_id=current["scan_document_id"], user=user)
+
+    sb.table("person_identity_documents").delete().eq("id", document_id).execute()
+
+    # If the removed one was primary, the person now has no primary at all and
+    # would be quoted by whichever row is oldest. Promote the oldest survivor
+    # explicitly, so the header and the audit reference agree with each other.
+    if current.get("is_primary"):
+        survivors = (
+            sb.table("person_identity_documents").select("id")
+            .eq("person_id", person_id).order("created_at").limit(1).execute().data
+        ) or []
+        if survivors:
+            (sb.table("person_identity_documents").update({"is_primary": True})
+             .eq("id", survivors[0]["id"]).execute())
+
+    await log_event(
+        case_id=None, user_id=user["id"],
+        user_display_name=user["display_name"],
+        action_type="PERSON_FIELD_UPDATED",
+        event_code=audit_events.VP_COMPLIANCE,
+        company_name=person.get("full_name"),
+        **audit_subject.for_person(
+            person, id_number=audit_subject.primary_id_number(sb, person_id)),
+        entity_type="person", entity_id=str(person_id),
+        old_value=f"{current.get('id_type')} {current.get('id_number')}",
+        new_value="removed",
+        # The whole row, because the row is gone: this entry is the only record
+        # of what the number was.
+        before_state={k: v for k, v in current.items()
+                      if k not in ("id", "person_id", "vp_source_key")},
+        after_state={"removed": True},
+    )
+    return {"deleted": True, "id": document_id}
 
 
 @router.put("/{person_id}/residential-address")
