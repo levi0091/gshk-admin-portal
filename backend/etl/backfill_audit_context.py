@@ -182,6 +182,27 @@ _STEPS: list[tuple[str, str]] = [
             OR (entity_type IN ('address', 'document')
                 AND subject_kind IN ('person', 'case', 'company')))
     """),
+    # The retired `documents` module, repaired here as well as in migration 037
+    # ON PURPOSE. 037 relabels history once; this runs whenever it is needed,
+    # and it IS needed again: a red Backend CI means Railway never deploys, so
+    # the portal keeps writing `documents` from the old code long after the
+    # migration has run (it happened within minutes on 2026-09-04 — one upload).
+    # The step above cannot catch those: it only touches `module IS NULL`, and
+    # these rows have a module, just the wrong one.
+    ("retired 'documents' module", """
+        UPDATE audit_log
+        SET module = CASE subject_kind
+              WHEN 'person'  THEN 'natural_person'
+              WHEN 'company' THEN 'body_corporate'
+              WHEN 'case'    THEN 'post_incorporation'
+            END
+        WHERE module = 'documents'
+          -- Only where the kind resolves. A row we cannot attribute keeps the
+          -- retired label rather than being rewritten to NULL: a NULL module
+          -- renders as a dash and reads as "imported from Viewpoint", which a
+          -- document upload never is.
+          AND subject_kind IN ('person', 'company', 'case')
+    """),
     ("native subject_id", r"""
         UPDATE audit_log
         SET subject_id = CASE
