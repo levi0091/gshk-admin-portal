@@ -325,12 +325,18 @@ def list_documents(*, owner_kind: str, owner_id: str,
     return (q.order("document_type_code").execute().data) or []
 
 
-def create_signed_url(document_id: str) -> dict:
+def create_signed_url(document_id: str, version_number: int | None = None) -> dict:
     """Signed URL that DOWNLOADS the file rather than rendering it in the tab.
 
     Supabase serves objects inline by default, so a PDF just opens in the
     browser. Passing `download` makes Storage return
     Content-Disposition: attachment, which is what a "Download" button should do.
+
+    `version_number` names a SUPERSEDED version. Without it the document history
+    was a list of versions whose Download buttons all fetched the current one:
+    the screen offered v1, v2 and v3, and handed back v3 three times under three
+    file names. Every version keeps its own `storage_path`, so the older bytes
+    were there the whole time — nothing was reading them.
     """
     sb = get_supabase()
     doc = (
@@ -341,10 +347,24 @@ def create_signed_url(document_id: str) -> dict:
     if doc.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Document deleted")
 
-    file_name = doc.get("file_name") or "document"
+    source = doc
+    if version_number is not None and version_number != doc.get("current_version"):
+        version = (
+            sb.table("document_versions").select("*")
+            .eq("document_id", document_id).eq("version_number", version_number)
+            .limit(1).execute()
+        ).data
+        if not version:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Version {version_number} of this document does not exist",
+            )
+        source = version[0]
+
+    file_name = source.get("file_name") or doc.get("file_name") or "document"
     try:
-        signed = sb.storage.from_(doc.get("storage_bucket") or BUCKET).create_signed_url(
-            doc["storage_path"], _SIGNED_URL_TTL, options={"download": file_name}
+        signed = sb.storage.from_(source.get("storage_bucket") or BUCKET).create_signed_url(
+            source["storage_path"], _SIGNED_URL_TTL, options={"download": file_name}
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Signed URL failed: {exc}")

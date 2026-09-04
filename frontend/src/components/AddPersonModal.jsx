@@ -37,6 +37,8 @@ const FIELDS = [
   { key: 'occupation', label: 'Occupation' },
   { key: 'email', label: 'Email Address', type: 'email' },
   { key: 'phone', label: 'Phone' },
+  // A TCSP licence held by an individual (migration 038).
+  { key: 'tcsp_licence_no', label: 'TCSP Licence No.' },
 ]
 
 export default function AddPersonModal({ onClose, onCreated }) {

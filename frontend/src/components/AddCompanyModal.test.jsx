@@ -285,3 +285,65 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 })
+
+// ── Parity with the profile's edit form (Levi 2026-09-04, item 1) ────────────
+
+describe('AddCompanyModal — every field the profile can edit', () => {
+  beforeEach(() => {
+    api.get.mockResolvedValue({
+      cr_country: [{ code: 'HK', label: 'Hong Kong' }],
+      cr_company_type: [{ code: 'P', label: 'Private' }],
+      cr_business_nature: [{ code: '001', label: 'Crop and animal production' }],
+    })
+  })
+
+  it('offers the six fields that used to be edit-only', async () => {
+    // Creating a company from a client's own paperwork meant creating a
+    // half-record, saving it, reopening it and typing the rest into a second
+    // form with different labels — and three of these six (Chinese Name,
+    // CR No., Incorporation Date) are on the certificate the operator is
+    // reading from at the moment they press New Company.
+    renderModal()
+    for (const label of ['Chinese Name', 'CR No.', 'Incorporation Date',
+                         'Business Nature', 'Mortgages and Charges', 'Case Notes']) {
+      expect(await screen.findByLabelText(label)).toBeInTheDocument()
+    }
+  })
+
+  it('posts them, and lets the backend derive the business-nature description', async () => {
+    // CR derives `natureDesc` from `nature`, so the operator picks a code and
+    // the description follows. A typed description could disagree with the
+    // code it is supposed to describe.
+    const user = userEvent.setup()
+    renderModal()
+    await fillRequired(user)
+    await user.type(screen.getByLabelText('Chinese Name'), '天際顧問')
+    await user.type(screen.getByLabelText('CR No.'), '3300012')
+    await user.type(screen.getByLabelText('Mortgages and Charges'), 'Nil')
+    await waitFor(() => expect(
+      screen.getByLabelText('Business Nature').querySelector('option[value="001"]'))
+      .not.toBeNull())
+    await user.selectOptions(screen.getByLabelText('Business Nature'), '001')
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    const body = api.post.mock.calls[0][1]
+    expect(body.company_name_zh).toBe('天際顧問')
+    expect(body.cr_number).toBe('3300012')
+    expect(body.mortgages_total).toBe('Nil')
+    expect(body.business_nature_code).toBe('001')
+    expect(body).not.toHaveProperty('business_nature_desc')
+  })
+
+  it('still omits the optional fields that were left blank', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await fillRequired(user)
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    const body = api.post.mock.calls[0][1]
+    expect(body).not.toHaveProperty('case_notes')
+    expect(body).not.toHaveProperty('company_name_zh')
+  })
+})

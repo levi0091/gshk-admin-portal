@@ -51,6 +51,14 @@ const EDITABLE = [
   { key: 'occupation', label: 'Occupation' },
   { key: 'email', label: 'Email Address' },
   { key: 'phone', label: 'Phone' },
+  // A TCSP licence held by an INDIVIDUAL (migration 038). The Company Secretary
+  // tile on every company profile prints "TCSP Licence No.", and it could only
+  // ever read the number off a corporate party -- so a secretary who is a
+  // licensed person rendered an em dash and there was no field anywhere in the
+  // portal that would fill it. The AMLO licenses individuals as trust or company
+  // service providers exactly as it licenses bodies corporate.
+  { key: 'tcsp_licence_no', label: 'TCSP Licence No.' },
+  { key: 'tcsp_exemption_reason', label: 'TCSP Exemption Reason' },
 ]
 
 // What an identity document holds is now decided by its TYPE, and served from

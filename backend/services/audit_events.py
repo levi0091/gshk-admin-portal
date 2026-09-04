@@ -137,6 +137,9 @@ _COMPANY_FIELD_CODES = {
     "aoa_agm_waived": VP_MA_DATES,
     # Registered office
     "registered_address_id": VP_REG_OFFICE,
+    # NAR1 s6 `telNo`. Statutory rather than general for the same reason as the
+    # figures above: this number is printed on the return CR receives.
+    "company_phone": VP_STATUTORY,
     # General folder
     "case_notes": VP_GENERAL,
     "assigned_to": VP_GENERAL,

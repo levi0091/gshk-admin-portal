@@ -19,7 +19,7 @@ from services import (
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE, COMPANY_TYPE, CURRENCY)
 from services.cr_forms.readiness import filing_problems
-from services.cr_forms import record_types
+from services.cr_forms import control_nature, record_types
 
 router = APIRouter()
 
@@ -161,8 +161,12 @@ _RELATIONS = {
     },
     "beneficial-owners": {
         "table": "beneficial_owners",
-        "fields": {"owner_type", "percent_interest", "percent_vote",
-                   "date_from", "date_to", "is_current"},
+        # `percent_interest` / `percent_vote` are still writable although the
+        # profile no longer shows them (migration 038): the columns hold ETL'd
+        # Viewpoint values, and an endpoint that refuses a field the database
+        # still carries would break any caller correcting one.
+        "fields": {"owner_type", "nature_of_control", "percent_interest",
+                   "percent_vote", "date_from", "date_to", "is_current"},
     },
 }
 
@@ -184,6 +188,17 @@ class CreateCompanyRequest(BaseModel):
     registered_address_id: Optional[str] = None
     assigned_to: Optional[str] = None
     case_notes: Optional[str] = None
+    # PARITY WITH THE EDIT FORM (Levi 2026-09-04). Every field the profile can
+    # edit is now settable at creation. These three were the gap: a company
+    # created in the portal had to be created, saved, then immediately reopened
+    # and edited to record what the operator already had in front of them.
+    #
+    # `business_nature_desc` is deliberately NOT here — it is derived from the
+    # code by the handler, exactly as PATCH derives it, because CR derives
+    # `natureDesc` from `nature` and a typed description could disagree with the
+    # code it describes.
+    business_nature_code: Optional[str] = None
+    mortgages_total: Optional[str] = None
     # Add Company form (wireframe_v7): these live in `addresses` / `contacts`,
     # not on `entities` — created alongside the company below.
     registered_address: Optional[str] = None
@@ -325,10 +340,21 @@ class LinkPartyRequest(BaseModel):
     shares_held: Optional[float] = None
     amount_paid: Optional[float] = None
     owner_type: Optional[str] = None
+    nature_of_control: Optional[str] = None
     percent_interest: Optional[float] = None
     percent_vote: Optional[float] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
+    # HOW A SHARE TRANSFER IS RECORDED (Levi 2026-09-04: "what happens when a
+    # shareholder loses his/her share to someone else").
+    #
+    # By setting this false on the outgoing holder, never by DELETE. The
+    # NAR1 mapper skips a holding with `is_current` false (`_schedule_1`), so a
+    # ceased member drops off the return exactly as removing the row would --
+    # but the row survives, which is what makes the transfer legible in the
+    # audit trail and keeps the register showing who held the shares before.
+    # Deleting is for a link that should never have existed.
+    is_current: Optional[bool] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -521,8 +547,13 @@ async def get_company(
     # Party rows embed the linked person; corporate parties are resolved by a
     # second lookup (entity_id AND corporate_entity_id both FK `entities`, so a
     # PostgREST embed on `entities` would be ambiguous).
+    # `tcsp_licence_no` is here because a company secretary is often a NATURAL
+    # PERSON, and the tile used to read the licence only off the corporate
+    # party — so an individual licensed under the AMLO rendered as an em dash
+    # with nowhere in the portal to fill it in (migration 038).
     person_cols = ("persons(id, full_name, full_name_zh, email, phone, "
-                   "nationality, date_of_birth, residential_address_id)")
+                   "nationality, date_of_birth, residential_address_id, "
+                   "tcsp_licence_no)")
     # Officers and secretaries both live in entity_officers, split by role.
     # (company_secretaries is a denormalized ETL mirror of the same rows and is
     # NOT corporate-party aware — it has no corporate_entity_id — so the profile
@@ -707,11 +738,25 @@ async def create_company(
                     f"recognises. The annual return takes "
                     f"{', '.join(f'{c} ({l})' for c, l in COMPANY_TYPE)}."),
         )
+    # Same closed list, same derivation, same refusal as PATCH. A code accepted
+    # here and refused there would let a company be born unable to save itself.
+    if body.business_nature_code:
+        code = str(body.business_nature_code).strip()
+        description = BUSINESS_NATURE.get(code)
+        if description is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{code!r} is not a CR business nature code",
+            )
+
     sb = get_supabase()
     payload = body.model_dump()
     address_line = payload.pop("registered_address", None)
     phone = payload.pop("company_phone", None)
     row = {k: v for k, v in payload.items() if v is not None}
+    if row.get("business_nature_code"):
+        row["business_nature_code"] = str(row["business_nature_code"]).strip()
+        row["business_nature_desc"] = BUSINESS_NATURE[row["business_nature_code"]]
 
     # The form's free-text registered address becomes an `addresses` row that the
     # entity points at (structured line1; the profile can refine it later).
@@ -757,19 +802,35 @@ async def update_company(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    # EMPTY STRING MEANS CLEAR THE FIELD, and is stored as NULL.
+    #
+    # A blank is a real answer -- a company can stop having a Chinese name, and
+    # a CR number typed into the wrong box has to be removable. `None` cannot
+    # carry that intent through this endpoint (it is how "not mentioned" is
+    # spelt, and is filtered out above), so "" is the wire form and it is
+    # normalised here, once, before every validator below -- otherwise clearing
+    # Business Nature would be refused as an unknown CR code.
+    updates = {k: (None if isinstance(v, str) and not v.strip() else v)
+               for k, v in updates.items()}
+
     # Business nature is a closed list of CR's, and the description follows the
     # code rather than being typed -- so an unknown code is refused here rather
     # than reaching CR, and the description is derived rather than trusted.
     if "business_nature_code" in updates:
-        code = str(updates["business_nature_code"]).strip()
-        description = BUSINESS_NATURE.get(code)
-        if description is None:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{code!r} is not a CR business nature code",
-            )
-        updates["business_nature_code"] = code
-        updates["business_nature_desc"] = description
+        code = updates["business_nature_code"]
+        if code is None:
+            # The description is derived, so it goes with the code it describes.
+            updates["business_nature_desc"] = None
+        else:
+            code = str(code).strip()
+            description = BUSINESS_NATURE.get(code)
+            if description is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{code!r} is not a CR business nature code",
+                )
+            updates["business_nature_code"] = code
+            updates["business_nature_desc"] = description
 
     sb = get_supabase()
     current = (
@@ -783,7 +844,7 @@ async def update_company(
     # CR's codes reached it. Grandfathered the same way a legacy HKID is (D4):
     # the value already on the row is always allowed back, so re-saving an
     # untouched profile can never be refused. Only a NEW value must be CR's.
-    if "company_type" in updates:
+    if updates.get("company_type") is not None:
         value = str(updates["company_type"]).strip()
         if value not in _COMPANY_TYPE_CODES and value != (current.get("company_type") or ""):
             raise HTTPException(
@@ -819,6 +880,85 @@ async def update_company(
         if old_val != new_val
     ])
     return updated
+
+
+class CompanyPhoneRequest(BaseModel):
+    """The company's telephone number, or the absence of one.
+
+    `None` is a real answer and has to survive the round trip — CR's `telNo` is
+    not mandatory — so this cannot use the "drop the nulls" convention the
+    field-patch models use.
+    """
+    class Config:
+        extra = "forbid"
+
+    company_phone: Optional[str] = None
+
+
+@router.put("/{company_id}/company-phone")
+async def update_company_phone(
+    company_id: str,
+    body: CompanyPhoneRequest,
+    user=Depends(require_permission("companies", "write")),
+):
+    """Set (or clear) the company's phone number.
+
+    THE GAP THIS CLOSES. `company_phone` was accepted by POST /companies,
+    written into `contacts`, printed on the profile — and then unreachable.
+    There was no endpoint and no control anywhere that could change it, so a
+    number mistyped at creation was permanent, and CR's NAR1 maps `telNo`
+    straight off this column. A wrong number went onto a statutory filing with
+    no way to correct it short of SQL.
+
+    It is a PUT on its own path, not a field on PATCH /companies, because it
+    writes a different table — the same reason the registered address has its
+    own route.
+    """
+    value = (body.company_phone or "").strip() or None
+
+    sb = get_supabase()
+    company = (
+        sb.table("entities").select("id, company_name, br_number")
+        .eq("id", company_id).single().execute()
+    ).data
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    existing = (
+        sb.table("contacts").select("*")
+        .eq("entity_id", company_id).eq("contact_type", "phone")
+        .order("is_preferred", desc=True).limit(1).execute()
+    ).data
+    old = (existing[0].get("contact_value") if existing else None) or None
+
+    if existing:
+        row = (sb.table("contacts").update({"contact_value": value})
+               .eq("id", existing[0]["id"]).execute()).data
+        result = row[0] if row else {**existing[0], "contact_value": value}
+    elif value is None:
+        # Nothing stored and nothing to store: inserting a row whose value is
+        # NULL would claim a phone record exists.
+        result = {"entity_id": company_id, "contact_type": "phone",
+                  "contact_value": None}
+    else:
+        result = (sb.table("contacts").insert({
+            "entity_id": company_id, "contact_type": "phone",
+            "contact_value": value, "is_preferred": True,
+        }).execute()).data[0]
+
+    if old != value:
+        await log_event(
+            case_id=company_id, user_id=user["id"],
+            user_display_name=user["display_name"], action_type="CASE_FIELD_UPDATED",
+            event_code=audit_events.company_field_code("company_phone"),
+            company_name=company.get("company_name"),
+            **audit_subject.for_company(company),
+            entity_type="entity", entity_id=str(company_id),
+            old_value=old, new_value=value,
+            before_state={"field": "company_phone", "old": old},
+            after_state={"field": "company_phone", "new": value},
+        )
+    return result
 
 
 @router.put("/{company_id}/registered-address")
@@ -1203,6 +1343,53 @@ def _resolve_party_type(person_id: Optional[str], corporate_entity_id: Optional[
     return "individual" if person_id else "corporate"
 
 
+def _validate_link_attributes(sb, relation: str, values: dict,
+                              current: Optional[dict] = None) -> dict:
+    """Refuse here what the DATABASE would refuse, with a sentence about the field.
+
+    THE BUG THIS CLOSES (Levi 2026-09-04). Share Class was a free-text box.
+    Typing "1" sent `share_class_id: "1"` at a `uuid NOT NULL REFERENCES
+    share_classes(id)` column; PostgREST raised 22P02, nothing caught it, and
+    the 500 came back from outside the CORS middleware -- so the browser
+    reported the API as unreachable for a request the API had understood
+    perfectly and correctly rejected. `services/api_errors.py` now makes that
+    reply readable; this makes it unnecessary.
+
+    Membership is checked as well as shape: a share class belonging to ANOTHER
+    company is a valid uuid and a valid FK, so the database takes it happily
+    and the company then files a Schedule 1 naming a class it does not have.
+    """
+    out = dict(values)
+
+    share_class_id = out.get("share_class_id")
+    if relation == "shareholders" and share_class_id:
+        # `.eq` on a uuid column with a non-uuid string is the 22P02 above, so
+        # the format is checked in Python before the value reaches PostgREST.
+        entity_id = (current or {}).get("entity_id") or out.get("entity_id")
+        classes = (sb.table("share_classes").select("id, class_name")
+                   .eq("entity_id", entity_id).execute().data) or []
+        known = {row["id"]: row.get("class_name") for row in classes}
+        if str(share_class_id) not in known:
+            offered = ", ".join(
+                f"{name}" for name in sorted(filter(None, known.values())))
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{share_class_id!r} is not a class of shares this company "
+                    "has. " + (
+                        f"Its classes are: {offered}."
+                        if offered else
+                        "It has no share capital recorded yet — add a class "
+                        "under Share Capital first.")),
+            )
+
+    for field in ("owner_type", "nature_of_control"):
+        if field in out:
+            out[field] = control_nature.validate(
+                field, out[field], (current or {}).get(field))
+    return out
+
+
 def _company_subject(sb, company_id: str) -> dict:
     """The company an audit row is about — the name to show, the BRN to quote.
 
@@ -1276,6 +1463,7 @@ async def link_party(
         raise HTTPException(status_code=422, detail="share_class_id is required for shareholders")
 
     sb = get_supabase()
+    row = _validate_link_attributes(sb, relation, row)
     created = sb.table(cfg["table"]).insert(row).execute().data
     if not created:
         raise HTTPException(status_code=400, detail="Link insert failed")
@@ -1317,6 +1505,11 @@ async def update_link(
     current = _scope_to_relation(q, relation, cfg).single().execute().data
     if not current:
         raise HTTPException(status_code=404, detail="Link not found")
+
+    # After the row is loaded, so a legacy `owner_type` can be grandfathered
+    # against what is actually stored and a share class can be checked against
+    # the company the link belongs to rather than one named in the request.
+    updates = _validate_link_attributes(sb, relation, updates, current)
 
     updated = (
         sb.table(cfg["table"]).update(updates).eq("id", link_id).execute()

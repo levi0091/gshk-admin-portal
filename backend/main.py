@@ -9,10 +9,20 @@ from routers import (auth, users, roles, cases, cases_audit, audit, companies,
                      persons, documents, form_contract, lookups,
                      public_approval, tpsi)
 from services.app_env import is_production
+from services import api_errors
 
 app = FastAPI(title="G-FlowDesk Admin API", version="0.1.0")
 
 origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173").split(",")]
+
+# ORDER IS LOAD-BEARING, and it is the opposite of how it reads.
+# `add_middleware` inserts at the FRONT of the stack, so the middleware added
+# LAST ends up outermost. CORS has to be outermost, which means the error
+# envelope has to be installed first -- otherwise an unhandled error is answered
+# above the CORS layer, the reply carries no Access-Control-Allow-Origin, the
+# browser blocks it, `fetch` rejects, and every screen reports the API as
+# unreachable for a request it answered in 40ms. See services/api_errors.py.
+api_errors.install(app)
 
 app.add_middleware(
     CORSMiddleware,

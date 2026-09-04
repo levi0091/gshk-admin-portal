@@ -7,8 +7,14 @@ import { api } from './api.js'
  * the URL with Storage's `download` flag (Content-Disposition: attachment), and
  * an anchor with `download` makes the browser save it rather than navigate.
  */
-export async function downloadDocument(documentId) {
-  const { url, file_name } = await api.get(`/documents/${documentId}/download`)
+export async function downloadDocument(documentId, versionNumber = null) {
+  // `versionNumber` fetches a SUPERSEDED version. The history list gives every
+  // version a Download button, and without this every one of them signed the
+  // current version's path — three buttons, one file, three names.
+  const path = versionNumber == null
+    ? `/documents/${documentId}/download`
+    : `/documents/${documentId}/versions/${versionNumber}/download`
+  const { url, file_name } = await api.get(path)
   saveUrl(url, file_name || '')
 }
 

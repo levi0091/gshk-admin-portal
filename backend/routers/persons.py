@@ -33,6 +33,11 @@ _EDITABLE_FIELDS = {
     "email", "phone", "date_of_birth", "gender", "nationality",
     "nationality_code", "nationality_origin", "occupation", "place_of_birth",
     "marital_status", "date_of_death", "residential_address_id",
+    # A trust-or-company-service-provider licence held by an INDIVIDUAL
+    # (migration 038). The Company Secretary tile printed this field and could
+    # only ever read it off a corporate party, so a licensed person showed an
+    # em dash and no screen in the portal could set it.
+    "tcsp_licence_no", "tcsp_exemption_reason",
 }
 
 
@@ -88,6 +93,12 @@ class CreatePersonRequest(BaseModel):
     place_of_birth: Optional[str] = None
     marital_status: Optional[str] = None
     residential_address_id: Optional[str] = None
+    # A TCSP licence held by an INDIVIDUAL (migration 038). Same parity rule as
+    # `nationality_origin` above -- and it has to be DECLARED, not merely
+    # allowed: `extra = "forbid"` above means an undeclared field is a 422, so
+    # the New Person form could not send one at all.
+    tcsp_licence_no: Optional[str] = None
+    tcsp_exemption_reason: Optional[str] = None
 
 
 class UpdatePersonRequest(BaseModel):
@@ -114,6 +125,8 @@ class UpdatePersonRequest(BaseModel):
     marital_status: Optional[str] = None
     date_of_death: Optional[str] = None
     residential_address_id: Optional[str] = None
+    tcsp_licence_no: Optional[str] = None
+    tcsp_exemption_reason: Optional[str] = None
 
 
 def _person_subject(sb, person_id: str) -> dict:

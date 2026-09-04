@@ -1,6 +1,39 @@
 import { formatDateTime } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 
+//: How many type colours exist. Must match the `.doc-type-c0..c7` rules in
+//: index.css — a hash landing outside them would render an unstyled chip.
+const TYPE_COLOURS = 8
+
+/**
+ * A stable colour index for a document type (Levi 2026-09-04: "maybe a
+ * different document type a different colour").
+ *
+ * Deterministic on the CODE, not on position in the list: a type must keep its
+ * colour when another type is uploaded above it, or the colour is telling you
+ * about the sort order rather than about the document.
+ *
+ * COLOUR IS REINFORCEMENT, NEVER THE MESSAGE. Every chip also spells the type
+ * out and CURRENT / SUPERSEDED is a separate tag with its own words, so nothing
+ * here requires telling two hues apart. That is also why the eight are kept off
+ * `--carrot` (needs attention) and `--bang` (approved): a document type that
+ * happened to hash onto one of those would be claiming a status it has not got.
+ */
+export function typeColour(code) {
+  let hash = 0
+  for (const ch of String(code || '')) hash = (hash * 31 + ch.charCodeAt(0)) % 100000
+  return hash % TYPE_COLOURS
+}
+
+/** What the document IS, set loud and in its own colour. */
+export function TypeChip({ doc }) {
+  return (
+    <span className={`doc-type-chip doc-type-c${typeColour(doc.document_type_code)}`}>
+      {doc.document_types?.label || doc.document_type_code}
+    </span>
+  )
+}
+
 /**
  * The document sections shared by the person and company profiles.
  *
@@ -50,7 +83,7 @@ export function SectionDocuments({ documents, busy, onRemove }) {
     <div className="sec-doc" key={doc.id}>
       <div className="sec-doc-l">
         <div className="sec-doc-type">
-          {doc.document_types?.label || doc.document_type_code}
+          <TypeChip doc={doc} />
         </div>
         <div className="sec-doc-sub">
           {[doc.title, doc.file_name,
@@ -94,7 +127,10 @@ export function DocumentHistory({ documents, sectionLabels }) {
       <div key={doc.id} className={removed ? 'doc-hist-removed' : undefined}>
         <div className="doc-hist-type">
           {section && <span className="doc-hist-cat">{section}</span>}
-          {doc.document_types?.label || doc.document_type_code}
+          {/* The type is what someone scanning this list is looking for, so it
+              is the loud element — same chip, same colour, as the section
+              above, so one document reads the same in both places. */}
+          <TypeChip doc={doc} />
           {removed && <span className="dv-tag dv-rmv">REMOVED</span>}
           <span className="cnt">{versions.length} version{versions.length === 1 ? '' : 's'}</span>
         </div>
@@ -117,7 +153,15 @@ export function DocumentHistory({ documents, sectionLabels }) {
               {/* A removed document is not downloadable — `create_signed_url`
                   404s a deleted one, so offering the button would be a lie. */}
               {!removed && (
-                <button className="dv-dl" onClick={() => downloadDocument(doc.id)}>Download</button>
+                // THE VERSION, not the document. Every button in this list used
+                // to sign the CURRENT version's path, so v1 and v2 both handed
+                // back v3 under three different file names — the older bytes
+                // were in `document_versions.storage_path` the whole time and
+                // nothing read them.
+                <button className="dv-dl"
+                        onClick={() => downloadDocument(doc.id, latest ? null : v.version_number)}>
+                  Download
+                </button>
               )}
             </div>
           )

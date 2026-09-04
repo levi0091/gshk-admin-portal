@@ -643,7 +643,7 @@ tbody tr.clickable { cursor: pointer; }
   border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; margin-bottom: 8px;
 }
 .sec-doc-l { min-width: 0; }
-.sec-doc-type { font-size: 12.5px; font-weight: 700; color: var(--t-head); }
+.sec-doc-type { display: flex; align-items: center; margin-bottom: 3px; }
 .sec-doc-sub {
   font-size: 11px; color: var(--t-muted); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -678,6 +678,37 @@ tbody tr.clickable { cursor: pointer; }
 .doc-hist-removed { opacity: .72; }
 .doc-ver .dv-meta { color: var(--t-muted); }
 .doc-ver .dv-dl { color: var(--indigo); font-weight: 600; cursor: pointer; background: none; border: none; }
+.doc-ver .dv-dl:hover { color: var(--carrot); }
+
+/* ── DOCUMENT TYPE CHIP ───────────────────────────────────
+   The document TYPE is the thing being scanned for, so it is the loud element:
+   a chip, uppercase, 11px against the 12px file name beside it. Colour is keyed
+   to the type code (components/DocumentSections.jsx `typeColour`) so the same
+   type is the same colour in its section, in the history, and on every profile.
+
+   COLOUR IS REINFORCEMENT, NEVER THE MESSAGE. Every chip also spells the type
+   out, and CURRENT / SUPERSEDED is a separate tag with its own words — nothing
+   here requires telling two hues apart. That is also why these eight are kept
+   out of the brand's semantic colours: --carrot means "needs attention" and
+   --bang means "approved" everywhere else in this app, and a document type that
+   happened to hash onto one of those would be claiming a status it does not
+   have. c1 and c2 are the brand's indigo and a muted carrot because the
+   palette has to look like this product; the other six are extensions used for
+   nothing but this chip. */
+.doc-type-chip {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  font-size: 11px; font-weight: 700; letter-spacing: .03em;
+  padding: 3px 9px; border-radius: var(--r-xs); text-transform: uppercase;
+}
+.doc-type-c0 { color: #242C66; background: #E9EAF0; }
+.doc-type-c1 { color: #9A4114; background: #FEF0EB; }
+.doc-type-c2 { color: #0B5E4A; background: #E4F1EE; }
+.doc-type-c3 { color: #0B5568; background: #E3EFF3; }
+.doc-type-c4 { color: #5E2C74; background: #F0E9F4; }
+.doc-type-c5 { color: #7A5A00; background: #FBF3DC; }
+.doc-type-c6 { color: #8A2544; background: #FAE8ED; }
+.doc-type-c7 { color: #3B4A62; background: #EAEEF3; }
+
 
 /* ── DOCUMENT UPLOAD + LINK PARTY (wireframe_v7 block 7) ─── */
 /* One definition — it was inlined identically in three modals. */

@@ -107,6 +107,22 @@ async def download_document(
     return document_service.create_signed_url(document_id)
 
 
+@router.get("/{document_id}/versions/{version_number}/download")
+async def download_document_version(
+    document_id: str,
+    version_number: int,
+    user=Depends(require_permission("documents", "read")),
+):
+    """The same, for a SUPERSEDED version.
+
+    The document history lists every version with a Download button, and every
+    one of them used to sign the current version's path — so v1 and v2 both
+    handed back v3. Each row in `document_versions` carries its own
+    `storage_path`; this reads it.
+    """
+    return document_service.create_signed_url(document_id, version_number)
+
+
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: str,

@@ -93,6 +93,17 @@ const LOOKUPS = {
                        { code: '001', label: 'Crop and animal production' }],
   cr_currency: [{ code: 'HKD', label: 'HKD - Hong Kong Dollar' },
                 { code: 'RMB', label: 'RMB - Ren Min Bi' }],
+  share_class_name: [{ code: 'Ordinary', label: 'Ordinary' },
+                     { code: 'Ordinary A', label: 'Ordinary A' },
+                     { code: 'Preference', label: 'Preference' }],
+  bo_owner_type: [{ code: 'ubo', label: 'Ultimate Beneficial Owner' },
+                  { code: 'significant_controller', label: 'Significant Controller' }],
+  bo_nature_of_control: [
+    { code: 'over_25_percent',
+      label: 'Holds more than 25% of the issued shares of the company' },
+    { code: 'significant_influence',
+      label: 'Has the right to exercise, or actually exercises, significant '
+           + 'influence or control over the company' }],
 }
 
 // What CR requires of each profile column, as GET /form-contract serves it.
@@ -289,6 +300,53 @@ describe('CompanyProfilePage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
 
     await waitFor(() => expect(api.del).toHaveBeenCalledWith('/documents/d1'))
+  })
+
+  it('downloads the VERSION that was clicked, not always the current one', async () => {
+    // Every Download button in the history used to sign the CURRENT version's
+    // path, so v1 and v2 both handed back v2 under two different file names.
+    // The older bytes have always been in `document_versions.storage_path`;
+    // nothing read them.
+    const user = userEvent.setup()
+    mockGet({
+      ...CLIENT,
+      documents: [{
+        id: 'd1', document_type_code: 'coi', current_version: 2, status: 'active',
+        file_name: 'coi-v2.pdf', updated_at: '2026-06-04T09:30:00Z',
+        document_types: { code: 'coi', label: 'Certificate of Incorporation',
+                          category: 'certificate' },
+        document_versions: [
+          { id: 'v1', version_number: 1, file_name: 'coi-v1.pdf',
+            created_at: '2026-01-05T09:30:00Z' },
+          { id: 'v2', version_number: 2, file_name: 'coi-v2.pdf',
+            created_at: '2026-06-04T09:30:00Z' },
+        ],
+      }],
+    })
+    renderPage()
+    await screen.findByText('Document History')
+
+    const superseded = (await screen.findByText('SUPERSEDED')).closest('.doc-ver')
+    await user.click(within(superseded).getByRole('button', { name: 'Download' }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
+      '/documents/d1/versions/1/download'))
+  })
+
+  it('sets the document TYPE in its own colour, in both places (item 13)', async () => {
+    // Levi 2026-09-04: "make it clearer maybe in bigger font or color to make
+    // it more prominent the type of document it is. maybe a different document
+    // type a different colour". The colour is keyed to the type CODE, so the
+    // same type reads the same in its section and in the history.
+    renderPage()
+    await screen.findByText('Document History')
+
+    const chips = document.querySelectorAll('.doc-type-chip')
+    expect(chips.length).toBeGreaterThanOrEqual(2)
+    const classes = [...chips].map(
+      c => [...c.classList].find(n => n.startsWith('doc-type-c')))
+    expect(new Set(classes).size).toBe(1)
+    expect(chips[0].textContent).toBe('Certificate of Incorporation')
   })
 
   it('scopes the upload picker to the section it was opened from', async () => {
@@ -492,7 +550,12 @@ describe('CompanyProfilePage — the CR form fields', () => {
     expect(within(tile).getByText('Total Number')).toBeInTheDocument()
     expect(within(tile).getByText('Total Amount')).toBeInTheDocument()
     expect(within(tile).getByText(/Total Amount Paid up/)).toBeInTheDocument()
-    expect(within(tile).getByText('Ordinary')).toBeInTheDocument()
+    // Twice on purpose: the class NAME now heads its own block as well as
+    // appearing under CR's "Class of Shares" heading. With several classes,
+    // omitting the heading made every block start with an empty title bar
+    // carrying nothing but an Edit button.
+    expect(within(tile).getAllByText('Ordinary').length).toBeGreaterThan(0)
+    expect(within(tile).getAllByText('HKD').length).toBeGreaterThan(0)
   })
 
   it('can edit a share class — the card shipped with no way to fix it', async () => {
@@ -509,12 +572,28 @@ describe('CompanyProfilePage — the CR form fields', () => {
     const tile = (await screen.findByText(/Share Capital/)).closest('.card')
 
     await user.click(within(tile).getByRole('button', { name: 'Edit' }))
-    await user.type(screen.getByLabelText('Total Amount'), '100')
-    await user.click(within(tile).getByRole('button', { name: 'Save' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit Class of Shares' })
+    await user.type(within(dialog).getByLabelText('Total Amount'), '100')
+    await user.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
 
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
       '/companies/e1/share-classes/sc1',
       expect.objectContaining({ issued_amount: '100' })))
+  })
+
+  it('edits a share class in a DIALOG, not inline under the row', async () => {
+    // The inline editor put Cancel and Save in a `.f-group.full` — a column
+    // flex box — so they stacked vertically and centred, the only pair of
+    // buttons in the app that did not sit side by side at the bottom right.
+    const user = userEvent.setup()
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+    await user.click(within(tile).getByRole('button', { name: 'Edit' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Edit Class of Shares' })
+    const footer = dialog.querySelector('.modal-footer')
+    expect(within(footer).getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(within(footer).getByRole('button', { name: 'Save Changes' })).toBeInTheDocument()
   })
 
   it('offers currency from CRs list, which is not ISO', async () => {
@@ -530,6 +609,29 @@ describe('CompanyProfilePage — the CR form fields', () => {
     expect(codes).not.toContain('CNY')  // ISO's, which CR refuses
   })
 
+  it('offers Class of Shares as a list, with a free-text escape', async () => {
+    // `share_classes` has a UNIQUE (entity_id, class_name), so "Ordinary" and
+    // "ORDINARY" typed on two different days become two classes of one class
+    // and Schedule 1 files the same members twice under both. CR validates
+    // nothing here — `clsOfShares` is free text — so the list cannot be closed.
+    const user = userEvent.setup()
+    mockGet({ ...CLIENT, share_classes: [] })
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+    await user.click(within(tile).getByRole('button', { name: /Add a class/ }))
+
+    const picker = screen.getByLabelText('Class of Shares')
+    const names = [...picker.querySelectorAll('option')].map(o => o.value)
+    expect(names).toEqual(expect.arrayContaining(
+      ['Ordinary', 'Ordinary A', 'Preference']))
+
+    // "Other…" reveals a text box rather than refusing an unusual class.
+    await user.selectOptions(picker, '__other__')
+    const free = screen.getByLabelText('Class of Shares (other)')
+    await user.type(free, 'Redeemable Preference')
+    expect(free).toHaveValue('Redeemable Preference')
+  })
+
   it('a company with no share capital can be given some', async () => {
     // 219 client companies are in this state, and it is what stops them
     // filing. Editing alone would never unblock one.
@@ -540,12 +642,13 @@ describe('CompanyProfilePage — the CR form fields', () => {
     const tile = (await screen.findByText(/Share Capital/)).closest('.card')
 
     await user.click(within(tile).getByRole('button', { name: /Add a class/ }))
-    await user.type(screen.getByLabelText('Class of Shares'), 'Ordinary')
-    await user.selectOptions(screen.getByLabelText('Currency'), 'HKD')
-    await user.type(screen.getByLabelText('Total Number'), '100')
-    await user.type(screen.getByLabelText('Total Amount'), '100')
-    await user.type(screen.getByLabelText(/Total Amount Paid up/), '100')
-    await user.click(within(tile).getByRole('button', { name: 'Save' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add Class of Shares' })
+    await user.selectOptions(within(dialog).getByLabelText('Class of Shares'), 'Ordinary')
+    await user.selectOptions(within(dialog).getByLabelText('Currency'), 'HKD')
+    await user.type(within(dialog).getByLabelText('Total Number'), '100')
+    await user.type(within(dialog).getByLabelText('Total Amount'), '100')
+    await user.type(within(dialog).getByLabelText(/Total Amount Paid up/), '100')
+    await user.click(within(dialog).getByRole('button', { name: 'Add Class' }))
 
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(
       '/companies/e1/share-classes',

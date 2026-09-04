@@ -3,11 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { liveCaseWarning } from '../lib/liveCase.js'
 import { formatDate } from '../lib/format.js'
-import { downloadDocument } from '../lib/download.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
+import ShareClassModal, { SHARE_CLASS_FIELDS } from '../components/ShareClassModal.jsx'
 import { useDocumentSections, groupBySection } from '../lib/documentSections.js'
 import {
   DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
@@ -40,7 +40,32 @@ const EDITABLE = [
   { key: 'mortgages_total', label: 'Mortgages and Charges' },
   { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'cr_country' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
-  { key: 'case_notes', label: 'Case Notes' },
+  { key: 'case_notes', label: 'Case Notes', full: true },
+]
+
+//: The company's telephone number. NOT in EDITABLE because it is not a column
+//: on `entities` — it is a `contacts` row, so it saves through its own
+//: endpoint, exactly as the registered address does.
+//:
+//: It had no editor at all until now: `company_phone` was accepted at creation,
+//: written to `contacts` and printed here, and then unreachable. CR's NAR1 maps
+//: `telNo` straight off it, so a number mistyped on the New Company form went
+//: onto a statutory filing with no way to correct it.
+const PHONE_FIELD = { key: 'company_phone', label: 'Company Phone', type: 'tel' }
+
+/** The preferred phone contact, or none. */
+function companyPhone(company) {
+  const rows = (company?.contacts || []).filter(c => c.contact_type === 'phone')
+  return (rows.find(c => c.is_preferred) || rows[0])?.contact_value || ''
+}
+
+//: What the Corporate Party Details tile edits — the fields that only mean
+//: anything when this company acts as somebody else's officer or member.
+//: Company Type is shown there too but is edited above, in Company Information;
+//: one field with two editors is one field that can be saved twice.
+const CORP_EDITABLE = [
+  { key: 'tcsp_licence_no', label: 'TCSP Licence No.' },
+  { key: 'tcsp_exemption_reason', label: 'TCSP Exemption Reason' },
 ]
 
 function Kv({ label, children, warning = null }) {
@@ -102,6 +127,16 @@ function FlagToggle({ on, label, sub, onToggle, busy }) {
 // profile, because a company's documents are filed exactly the same way
 // (Levi 2026-09-04: "this is the same for the body corporation upload document
 // features").
+//
+// LEVI'S ITEM 13 ON 2026-09-04 ASKS FOR THE OPPOSITE, and it is not resolved
+// here: "no need to have multiple sections for different document types. just
+// split based on history and current 2 sections so it is clear." Collapsing
+// these cards would cost the per-section upload picker (which is what stops a
+// document being filed under the wrong type) and the Remove button, both of
+// which landed the same day — so the layout is left as it is and the question
+// is Levi's to settle. What item 13 also asked for and nobody had done, the
+// document TYPE made prominent and coloured, is delivered in
+// `components/DocumentSections.jsx`.
 
 export default function CompanyProfilePage() {
   const { companyId } = useParams()
@@ -131,6 +166,11 @@ export default function CompanyProfilePage() {
   const {
     sections, ready: sectionsReady, error: sectionsError,
   } = useDocumentSections('company')
+  // The Corporate Party tile edits two fields nothing else on the profile
+  // touches, so it holds its own draft rather than joining `draft` — opening
+  // one editor must not put the other card into edit mode.
+  const [corpEditing, setCorpEditing] = useState(false)
+  const [corpDraft, setCorpDraft] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
@@ -159,7 +199,10 @@ export default function CompanyProfilePage() {
   const [addrDraft, setAddrDraft] = useState(null)
 
   function startEdit() {
-    setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, company[f.key] ?? ''])))
+    setDraft({
+      ...Object.fromEntries(EDITABLE.map(f => [f.key, company[f.key] ?? ''])),
+      company_phone: companyPhone(company),
+    })
     setAddrDraft({ ...EMPTY_ADDRESS, ...(company.registered_address || {}) })
     setEditing(true)
   }
@@ -178,11 +221,23 @@ export default function CompanyProfilePage() {
     }
   }
 
-  async function unlinkParty(relation, linkId) {
-    if (!window.confirm('Remove this party from the company?')) return
+  // NAMES THE PARTY, AND SAYS WHAT IS LOST. "Remove this party from the
+  // company?" named nobody — with eight directors on screen there was no way
+  // to tell which row the dialog belonged to — and it did not say that the
+  // delete is permanent. Ceasing an appointment and deleting the record that
+  // it existed are different acts with the same button, so the difference has
+  // to be in the sentence.
+  async function unlinkParty(relation, row) {
+    const who = partyName(row)
+    if (!window.confirm(
+      `Remove ${who} from this company?\n\n`
+      + 'This deletes the record that they ever held the role — it is not the '
+      + 'same as ending it. To end an appointment or a shareholding, press '
+      + 'Edit and set Status to Former, which keeps the history and takes them '
+      + 'off the return.')) return
     setBusy(true)
     try {
-      await api.del(`/companies/${companyId}/${relation}/${linkId}`)
+      await api.del(`/companies/${companyId}/${relation}/${row.id}`)
       load()
     } catch (err) {
       setError(err.message)
@@ -193,9 +248,19 @@ export default function CompanyProfilePage() {
 
   // Send only fields that actually changed — the backend writes one audit
   // entry per changed field, so sending untouched fields would be noise.
+  //
+  // AN EMPTIED FIELD IS A CHANGE. This used to drop `v === ''` as well, which
+  // meant deleting a value and pressing Save did nothing at all and looked
+  // exactly like a save that worked — the field came back on the next load. A
+  // blank is a legitimate answer (a company can stop having a Chinese name; a
+  // CR number typed into the wrong box has to be removable) and the API stores
+  // it as NULL. A field that was already empty still sends nothing, because
+  // `company[k] ?? ''` is then `''` too.
   function changedFields() {
     return Object.fromEntries(
-      Object.entries(draft).filter(([k, v]) => (company[k] ?? '') !== v && v !== '')
+      Object.entries(draft)
+        .filter(([k]) => k !== PHONE_FIELD.key)
+        .filter(([k, v]) => (company[k] ?? '') !== v)
     )
   }
 
@@ -208,7 +273,8 @@ export default function CompanyProfilePage() {
     // operator has to be told that the return already validated, sent to the
     // client or filed with CR will no longer match this record.
     const changed = changedFields()
-    if (!force && Object.keys(changed).length) {
+    const phoneChanged = (draft.company_phone ?? '') !== companyPhone(company)
+    if (!force && (Object.keys(changed).length || phoneChanged)) {
       const warning = liveCaseWarning(company)
       if (warning) { setConflict(warning); return }
     }
@@ -218,13 +284,39 @@ export default function CompanyProfilePage() {
       if (Object.keys(changed).length) {
         await api.patch(`/companies/${companyId}`, changed)
       }
-      // Separate request because it writes a different table, and it goes
-      // second so a rejected address (a line over CR's 60) does not silently
-      // discard the field edits that already succeeded.
+      // Separate requests because they write different tables, and they go
+      // after the field patch so a rejected address (a line over CR's 60) does
+      // not silently discard the field edits that already succeeded.
       if (addrDraft && addressChanged(addrDraft, company.registered_address)) {
         await api.put(`/companies/${companyId}/registered-address`, addressPayload(addrDraft))
       }
+      if (phoneChanged) {
+        await api.put(`/companies/${companyId}/company-phone`,
+                      { company_phone: draft.company_phone || null })
+      }
       setEditing(false)
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function startCorpEdit() {
+    setCorpDraft(Object.fromEntries(
+      CORP_EDITABLE.map(f => [f.key, company[f.key] ?? ''])))
+    setCorpEditing(true)
+  }
+
+  async function saveCorpDetails() {
+    const changed = Object.fromEntries(
+      Object.entries(corpDraft).filter(([k, v]) => (company[k] ?? '') !== v))
+    if (!Object.keys(changed).length) { setCorpEditing(false); return }
+    setBusy(true)
+    try {
+      await api.patch(`/companies/${companyId}`, changed)
+      setCorpEditing(false)
       load()
     } catch (err) {
       setError(err.message)
@@ -382,6 +474,11 @@ export default function CompanyProfilePage() {
           companyId={companyId}
           relation={linkModal.relation}
           link={linkModal.link}
+          // The Class of Shares dropdown is THIS company's classes. Passed down
+          // rather than fetched: the profile already holds them, and a second
+          // request would be a second answer that can disagree with the tile
+          // rendered right behind the modal.
+          shareClasses={company.share_classes}
           onClose={() => setLinkModal(null)}
           onSaved={() => { setLinkModal(null); load() }}
         />
@@ -396,7 +493,10 @@ export default function CompanyProfilePage() {
                 <div className="card-title">
                   Company Information <WarningCount count={infoWarnings.length} />
                 </div>
-                <div className="card-sub">Core company details, filings &amp; documents</div>
+                {/* Not "filings & documents" any more — those moved to their
+                    own card below, so saying it here pointed at a section that
+                    is no longer part of this one. */}
+                <div className="card-sub">Core company details</div>
               </div>
               {editing ? (
                 <div className="hdr-actions">
@@ -432,6 +532,11 @@ export default function CompanyProfilePage() {
                     onChange={(k, v) => setAddrDraft(a => ({ ...a, [k]: v }))}
                   />
                 </div>
+                {/* Below the address because it saves the same way — its own
+                    table, its own request. */}
+                <FormField field={{ ...PHONE_FIELD, full: true }}
+                           value={draft[PHONE_FIELD.key]} lookups={lookups}
+                           onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
               </div>
             ) : (
               <div className="kv-list">
@@ -470,11 +575,13 @@ export default function CompanyProfilePage() {
                     identical once you comma-join them. */}
                 <AddressBlock value={company.registered_address} readOnly
                               warnings={addressWarnings} />
-                <Kv label="Company Phone">
-                  {company.contacts?.find(c => c.contact_type === 'phone')?.contact_value}
-                </Kv>
+                <Kv label="Company Phone">{companyPhone(company) || null}</Kv>
                 <Kv label="Create Date">{formatDate(company.created_at)}</Kv>
                 <Kv label="Incorporation Date">{formatDate(company.incorporation_date)}</Kv>
+                {/* CASE NOTES WERE EDITABLE AND DISPLAYED NOWHERE. Typing a
+                    note, saving it and reloading looked identical to never
+                    having typed one. */}
+                <Kv label="Case Notes">{company.case_notes}</Kv>
               </div>
             )}
 
@@ -545,12 +652,41 @@ export default function CompanyProfilePage() {
                     Held when this company acts as a director, secretary or shareholder of another
                   </div>
                 </div>
+                {/* WAS READ-ONLY. The TCSP licence is the one thing this tile is
+                    for, the Company Secretary tile on every OTHER company prints
+                    it, and there was no screen anywhere in the portal that could
+                    set it — so it showed an em dash for a licensed provider and
+                    stayed that way. */}
+                {corpEditing ? (
+                  <div className="hdr-actions">
+                    <button className="btn-edit" onClick={() => setCorpEditing(false)} disabled={busy}>
+                      Cancel
+                    </button>
+                    <button className="btn btn-primary btn-sm" onClick={saveCorpDetails} disabled={busy}>
+                      {busy ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                ) : (
+                  <button className="btn-edit" onClick={startCorpEdit}>Edit</button>
+                )}
               </div>
-              <div className="kv-list">
-                <Kv label="Company Type">{company.company_type}</Kv>
-                <Kv label="TCSP Licence">{company.tcsp_licence_no}</Kv>
-                <Kv label="TCSP Exemption">{company.tcsp_exemption_reason}</Kv>
-              </div>
+              {corpEditing ? (
+                <div className="form-grid">
+                  {CORP_EDITABLE.map(f => (
+                    <FormField key={f.key} field={{ ...f, full: true }}
+                               value={corpDraft[f.key]} lookups={lookups}
+                               onChange={(k, v) => setCorpDraft(d => ({ ...d, [k]: v }))} />
+                  ))}
+                </div>
+              ) : (
+                <div className="kv-list">
+                  <Kv label="Company Type">
+                    {displayValue({ lookup: 'cr_company_type' }, company.company_type, lookups)}
+                  </Kv>
+                  <Kv label="TCSP Licence No.">{company.tcsp_licence_no}</Kv>
+                  <Kv label="TCSP Exemption Reason">{company.tcsp_exemption_reason}</Kv>
+                </div>
+              )}
             </div>
           )}
 
@@ -560,7 +696,7 @@ export default function CompanyProfilePage() {
               share classes hanging off each shareholding. */}
           {isClient && (
             <ShareCapitalTile classes={company.share_classes}
-                              lookups={lookups} warnFor={warnFor} busy={busy}
+                              warnFor={warnFor} busy={busy}
                               onSave={saveShareClass} onCreate={createShareClass} />
           )}
 
@@ -571,12 +707,22 @@ export default function CompanyProfilePage() {
                          rows={company.officers} relation="officers" busy={busy}
                          onAdd={() => setLinkModal({ relation: 'officers' })}
                          onEdit={row => setLinkModal({ relation: 'officers', link: row })}
-                         onRemove={id => unlinkParty('officers', id)}
+                         onRemove={row => unlinkParty('officers', row)}
                          render={o => (
                            <>
-                             <Kv label="Role">{o.role}</Kv>
+                             <Kv label="Role">{(o.role || '').replace(/_/g, ' ')}</Kv>
+                             {/* POSITION AND RESIGNATION REASON ARE SHOWN
+                                 (Levi 2026-09-04). Both were editable in the
+                                 modal and printed nowhere, so typing one and
+                                 saving it looked identical to not typing it.
+                                 Conditional because an empty Position on a
+                                 director who has none is a row of nothing. */}
+                             {o.position && <Kv label="Position">{o.position}</Kv>}
                              <Kv label="Appointed">{formatDate(o.appointed_date)}</Kv>
                              {o.resigned_date && <Kv label="Resigned">{formatDate(o.resigned_date)}</Kv>}
+                             {o.resignation_reason && (
+                               <Kv label="Resignation Reason">{o.resignation_reason}</Kv>
+                             )}
                              {/* B3's substantive half: every director's contact
                                  details, which the tile did not show at all. */}
                              <Kv label="Email Address">{o.persons?.email}</Kv>
@@ -592,17 +738,37 @@ export default function CompanyProfilePage() {
                            </>
                          )} />
 
+              {/* A TRANSFER IS TWO EDITS, NOT A DELETE (Levi's Q9: "what
+                  happens when a shareholder loses his/her share to someone
+                  else"). The register has to keep showing who held the shares
+                  before, and the audit trail has to show when that stopped —
+                  both of which a DELETE destroys. Setting the outgoing holder
+                  to Former is what drops them from the return: `nar1_mapper`'s
+                  `_schedule_1` skips a holding with `is_current` false. The
+                  note says so on the tile, because the two buttons on offer
+                  are Edit and Remove and Remove is the one that reads like
+                  "this person no longer holds shares". */}
               <PartyTile title="Shareholder(s)" sub="Members of the company"
                          rows={company.shareholders} relation="shareholders" busy={busy}
                          onAdd={() => setLinkModal({ relation: 'shareholders' })}
                          onEdit={row => setLinkModal({ relation: 'shareholders', link: row })}
-                         onRemove={id => unlinkParty('shareholders', id)}
+                         onRemove={row => unlinkParty('shareholders', row)}
+                         note={'Transferring shares? Edit the outgoing holder and set '
+                             + 'Status to Former, then add the new holder — or raise an '
+                             + 'existing holder’s Shares Held. Remove deletes the record '
+                             + 'that they ever held the shares.'}
                          render={s => (
                            <>
                              {/* CR's shareCapitalList states the class and its
                                  currency beside the holding, not just a count. */}
                              <Kv label="Class of Shares">{s.share_classes?.class_name}</Kv>
-                             <Kv label="Total Number">{figure(s.shares_held)}</Kv>
+                             {/* "Total Number" is CR's heading for the CLASS
+                                 total in section 11 — the number of shares in
+                                 issue. Using it here for one member's holding
+                                 put the same words on two different figures on
+                                 the same screen. This is what the modal calls
+                                 it, and what it is. */}
+                             <Kv label="Shares Held">{figure(s.shares_held)}</Kv>
                              <Kv label="Currency">{s.share_classes?.currency}</Kv>
                              <Kv label="Amount Paid">{figure(s.amount_paid)}</Kv>
                              {/* B4 — a shareholder needs an address, natural
@@ -621,14 +787,32 @@ export default function CompanyProfilePage() {
                          rows={company.secretaries} relation="secretaries" busy={busy}
                          onAdd={() => setLinkModal({ relation: 'secretaries' })}
                          onEdit={row => setLinkModal({ relation: 'secretaries', link: row })}
-                         onRemove={id => unlinkParty('secretaries', id)}
+                         onRemove={row => unlinkParty('secretaries', row)}
                          render={s => (
                            <>
-                             {/* TCSP licence comes from the linked corporate party. */}
-                             <Kv label="TCSP Licence No.">{s.corporate_entity?.tcsp_licence_no}</Kv>
-                             <Kv label="Position">{s.position}</Kv>
+                             {/* THE LICENCE MAY BE THE PERSON'S. This read only
+                                 `corporate_entity` and printed an em dash for a
+                                 secretary who is an individual — and the AMLO
+                                 licenses individuals as TCSPs exactly as it
+                                 licenses bodies corporate. `persons` now
+                                 carries the column (migration 038). */}
+                             <Kv label="TCSP Licence No.">
+                               {s.corporate_entity?.tcsp_licence_no || s.persons?.tcsp_licence_no}
+                             </Kv>
+                             {s.position && <Kv label="Position">{s.position}</Kv>}
                              <Kv label="Appointed">{formatDate(s.appointed_date)}</Kv>
                              {s.resigned_date && <Kv label="Resigned">{formatDate(s.resigned_date)}</Kv>}
+                             {/* Editable in the modal and printed nowhere —
+                                 the same gap as the director tile. */}
+                             {s.resignation_reason && (
+                               <Kv label="Resignation Reason">{s.resignation_reason}</Kv>
+                             )}
+                             <Kv label="Email Address">{s.persons?.email}</Kv>
+                             <Kv label={s.corporate_entity_id
+                               ? 'Registered Office' : 'Residential Address'}>
+                               {addressText(s.corporate_entity?.registered_address
+                                 || s.persons?.residential_address)}
+                             </Kv>
                            </>
                          )} />
 
@@ -636,12 +820,34 @@ export default function CompanyProfilePage() {
                          rows={company.beneficial_owners} relation="beneficial-owners" busy={busy}
                          onAdd={() => setLinkModal({ relation: 'beneficial-owners' })}
                          onEdit={row => setLinkModal({ relation: 'beneficial-owners', link: row })}
-                         onRemove={id => unlinkParty('beneficial-owners', id)}
+                         onRemove={row => unlinkParty('beneficial-owners', row)}
                          render={b => (
                            <>
-                             <Kv label="Owner Type">{b.owner_type}</Kv>
-                             <Kv label="Interest %">{b.percent_interest}</Kv>
-                             <Kv label="Voting %">{b.percent_vote}</Kv>
+                             {/* The stored code rendered as its sentence. The
+                                 raw value was printed before, so the tile read
+                                 "significant_controller". */}
+                             <Kv label="Owner Type">
+                               {displayValue({ lookup: 'bo_owner_type' }, b.owner_type, lookups)}
+                             </Kv>
+                             {/* Companies Ordinance s.653D. REPLACES Interest %
+                                 and Voting % (Levi 2026-09-04): two numeric
+                                 columns could not express "has the right to
+                                 exercise significant influence or control",
+                                 which is the second of the two conditions and
+                                 the one that has nothing to do with a
+                                 percentage. The columns are kept in the
+                                 database; nothing filed reads them. */}
+                             <Kv label="Nature of Control over the Company">
+                               {displayValue({ lookup: 'bo_nature_of_control' },
+                                             b.nature_of_control, lookups)}
+                             </Kv>
+                             {b.date_from && <Kv label="From">{formatDate(b.date_from)}</Kv>}
+                             {b.date_to && <Kv label="To">{formatDate(b.date_to)}</Kv>}
+                             <Kv label={b.corporate_entity_id
+                               ? 'Registered Office' : 'Residential Address'}>
+                               {addressText(b.corporate_entity?.registered_address
+                                 || b.persons?.residential_address)}
+                             </Kv>
                            </>
                          )} />
             </>
@@ -722,65 +928,17 @@ export default function CompanyProfilePage() {
  * so a screen that showed one number under an ambiguous label was showing the
  * wrong one and no one could tell.
  */
-//: CR's section 11 headings, in CR's order. `lookup` names the vocabulary the
-//: editor draws from — currency is CR's 54 codes, NOT the 162 ISO ones in
-//: `lookup_values`, because CR wants RMB where ISO says CNY.
-const SHARE_CLASS_FIELDS = [
-  { key: 'class_name', label: 'Class of Shares' },
-  { key: 'currency', label: 'Currency', lookup: 'cr_currency' },
-  { key: 'total_issued', label: 'Total Number' },
-  { key: 'issued_amount', label: 'Total Amount' },
-  { key: 'total_paid', label: 'Total Amount Paid up or Regarded as Paid up' },
-]
-
-function ShareCapitalTile({ classes, lookups, warnFor, busy, onSave, onCreate }) {
+function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate }) {
   const rows = classes || []
-  // The id being edited, 'new' while adding, or null.
+  // The row being edited, the string 'new' while adding, or null. The editor
+  // itself is a dialog now (components/ShareClassModal.jsx) — inline, its two
+  // buttons stacked vertically inside a column flex box, which is the one
+  // place in the app where Cancel sat on top of Save.
   const [editing, setEditing] = useState(null)
-  const [draft, setDraft] = useState({})
 
   const warnings = rows.flatMap(row =>
     SHARE_CLASS_FIELDS.map(f => warnFor('share_classes', f.key, row[f.key]))
       .filter(Boolean))
-
-  const startEdit = (row) => {
-    setDraft(Object.fromEntries(
-      SHARE_CLASS_FIELDS.map(f => [f.key, row[f.key] ?? ''])))
-    setEditing(row.id)
-  }
-  const startAdd = () => {
-    setDraft(Object.fromEntries(SHARE_CLASS_FIELDS.map(f => [f.key, ''])))
-    setEditing('new')
-  }
-
-  async function save() {
-    // Figures go as STRINGS: CR counts characters, and a number that
-    // round-trips through JSON as 1.0000000001e14 is not what was typed.
-    const ok = editing === 'new'
-      ? await onCreate(draft)
-      : await onSave(editing, Object.fromEntries(
-          Object.entries(draft).filter(
-            ([k, v]) => String(rows.find(r => r.id === editing)?.[k] ?? '') !== String(v))))
-    if (ok) setEditing(null)
-  }
-
-  const editor = (
-    <div className="form-grid">
-      {SHARE_CLASS_FIELDS.map(f => (
-        <FormField key={f.key} field={{ ...f, full: true }} value={draft[f.key]}
-                   lookups={lookups}
-                   onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
-      ))}
-      <div className="f-group full hdr-actions">
-        <button className="btn-edit" onClick={() => setEditing(null)} disabled={busy}>
-          Cancel
-        </button>
-        <button className="btn btn-primary btn-sm" onClick={save} disabled={busy}>
-          {busy ? 'Saving…' : 'Save'}
-        </button>
-      </div>
-    </div>
-  )
 
   return (
     <div className="card mb-16">
@@ -794,16 +952,25 @@ function ShareCapitalTile({ classes, lookups, warnFor, busy, onSave, onCreate })
             Section 11 of the annual return — one row per class of shares
           </div>
         </div>
-        {editing === null && (
-          <button className="btn btn-outline btn-sm" onClick={startAdd}>
-            + Add a class
-          </button>
-        )}
+        <button className="btn btn-outline btn-sm" onClick={() => setEditing('new')}>
+          + Add a class
+        </button>
       </div>
 
-      {editing === 'new' && editor}
+      {editing && (
+        <ShareClassModal
+          // The draft is seeded once, on mount. Without a key, going from one
+          // row's editor straight to another's would reuse the first row's
+          // draft — and silently save it over the second row.
+          key={editing === 'new' ? 'new' : editing.id}
+          row={editing === 'new' ? null : editing}
+          busy={busy}
+          onClose={() => setEditing(null)}
+          onSave={values => (editing === 'new' ? onCreate(values) : onSave(editing.id, values))}
+        />
+      )}
 
-      {rows.length === 0 && editing !== 'new' ? (
+      {rows.length === 0 ? (
         // 219 client companies are in this state, and it stops them filing.
         // Saying "None" would read as "nothing to do here".
         <div className="empty-state" style={{ padding: '16px 0' }}>
@@ -811,28 +978,27 @@ function ShareCapitalTile({ classes, lookups, warnFor, busy, onSave, onCreate })
           class of shares for a company having a share capital.
         </div>
       ) : rows.map(row => (
-        // No separate heading: "Class of Shares" is CR's own first heading and
-        // is right there in the list. Repeating it above would show the same
-        // value twice under two different names.
         <div className="member-block" key={row.id || row.class_name}>
-          {editing === row.id ? editor : (
-            <>
-              <div className="member-name">
-                <span style={{ marginLeft: 'auto' }}>
-                  <button className="btn-edit" onClick={() => startEdit(row)}>Edit</button>
-                </span>
-              </div>
-              <div className="kv-list">
-                {SHARE_CLASS_FIELDS.map(f => (
-                  <Kv key={f.key} label={f.label}
-                      warning={warnFor('share_classes', f.key, row[f.key])}>
-                    {f.key === 'class_name' || f.key === 'currency'
-                      ? row[f.key] : figure(row[f.key])}
-                  </Kv>
-                ))}
-              </div>
-            </>
-          )}
+          <div className="member-name">
+            {/* The class NAME heads its own block. It used to be omitted on the
+                grounds that "Class of Shares" is the first row of the list
+                below — but with several classes that made every block start
+                with an empty title bar carrying nothing but an Edit button. */}
+            {row.class_name || <span className="td-muted">Unnamed class</span>}
+            {row.currency && <span className="member-role-tag">{row.currency}</span>}
+            <span style={{ marginLeft: 'auto' }}>
+              <button className="btn-edit" onClick={() => setEditing(row)}>Edit</button>
+            </span>
+          </div>
+          <div className="kv-list">
+            {SHARE_CLASS_FIELDS.map(f => (
+              <Kv key={f.key} label={f.label}
+                  warning={warnFor('share_classes', f.key, row[f.key])}>
+                {f.key === 'class_name' || f.key === 'currency'
+                  ? row[f.key] : figure(row[f.key])}
+              </Kv>
+            ))}
+          </div>
         </div>
       ))}
     </div>
@@ -844,7 +1010,7 @@ function ShareCapitalTile({ classes, lookups, warnFor, busy, onSave, onCreate })
  * its attributes (OQ-1) or remove it. company_secretaries has no linking
  * endpoint, so that tile stays read-only.
  */
-function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onAdd, onEdit, onRemove, busy }) {
+function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onAdd, onEdit, onRemove, busy, note }) {
   const list = rows || []
   return (
     <div className="card mb-16">
@@ -857,6 +1023,7 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
           <button className="btn btn-outline btn-sm" onClick={onAdd}>+ Add</button>
         )}
       </div>
+      {note && <div className="reveal-note" role="note">{note}</div>}
       {list.length === 0 ? (
         <div className="empty-state" style={{ padding: '16px 0' }}>None linked.</div>
       ) : list.map(row => (
@@ -870,7 +1037,7 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
               <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                 <button className="btn-edit" onClick={() => onEdit(row)}>Edit</button>
                 <button className="btn-edit" disabled={busy}
-                        onClick={() => onRemove(row.id)}>Remove</button>
+                        onClick={() => onRemove(row)}>Remove</button>
               </span>
             )}
           </div>

@@ -169,16 +169,28 @@ def test_an_unknown_user_is_404_and_changes_no_password(client):
     send.assert_not_called()
 
 
-def test_a_database_failure_is_NOT_reported_as_a_missing_user(client):
+def test_a_database_failure_is_NOT_reported_as_a_missing_user():
     """The reason the lookup uses `.limit(1)` and not `.single()`: the latter
     raises on no rows, so not-found would need a bare `except` — and that same
     `except` would turn an outage into "User not found", sending the
-    administrator hunting for a user who is sitting right there in the table."""
+    administrator hunting for a user who is sitting right there in the table.
+
+    The outage is now answered as a 500 by `services/api_errors.py` rather than
+    escaping the app — which is the point of that middleware, and does not
+    change what this test is protecting: whatever the administrator is told, it
+    must not be that the user does not exist. `raise_server_exceptions=False`
+    because the question is what the BROWSER receives.
+    """
+    error_client = TestClient(app, raise_server_exceptions=False)
     sb = _sb()
     (sb.table.return_value.select.return_value.eq.return_value.limit
      .return_value.execute.side_effect) = RuntimeError("supabase is down")
-    with pytest.raises(RuntimeError):
-        _reset(client, sb=sb)
+
+    response, _, send = _reset(error_client, sb=sb)
+
+    assert response.status_code == 500
+    assert "not found" not in response.text.lower()
+    send.assert_not_called()
 
 
 def test_a_deactivated_account_is_refused(client):

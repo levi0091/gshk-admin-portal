@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api.js'
 import AddressBlock from './AddressBlock.jsx'
+import FormField from './FormField.jsx'
 import { EMPTY_ADDRESS, addressPayload } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
 import useDiscardGuard from '../lib/useDiscardGuard.js'
@@ -36,9 +37,38 @@ const DIAL_CODES = [
   { code: '+61', label: '+61  Australia' },
 ]
 
+// PARITY WITH THE PROFILE'S EDIT FORM (Levi 2026-09-04: "make sure all the
+// fields in edit is also available in add company function").
+//
+// Six fields the profile could edit had no box here — Chinese Name, CR No.,
+// Business Nature, Mortgages and Charges, Incorporation Date and Case Notes —
+// so creating a company from a client's own paperwork meant creating a
+// half-record, saving it, reopening it and typing the rest into a second form
+// with different labels. Three of the six (Chinese Name, CR No.,
+// Incorporation Date) are on the incorporation certificate the operator is
+// reading from at the moment they press New Company.
+//
+// Rendered through `FormField` with the SAME descriptors the profile uses, so
+// a lookup added to one appears in the other rather than being copied.
+const OPTIONAL_FIELDS = [
+  { key: 'company_name_zh', label: 'Chinese Name', full: true },
+  { key: 'cr_number', label: 'CR No.' },
+  { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
+  // The code is picked and CR derives the description from it — the backend
+  // writes `business_nature_desc` and never accepts one, exactly as PATCH does.
+  { key: 'business_nature_code', label: 'Business Nature',
+    lookup: 'cr_business_nature', full: true },
+  // Text, not a number: CR accepts "Nil", and almost every company here files
+  // exactly that. A 0 would read as "none registered" rather than "nothing to
+  // declare".
+  { key: 'mortgages_total', label: 'Mortgages and Charges', full: true },
+  { key: 'case_notes', label: 'Case Notes', full: true },
+]
+
 const EMPTY_FORM = {
   company_name: '', br_number: '', status: '', company_type: '',
   incorporation_place: '',
+  ...Object.fromEntries(OPTIONAL_FIELDS.map(f => [f.key, ''])),
   phone_code: DEFAULT_DIAL_CODE, phone_number: '',
 }
 
@@ -192,6 +222,11 @@ export default function AddCompanyModal({ onClose, onCreated }) {
               </select>
               {errors.incorporation_place && <span className="f-hint" style={{ color: '#C53030' }}>{errors.incorporation_place}</span>}
             </div>
+
+            {OPTIONAL_FIELDS.map(f => (
+              <FormField key={f.key} field={f} value={form[f.key]} lookups={lookups}
+                         onChange={(k, v) => setForm(prev => ({ ...prev, [k]: v }))} />
+            ))}
 
             <div className="f-group full">
               <div className="tile-sec-lbl">

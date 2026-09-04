@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from middleware.auth import require_any_permission
 from db.supabase import get_supabase
+from services.cr_forms import control_nature
 from services.cr_forms.record_types import RECORD_TYPES
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE,
@@ -52,13 +53,45 @@ _CR_BUSINESS_NATURE = [
     for code, description in sorted(BUSINESS_NATURE.items())
 ]
 
+#: The three currencies GSHK's book actually files in, offered first.
+#:
+#: Alphabetical order buried HKD at position 22 of 54, behind AED, AFA, ALL and
+#: eighteen others nobody here has ever filed. This is the same reasoning that
+#: puts Private first in `_CR_COMPANY_TYPE` and Hong Kong first on the address
+#: form: the list stays complete, the common answer stops being a scroll.
+_CURRENCY_PINNED = ("EUR", "HKD", "USD")
+
 #: CR's 54 currency codes, which are NOT ISO 4217 — CR wants RMB, NTD, WON and
 #: NIS where ISO says CNY, TWD, KRW and ILS. `lookup_values` separately holds
 #: 162 ISO codes lifted from Viewpoint; offering those on a share capital form
 #: produces a filing CR refuses, so anything bound for CR reads this instead.
+#:
+#: Pinned first, then the rest alphabetically. A pinned code that CR ever drops
+#: simply disappears rather than being served as a code CR would refuse.
 _CR_CURRENCY = [
+    {"code": code, "label": f"{code} - {CURRENCY[code]}"}
+    for code in _CURRENCY_PINNED if code in CURRENCY
+] + [
     {"code": code, "label": f"{code} - {description}"}
     for code, description in sorted(CURRENCY.items())
+    if code not in _CURRENCY_PINNED
+]
+
+#: Class-of-shares names, offered as a starting point and NOT a closed list.
+#:
+#: CR validates nothing here: `clsOfShares` is free text of 100 characters on
+#: NAR1 and NNC1 alike (see `cr_forms/contract.py`), and a company is free to
+#: constitute a class called anything. What this fixes is spelling — an operator
+#: typing the class by hand produced "ORDINARY", "ordinary" and "Ordinary
+#: Shares" for one class, and `share_classes` has a UNIQUE (entity_id,
+#: class_name), so the same class under two spellings becomes two classes and
+#: Schedule 1 files the members twice.
+#:
+#: The screen pairs this with a free-text escape, so an unusual class is still
+#: typed rather than forced into the nearest listed one.
+_SHARE_CLASS_NAME = [
+    {"code": name, "label": name}
+    for name in ("Ordinary", "Ordinary A", "Ordinary B", "Preference")
 ]
 
 #: CR's three company types. Deliberately NOT sorted — Private first, because
@@ -130,6 +163,15 @@ def _all() -> dict[str, list[dict]]:
     grouped["cr_company_type"] = _CR_COMPANY_TYPE
     grouped["cr_record_type"] = _CR_RECORD_TYPE
     grouped["cr_country"] = _CR_COUNTRY
+    grouped["share_class_name"] = _SHARE_CLASS_NAME
+    # The portal's own beneficial-owner vocabularies (Companies Ordinance
+    # Part 12 Div 2A), not CR's — hence no `cr_` prefix. Served here so the
+    # dropdown and the write check read the same list.
+    grouped["bo_owner_type"] = [
+        {"code": code, "label": label} for code, label in control_nature.OWNER_TYPES]
+    grouped["bo_nature_of_control"] = [
+        {"code": code, "label": label}
+        for code, label in control_nature.NATURE_OF_CONTROL]
     _cache = (time.monotonic(), grouped)
     return grouped
 
