@@ -5,6 +5,8 @@ import StatusBadge, {
   COMPANY_STATUSES, FlagBadges, statusOptions,
 } from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
+import { disabledReason } from '../lib/permissions.js'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
@@ -83,6 +85,8 @@ const COLUMNS = [
 
 export default function CompanyRegistryPage() {
   const navigate = useNavigate()
+  const { hasPermission } = useAuth()
+  const canWrite = hasPermission('companies', 'write')
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -151,7 +155,13 @@ export default function CompanyRegistryPage() {
           <div className="pg-sub">All companies — clients and corporate parties</div>
         </div>
         <div className="pg-actions">
-          <button className="btn btn-action" onClick={() => setShowAdd(true)}>
+          {/* `companies:read` gets this list; creating a row is
+              `companies:write`. Disabled rather than hidden, so a read-only
+              role sees the same screen with one action withheld and a reason
+              on it. */}
+          <button className="btn btn-action" onClick={() => setShowAdd(true)}
+                  disabled={!canWrite}
+                  title={disabledReason(canWrite, 'companies', 'write')}>
             + Add Company
           </button>
         </div>

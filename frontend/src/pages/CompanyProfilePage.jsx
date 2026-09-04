@@ -20,6 +20,8 @@ import { useFormContract, fieldWarning } from '../lib/formContract.js'
 import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
+import { ReadOnlyNote } from '../components/RequirePermission.jsx'
+import { needsPermission, disabledReason } from '../lib/permissions.js'
 
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
@@ -101,13 +103,14 @@ function partyName(row) {
     || '—'
 }
 
-function FlagToggle({ on, label, sub, onToggle, busy }) {
+function FlagToggle({ on, label, sub, onToggle, busy, disabled = false, reason }) {
   return (
     <button
       type="button"
       className={`flag-toggle${on ? '' : ' is-off'}`}
       onClick={onToggle}
-      disabled={busy}
+      disabled={busy || disabled}
+      title={disabled ? reason : undefined}
       role="switch"
       aria-checked={on}
       aria-label={label}
@@ -161,6 +164,19 @@ export default function CompanyProfilePage() {
   const { hasPermission, isSuperAdmin } = useAuth()
   // nar1:read shows cases; nar1:write is what opens one.
   const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
+  // WHAT A READER MAY DO HERE. `companies:read` opens this page (the route
+  // guard saw to that); everything that WRITES needs `companies:write`, and
+  // the API refuses it independently — this only stops the screen offering an
+  // action it knows will be refused, and says why.
+  //
+  // Documents are a SEPARATE module with three levels, so they are asked
+  // separately: a role can hold `companies:write` and still not be allowed to
+  // delete a filed document.
+  const canWrite = hasPermission('companies', 'write')
+  const canUploadDoc = hasPermission('documents', 'write')
+  const canRemoveDoc = hasPermission('documents', 'delete')
+  const canDownloadDoc = hasPermission('documents', 'read')
+  const noWrite = needsPermission('companies', 'write')
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
   const [linkModal, setLinkModal] = useState(null)
   const {
@@ -425,9 +441,11 @@ export default function CompanyProfilePage() {
 
           <div className="flag-panel">
             <FlagToggle on={isClient} label="Is Client" busy={busy}
+                        disabled={!canWrite} reason={noWrite}
                         sub="Reveals client tiles + Cases pane"
                         onToggle={() => toggleFlag('is_client')} />
             <FlagToggle on={isCorp} label="Is Corporate Party" busy={busy}
+                        disabled={!canWrite} reason={noWrite}
                         sub="Acts as director / secretary / shareholder elsewhere"
                         onToggle={() => toggleFlag('is_corporate_party')} />
           </div>
@@ -484,6 +502,14 @@ export default function CompanyProfilePage() {
         />
       )}
 
+      {/* SAID ONCE, AT THE TOP. Every control below also carries its own
+          reason, but a tooltip is only found by somebody who already suspects;
+          this is the sentence that stops a reader deciding the page is
+          broken. */}
+      {!canWrite && (
+        <ReadOnlyNote module="companies" what="this company's full profile" />
+      )}
+
       <div className={`detail-grid${isClient ? '' : ' client-off'}`}>
         <div>
           {/* Company Information */}
@@ -506,7 +532,11 @@ export default function CompanyProfilePage() {
                   </button>
                 </div>
               ) : (
-                <button className="btn-edit" onClick={startEdit}>Edit</button>
+                <button className="btn-edit" onClick={startEdit}
+                        disabled={!canWrite}
+                        title={disabledReason(canWrite, 'companies', 'write')}>
+                  Edit
+                </button>
               )}
             </div>
 
@@ -614,7 +644,9 @@ export default function CompanyProfilePage() {
           {sections.map(section => (
             <DocumentSection key={section.key} section={section}
                              count={(bySection[section.key] || []).length}
-                             onAdd={() => setUploadInto(section)}>
+                             onAdd={() => setUploadInto(section)}
+                             canAdd={canUploadDoc}
+                             addReason={needsPermission('documents', 'write')}>
               {(bySection[section.key] || []).length === 0 ? (
                 <div className="empty-state" style={{ padding: '16px 0' }}>
                   Nothing uploaded yet.
@@ -624,6 +656,10 @@ export default function CompanyProfilePage() {
                   documents={bySection[section.key]}
                   busy={busy}
                   onRemove={doc => setRemoving(doc)}
+                  canDownload={canDownloadDoc}
+                  downloadReason={needsPermission('documents', 'read')}
+                  canRemove={canRemoveDoc}
+                  removeReason={needsPermission('documents', 'delete')}
                 />
               )}
             </DocumentSection>
@@ -638,7 +674,9 @@ export default function CompanyProfilePage() {
                 </div>
               </div>
             </div>
-            <DocumentHistory documents={company.documents} sectionLabels={sectionLabels} />
+            <DocumentHistory documents={company.documents} sectionLabels={sectionLabels}
+                             canDownload={canDownloadDoc}
+                             downloadReason={needsPermission('documents', 'read')} />
           </div>
 
           {/* Corporate Party Details — gated on is_corporate_party */}
@@ -667,7 +705,11 @@ export default function CompanyProfilePage() {
                     </button>
                   </div>
                 ) : (
-                  <button className="btn-edit" onClick={startCorpEdit}>Edit</button>
+                  <button className="btn-edit" onClick={startCorpEdit}
+                          disabled={!canWrite}
+                          title={disabledReason(canWrite, 'companies', 'write')}>
+                    Edit
+                  </button>
                 )}
               </div>
               {corpEditing ? (
@@ -697,6 +739,7 @@ export default function CompanyProfilePage() {
           {isClient && (
             <ShareCapitalTile classes={company.share_classes}
                               warnFor={warnFor} busy={busy}
+                              canWrite={canWrite}
                               onSave={saveShareClass} onCreate={createShareClass} />
           )}
 
@@ -705,6 +748,7 @@ export default function CompanyProfilePage() {
             <>
               <PartyTile title="Director(s)" sub="Appointed directors"
                          rows={company.officers} relation="officers" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'officers' })}
                          onEdit={row => setLinkModal({ relation: 'officers', link: row })}
                          onRemove={row => unlinkParty('officers', row)}
@@ -750,6 +794,7 @@ export default function CompanyProfilePage() {
                   "this person no longer holds shares". */}
               <PartyTile title="Shareholder(s)" sub="Members of the company"
                          rows={company.shareholders} relation="shareholders" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'shareholders' })}
                          onEdit={row => setLinkModal({ relation: 'shareholders', link: row })}
                          onRemove={row => unlinkParty('shareholders', row)}
@@ -785,6 +830,7 @@ export default function CompanyProfilePage() {
 
               <PartyTile title="Company Secretary" sub="Secretarial service provider"
                          rows={company.secretaries} relation="secretaries" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'secretaries' })}
                          onEdit={row => setLinkModal({ relation: 'secretaries', link: row })}
                          onRemove={row => unlinkParty('secretaries', row)}
@@ -818,6 +864,7 @@ export default function CompanyProfilePage() {
 
               <PartyTile title="Beneficial Owner(s)" sub="Significant controllers"
                          rows={company.beneficial_owners} relation="beneficial-owners" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'beneficial-owners' })}
                          onEdit={row => setLinkModal({ relation: 'beneficial-owners', link: row })}
                          onRemove={row => unlinkParty('beneficial-owners', row)}
@@ -866,13 +913,17 @@ export default function CompanyProfilePage() {
                 {/* The annual return is started from the company it is for.
                     Without this the only route was the dashboard, where you
                     then had to search back to the company you were already on. */}
-                {canOpenCase && (
-                  <button className="btn btn-outline btn-sm"
-                          disabled={filingProblems.length > 0}
-                          onClick={() => setNewCase(true)}>
-                    + New case
-                  </button>
-                )}
+                {/* Rendered for every reader, disabled for the ones who may
+                    not press it — the same rule as the rest of this screen. It
+                    already had a disabled state (a company that cannot file),
+                    and hiding it for a permission while disabling it for data
+                    made the same button mean two different things. */}
+                <button className="btn btn-outline btn-sm"
+                        disabled={!canOpenCase || filingProblems.length > 0}
+                        title={disabledReason(canOpenCase, 'nar1', 'write')}
+                        onClick={() => setNewCase(true)}>
+                  + New case
+                </button>
               </div>
               {/* WHY THE REFUSAL IS PRINTED HERE. 453 of 5,930 client
                   companies cannot produce a valid return (OQ-2), and a
@@ -928,7 +979,9 @@ export default function CompanyProfilePage() {
  * so a screen that showed one number under an ambiguous label was showing the
  * wrong one and no one could tell.
  */
-function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate }) {
+function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
+                            canWrite = true }) {
+  const writeReason = needsPermission('companies', 'write')
   const rows = classes || []
   // The row being edited, the string 'new' while adding, or null. The editor
   // itself is a dialog now (components/ShareClassModal.jsx) — inline, its two
@@ -952,7 +1005,9 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate }) {
             Section 11 of the annual return — one row per class of shares
           </div>
         </div>
-        <button className="btn btn-outline btn-sm" onClick={() => setEditing('new')}>
+        <button className="btn btn-outline btn-sm" onClick={() => setEditing('new')}
+                disabled={!canWrite}
+                title={canWrite ? undefined : writeReason}>
           + Add a class
         </button>
       </div>
@@ -987,7 +1042,11 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate }) {
             {row.class_name || <span className="td-muted">Unnamed class</span>}
             {row.currency && <span className="member-role-tag">{row.currency}</span>}
             <span style={{ marginLeft: 'auto' }}>
-              <button className="btn-edit" onClick={() => setEditing(row)}>Edit</button>
+              <button className="btn-edit" onClick={() => setEditing(row)}
+                      disabled={!canWrite}
+                      title={canWrite ? undefined : writeReason}>
+                Edit
+              </button>
             </span>
           </div>
           <div className="kv-list">
@@ -1010,8 +1069,10 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate }) {
  * its attributes (OQ-1) or remove it. company_secretaries has no linking
  * endpoint, so that tile stays read-only.
  */
-function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onAdd, onEdit, onRemove, busy, note }) {
+function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
+                     onAdd, onEdit, onRemove, busy, note, canWrite = true }) {
   const list = rows || []
+  const writeReason = needsPermission('companies', 'write')
   return (
     <div className="card mb-16">
       <div className="card-hdr">
@@ -1020,7 +1081,11 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
           <div className="card-sub">{sub}</div>
         </div>
         {relation && (
-          <button className="btn btn-outline btn-sm" onClick={onAdd}>+ Add</button>
+          <button className="btn btn-outline btn-sm" onClick={onAdd}
+                  disabled={!canWrite}
+                  title={canWrite ? undefined : writeReason}>
+            + Add
+          </button>
         )}
       </div>
       {note && <div className="reveal-note" role="note">{note}</div>}
@@ -1035,8 +1100,15 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
             {row.is_current === false && <span className="member-role-tag">Former</span>}
             {relation && (
               <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                <button className="btn-edit" onClick={() => onEdit(row)}>Edit</button>
-                <button className="btn-edit" disabled={busy}
+                <button className="btn-edit" onClick={() => onEdit(row)}
+                        disabled={!canWrite}
+                        title={canWrite ? undefined : writeReason}>
+                  Edit
+                </button>
+                {/* `onRemove(row)`, not `row.id` — the caller needs the whole
+                    row to name the party in its confirmation. */}
+                <button className="btn-edit" disabled={busy || !canWrite}
+                        title={canWrite ? undefined : writeReason}
                         onClick={() => onRemove(row)}>Remove</button>
               </span>
             )}

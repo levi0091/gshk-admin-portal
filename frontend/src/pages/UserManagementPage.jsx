@@ -313,13 +313,20 @@ function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
 
 function DeactivateModal({ user, onClose, onDeactivated }) {
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   async function confirm() {
+    setError('')
     setLoading(true)
     try {
       await api.patch(`/users/${user.id}/deactivate`, {})
       onDeactivated()
       onClose()
+    } catch (err) {
+      // It used to close on failure too — `finally` without a `catch` — so a
+      // refused deactivation looked exactly like a successful one until the
+      // row reloaded still Active.
+      setError(err.message)
     } finally {
       setLoading(false)
     }
@@ -334,13 +341,112 @@ function DeactivateModal({ user, onClose, onDeactivated }) {
         </div>
         <div className="modal-body">
           <p style={{ fontSize: 13, color: 'var(--t-body)', lineHeight: 1.6 }}>
-            Are you sure you want to deactivate <strong>{user.display_name}</strong>? They will immediately lose access to the portal. This can be reversed by reassigning a role.
+            Are you sure you want to deactivate <strong>{user.display_name}</strong>?
+            They will immediately lose access to the portal, and their sign-in
+            is disabled in Supabase Auth as well.
           </p>
+          {/* THE OLD COPY SAID "this can be reversed by reassigning a role",
+              which was not true of anything the portal did: Edit writes the
+              role and the display name and has never touched `is_active`, and
+              nothing lifted the Auth ban. Naming the actual button is the
+              point — an administrator needs to know the undo exists BEFORE
+              pressing this, not after. */}
+          <p className="confirm-note">
+            Reversible: the row keeps its <b>Reactivate</b> button, which
+            restores access and lifts the Auth ban.
+          </p>
+          {error && (
+            <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C', marginTop: 14 }}>
+              {error}
+            </div>
+          )}
         </div>
         <div className="modal-footer">
           <button className="btn btn-outline" onClick={onClose}>Cancel</button>
           <button className="btn btn-danger" disabled={loading} onClick={confirm}>
             {loading ? 'Deactivating…' : 'Deactivate'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The undo deactivation never had.
+ *
+ * Both halves matter and only one of them is visible: `users.is_active` is what
+ * this portal refuses on, and the Supabase Auth ban is what refuses the sign-in
+ * itself. The backend lifts the ban FIRST and only then marks the row active,
+ * so a failure leaves the account honestly deactivated rather than showing
+ * Active beside a login that still does not work.
+ */
+function ReactivateModal({ user, onClose, onReactivated }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function confirm() {
+    setError('')
+    setLoading(true)
+    try {
+      await api.patch(`/users/${user.id}/reactivate`, {})
+      onReactivated()
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-hdr">
+          <span className="modal-title">Reactivate User</span>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <p style={{ fontSize: 13, color: 'var(--t-body)', lineHeight: 1.6, margin: 0 }}>
+            Restore portal access for <strong>{user.display_name}</strong>? Their
+            role and permissions come back exactly as they were, and their
+            existing password still works.
+          </p>
+
+          {/* THE ADDRESS, SET AS A SPECIMEN — the same reason the reset dialog
+              does it. Two rows can carry the same display name, and this is
+              the identifier that is actually unique. */}
+          <div style={{
+            background: 'var(--indigo-5)', border: '1px solid var(--border)',
+            borderRadius: 6, padding: '12px 14px', marginTop: 14,
+          }}>
+            <div style={{
+              fontSize: 11, fontWeight: 600, letterSpacing: '.04em',
+              textTransform: 'uppercase', color: 'var(--t-muted)', marginBottom: 4,
+            }}>
+              Account being restored
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t-head)', wordBreak: 'break-all' }}>
+              {user.email || '— no email on record —'}
+            </div>
+          </div>
+
+          <p className="confirm-note" style={{ marginTop: 14 }}>
+            If they have forgotten their password, use <b>Reset password</b>
+            afterwards — that button is hidden while an account is deactivated,
+            because a password mailed to a banned account cannot be used.
+          </p>
+
+          {error && (
+            <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C', marginTop: 14 }}>
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={loading} onClick={confirm}>
+            {loading ? 'Reactivating…' : 'Reactivate'}
           </button>
         </div>
       </div>
@@ -356,6 +462,7 @@ export default function UserManagementPage() {
   const [showAdd, setShowAdd] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [deactivateTarget, setDeactivateTarget] = useState(null)
+  const [reactivateTarget, setReactivateTarget] = useState(null)
   const [resetTarget, setResetTarget] = useState(null)
 
   async function load() {
@@ -439,6 +546,20 @@ export default function UserManagementPage() {
                         Deactivate
                       </button>
                     )}
+                    {/* Offered for super admins too, unlike Deactivate. That
+                        rule protects the LAST super admin from being locked
+                        out; it is not a reason to leave one that is already
+                        deactivated stranded — and Harry Lo, a deactivated
+                        super_admin, is exactly that row on DEV. */}
+                    {!u.is_active && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        style={{ color: 'var(--bang)' }}
+                        onClick={() => setReactivateTarget(u)}
+                      >
+                        Reactivate
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -475,6 +596,13 @@ export default function UserManagementPage() {
           user={deactivateTarget}
           onClose={() => setDeactivateTarget(null)}
           onDeactivated={load}
+        />
+      )}
+      {reactivateTarget && (
+        <ReactivateModal
+          user={reactivateTarget}
+          onClose={() => setReactivateTarget(null)}
+          onReactivated={load}
         />
       )}
     </>

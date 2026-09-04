@@ -272,8 +272,9 @@ async def reset_user_password(
         # cannot sign in, and tell the administrator the opposite of the truth.
         raise HTTPException(
             status_code=409,
-            detail="This account is deactivated. Reassign a role to restore "
-                   "access before resetting the password.",
+            detail="This account is deactivated. Reactivate it first — a "
+                   "password mailed to a banned account is a live credential "
+                   "for an account that cannot sign in.",
         )
 
     email = (target.get("email") or "").strip()
@@ -356,6 +357,14 @@ async def update_user(
     return result.data[0]
 
 
+#: What `deactivate` hands Supabase Auth: a hundred years, which is the
+#: closest thing GoTrue has to "indefinitely". `reactivate` sends the string
+#: below to lift it — GoTrue treats `"none"` as "clear the ban", and it is the
+#: ONLY way back: nothing about flipping `users.is_active` touches Auth.
+_BAN_FOREVER = "876600h"
+_BAN_NONE = "none"
+
+
 @router.patch("/{user_id}/deactivate")
 async def deactivate_user(
     user_id: str,
@@ -368,8 +377,94 @@ async def deactivate_user(
     clear_auth_cache()   # a deactivated user must lose access immediately
 
     try:
-        sb.auth.admin.update_user_by_id(user_id, {"ban_duration": "876600h"})
-    except Exception:
-        pass  # Auth disable is best-effort
+        sb.auth.admin.update_user_by_id(user_id, {"ban_duration": _BAN_FOREVER})
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort, and it can afford to be: the middleware refuses the
+        # account on `is_active` alone, which is already false by the time we
+        # get here. It is REPORTED rather than swallowed so the pair with
+        # `reactivate` stays legible — lifting a ban that never landed is a
+        # no-op, not a fault.
+        print(f"[users] WARN: Auth ban failed for {user_id}: {exc}",
+              file=sys.stderr)
 
     return {"message": "User deactivated", "user_id": user_id}
+
+
+@router.patch("/{user_id}/reactivate")
+async def reactivate_user(
+    user_id: str,
+    current_user=Depends(require_super_admin()),
+):
+    """Give a deactivated colleague their account back.
+
+    THIS EXISTS BECAUSE DEACTIVATION HAD NO UNDO. The confirmation dialog said
+    it "can be reversed by reassigning a role", and that was simply not true:
+    `PATCH /users/{id}` writes `role_id` and `display_name` and has never
+    written `is_active`, and nothing anywhere lifted the Auth ban. A
+    deactivated account was permanent, and the only route back was editing the
+    database by hand.
+
+    ORDER MATTERS, AND IT IS THE OPPOSITE OF THE RESET ROUTE'S. Auth first,
+    then the flag — and here an Auth failure is FATAL, because nothing has
+    changed yet:
+
+      * `is_active` is what the middleware refuses on, so writing it first
+        would put the account back on screen as Active while GoTrue still
+        refused the sign-in. The administrator would see a working account and
+        the user would see "Invalid login credentials", with nothing on either
+        screen connecting the two.
+      * Failing before the flag leaves the row saying Inactive, which is TRUE
+        — the person still cannot sign in — and leaves the button there to
+        press again. That is the safe direction, and it is what makes this
+        route re-runnable.
+
+    Reactivating an account that is already active is a NO-OP, not an error.
+    Two administrators pressing the same button is not a fault worth a 409.
+
+    NOT AUDITED, like every other user-management event (CLAUDE.md, "Audit
+    scope"): adding an `action_type` without a migration seeding it would
+    render unlabelled in the trail.
+    """
+    sb = get_supabase()
+
+    # `.limit(1)` rather than `.single()`, for the reason spelled out on the
+    # reset route: `.single()` raises on no rows, so the not-found path would
+    # need a bare `except` that would also turn a database outage into
+    # "User not found".
+    rows = (sb.table("users")
+            .select("id, display_name, email, is_active")
+            .eq("id", user_id).limit(1).execute()).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="User not found")
+    target = rows[0]
+
+    if target.get("is_active"):
+        return {"message": "User is already active", "user_id": user_id,
+                "is_active": True, "already_active": True}
+
+    try:
+        sb.auth.admin.update_user_by_id(user_id, {"ban_duration": _BAN_NONE})
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately a refusal rather than a warning. If the ban cannot be
+        # lifted the account cannot sign in, and reporting success here is the
+        # one outcome that would send an administrator away believing the
+        # problem was solved.
+        raise HTTPException(
+            status_code=502,
+            detail=f"The account could not be re-enabled in Supabase Auth, so "
+                   f"it is still deactivated and nothing was changed: {exc}",
+        )
+
+    result = sb.table("users").update({"is_active": True}).eq("id", user_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Identities are cached for 30 seconds, and a REFUSAL is cached with them.
+    # Without this the user is still told their account is inactive for half a
+    # minute after it was restored.
+    clear_auth_cache()
+
+    return {"message": "User reactivated", "user_id": user_id,
+            "is_active": True, "already_active": False,
+            "display_name": target.get("display_name"),
+            "email": target.get("email")}

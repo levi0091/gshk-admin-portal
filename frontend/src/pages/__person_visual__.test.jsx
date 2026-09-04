@@ -29,6 +29,14 @@ vi.mock('../lib/api.js', () => ({
   api: { get: (...a) => get(...a), post: vi.fn(), patch: vi.fn(), put: vi.fn(),
          del: vi.fn(), upload: vi.fn() },
 }))
+// The screen shot is of a user who may edit — the read-only variant is a
+// different picture, covered by the unit tests rather than by a screenshot.
+vi.mock('../context/AuthContext.jsx', () => ({
+  useAuth: () => ({
+    hasPermission: () => true, isSuperAdmin: true, profileLoading: false,
+    profile: { id: 'u-1', display_name: 'Levi Z.', role_name: 'super_admin' },
+  }),
+}))
 import { _resetLookups } from '../lib/lookups.js'
 import { _resetFormContract } from '../lib/formContract.js'
 import { _resetDocumentSections } from '../lib/documentSections.js'

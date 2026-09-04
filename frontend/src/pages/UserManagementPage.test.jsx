@@ -4,8 +4,10 @@ import userEvent from '@testing-library/user-event'
 
 const get = vi.fn()
 const post = vi.fn()
+const patch = vi.fn()
 vi.mock('../lib/api.js', () => ({
-  api: { get: (...a) => get(...a), post: (...a) => post(...a), patch: vi.fn() },
+  api: { get: (...a) => get(...a), post: (...a) => post(...a),
+         patch: (...a) => patch(...a) },
 }))
 
 let auth = { profile: { id: 'admin-1' } }
@@ -26,6 +28,7 @@ beforeEach(() => {
     String(url).includes('roles') ? ROLES : []))
   post.mockResolvedValue({ id: 'u9', display_name: 'Roy',
                            welcome_email_sent: true })
+  patch.mockResolvedValue({ ok: true })
 })
 
 async function openAddUser() {
@@ -255,5 +258,140 @@ describe('UserManagementPage — resetting a password', () => {
     await screen.findByText('Roy Tan')
     expect(screen.queryByRole('button', { name: /Reset password/i }))
       .not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Deactivation gets an undo.
+ *
+ * It had none. The dialog claimed it "can be reversed by reassigning a role",
+ * and nothing the portal offered did that: Edit writes the role and the display
+ * name and has never written `is_active`, and nothing lifted the Supabase Auth
+ * ban. A deactivated colleague was locked out for good.
+ */
+describe('UserManagementPage — reactivating a user', () => {
+  const users = list => get.mockImplementation(url => Promise.resolve(
+    String(url).includes('roles') ? ROLES : list))
+
+  const INACTIVE = { ...STAFF, is_active: false }
+
+  async function openReactivate(row = INACTIVE) {
+    users([row])
+    const user = userEvent.setup()
+    render(<UserManagementPage />)
+    await user.click(await screen.findByRole('button', { name: /^Reactivate$/i }))
+    return user
+  }
+
+  const dialog = () => screen.getAllByRole('button', { name: /^Reactivate$/i })
+    .map(b => b.closest('.modal')).find(Boolean)
+
+  it('offers Reactivate on a deactivated row, and Deactivate on an active one', async () => {
+    users([INACTIVE])
+    render(<UserManagementPage />)
+    await screen.findByText('Roy Tan')
+
+    expect(screen.getByRole('button', { name: /^Reactivate$/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Deactivate$/i })).not.toBeInTheDocument()
+  })
+
+  it('offers no Reactivate on an account that is already active', async () => {
+    users([STAFF])
+    render(<UserManagementPage />)
+    await screen.findByText('Roy Tan')
+
+    expect(screen.queryByRole('button', { name: /^Reactivate$/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Deactivate$/i })).toBeInTheDocument()
+  })
+
+  it('offers it for a deactivated SUPER ADMIN too', async () => {
+    // Deactivate is withheld from super admins so the last one cannot lock
+    // themselves out. That is no reason to strand one that is already
+    // deactivated — Harry Lo on DEV is exactly that row.
+    users([{ ...INACTIVE, roles: { name: 'super_admin' } }])
+    render(<UserManagementPage />)
+    await screen.findByText('Roy Tan')
+
+    expect(screen.getByRole('button', { name: /^Reactivate$/i })).toBeInTheDocument()
+  })
+
+  it('names the account by EMAIL before restoring it', async () => {
+    await openReactivate()
+    expect(within(dialog()).getByText('roy@x.com')).toBeInTheDocument()
+  })
+
+  it('changes nothing until the dialog is confirmed', async () => {
+    await openReactivate()
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('patches the reactivate route for the confirmed user and nobody else', async () => {
+    const user = await openReactivate()
+    await user.click(within(dialog()).getByRole('button', { name: /^Reactivate$/i }))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('/users/u9/reactivate', {}))
+    expect(patch).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads the list afterwards, so the row stops saying Inactive', async () => {
+    const user = await openReactivate()
+    const before = get.mock.calls.length
+    await user.click(within(dialog()).getByRole('button', { name: /^Reactivate$/i }))
+
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('keeps the dialog open and shows why when the backend refuses', async () => {
+    // The 502 the route raises when the Auth ban could not be lifted. Closing
+    // on a failure would report a restored account that is still banned.
+    patch.mockRejectedValueOnce(new Error('still deactivated: gotrue is down'))
+    const user = await openReactivate()
+    await user.click(within(dialog()).getByRole('button', { name: /^Reactivate$/i }))
+
+    expect(await screen.findByText(/still deactivated/)).toBeInTheDocument()
+    expect(dialog()).toBeTruthy()
+  })
+
+  it('points at Reset password for the forgotten-password case', async () => {
+    // That button is hidden while the account is deactivated, so the order
+    // matters and the dialog is where somebody finds that out.
+    await openReactivate()
+    expect(within(dialog()).getByText(/Reset password/)).toBeInTheDocument()
+  })
+})
+
+describe('UserManagementPage — the deactivate dialog', () => {
+  const users = list => get.mockImplementation(url => Promise.resolve(
+    String(url).includes('roles') ? ROLES : list))
+
+  async function openDeactivate() {
+    users([STAFF])
+    const user = userEvent.setup()
+    render(<UserManagementPage />)
+    await user.click(await screen.findByRole('button', { name: /^Deactivate$/i }))
+    return user
+  }
+
+  const dialog = () => screen.getAllByRole('button', { name: /^Deactivate$/i })
+    .map(b => b.closest('.modal')).find(Boolean)
+
+  it('no longer claims a role change reverses it', async () => {
+    // It never did. `PATCH /users/{id}` writes role_id and display_name and
+    // has never written is_active.
+    await openDeactivate()
+    expect(screen.queryByText(/reassigning a role/i)).not.toBeInTheDocument()
+  })
+
+  it('names the button that actually reverses it', async () => {
+    await openDeactivate()
+    expect(within(dialog()).getByText(/Reactivate/)).toBeInTheDocument()
+  })
+
+  it('stays open and says why when the deactivation is refused', async () => {
+    patch.mockRejectedValueOnce(new Error('User not found'))
+    const user = await openDeactivate()
+    await user.click(within(dialog()).getByRole('button', { name: /^Deactivate$/i }))
+
+    expect(await screen.findByText('User not found')).toBeInTheDocument()
   })
 })

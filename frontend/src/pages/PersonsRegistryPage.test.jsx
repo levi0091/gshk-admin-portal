@@ -12,6 +12,10 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
+// "+ Add Person" is gated on `persons:write`. Reassigned by the read-only test
+// at the bottom of this file.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { api } from '../lib/api.js'
 
 const PAYLOAD = {
@@ -38,6 +42,10 @@ const renderPage = () => render(<MemoryRouter><PersonsRegistryPage /></MemoryRou
 beforeEach(() => {
   vi.clearAllMocks()
   api.get.mockResolvedValue(PAYLOAD)
+  auth = {
+    hasPermission: () => true, isSuperAdmin: true, profileLoading: false,
+    profile: { id: 'u-1', display_name: 'Levi Z.', role_name: 'super_admin' },
+  }
 })
 
 describe('PersonsRegistryPage', () => {
@@ -249,5 +257,27 @@ describe('PersonsRegistryPage — column filters', () => {
       expect(last).toContain('filter=updated_at:gte:2026-06-01')
       expect(last).toContain('filter=updated_at:lte:2026-06-30')
     })
+  })
+})
+
+describe('PersonsRegistryPage — write access', () => {
+  it('lets the tester role add a person', async () => {
+    // The reported case holds persons (read) AND persons (write).
+    auth.hasPermission = (m, p) =>
+      ['companies:read', 'persons:read', 'persons:write'].includes(`${m}:${p}`)
+    renderPage()
+    await screen.findByText('John Smith')
+
+    expect(screen.getByRole('button', { name: /Add Person/ })).toBeEnabled()
+  })
+
+  it('disables + Add Person for a persons:read-only role, with the reason', async () => {
+    auth.hasPermission = (m, p) => `${m}:${p}` === 'persons:read'
+    renderPage()
+    await screen.findByText('John Smith')
+
+    const add = screen.getByRole('button', { name: /Add Person/ })
+    expect(add).toBeDisabled()
+    expect(add).toHaveAttribute('title', expect.stringContaining('persons (write)'))
   })
 })

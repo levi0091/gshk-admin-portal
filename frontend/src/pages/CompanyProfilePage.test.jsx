@@ -798,3 +798,119 @@ describe('CompanyProfilePage — the CR form fields', () => {
     expect(screen.getByRole('button', { name: /New case/ })).toBeEnabled()
   })
 })
+
+/**
+ * A role that may READ a company but not change it (Levi 2026-09-04).
+ *
+ * "I should only be able to click around the company profile but all these
+ * buttons should be disabled for me." DISABLED, not hidden: hiding them makes
+ * the screen look like a different, smaller product, and a reader who has been
+ * told a feature exists then cannot find it. The backend refuses each of these
+ * independently — this stops the screen offering what it knows will be refused,
+ * and says why.
+ */
+describe('CompanyProfilePage — a read-only role', () => {
+  const holding = (...perms) => (module, permission) =>
+    perms.includes(`${module}:${permission}`)
+
+  beforeEach(() => {
+    // The tester role exactly: companies (read), persons (read+write), and no
+    // `documents` or `nar1` at all.
+    auth = {
+      isSuperAdmin: false,
+      hasPermission: holding('companies:read', 'persons:read', 'persons:write'),
+      profile: { display_name: 'Tester', role_name: 'tester' },
+    }
+  })
+
+  it('says once, at the top, that the screen is read-only', async () => {
+    renderPage()
+    await screen.findByText('Company Information')
+
+    const note = screen.getAllByRole('note')
+      .find(n => /Read-only/.test(n.textContent))
+    expect(note).toBeTruthy()
+    expect(note).toHaveTextContent('companies (write)')
+  })
+
+  it('still shows the company — reading is the whole point', async () => {
+    renderPage()
+    await screen.findByText('Company Information')
+    // The name is in the header and in the breadcrumb; one of each is enough.
+    expect(screen.getAllByText('Skyline Capital').length).toBeGreaterThan(0)
+    expect(screen.getByText('Director(s)')).toBeInTheDocument()
+  })
+
+  it('disables Edit on Company Information, and says why on the button', async () => {
+    renderPage()
+    const card = (await screen.findByText('Company Information')).closest('.card')
+
+    const edit = within(card).getByRole('button', { name: /^Edit$/ })
+    expect(edit).toBeDisabled()
+    expect(edit).toHaveAttribute('title', expect.stringContaining('companies (write)'))
+  })
+
+  it('disables the Is Client / Is Corporate Party switches', async () => {
+    // They are one click from rewriting what the whole screen shows.
+    renderPage()
+    await screen.findByText('Company Information')
+
+    expect(screen.getByRole('switch', { name: 'Is Client' })).toBeDisabled()
+    expect(screen.getByRole('switch', { name: 'Is Corporate Party' })).toBeDisabled()
+  })
+
+  it('disables every party tile action', async () => {
+    renderPage()
+    const tile = (await screen.findByText('Director(s)')).closest('.card')
+
+    expect(within(tile).getByRole('button', { name: /\+ Add/ })).toBeDisabled()
+    for (const b of within(tile).getAllByRole('button', { name: /^Edit$|^Remove$/ })) {
+      expect(b).toBeDisabled()
+    }
+  })
+
+  it('disables Add and Edit on share capital', async () => {
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+
+    expect(within(tile).getByRole('button', { name: /Add a class/ })).toBeDisabled()
+    expect(within(tile).getByRole('button', { name: /^Edit$/ })).toBeDisabled()
+  })
+
+  it('disables + New case, which is a different module again', async () => {
+    // `nar1:write`, not `companies:write` — a role that may edit a company
+    // profile is not thereby entitled to drive a statutory filing.
+    renderPage()
+    await screen.findByText('Cases')
+
+    const button = screen.getByRole('button', { name: /New case/ })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('title', expect.stringContaining('nar1 (write)'))
+  })
+
+  it('disables document upload — a THIRD module, asked separately', async () => {
+    // `documents:write`. A role can hold `companies:write` and still not be
+    // allowed to file documents, and vice versa.
+    renderPage()
+    await screen.findByText('Document History')
+    const card = sectionCard('Certificates')
+
+    expect(within(card).getByRole('button', { name: /Upload Document/ }))
+      .toBeDisabled()
+  })
+
+  it('lets a role that holds documents:write upload, on a company it cannot edit', async () => {
+    // The permissions really are independent — this is the proof that the
+    // screen asks each of them rather than gating everything on one.
+    auth.hasPermission = holding('companies:read', 'documents:read',
+                                 'documents:write')
+    renderPage()
+    await screen.findByText('Document History')
+    const card = sectionCard('Certificates')
+
+    expect(within(card).getByRole('button', { name: /Upload Document/ }))
+      .toBeEnabled()
+    expect(within(screen.getByText('Company Information').closest('.card'))
+      .getByRole('button', { name: /^Edit$/ })).toBeDisabled()
+  })
+})

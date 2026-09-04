@@ -13,7 +13,9 @@ import UserManagementPage from './pages/UserManagementPage.jsx'
 import SetPasswordPage from './pages/SetPasswordPage.jsx'
 import RoleManagementPage from './pages/RoleManagementPage.jsx'
 import AuditLogPage from './pages/AuditLogPage.jsx'
+import HomePage from './pages/HomePage.jsx'
 import AppShell from './components/AppShell.jsx'
+import RequirePermission, { NoAccess } from './components/RequirePermission.jsx'
 
 function RequireAuth({ children }) {
   const { session, mustChangePassword, profileLoading } = useAuth()
@@ -35,7 +37,11 @@ function RequireSuperAdmin({ children }) {
   const { isSuperAdmin, profileLoading } = useAuth()
   // Wait for /auth/me to resolve before deciding — prevents redirect loop on slow/failing backend
   if (profileLoading) return null
-  if (!isSuperAdmin) return <Navigate to="/login" replace />
+  // NOT `<Navigate to="/login">`. Bouncing a signed-in user to the sign-in
+  // screen says "you are not logged in" about somebody who is, and the login
+  // page then either sits there or bounces them straight back. The honest
+  // answer to "you may not open this" is to say so.
+  if (!isSuperAdmin) return <NoAccess title="Super Admins only" />
   return children
 }
 
@@ -52,14 +58,43 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="registry" element={<CompanyRegistryPage />} />
-          <Route path="companies/:companyId" element={<CompanyProfilePage />} />
+          {/* NOT a bare redirect to /dashboard any more. That screen needs
+              `nar1:read`, and sending every signed-in user to it dropped roles
+              without that permission onto a page that answered 403 — while the
+              sidebar, which IS gated, showed nothing at all. HomePage sends
+              each role to the first screen its own menu offers. */}
+          <Route index element={<HomePage />} />
+          <Route path="dashboard" element={
+            <RequirePermission module="nar1" permission="read">
+              <DashboardPage />
+            </RequirePermission>
+          } />
+          <Route path="registry" element={
+            <RequirePermission module="companies" permission="read">
+              <CompanyRegistryPage />
+            </RequirePermission>
+          } />
+          <Route path="companies/:companyId" element={
+            <RequirePermission module="companies" permission="read">
+              <CompanyProfilePage />
+            </RequirePermission>
+          } />
           {/* The case dashboard opens a case directly, not the company. */}
-          <Route path="cases/:caseId" element={<CaseWorkflowPage />} />
-          <Route path="persons" element={<PersonsRegistryPage />} />
-          <Route path="persons/:personId" element={<PersonProfilePage />} />
+          <Route path="cases/:caseId" element={
+            <RequirePermission module="nar1" permission="read">
+              <CaseWorkflowPage />
+            </RequirePermission>
+          } />
+          <Route path="persons" element={
+            <RequirePermission module="persons" permission="read">
+              <PersonsRegistryPage />
+            </RequirePermission>
+          } />
+          <Route path="persons/:personId" element={
+            <RequirePermission module="persons" permission="read">
+              <PersonProfilePage />
+            </RequirePermission>
+          } />
           <Route
             path="users"
             element={
@@ -76,9 +111,21 @@ export default function App() {
               </RequireSuperAdmin>
             }
           />
-          <Route path="audit-log" element={<AuditLogPage />} />
+          <Route path="audit-log" element={
+            <RequirePermission module="audit_trail" permission="read">
+              <AuditLogPage />
+            </RequirePermission>
+          } />
+          {/* The one screen every signed-in user may open, whatever their role
+              holds — it is where they read what their role holds. */}
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="cr-credentials" element={<CrCredentialsPage />} />
+          {/* tpsi:read views the credential metadata; the page gates saving on
+              tpsi:write itself. */}
+          <Route path="cr-credentials" element={
+            <RequirePermission module="tpsi" permission="read">
+              <CrCredentialsPage />
+            </RequirePermission>
+          } />
         </Route>
       </Routes>
     </BrowserRouter>

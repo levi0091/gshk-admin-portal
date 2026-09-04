@@ -15,6 +15,11 @@ vi.mock('../lib/api.js', () => ({
   api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), put: vi.fn(), del: vi.fn(),
          upload: vi.fn() },
 }))
+// The screen gates every write on the caller's permissions. `auth` is
+// reassigned by the read-only tests at the bottom of this file; the default is
+// a role that holds everything, which is what the rest of these tests describe.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { api } from '../lib/api.js'
 import { _resetLookups } from '../lib/lookups.js'
 import { _resetFormContract } from '../lib/formContract.js'
@@ -159,6 +164,10 @@ beforeEach(() => {
   mockGet(PERSON)
   api.patch.mockResolvedValue({})
   api.upload.mockResolvedValue({ id: 'i9' })
+  auth = {
+    hasPermission: () => true, isSuperAdmin: true, profileLoading: false,
+    profile: { id: 'u-1', display_name: 'Levi Z.', role_name: 'super_admin' },
+  }
 })
 
 describe('PersonProfilePage', () => {
@@ -733,5 +742,126 @@ describe('PersonProfilePage — the identity card and the history', () => {
     expect(within(history).getByText(/v1 · p\.pdf/)).toBeInTheDocument()
     // Hong Kong wall-clock: 09:30 UTC is 17:30 the same day in HK.
     expect(within(history).getByText(/17:30/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * The tester role on a person: `persons:read` + `persons:write`, and no
+ * `documents` module at all (Levi 2026-09-04 — "I should be able to
+ * edit/create and save person profile").
+ *
+ * The point of this block is that the two are asked SEPARATELY. A person's own
+ * fields and their identity RECORDS are `persons:write` — an identity document
+ * is part of the person, not an upload, and `POST
+ * /persons/{id}/identity-documents` is gated accordingly. A file filed under
+ * Proof of Address is the `documents` module, which this role does not hold.
+ */
+describe('PersonProfilePage — the tester role (persons read+write, no documents)', () => {
+  const holding = (...perms) => (module, permission) =>
+    perms.includes(`${module}:${permission}`)
+
+  beforeEach(() => {
+    auth = {
+      isSuperAdmin: false,
+      hasPermission: holding('companies:read', 'persons:read', 'persons:write'),
+      profile: { display_name: 'Tester', role_name: 'tester' },
+    }
+  })
+
+  it('shows no read-only banner — this role CAN edit a person', async () => {
+    renderPage()
+    await screen.findByText('Personal Information')
+
+    // Scoped to the permission banner: "Appointments & Roles" carries its own
+    // "Read-only here" note about where roles are edited, which is a different
+    // statement and stays whatever the permissions are.
+    expect(screen.queryAllByRole('note')
+      .filter(n => /persons \(write\)/.test(n.textContent))).toHaveLength(0)
+  })
+
+  it('lets them edit and save the person', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText('Personal Information')).closest('.card')
+
+    const edit = within(card).getByRole('button', { name: /^Edit$/ })
+    expect(edit).toBeEnabled()
+    await user.click(edit)
+    expect(within(card).getByRole('button', { name: /^Save$/ })).toBeInTheDocument()
+  })
+
+  it('lets them add and edit an identity document', async () => {
+    // `persons:write`, NOT `documents:write` — the record is part of the
+    // person even when it carries a scan.
+    renderPage()
+    await screen.findByText(/Identity Documents/)
+    const card = sectionCard('Identity Documents')
+
+    expect(within(card).getByRole('button', { name: /Add Identity Document/ }))
+      .toBeEnabled()
+    for (const b of within(card).getAllByRole('button', { name: /^Edit$|^Remove$/ })) {
+      expect(b).toBeEnabled()
+    }
+  })
+
+  it('still refuses the documents module, which is a separate grant', async () => {
+    renderPage()
+    await screen.findByText(/Identity Documents/)
+    const proof = sectionCard('Proof of Address')
+
+    const upload = within(proof).getByRole('button', { name: /Upload Document/ })
+    expect(upload).toBeDisabled()
+    expect(upload).toHaveAttribute('title',
+      expect.stringContaining('documents (write)'))
+  })
+})
+
+describe('PersonProfilePage — a persons:read-only role', () => {
+  const holding = (...perms) => (module, permission) =>
+    perms.includes(`${module}:${permission}`)
+
+  beforeEach(() => {
+    auth = {
+      isSuperAdmin: false,
+      hasPermission: holding('persons:read'),
+      profile: { display_name: 'Reader', role_name: 'reader' },
+    }
+  })
+
+  it('says once, at the top, that the screen is read-only', async () => {
+    renderPage()
+    await screen.findByText('Personal Information')
+
+    const note = screen.getAllByRole('note')
+      .find(n => /Read-only/.test(n.textContent))
+    expect(note).toBeTruthy()
+    expect(note).toHaveTextContent('persons (write)')
+  })
+
+  it('still shows the person', async () => {
+    renderPage()
+    expect(await screen.findByText('Personal Information')).toBeInTheDocument()
+    expect(screen.getByText('British (BNO)')).toBeInTheDocument()
+  })
+
+  it('disables Edit, with the reason on the button', async () => {
+    renderPage()
+    const card = (await screen.findByText('Personal Information')).closest('.card')
+
+    const edit = within(card).getByRole('button', { name: /^Edit$/ })
+    expect(edit).toBeDisabled()
+    expect(edit).toHaveAttribute('title', expect.stringContaining('persons (write)'))
+  })
+
+  it('disables every identity-document action', async () => {
+    renderPage()
+    await screen.findByText(/Identity Documents/)
+    const card = sectionCard('Identity Documents')
+
+    expect(within(card).getByRole('button', { name: /Add Identity Document/ }))
+      .toBeDisabled()
+    for (const b of within(card).getAllByRole('button', { name: /^Edit$|^Remove$/ })) {
+      expect(b).toBeDisabled()
+    }
   })
 })

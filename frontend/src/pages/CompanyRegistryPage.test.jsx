@@ -12,6 +12,10 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn() } }))
+// "+ Add Company" is gated on `companies:write`. Reassigned by the read-only
+// test at the bottom of this file.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { api } from '../lib/api.js'
 
 const PAYLOAD = {
@@ -46,6 +50,10 @@ function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks()
   api.get.mockResolvedValue(PAYLOAD)
+  auth = {
+    hasPermission: () => true, isSuperAdmin: true, profileLoading: false,
+    profile: { id: 'u-1', display_name: 'Levi Z.', role_name: 'super_admin' },
+  }
 })
 
 describe('CompanyRegistryPage', () => {
@@ -550,5 +558,30 @@ describe('CompanyRegistryPage — column filters', () => {
       .toHaveClass('th-filtered')
     expect(screen.getByRole('button', { name: 'Filter Company Name' }))
       .not.toHaveClass('is-on')
+  })
+})
+
+describe('CompanyRegistryPage — a read-only role', () => {
+  it('still lists every company', async () => {
+    // `companies:read` is exactly what this list is for.
+    auth.hasPermission = (m, p) => `${m}:${p}` === 'companies:read'
+    renderPage()
+    expect(await screen.findByText('Harbour Tech Ltd.')).toBeInTheDocument()
+  })
+
+  it('disables + Add Company, and says which permission is missing', async () => {
+    auth.hasPermission = (m, p) => `${m}:${p}` === 'companies:read'
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+
+    const add = screen.getByRole('button', { name: /Add Company/ })
+    expect(add).toBeDisabled()
+    expect(add).toHaveAttribute('title', expect.stringContaining('companies (write)'))
+  })
+
+  it('leaves it enabled for a role that holds companies:write', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.getByRole('button', { name: /Add Company/ })).toBeEnabled()
   })
 })

@@ -19,6 +19,9 @@ import { idNumberProblem } from '../lib/hkid.js'
 import {
   useDocumentSections, groupBySection, fieldsForStoredDocument, identityRules,
 } from '../lib/documentSections.js'
+import { useAuth } from '../context/AuthContext.jsx'
+import { ReadOnlyNote } from '../components/RequirePermission.jsx'
+import { needsPermission, disabledReason } from '../lib/permissions.js'
 
 // `lookup` names the controlled vocabulary a field draws from (migration 013,
 // lifted from Viewpoint). Without it these were free-text, which is how the same
@@ -117,7 +120,12 @@ const ID_TYPE_LABEL = {
 function IdentityDocument({
   doc, identityFields, lookups, busy, isPrimary, canChoosePrimary,
   onSave, onMakePrimary, onRemove,
+  // An identity RECORD is written through `persons:write` — it is part of the
+  // person, not an upload. Its SCAN is a document, so downloading it asks
+  // `documents:read` instead. Two facts, two permissions.
+  canWrite = true, canDownloadScan = true,
 }) {
+  const writeReason = needsPermission('persons', 'write')
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
 
@@ -165,18 +173,29 @@ function IdentityDocument({
                   primary one by definition, and a button that cannot change
                   anything is noise. */}
               {canChoosePrimary && (
-                <button className="btn-edit" onClick={onMakePrimary} disabled={busy}>
+                <button className="btn-edit" onClick={onMakePrimary}
+                        disabled={busy || !canWrite}
+                        title={canWrite ? undefined : writeReason}>
                   Make primary
                 </button>
               )}
               {doc.scan_document_id && (
                 <button className="btn-edit"
+                        disabled={!canDownloadScan}
+                        title={canDownloadScan
+                          ? undefined : needsPermission('documents', 'read')}
                         onClick={() => downloadDocument(doc.scan_document_id)}>
                   Download scan
                 </button>
               )}
-              <button className="btn-edit" onClick={start}>Edit</button>
-              <button className="btn-edit btn-edit-danger" onClick={onRemove} disabled={busy}>
+              <button className="btn-edit" onClick={start}
+                      disabled={!canWrite}
+                      title={canWrite ? undefined : writeReason}>
+                Edit
+              </button>
+              <button className="btn-edit btn-edit-danger" onClick={onRemove}
+                      disabled={busy || !canWrite}
+                      title={canWrite ? undefined : writeReason}>
                 Remove
               </button>
             </>
@@ -237,6 +256,16 @@ export default function PersonProfilePage() {
   // rather than one flag per section — a second dialog can never open behind
   // the first.
   const [uploadInto, setUploadInto] = useState(null)
+  const { hasPermission } = useAuth()
+  // `persons:read` opened this page. The person's own fields and their
+  // identity RECORDS are `persons:write`; uploaded files are the separate
+  // `documents` module, which a role can hold independently. The API enforces
+  // each of these on its own — this only stops the screen offering what it
+  // knows will be refused.
+  const canWrite = hasPermission('persons', 'write')
+  const canUploadDoc = hasPermission('documents', 'write')
+  const canRemoveDoc = hasPermission('documents', 'delete')
+  const canDownloadDoc = hasPermission('documents', 'read')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -454,6 +483,10 @@ export default function PersonProfilePage() {
         />
       )}
 
+      {!canWrite && (
+        <ReadOnlyNote module="persons" what="this person's details and identity documents" />
+      )}
+
       <div className="detail-grid client-off">
         <div>
           {/* Personal Information */}
@@ -473,7 +506,11 @@ export default function PersonProfilePage() {
                   </button>
                 </div>
               ) : (
-                <button className="btn-edit" onClick={startEdit}>Edit</button>
+                <button className="btn-edit" onClick={startEdit}
+                        disabled={!canWrite}
+                        title={disabledReason(canWrite, 'persons', 'write')}>
+                  Edit
+                </button>
               )}
             </div>
 
@@ -545,7 +582,13 @@ export default function PersonProfilePage() {
           {sections.map(section => section.is_identity ? (
             <DocumentSection key={section.key} section={section}
                              count={idDocs.length}
-                             onAdd={() => setUploadInto(section)}>
+                             onAdd={() => setUploadInto(section)}
+                             /* An identity document is created through
+                                POST /persons/{id}/identity-documents, which is
+                                gated on `persons:write` — NOT on `documents`,
+                                even though it can carry a scan. */
+                             canAdd={canWrite}
+                             addReason={needsPermission('persons', 'write')}>
               {idDocs.length === 0 ? (
                 <div className="empty-state" style={{ padding: '16px 0' }}>
                   No identity documents on file. CR files every director by their
@@ -560,6 +603,8 @@ export default function PersonProfilePage() {
                   busy={busy}
                   isPrimary={d.id === primaryDoc?.id}
                   canChoosePrimary={idDocs.length > 1 && d.id !== primaryDoc?.id}
+                  canWrite={canWrite}
+                  canDownloadScan={canDownloadDoc}
                   onSave={changed => saveIdentityDocument(d.id, changed)}
                   onMakePrimary={() => saveIdentityDocument(d.id, { is_primary: true })}
                   onRemove={() => setRemoving({ kind: 'identity', doc: d })}
@@ -569,7 +614,9 @@ export default function PersonProfilePage() {
           ) : (
             <DocumentSection key={section.key} section={section}
                              count={(bySection[section.key] || []).length}
-                             onAdd={() => setUploadInto(section)}>
+                             onAdd={() => setUploadInto(section)}
+                             canAdd={canUploadDoc}
+                             addReason={needsPermission('documents', 'write')}>
               {(bySection[section.key] || []).length === 0 ? (
                 <div className="empty-state" style={{ padding: '16px 0' }}>
                   Nothing uploaded yet.
@@ -579,6 +626,10 @@ export default function PersonProfilePage() {
                   documents={bySection[section.key]}
                   busy={busy}
                   onRemove={doc => setRemoving({ kind: 'document', doc })}
+                  canDownload={canDownloadDoc}
+                  downloadReason={needsPermission('documents', 'read')}
+                  canRemove={canRemoveDoc}
+                  removeReason={needsPermission('documents', 'delete')}
                 />
               )}
             </DocumentSection>
@@ -594,7 +645,9 @@ export default function PersonProfilePage() {
                 </div>
               </div>
             </div>
-            <DocumentHistory documents={person.documents} sectionLabels={sectionLabels} />
+            <DocumentHistory documents={person.documents} sectionLabels={sectionLabels}
+                             canDownload={canDownloadDoc}
+                             downloadReason={needsPermission('documents', 'read')} />
           </div>
 
           {/* Appointments & Roles — read-only */}
