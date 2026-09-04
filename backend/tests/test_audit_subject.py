@@ -11,23 +11,30 @@ from services import audit_subject as sub
 # --------------------------------------------------------------------------- #
 #  The vocabularies are pinned, on BOTH sides of the wire.
 #
-#  These five strings go out as `filter=module:in:...` and land in a closed enum
+#  These four strings go out as `filter=module:in:...` and land in a closed enum
 #  in routers/audit.py. frontend/src/lib/auditVocabulary.test.js pins the same
 #  literals, so a rename on either side fails CI rather than shipping a filter
 #  option that matches nothing.
 # --------------------------------------------------------------------------- #
 def test_module_vocabulary_is_the_sidebar_names():
     assert sub.MODULES == (
-        "post_incorporation", "body_corporate", "natural_person",
-        "documents", "cr_filing",
+        "post_incorporation", "body_corporate", "natural_person", "cr_filing",
     )
 
 
 def test_every_module_has_a_label():
     assert [sub.MODULE_LABELS[m] for m in sub.MODULES] == [
-        "Post-incorporation", "Body Corporate", "Natural Person",
-        "Documents", "CR Filing",
+        "Post-incorporation", "Body Corporate", "Natural Person", "CR Filing",
     ]
+
+
+def test_there_is_no_documents_module():
+    """Levi 2026-09-04. A document is uploaded AGAINST a record and is filed
+    under that record's module, so a director's history is one filter value and
+    not two. Pinned as its own test because deleting a name from a tuple is the
+    kind of change that gets reverted by a merge without anyone noticing."""
+    assert "documents" not in sub.MODULES
+    assert not hasattr(sub, "DOCUMENTS")
 
 
 def test_subject_kinds_are_pinned():
@@ -80,8 +87,42 @@ def test_a_document_without_a_case_id_belongs_to_a_person():
                       )["subject_kind"] == "person"
     assert sub.derive(entity_type="document", entity_id="d", case_id=ENTITY_UUID
                       )["subject_kind"] == "company"
-    assert sub.derive(entity_type="document", entity_id="d", case_id=None
-                      )["module"] == "documents"
+
+
+def test_a_document_takes_the_module_of_whatever_it_hangs_off():
+    """The whole point of dropping the `documents` module: an id scan on a
+    director must land in the SAME filter value as an edit to that director, or
+    "everything that happened to this person" takes two queries and the operator
+    has to know in advance which events went where."""
+    person_doc = sub.derive(entity_type="document", entity_id="d", case_id=None)
+    company_doc = sub.derive(entity_type="document", entity_id="d",
+                             case_id=ENTITY_UUID)
+    assert person_doc["module"] == "natural_person"
+    assert company_doc["module"] == "body_corporate"
+    # And it is the same value an ordinary edit to that record gets.
+    assert person_doc["module"] == sub.derive(
+        entity_type="person", entity_id=CASE_UUID)["module"]
+    assert company_doc["module"] == sub.derive(
+        entity_type="entity", case_id=ENTITY_UUID)["module"]
+
+
+def test_a_case_owned_document_is_post_incorporation():
+    """A CR receipt or a wet-signed return is an artefact of one filing, so it
+    files under the workflow. No such row exists on DEV yet — the path is
+    document_service._audit_owner's first branch."""
+    out = sub.derive(entity_type="document", entity_id="d",
+                     subject_kind="case", subject_id=CASE_UUID)
+    assert out["module"] == "post_incorporation"
+
+
+def test_an_address_takes_its_owners_module_too():
+    """Same rule, and it was already true for addresses — this pins that the
+    two polymorphic types are now resolved by one mechanism rather than by an
+    ad-hoc branch each."""
+    assert sub.derive(entity_type="address", subject_kind="person",
+                      subject_id=CASE_UUID)["module"] == "natural_person"
+    assert sub.derive(entity_type="address", case_id=ENTITY_UUID
+                      )["module"] == "body_corporate"
 
 
 def test_tpsi_events_are_cr_filing():
@@ -101,10 +142,10 @@ def test_the_shared_credential_never_writes_a_non_uuid_subject_id():
 def test_an_explicit_value_always_wins():
     out = sub.derive(
         entity_type="entity", case_id=ENTITY_UUID,
-        module="documents", subject_kind="person", subject_id=CASE_UUID,
+        module="cr_filing", subject_kind="person", subject_id=CASE_UUID,
         subject_ref="A123456(7)",
     )
-    assert out == {"module": "documents", "subject_kind": "person",
+    assert out == {"module": "cr_filing", "subject_kind": "person",
                    "subject_id": CASE_UUID, "subject_ref": "A123456(7)"}
 
 
@@ -137,12 +178,21 @@ def test_for_person_prefers_the_supplied_identity_number():
     assert out["subject_ref"] == "A123456(7)"
 
 
-def test_helpers_take_a_module_override_for_documents():
-    """A document on a company is a DOCUMENTS row about a COMPANY — the surface
-    and the subject are different questions."""
-    out = sub.for_company({"id": ENTITY_UUID}, module=sub.DOCUMENTS)
-    assert out["module"] == "documents"
+def test_helpers_still_take_a_module_override():
+    """The override survives dropping `documents` — it is how a row can be
+    ABOUT a company while belonging to another surface, which is exactly what a
+    CR filing is."""
+    out = sub.for_company({"id": ENTITY_UUID}, module=sub.CR_FILING)
+    assert out["module"] == "cr_filing"
     assert out["subject_kind"] == "company"
+
+
+def test_each_helper_defaults_to_its_subjects_module():
+    """No caller passes a module for a document any more, so these defaults are
+    what document_service._audit_owner now relies on."""
+    assert sub.for_person({"id": CASE_UUID})["module"] == "natural_person"
+    assert sub.for_company({"id": ENTITY_UUID})["module"] == "body_corporate"
+    assert sub.for_case({"id": CASE_UUID})["module"] == "post_incorporation"
 
 
 def test_helpers_survive_a_missing_record():

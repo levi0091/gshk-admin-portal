@@ -271,11 +271,12 @@ def collapse_uniform_kv(value):
 
 
 #: Viewpoint subject kind -> the G-FlowDesk module it belongs to. Only two,
-#: and that is not an omission: Viewpoint has no NAR1 case workflow, no document
-#: store and no CR e-Filing transport, so an imported row is never labelled
-#: post_incorporation, documents or cr_filing. Mirrors
-#: services/audit_subject.MODULES; a NULL module renders as a dash, which is
-#: the truth about a system that did not record one.
+#: and that is not an omission: Viewpoint has no NAR1 case workflow and no CR
+#: e-Filing transport, so an imported row is never labelled post_incorporation
+#: or cr_filing. Mirrors services/audit_subject._MODULE_FOR_KIND, which is the
+#: same rule the native side applies — the module follows the subject, which is
+#: why a document has none of its own. A NULL module renders as a dash, which
+#: is the truth about a system that did not record one.
 _MODULE_FOR_KIND = {"company": "body_corporate", "person": "natural_person"}
 
 

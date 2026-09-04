@@ -4,19 +4,25 @@
  * MODULES ARE THE SIDEBAR'S OWN NAMES. An operator asking "what happened in
  * post-incorporation this week" is naming the screen they work on, so the
  * filter offers exactly those words rather than a taxonomy invented for the
- * log. The five values must match `backend/services/audit_subject.MODULES`
+ * log. The four values must match `backend/services/audit_subject.MODULES`
  * verbatim — they go on the wire as `filter=module:in:...` and reach a closed
  * enum on the server. `auditVocabulary.test.js` and
- * `backend/tests/test_audit_subject.py` both pin the same five literals, so a
+ * `backend/tests/test_audit_subject.py` both pin the same four literals, so a
  * rename on one side fails CI instead of producing a filter option that
  * silently matches nothing.
+ *
+ * THERE IS NO `documents` MODULE (Levi 2026-09-04). A document event carries
+ * the module of the record it was uploaded against, so an id scan on a director
+ * files under Natural Person and a certificate on a company under Body
+ * Corporate. A module of its own split each record's history across two filter
+ * values, which made "everything that happened to this director" unaskable in
+ * one go. Migration 037 relabelled the rows already written.
  */
 
 export const MODULES = [
   { value: 'post_incorporation', label: 'Post-incorporation' },
   { value: 'body_corporate', label: 'Body Corporate' },
   { value: 'natural_person', label: 'Natural Person' },
-  { value: 'documents', label: 'Documents' },
   { value: 'cr_filing', label: 'CR Filing' },
 ]
 

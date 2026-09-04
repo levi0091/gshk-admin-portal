@@ -119,6 +119,13 @@ def _audit_owner(sb, owner_kind: str, owner_id: Optional[str]) -> dict:
     CASE, not its company: it is an artefact of one filing of one year. The
     company still appears, as the name beside the case number.
 
+    THE MODULE IS THE OWNER'S MODULE, not a `documents` module (Levi
+    2026-09-04). None of the three calls below passes one, so each takes the
+    default for its kind: an id scan on a director is a Natural Person change,
+    a certificate against a company is a Body Corporate change, and a CR receipt
+    on a case is Post-incorporation. A director's history is then one filter
+    away instead of two.
+
     Swallows every failure — a document upload must not fail because the audit
     row could not be made prettier.
     """
@@ -131,7 +138,7 @@ def _audit_owner(sb, owner_kind: str, owner_id: Optional[str]) -> dict:
         return {
             "case_id": case.get("entity_id"),
             "company_name": entity.get("company_name"),
-            **audit_subject.for_case(case, module=audit_subject.DOCUMENTS),
+            **audit_subject.for_case(case),
         }
 
     if owner_kind == "entity":
@@ -139,8 +146,7 @@ def _audit_owner(sb, owner_kind: str, owner_id: Optional[str]) -> dict:
         return {
             "case_id": owner_id,
             "company_name": entity.get("company_name"),
-            **audit_subject.for_company(
-                entity or {"id": owner_id}, module=audit_subject.DOCUMENTS),
+            **audit_subject.for_company(entity or {"id": owner_id}),
         }
 
     try:
@@ -154,7 +160,6 @@ def _audit_owner(sb, owner_kind: str, owner_id: Optional[str]) -> dict:
         **audit_subject.for_person(
             person,
             id_number=audit_subject.primary_id_number(sb, owner_id),
-            module=audit_subject.DOCUMENTS,
         ),
     }
 

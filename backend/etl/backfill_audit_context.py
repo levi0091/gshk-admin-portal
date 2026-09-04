@@ -156,14 +156,31 @@ _STEPS: list[tuple[str, str]] = [
               WHEN entity_type = 'person'    THEN 'natural_person'
               WHEN entity_type IN ('entity','share_class',
                                    'entity_record_location') THEN 'body_corporate'
-              WHEN entity_type = 'address'
-                   THEN CASE WHEN subject_kind = 'person'
-                             THEN 'natural_person' ELSE 'body_corporate' END
-              WHEN entity_type = 'document' THEN 'documents'
+              -- A document and an address take the module of whatever they
+              -- hang off — there is no `documents` module (audit_subject
+              -- ._MODULE_FOR_KIND). `subject_kind` is already settled by the
+              -- step above, so this reads it rather than re-deriving it.
+              WHEN entity_type IN ('address', 'document')
+                   THEN CASE subject_kind
+                          WHEN 'person'  THEN 'natural_person'
+                          WHEN 'case'    THEN 'post_incorporation'
+                          WHEN 'company' THEN 'body_corporate'
+                        END
               WHEN entity_type IN ('tpsi','tpsi_filing','tpsi_credential')
                    THEN 'cr_filing'
             END
         WHERE source = 'g_flowdesk' AND module IS NULL
+          -- One arm per branch the CASE can actually resolve. A document or
+          -- address whose subject_kind is still NULL now comes out NULL (it
+          -- used to fall back to body_corporate, which was a guess); without
+          -- this guard the statement rewrites NULL over NULL and reports those
+          -- rows as updated on every run, so "0 rows" would stop meaning
+          -- "nothing left to do".
+          AND (entity_type IN ('nar1_case', 'person', 'entity', 'share_class',
+                               'entity_record_location', 'tpsi', 'tpsi_filing',
+                               'tpsi_credential')
+            OR (entity_type IN ('address', 'document')
+                AND subject_kind IN ('person', 'case', 'company')))
     """),
     ("native subject_id", r"""
         UPDATE audit_log

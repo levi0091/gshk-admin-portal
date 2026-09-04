@@ -146,7 +146,9 @@ const AUDIT = {
       user_display_name: 'Levi Z.', new_value: 'HK$3,480.00' },
     { id: 'a5', created_at: '2026-09-04T08:05:00Z', source: 'g_flowdesk',
       action_type: 'DOCUMENT_UPLOADED', event_code: 'GF_DOC_UPLOADED',
-      action_label: 'Document Uploaded', module: 'documents',
+      // A person's document files under Natural Person, exactly like the edit
+      // to that person two rows up — not under a module of its own.
+      action_label: 'Document Uploaded', module: 'natural_person',
       subject_kind: 'person', subject_id: 'p2', subject_ref: 'EA1122334',
       company_name: 'Mei Chan', user_display_name: 'Roy T.',
       new_value: 'passport v1 (mei-chan-passport.pdf)' },

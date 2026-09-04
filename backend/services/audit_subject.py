@@ -7,9 +7,11 @@ read, and nothing at all distinguished a company edit from a person edit from a
 NAR1 workflow step. This module supplies the two answers, denormalized onto
 every row so they survive a deleted record and can be filtered without a join:
 
-    module        which surface the change belongs to — the SAME five names the
-                  sidebar uses, because that is the vocabulary the operator
-                  already has.
+    module        which surface the change belongs to — the sidebar's own
+                  names, because that is the vocabulary the operator already
+                  has. It follows the SUBJECT, so a document uploaded against a
+                  director is a Natural Person change and one uploaded against
+                  a company is a Body Corporate change; see _MODULE_FOR_KIND.
     subject_*     the record the change is about: its kind, its id (so the cell
                   is a link), its name, and the identifier a human quotes.
 
@@ -52,18 +54,16 @@ from typing import Any, Optional
 POST_INCORPORATION = "post_incorporation"
 BODY_CORPORATE = "body_corporate"
 NATURAL_PERSON = "natural_person"
-DOCUMENTS = "documents"
 CR_FILING = "cr_filing"
 
 MODULES: tuple[str, ...] = (
-    POST_INCORPORATION, BODY_CORPORATE, NATURAL_PERSON, DOCUMENTS, CR_FILING,
+    POST_INCORPORATION, BODY_CORPORATE, NATURAL_PERSON, CR_FILING,
 )
 
 MODULE_LABELS: dict[str, str] = {
     POST_INCORPORATION: "Post-incorporation",
     BODY_CORPORATE: "Body Corporate",
     NATURAL_PERSON: "Natural Person",
-    DOCUMENTS: "Documents",
     CR_FILING: "CR Filing",
 }
 
@@ -75,6 +75,23 @@ COMPANY = "company"
 PERSON = "person"
 
 SUBJECT_KINDS: tuple[str, ...] = (CASE, COMPANY, PERSON)
+
+#: THE MODULE FOLLOWS THE SUBJECT (Levi 2026-09-04). There is deliberately no
+#: `documents` module: a document is not a thing that happens to nobody, it is
+#: uploaded AGAINST a person, a company or a case, and the operator filtering
+#: the trail wants that record's module. Filing document events under a module
+#: of their own split every person's history in two — half under Natural Person,
+#: half under Documents — so "everything that happened to this director" was a
+#: question the filter could not answer in one go.
+#:
+#: This is the only reason `document` is polymorphic below rather than carrying
+#: a module of its own, and it is why `derive` falls through to this map: any
+#: entity_type that does not fix a module inherits its subject's.
+_MODULE_FOR_KIND: dict[str, str] = {
+    CASE: POST_INCORPORATION,
+    COMPANY: BODY_CORPORATE,
+    PERSON: NATURAL_PERSON,
+}
 
 #: The keys every helper below returns, so a caller can spread one dict.
 KEYS = ("module", "subject_kind", "subject_id", "subject_ref")
@@ -99,9 +116,10 @@ _BY_ENTITY_TYPE: dict[str, tuple[Optional[str], Optional[str]]] = {
     "entity_record_location": (BODY_CORPORATE, COMPANY),
     "person": (NATURAL_PERSON, PERSON),
     # Polymorphic: an address hangs off a company OR a person, and a document
-    # off a company, a person or a case.
+    # off a company, a person or a case. Neither fixes a module — both take the
+    # module of whatever they hang off (_MODULE_FOR_KIND).
     "address": (None, None),
-    "document": (DOCUMENTS, None),
+    "document": (None, None),
     # CR e-Filing is its own surface — the CR Credentials screen and the
     # transport behind the workflow's last step. Kept apart from
     # post_incorporation on purpose: "did anything go to CR today" and "what did
@@ -114,14 +132,18 @@ _BY_ENTITY_TYPE: dict[str, tuple[Optional[str], Optional[str]]] = {
 }
 
 
-def _infer_kind(module: Optional[str], case_id: Optional[str]) -> Optional[str]:
+def _infer_kind(entity_type: Optional[str], case_id: Optional[str]) -> Optional[str]:
     """Last resort for the polymorphic types, from what the row already carries.
 
     `case_id` holds an ENTITY id, so its presence means a company is involved;
     a person-owned document is written with no case_id at all. This is a guess,
     and it is only reached when the caller supplied no kind.
+
+    Keyed on `entity_type` rather than on the module, because a document no
+    longer has a module of its own to be recognised by — the module is now the
+    ANSWER this function feeds, not an input to it.
     """
-    if module == DOCUMENTS:
+    if entity_type == "document":
         return COMPANY if case_id else PERSON
     return COMPANY if case_id else None
 
@@ -143,7 +165,12 @@ def derive(
     """
     fallback_module, fallback_kind = _BY_ENTITY_TYPE.get(entity_type or "", (None, None))
     module = module or fallback_module
-    subject_kind = subject_kind or fallback_kind or _infer_kind(module, case_id)
+    subject_kind = subject_kind or fallback_kind or _infer_kind(entity_type, case_id)
+    # Last: a type that fixes no module of its own (a document, an address)
+    # takes its subject's. Deliberately after the kind is settled, and it can
+    # never overwrite a module the caller or the type already supplied — a
+    # tpsi row is about a company and stays cr_filing.
+    module = module or _MODULE_FOR_KIND.get(subject_kind or "")
 
     if subject_id is None:
         if subject_kind == PERSON:

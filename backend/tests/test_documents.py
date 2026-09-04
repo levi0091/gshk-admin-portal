@@ -143,3 +143,59 @@ def test_upload_requires_write_permission():
         resp = client.post("/companies/e1/documents", files=FILE,
                            data={"document_type_code": "coi"}, headers=H)
         assert resp.status_code == 403
+
+
+# --------------------------------------------------------------------------- #
+#  A document is filed under its OWNER's module (Levi 2026-09-04).
+#
+#  There is no `documents` module. The screen showed why: an id scan uploaded
+#  against Brian YIU sat under "Documents" directly above an edit to Brian YIU
+#  under "Natural Person" — the same person, the same afternoon, two filter
+#  values. Nothing below asserts a NEW module; every assertion is that a
+#  document row lands on the SAME module that record's own edits already do.
+# --------------------------------------------------------------------------- #
+def _audit_owner(owner_kind, owner_id):
+    """`document_service._audit_owner` against a mocked Supabase.
+
+    The chained MagicMock resolves every `.data` to a MagicMock, so the names
+    come out meaningless — irrelevant here, because `module` and `subject_kind`
+    are literals chosen by the branch, and the branch is what is under test.
+    """
+    from services import document_service
+    with patch("services.document_service.get_supabase") as msb:
+        return document_service._audit_owner(msb.return_value, owner_kind, owner_id)
+
+
+def test_a_person_owned_document_is_a_natural_person_row():
+    out = _audit_owner("person", "p-1")
+    assert out["module"] == "natural_person"
+    assert out["subject_kind"] == "person"
+
+
+def test_a_company_owned_document_is_a_body_corporate_row():
+    out = _audit_owner("entity", "e-1")
+    assert out["module"] == "body_corporate"
+    assert out["subject_kind"] == "company"
+
+
+def test_a_case_owned_receipt_is_a_post_incorporation_row():
+    """A CR receipt is an artefact of one filing, so it files under the
+    workflow — not under the company, and not under a module of its own."""
+    out = _audit_owner("receipt", "c-1")
+    assert out["module"] == "post_incorporation"
+    assert out["subject_kind"] == "case"
+
+
+def test_an_upload_through_the_real_route_writes_the_owners_module():
+    """The row the operator actually complained about, end to end."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("services.document_service.get_supabase") as msb, \
+         patch("services.document_service.log_event", new=AsyncMock()) as audit:
+        sb = msb.return_value
+        _no_existing(sb)
+        sb.table.return_value.insert.return_value.execute.return_value.data = [
+            {"id": "doc-1", "person_id": "p-1", "current_version": 1}]
+        resp = client.post("/persons/p-1/documents", files=FILE,
+                           data={"document_type_code": "id_scan"}, headers=H)
+        assert resp.status_code == 201
+        assert audit.await_args.kwargs["module"] == "natural_person"

@@ -4,23 +4,31 @@ import {
 } from './auditVocabulary.js'
 
 describe('the module vocabulary', () => {
-  // These five strings go on the wire as `filter=module:in:...` and land in a
+  // These four strings go on the wire as `filter=module:in:...` and land in a
   // CLOSED enum in backend/routers/audit.py. backend/tests/test_audit_subject.py
   // pins the same literals, so a rename on either side fails CI rather than
   // shipping a filter option that silently matches nothing.
   it('is exactly what the backend stores', () => {
     expect(MODULES.map(m => m.value)).toEqual([
-      'post_incorporation', 'body_corporate', 'natural_person',
-      'documents', 'cr_filing',
+      'post_incorporation', 'body_corporate', 'natural_person', 'cr_filing',
     ])
   })
 
   it('labels each module with the sidebar’s own name', () => {
     expect(MODULES.map(m => m.label)).toEqual([
-      'Post-incorporation', 'Body Corporate', 'Natural Person',
-      'Documents', 'CR Filing',
+      'Post-incorporation', 'Body Corporate', 'Natural Person', 'CR Filing',
     ])
     expect(MODULE_LABELS.cr_filing).toBe('CR Filing')
+  })
+
+  // Levi 2026-09-04. A document event carries the module of the record it was
+  // uploaded against, so a director's history is ONE filter value. Offering a
+  // `documents` option here would be worse than the old behaviour: it would
+  // match nothing at all once migration 036 has run, and an operator filtering
+  // by it would read the empty result as "no documents were uploaded".
+  it('offers no Documents option', () => {
+    expect(MODULES.map(m => m.value)).not.toContain('documents')
+    expect(MODULE_LABELS.documents).toBeUndefined()
   })
 
   it('keeps the subject-kind chips short', () => {
