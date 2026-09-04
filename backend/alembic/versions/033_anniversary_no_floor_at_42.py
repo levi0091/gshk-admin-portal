@@ -77,6 +77,7 @@ come from different rules.
 Read-only and additive. No table is altered, no data is written.
 """
 from alembic import op
+import sqlalchemy as sa
 
 revision = "033"
 down_revision = "032"
@@ -121,7 +122,48 @@ _NEAREST = """
 """
 
 
-def _company_view(days_expr: str) -> str:
+#: Columns migration 028 added to `entities` AFTER 019 created the view, and so
+#: the exact columns 019's frozen `e.*` did NOT contain.
+#:
+#: A view's `*` is expanded and stored at creation time, and every column it
+#: captures becomes a hard dependency. That is why the downgrade cannot simply
+#: re-expand `e.*`: doing so recreates 019's view over a WIDER table, and
+#: migration 028's own downgrade — five steps further down the same teardown —
+#: then dies with
+#:
+#:   cannot drop column mortgages_total of table entities because other
+#:   objects depend on it
+#:
+#: which is precisely what broke `alembic downgrade` (reversibility) in CI. The
+#: upgrade still uses `e.*` and still takes all three, exactly as this
+#: migration's header describes. Only the DOWNGRADE pins the narrower list,
+#: because only the downgrade is claiming to put 019's view back.
+_COLS_ADDED_AFTER_019 = ("business_nature_code", "business_nature_desc",
+                         "mortgages_total")
+
+
+def _entities_select(exclude: tuple = ()) -> str:
+    """`e.*`, or the explicit list it would expand to minus `exclude`.
+
+    Read from the live catalogue in ordinal order rather than hardcoded: that is
+    what `e.*` itself expands to, so the two cannot drift as later migrations
+    add columns. Any column named in `exclude` that is already gone is simply
+    not there to skip, which keeps this correct when the downgrade is re-run.
+    """
+    if not exclude:
+        return "e.*"
+    names = op.get_bind().execute(sa.text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'entities' "
+        "ORDER BY ordinal_position"
+    )).scalars().all()
+    kept = [n for n in names if n not in exclude]
+    if not kept:  # pragma: no cover - the table always has columns
+        raise RuntimeError("entities has no columns to rebuild company_registry from")
+    return ",\n          ".join(f"e.{n}" for n in kept)
+
+
+def _company_view(days_expr: str, exclude: tuple = ()) -> str:
     """019's view with one expression swapped.
 
     Parameterised because upgrade and downgrade differ in exactly that
@@ -132,7 +174,7 @@ def _company_view(days_expr: str) -> str:
         CREATE VIEW public.company_registry
         WITH (security_invoker = true) AS
         SELECT
-          e.*,
+          {_entities_select(exclude)},
           a.last_on AS last_anniversary,
           a.next_on AS next_anniversary,
           {days_expr.strip()}
@@ -304,11 +346,11 @@ _COLUMN_COMMENT = """
 """
 
 
-def _rebuild(days_expr: str) -> None:
+def _rebuild(days_expr: str, exclude: tuple = ()) -> None:
     """Drop both views and put them back, with one expression chosen."""
     op.execute(f"DROP VIEW IF EXISTS {CASE_VIEW};")
     op.execute("DROP VIEW IF EXISTS public.company_registry;")
-    op.execute(_company_view(days_expr))
+    op.execute(_company_view(days_expr, exclude))
     op.execute(_COMPANY_GRANTS)
     op.execute(_case_view_sql())
     op.execute(_CASE_GRANTS)
@@ -323,4 +365,12 @@ def downgrade() -> None:
     # CI's migrations job runs `upgrade head` then `downgrade base`, so this
     # path is exercised on every push and an irreversible migration breaks the
     # pipeline. Back to 019's floor and 025's view, grants included.
-    _rebuild(_FLOORED)
+    #
+    # And back to 019's COLUMNS: see _COLS_ADDED_AFTER_019. Restoring the floor
+    # while leaving the view wider than 019 left it is not a reversal, and it
+    # strands migration 028 further down the teardown, unable to drop the very
+    # columns it added. The view company_registry must also still EXIST at that
+    # point — 025's downgrade recreates nar1_case_registry with a
+    # `JOIN public.company_registry` — so dropping it here instead is not an
+    # option either. It has to come back narrower.
+    _rebuild(_FLOORED, exclude=_COLS_ADDED_AFTER_019)
