@@ -27,6 +27,8 @@ const PAYLOAD = {
       // denormalized by migration 012 — generic action + company name
       action_label: 'Statutory Officer (Director/Secretary) Appointment',
       company_name: 'iTutors Limited',
+      module: 'body_corporate', subject_kind: 'company',
+      subject_id: 'e1', subject_ref: '69123456',
       new_value: 'Get Started HK Limited (company_secretary)',
       metadata: { description: 'Get Started HK Limited Appointed as Secretary' },
     },
@@ -46,9 +48,33 @@ const PAYLOAD = {
       event_code: 'ADC', action_label: 'Change Master File Details',
       user_display_name: 'Levi Z.', case_id: 'e2',
       company_name: 'Harbour Tech',
+      module: 'body_corporate', subject_kind: 'company', subject_id: 'e2',
       before_state: { field: 'company_name', old: 'Old Co' },
       after_state: { field: 'company_name', new: 'New Co' },
       metadata: null,
+    },
+    {
+      // NAR1 workflow — the case number leads, the company qualifies it
+      id: 'n2', created_at: '2026-09-04T09:00:00Z',
+      action_type: 'CASE_STATUS_CHANGED', source: 'g_flowdesk',
+      event_code: 'CASE_STATUS_CHANGED', action_label: 'Case Status Changed',
+      user_display_name: 'Roy T.', case_id: 'e3',
+      company_name: 'Kanenas Holding Limited',
+      module: 'post_incorporation', subject_kind: 'case',
+      subject_id: 'c9', subject_ref: 'NAR1-2026-0042',
+      new_value: 'Client Verification',
+    },
+    {
+      // a natural person — this row used to name nobody at all
+      id: 'n3', created_at: '2026-09-04T09:30:00Z',
+      action_type: 'PERSON_FIELD_UPDATED', source: 'g_flowdesk',
+      event_code: 'CPC', action_label: 'Change Compliance Details',
+      user_display_name: 'Vanis L.',
+      company_name: 'Ilze TSERKEZIS',
+      module: 'natural_person', subject_kind: 'person',
+      subject_id: 'p7', subject_ref: 'A123456(7)',
+      before_state: { field: 'passport_no', old: 'X1' },
+      after_state: { field: 'passport_no', new: 'X2' },
     },
   ],
 }
@@ -74,7 +100,7 @@ describe('AuditLogPage', () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('iTutors Limited')
-    await user.click(screen.getByRole('columnheader', { name: /Company \/ Case/ }))
+    await user.click(screen.getByRole('columnheader', { name: /Case \/ Company \/ Person/ }))
     await waitFor(() => {
       expect(api.get.mock.calls.some(c => c[0].includes('sort=company_name'))).toBe(true)
     })
@@ -129,7 +155,7 @@ describe('AuditLogPage', () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('iTutors Limited')
-    await user.type(screen.getByLabelText('Search company, action, event code or user'), 'secretary')
+    await user.type(screen.getByLabelText('Search company, person, reference, action or user'), 'secretary')
     await waitFor(() => {
       expect(api.get.mock.calls.some(c => c[0].includes('search=secretary'))).toBe(true)
     }, { timeout: 2000 })
@@ -186,5 +212,101 @@ describe('AuditLogPage — overlapping requests (UAT W-8)', () => {
     expect(signal.aborted).toBe(false)
     unmount()
     expect(signal.aborted).toBe(true)
+  })
+})
+
+
+// ---- WHICH module, WHICH record (migration 034) ---------------------------
+//
+// Levi 2026-09-04: "in a lot of actions it is not clear what case or company or
+// person it is referring to." Each of these is one of the readings that was
+// missing.
+describe('AuditLogPage — the subject and the module', () => {
+  it('names the module a change belongs to', async () => {
+    renderPage()
+    await screen.findByText('iTutors Limited')
+    expect(screen.getByText('Post-incorporation')).toBeInTheDocument()
+    expect(screen.getByText('Natural Person')).toBeInTheDocument()
+    expect(screen.getAllByText('Body Corporate').length).toBeGreaterThan(0)
+  })
+
+  it('reads a body corporate as name (BRN)', async () => {
+    renderPage()
+    const row = (await screen.findByText('iTutors Limited')).closest('tr')
+    expect(within(row).getByText('(69123456)')).toBeInTheDocument()
+    expect(within(row).getByText('Company')).toBeInTheDocument()
+  })
+
+  it('reads a NAR1 workflow row as case no (company), linking to the CASE', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const caseNo = await screen.findByText('NAR1-2026-0042')
+    const row = caseNo.closest('tr')
+    expect(within(row).getByText('(Kanenas Holding Limited)')).toBeInTheDocument()
+    expect(within(row).getByText('Case')).toBeInTheDocument()
+    await user.click(caseNo)
+    expect(navigate).toHaveBeenCalledWith('/cases/c9')
+  })
+
+  it('reads a natural person as name (identity number), linking to the person', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const name = await screen.findByText('Ilze TSERKEZIS')
+    const row = name.closest('tr')
+    expect(within(row).getByText('(A123456(7))')).toBeInTheDocument()
+    expect(within(row).getByText('Person')).toBeInTheDocument()
+    await user.click(name)
+    expect(navigate).toHaveBeenCalledWith('/persons/p7')
+  })
+
+  it('shows a dash for a Viewpoint row with no module — never an invented one', async () => {
+    // Viewpoint recorded no NAR1 workflow, no document store and no CR filing.
+    renderPage()
+    const row = (await screen.findByText('1450PO')).closest('tr')
+    expect(within(row).getByText('—')).toBeInTheDocument()
+  })
+})
+
+describe('AuditLogPage — per-column filters', () => {
+  async function openFilter(columnName) {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('iTutors Limited')
+    const header = screen.getByRole('columnheader', { name: new RegExp(columnName) })
+    await user.click(within(header).getByRole('button', { name: /Filter/i }))
+    return user
+  }
+
+  it('sends the module filter to the SERVER, not to the 100 rows on screen', async () => {
+    const user = await openFilter('Module')
+    await user.click(screen.getByLabelText('Natural Person'))
+    await user.click(screen.getByRole('button', { name: /Apply/i }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(
+        c => c[0].includes('filter=module%3Ain%3Anatural_person'))).toBe(true)
+    })
+  })
+
+  it('names every applied filter in a removable chip', async () => {
+    const user = await openFilter('Module')
+    await user.click(screen.getByLabelText('CR Filing'))
+    await user.click(screen.getByRole('button', { name: /Apply/i }))
+    const chip = await screen.findByRole('button', { name: /Remove the Module filter/ })
+    expect(chip).toHaveTextContent('CR Filing')
+    await user.click(chip)
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /Remove the Module filter/ }))
+        .not.toBeInTheDocument()
+    })
+  })
+
+  it('filters the subject by name', async () => {
+    const user = await openFilter('Case \\/ Company \\/ Person')
+    await user.type(screen.getByPlaceholderText('Company, person or case'), 'kanenas')
+    await user.click(screen.getByRole('button', { name: /Apply/i }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.some(
+        c => c[0].includes('company_name%3Acontains%3Akanenas'))).toBe(true)
+    })
   })
 })

@@ -22,6 +22,7 @@ from services import (
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
+from services import audit_subject
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms import nar1_source
 from services.tpsi.forms.cr_vocabularies import (
@@ -57,6 +58,10 @@ def _audit_target(case: dict) -> dict:
         "entity_type": "nar1_case",
         "entity_id": case["id"],
         "case_id": case.get("entity_id"),
+        # A workflow row is about ONE FILING of one year, so the case number
+        # leads and the company qualifies it: "NAR1-2026-0042 (Kanenas Holding
+        # Limited)". See services/audit_subject.
+        **audit_subject.for_case(case),
     }
     try:
         entity = nar1_cases.entity_for(case["entity_id"])

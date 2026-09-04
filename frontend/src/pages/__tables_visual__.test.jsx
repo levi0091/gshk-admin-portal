@@ -26,6 +26,7 @@ import path from 'node:path'
 import DashboardPage from './DashboardPage.jsx'
 import CompanyRegistryPage from './CompanyRegistryPage.jsx'
 import PersonsRegistryPage from './PersonsRegistryPage.jsx'
+import AuditLogPage from './AuditLogPage.jsx'
 
 const get = vi.fn()
 vi.mock('../lib/api.js', () => ({ api: { get: (...a) => get(...a), post: vi.fn() } }))
@@ -110,12 +111,69 @@ const PERSONS = {
   ],
 }
 
+// One row per reading the audit trail's Subject cell has to produce, plus the
+// two that used to render as nothing at all: an unresolved Viewpoint key, and a
+// CR filing event that named no company.
+const AUDIT = {
+  total: 226351, page: 1, page_size: 100,
+  entries: [
+    { id: 'a1', created_at: '2026-09-04T09:10:00Z', source: 'g_flowdesk',
+      action_type: 'CASE_STATUS_CHANGED', event_code: 'CASE_STATUS_CHANGED',
+      action_label: 'Case Status Changed', module: 'post_incorporation',
+      subject_kind: 'case', subject_id: 'c1', subject_ref: 'NAR-2026-0065',
+      company_name: 'CGAHCHBAABBG TEST COMPANY LIMITED', case_id: 'e1',
+      user_display_name: 'Levi Z.', new_value: 'Client Verification' },
+    { id: 'a2', created_at: '2026-09-04T08:55:00Z', source: 'g_flowdesk',
+      action_type: 'CASE_FIELD_UPDATED', event_code: 'LRO',
+      action_label: 'Change Location of Registered Office',
+      module: 'body_corporate', subject_kind: 'company', subject_id: 'e2',
+      subject_ref: '69664946 - 000', company_name: 'CLICKBYTE MEDIA LIMITED',
+      case_id: 'e2', user_display_name: 'Roy T.',
+      before_state: { field: 'line1', old: 'Unit 5, 12/F' },
+      after_state: { field: 'line1', new: 'Unit 9, 20/F' } },
+    { id: 'a3', created_at: '2026-09-04T08:40:00Z', source: 'g_flowdesk',
+      action_type: 'PERSON_FIELD_UPDATED', event_code: 'CPC',
+      action_label: 'Change Compliance Details', module: 'natural_person',
+      subject_kind: 'person', subject_id: 'p1', subject_ref: 'A1234567(8)',
+      company_name: 'John Smith', user_display_name: 'Vanis L.',
+      before_state: { field: 'passport_no', old: 'EA1122334' },
+      after_state: { field: 'passport_no', new: 'EB9988776' } },
+    { id: 'a4', created_at: '2026-09-04T08:20:00Z', source: 'g_flowdesk',
+      action_type: 'TPSI_SUBMISSION_SUCCESS', event_code: 'TPSI_SUBMISSION_SUCCESS',
+      action_label: 'TPSI Submission Succeeded', module: 'cr_filing',
+      subject_kind: 'case', subject_id: 'c3', subject_ref: 'NAR-2026-0063',
+      company_name: 'CGAHCHBAABBG DIRECTOR COMPANY LIMITED', case_id: 'e3',
+      user_display_name: 'Levi Z.', new_value: 'HK$3,480.00' },
+    { id: 'a5', created_at: '2026-09-04T08:05:00Z', source: 'g_flowdesk',
+      action_type: 'DOCUMENT_UPLOADED', event_code: 'GF_DOC_UPLOADED',
+      action_label: 'Document Uploaded', module: 'documents',
+      subject_kind: 'person', subject_id: 'p2', subject_ref: 'EA1122334',
+      company_name: 'Mei Chan', user_display_name: 'Roy T.',
+      new_value: 'passport v1 (mei-chan-passport.pdf)' },
+    { id: 'a6', created_at: '2026-06-18T12:07:00Z', source: 'viewpoint_import',
+      action_type: 'LEGACY_VP_EVENT', event_code: 'OFA',
+      action_label: 'Statutory Officer (Director/Secretary) Appointment',
+      module: 'body_corporate', subject_kind: 'company', subject_id: 'e4',
+      subject_ref: '61200341 - 000', company_name: 'iTutors Limited',
+      case_id: 'e4', created_by: 'JAC', user_display_name: 'JAC',
+      new_value: 'Get Started HK Limited (company_secretary)' },
+    // Viewpoint recorded a key that matches no record we imported. Muted and
+    // unlinked, with no module invented for it.
+    { id: 'a7', created_at: '2026-06-18T12:07:00Z', source: 'viewpoint_import',
+      action_type: 'LEGACY_VP_EVENT', event_code: 'STATUS',
+      action_label: 'Status Changed', source_keycode: '1450PO',
+      created_by: 'LEEANN', user_display_name: 'LEEANN',
+      old_value: '', new_value: 'NC' },
+  ],
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   get.mockImplementation(url => Promise.resolve(
-    url.startsWith('/cases') ? CASES
-      : url.startsWith('/companies') ? COMPANIES
-        : PERSONS))
+    url.startsWith('/audit') ? AUDIT
+      : url.startsWith('/cases') ? CASES
+        : url.startsWith('/companies') ? COMPANIES
+          : PERSONS))
 })
 
 async function dump(name, ui, { open, whole } = {}) {
@@ -169,6 +227,15 @@ describe.runIf(SHOOT)('tables visual harness', () => {
   // The two shots the 2026-09-04 round of fixes is actually about.
   it('registry · status list, company statuses only', async () => {
     await dump('t9-registry-status-narrowed', <CompanyRegistryPage />, { open: 'Status' })
+  })
+
+  // The 2026-09-04 audit-trail work: WHICH record, and WHICH module.
+  it('audit log', async () => {
+    await dump('t11-audit', <AuditLogPage />)
+  })
+
+  it('audit log · module filter open', async () => {
+    await dump('t12-audit-module-open', <AuditLogPage />, { open: 'Module' })
   })
 
   it('dashboard · nothing matches', async () => {

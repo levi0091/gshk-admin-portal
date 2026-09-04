@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
+from services import audit_subject
 from services import audit_events, document_service, address_service, table_filters as tf
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
@@ -77,6 +78,22 @@ class UpdatePersonRequest(BaseModel):
     marital_status: Optional[str] = None
     date_of_death: Optional[str] = None
     residential_address_id: Optional[str] = None
+
+
+def _person_subject(sb, person_id: str) -> dict:
+    """The person an audit row is about, for routes that hold only their id.
+
+    Failure is swallowed: a row edit must not be turned into a 500 by the
+    lookup that only makes its audit entry nicer to read.
+    """
+    try:
+        row = (
+            sb.table("persons").select("id, full_name")
+            .eq("id", person_id).single().execute()
+        ).data
+    except Exception:  # noqa: BLE001
+        return {"id": person_id}
+    return row or {"id": person_id}
 
 
 def _role_rollup(sb, person_id: str) -> list[dict]:
@@ -286,6 +303,9 @@ async def create_person(
         user_display_name=user["display_name"], action_type="PERSON_CREATED",
         event_code=audit_events.VP_NEW_MASTER_FILE,   # Viewpoint: New Master File
         company_name=person["full_name"],             # subject of the event
+        # A person is quoted by an identity number, but a brand-new record has
+        # no document yet — the reference fills itself in on the next edit.
+        **audit_subject.for_person(person),
         entity_type="person", entity_id=str(person["id"]),
         new_value=person["full_name"], after_state=row,
     )
@@ -314,6 +334,8 @@ async def update_person(
         sb.table("persons").update(updates).eq("id", person_id).execute()
     ).data[0]
 
+    subject = audit_subject.for_person(
+        current, id_number=audit_subject.primary_id_number(sb, person_id))
     await log_events([
         dict(
             case_id=None, user_id=user["id"],
@@ -321,6 +343,7 @@ async def update_person(
             # KYC fields are Compliance (CPC) in Viewpoint; names/contact are ADC.
             event_code=audit_events.person_field_code(field),
             company_name=current.get("full_name"),
+            **subject,
             entity_type="person", entity_id=str(person_id),
             old_value=old_val, new_value=new_val,
             before_state={"field": field, "old": old_val},
@@ -423,12 +446,20 @@ async def update_identity_document(
         .eq("id", document_id).execute()
     ).data[0]
 
+    # WHOSE document. These rows carried no subject name at all, so an edit to
+    # a passport number read as "Change Compliance Details" against nothing.
+    # The number quoted is the one AFTER the edit — the trail says which record
+    # the reader will find if they go looking now.
+    person = _person_subject(sb, person_id)
     await log_events([
         dict(
             case_id=None, user_id=user["id"],
             user_display_name=user["display_name"],
             action_type="PERSON_FIELD_UPDATED",
             event_code=audit_events.VP_COMPLIANCE,
+            company_name=person.get("full_name"),
+            **audit_subject.for_person(
+                person, id_number=audit_subject.primary_id_number(sb, person_id)),
             entity_type="person", entity_id=str(person_id),
             old_value=old_val, new_value=new_val,
             before_state={"field": field, "old": old_val},
@@ -483,6 +514,10 @@ async def update_residential_address(
     await log_events(_address_audit_entries(
         entity_id=person_id, user=user, subject_name=current.get("full_name"),
         event_code=audit_events.VP_MASTER_DETAILS, before=before, result=result,
+        # An address is polymorphic — it hangs off a company OR a person — so
+        # the caller has to say which, or the row classifies as a company edit.
+        subject=audit_subject.for_person(
+            current, id_number=audit_subject.primary_id_number(sb, person_id)),
     ))
     return {
         **result["address"],

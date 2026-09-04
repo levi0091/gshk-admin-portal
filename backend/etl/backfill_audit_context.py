@@ -16,6 +16,15 @@ does — what action, on which company, old -> new, by whom:
   company_name      <- the entity (or person) the event is about, resolved via
                        case_id, else via source_keycode -> vp_source_key.
   user_display_name <- created_by (the Viewpoint user code) where missing.
+  module            <- which surface the change belongs to. Viewpoint has only
+                       two of the five (a company edit, a person edit); it never
+                       recorded a NAR1 case workflow, a document or a CR filing,
+                       so those stay NULL on an imported row rather than being
+                       invented.
+  subject_*          <- WHICH RECORD: kind, id, name and the reference a human
+                       quotes (BRN / identity number). Migration 034 does this
+                       once; these steps repeat it after a fresh import, which
+                       is the only time new unlabelled rows appear.
   old/new_value     <- collapsed where Viewpoint packed a whole field map into
                        one string. "AdNrS1=2311; AdNrS2=2311; ... AdNrSU=2311"
                        is 15 fields all set to the same value; that is one
@@ -79,6 +88,57 @@ _STEPS: list[tuple[str, str]] = [
         UPDATE audit_log
         SET user_display_name = created_by
         WHERE user_display_name IS NULL AND created_by IS NOT NULL
+    """),
+    # WHICH RECORD the event is about (migration 034). A RefCode resolves to an
+    # entity OR a person; resolving it against `entities` alone is what left
+    # every person-scoped Viewpoint event printing a raw key nobody can read.
+    ("subject (via entity keycode)", """
+        UPDATE audit_log a
+        SET subject_kind = 'company',
+            subject_id   = e.id,
+            subject_ref  = e.br_number,
+            module       = 'body_corporate'
+        FROM entities e
+        WHERE a.subject_kind IS NULL
+          AND a.source_keycode = e.vp_source_key
+    """),
+    ("subject (via person keycode)", """
+        UPDATE audit_log a
+        SET subject_kind = 'person',
+            subject_id   = p.id,
+            module       = 'natural_person'
+        FROM persons p
+        WHERE a.subject_kind IS NULL
+          AND a.source_keycode = p.vp_source_key
+    """),
+    ("subject (via case_id)", """
+        UPDATE audit_log a
+        SET subject_kind = 'company',
+            subject_id   = e.id,
+            subject_ref  = e.br_number,
+            module       = 'body_corporate'
+        FROM entities e
+        WHERE a.subject_kind IS NULL
+          AND a.case_id = e.id
+    """),
+    # The identity document a person is quoted by, ordered exactly like
+    # `person_registry`'s lateral join (migration 009).
+    ("subject reference (person identity document)", """
+        UPDATE audit_log a
+        SET subject_ref = (
+              SELECT d.id_number
+              FROM person_identity_documents d
+              WHERE d.person_id = a.subject_id
+              ORDER BY d.is_primary DESC, d.created_at ASC
+              LIMIT 1
+            )
+        WHERE a.subject_kind = 'person'
+          AND a.subject_ref IS NULL
+          AND a.subject_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM person_identity_documents d
+            WHERE d.person_id = a.subject_id
+          )
     """),
     # Collapse "k=v; k=v; ..." maps where every value is identical. The raw
     # string is kept in metadata so nothing is lost.

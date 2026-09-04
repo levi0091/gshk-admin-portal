@@ -480,7 +480,15 @@ def test_prepare_audits_the_filing_it_opened(client):
     assert response.status_code == 201
     assert logged["action_type"] == "TPSI_FILING_CREATED"
     assert logged["entity_id"] == "f1"
-    assert logged["case_id"] == "c1"
+    # `audit_log.case_id` holds the ENTITY id, not the case id -- the convention
+    # routers/cases.py::_audit_target documents, and the one a company-scoped
+    # audit query relies on. This route used to write the CASE id here, which
+    # put every CR filing event in an id space no company trail could return.
+    assert logged["case_id"] == "e1"
+    # The case is still named -- as the SUBJECT, which is what it is.
+    assert logged["subject_kind"] == "case"
+    assert logged["subject_id"] == "c1"
+    assert logged["module"] == "cr_filing"
     assert logged["metadata"]["form_code"] == "Nar1"
     # The built XML is not audit metadata: it is the whole statutory return and
     # it is already stored on the filing row.
@@ -1238,7 +1246,11 @@ def test_pdf_returns_pdf_bytes_and_audits_generation(client):
     assert response.headers["content-type"] == "application/pdf"
     assert response.content.startswith(b"%PDF-")
     assert logged["action_type"] == "DOCUMENT_GENERATED"
-    assert logged["case_id"] == "c1"
+    # The CASE is the subject; `case_id` carries the entity (see
+    # test_prepare_audits_the_filing_it_opened). This stub row names no entity,
+    # so there is none to carry -- naming the case is the point.
+    assert logged["subject_kind"] == "case"
+    assert logged["subject_id"] == "c1"
 
 
 def test_pdf_renders_the_validated_snapshot_not_the_request_xml(client):

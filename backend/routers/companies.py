@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
+from services import audit_subject
 from services import (
     audit_events, document_service, address_service, table_filters as tf)
 from services.tpsi.forms.cr_vocabularies import (
@@ -734,6 +735,7 @@ async def create_company(
         user_display_name=user["display_name"], action_type="COMPANY_CREATED",
         event_code=audit_events.VP_NEW_MASTER_FILE,
         company_name=company["company_name"],
+        **audit_subject.for_company(company),
         entity_type="entity", entity_id=str(company["id"]),
         new_value=company["company_name"],
         after_state={**row, **({"company_phone": phone} if phone else {})},
@@ -803,6 +805,7 @@ async def update_company(
             # way Viewpoint logs it (ADC / COC / CMA / CGC / LRO).
             event_code=audit_events.company_field_code(field),
             company_name=current.get("company_name"),
+            **audit_subject.for_company(current),
             entity_type="entity", entity_id=str(company_id),
             old_value=old_val, new_value=new_val,
             before_state={"field": field, "old": old_val},
@@ -860,6 +863,7 @@ async def update_registered_address(
     await log_events(_address_audit_entries(
         entity_id=company_id, user=user, subject_name=current.get("company_name"),
         event_code=audit_events.VP_REG_OFFICE, before=before, result=result,
+        subject=audit_subject.for_company(current),
     ))
     return {**result["address"], "shared_by": _shared_by(sb, result["address"]["id"])}
 
@@ -869,7 +873,7 @@ def _shared_by(sb, address_id: str) -> int:
 
 
 def _address_audit_entries(*, entity_id, user, subject_name, event_code,
-                           before, result):
+                           before, result, subject=None):
     """One entry per changed line — the `CASE_FIELD_UPDATED` contract.
 
     `copied_from` rides in the metadata because a copy-on-write save changes
@@ -890,6 +894,7 @@ def _address_audit_entries(*, entity_id, user, subject_name, event_code,
             user_display_name=user["display_name"],
             action_type="CASE_FIELD_UPDATED", event_code=event_code,
             company_name=subject_name,
+            **(subject or {}),
             entity_type="address", entity_id=str(after["id"]),
             old_value=old_val, new_value=new_val,
             before_state={"field": field, "old": old_val},
@@ -952,6 +957,7 @@ async def update_share_class(
             action_type="CASE_FIELD_UPDATED",
             event_code=audit_events.company_field_code("share_capital"),
             company_name=company.get("company_name"),
+            **audit_subject.for_company(company),
             entity_type="share_class", entity_id=str(share_class_id),
             old_value=old, new_value=new,
             before_state={"field": f"share_class.{field}", "old": old},
@@ -1013,6 +1019,7 @@ async def create_share_class(
         action_type="CASE_FIELD_UPDATED",
         event_code=audit_events.company_field_code("share_capital"),
         company_name=company.get("company_name"),
+        **audit_subject.for_company(company),
         entity_type="share_class", entity_id=str(created[0]["id"]),
         after_state={"field": "share_class", "new": values},
     )
@@ -1075,6 +1082,7 @@ async def set_record_location(
             action_type="CASE_FIELD_UPDATED",
             event_code=audit_events.company_field_code("record_location"),
             company_name=company.get("company_name"),
+            **audit_subject.for_company(company),
             entity_type="entity_record_location", entity_id=str(company_id),
             old_value=old_value, new_value=new_value,
             before_state={"field": f"record_location.{record_type}",
@@ -1116,6 +1124,7 @@ async def update_flags(
         user_display_name=user["display_name"], action_type="COMPANY_FLAG_CHANGED",
         event_code=audit_events.GF_FLAGS_CHANGED,   # no Viewpoint equivalent
         company_name=current.get("company_name"),
+        **audit_subject.for_company(current),
         entity_type="entity", entity_id=str(company_id),
         old_value="; ".join(f"{k}={v}" for k, v in before.items()),
         new_value="; ".join(f"{k}={v}" for k, v in updates.items()),
@@ -1179,12 +1188,29 @@ def _resolve_party_type(person_id: Optional[str], corporate_entity_id: Optional[
     return "individual" if person_id else "corporate"
 
 
-def _company_name(sb, company_id: str) -> Optional[str]:
+def _company_subject(sb, company_id: str) -> dict:
+    """The company an audit row is about — the name to show, the BRN to quote.
+
+    One select for both halves. The audit trail renders a body corporate as
+    "name (BRN)", and fetching the name alone is what left the reference blank
+    on every party link in the trail.
+    """
     row = (
-        sb.table("entities").select("company_name").eq("id", company_id)
-        .single().execute()
+        sb.table("entities").select("id, company_name, br_number")
+        .eq("id", company_id).single().execute()
     ).data
-    return (row or {}).get("company_name")
+    return row or {"id": company_id}
+
+
+def _company_name(sb, company_id: str) -> Optional[str]:
+    return _company_subject(sb, company_id).get("company_name")
+
+
+def _company_subject_audit(sb, company_id: str) -> dict:
+    """`company_name` plus the subject keys, in one call, for a single-use site."""
+    subject = _company_subject(sb, company_id)
+    return {"company_name": subject.get("company_name"),
+            **audit_subject.for_company(subject)}
 
 
 def _party_name(sb, person_id: Optional[str], corporate_entity_id: Optional[str],
@@ -1245,7 +1271,7 @@ async def link_party(
         case_id=company_id, user_id=user["id"],
         user_display_name=user["display_name"], action_type="PARTY_LINKED",
         event_code=audit_events.party_code(relation, "link"),
-        company_name=_company_name(sb, company_id),
+        **_company_subject_audit(sb, company_id),
         entity_type="entity", entity_id=str(company_id),
         # Linking has no "old" — the new value is the party that now holds the role.
         new_value=_party_summary(party, row),
@@ -1283,13 +1309,13 @@ async def update_link(
 
     party = _party_name(sb, current.get("person_id"), current.get("corporate_entity_id"),
                         current.get("corporate_name"))
-    company = _company_name(sb, company_id)
+    subject = _company_subject_audit(sb, company_id)
     await log_events([
         dict(
             case_id=company_id, user_id=user["id"],
             user_display_name=user["display_name"], action_type="PARTY_UPDATED",
             event_code=audit_events.party_code(relation, "update"),
-            company_name=company,
+            **subject,
             entity_type="entity", entity_id=str(company_id),
             old_value=f"{party} — {field}: {old_val}",
             new_value=f"{party} — {field}: {new_val}",
@@ -1330,7 +1356,7 @@ async def unlink_party(
         case_id=company_id, user_id=user["id"],
         user_display_name=user["display_name"], action_type="PARTY_UNLINKED",
         event_code=audit_events.party_code(relation, "unlink"),
-        company_name=_company_name(sb, company_id),
+        **_company_subject_audit(sb, company_id),
         entity_type="entity", entity_id=str(company_id),
         # Removal has no "new" — the old value is the party that held the role.
         old_value=_party_summary(party, current),

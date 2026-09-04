@@ -55,6 +55,7 @@ from fastapi.responses import HTMLResponse
 
 from services import audit_events as ev, nar1_approvals, nar1_cases
 from services.audit_service import log_event
+from services import audit_subject
 
 router = APIRouter()
 
@@ -447,6 +448,7 @@ async def record_approval(token: str, request: Request):
         entity_type="nar1_case",
         entity_id=case["id"],
         company_name=entity.get("company_name"),
+        **audit_subject.for_case(case),
         new_value="approved",
         metadata={
             "case_no": case.get("case_no"),

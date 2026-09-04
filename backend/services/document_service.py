@@ -20,6 +20,7 @@ from fastapi import HTTPException
 
 from db.supabase import get_supabase
 from services.audit_service import log_event
+from services import audit_subject
 from services import audit_events
 
 BUCKET = "gflowdesk-documents"
@@ -69,46 +70,93 @@ def _upload_bytes(sb, path: str, content: bytes, mime_type: Optional[str]) -> No
         raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}")
 
 
-def _case_entity_id(sb, case_id: str) -> Optional[str]:
-    """The company a NAR1 case is for. `audit_log.case_id` holds an ENTITY id
-    (routers/cases.py::_audit_target), so a case-owned document has to resolve
-    through to the entity or its audit row lands in an id space no company
-    query returns — the defect _audit_target exists to document."""
+def _case_row(sb, case_id: str) -> dict:
+    """The NAR1 case a document hangs off — its company, and its case number.
+
+    `audit_log.case_id` holds an ENTITY id (routers/cases.py::_audit_target), so
+    a case-owned document has to resolve through to the entity or its audit row
+    lands in an id space no company query returns — the defect _audit_target
+    exists to document. The case number comes back in the same select because
+    the trail quotes it beside the company name.
+    """
     try:
-        row = (sb.table("nar1_cases").select("entity_id")
+        row = (sb.table("nar1_cases").select("id, entity_id, case_no")
                .eq("id", case_id).single().execute()).data
-        return (row or {}).get("entity_id")
-    except Exception:
-        return None
+        return row or {"id": case_id}
+    except Exception:  # noqa: BLE001
+        return {"id": case_id}
 
 
-def _owner_name(sb, owner_kind: str, owner_id: Optional[str]) -> Optional[str]:
-    """The company or person the document belongs to — recorded on the audit row
-    so the trail names the subject without a join."""
-    if not owner_id:
-        return None
+def _case_entity_id(sb, case_id: str) -> Optional[str]:
+    return _case_row(sb, case_id).get("entity_id")
+
+
+def _entity_subject(sb, entity_id: Optional[str]) -> dict:
+    if not entity_id:
+        return {}
     try:
-        if owner_kind in _CASE_OWNER_KINDS:
-            entity_id = _case_entity_id(sb, owner_id)
-            return _owner_name(sb, "entity", entity_id) if entity_id else None
-        if owner_kind == "entity":
-            row = (sb.table("entities").select("company_name")
-                   .eq("id", owner_id).single().execute()).data
-            return (row or {}).get("company_name")
-        row = (sb.table("persons").select("full_name")
-               .eq("id", owner_id).single().execute()).data
-        return (row or {}).get("full_name")
-    except Exception:
-        return None
+        row = (sb.table("entities").select("id, company_name, br_number")
+               .eq("id", entity_id).single().execute()).data
+    except Exception:  # noqa: BLE001
+        return {}
+    return row or {}
 
 
-def _audit_case_id(sb, owner_kind: str, owner_id: str) -> Optional[str]:
-    """What goes in `audit_log.case_id`: always an ENTITY id, never a case id."""
-    if owner_kind == "entity":
-        return owner_id
+def _audit_owner(sb, owner_kind: str, owner_id: Optional[str]) -> dict:
+    """Everything an audit row needs to say WHICH record a document belongs to.
+
+    One helper, one pass, because the three answers are the same lookup:
+
+      case_id        the ENTITY id, never a case id (routers/cases.py
+                     ::_audit_target) — this is how a company's whole trail is
+                     queried, and a case id there is invisible to it.
+      company_name   the company or person the document hangs off.
+      subject_*      module, kind, id and the reference a human quotes, so the
+                     trail reads "Kanenas Holding Limited (69123456)" rather
+                     than naming nothing.
+
+    A CASE-owned document (a CR receipt, a wet-signed return) is filed under its
+    CASE, not its company: it is an artefact of one filing of one year. The
+    company still appears, as the name beside the case number.
+
+    Swallows every failure — a document upload must not fail because the audit
+    row could not be made prettier.
+    """
+    if not owner_id:
+        return {}
+
     if owner_kind in _CASE_OWNER_KINDS:
-        return _case_entity_id(sb, owner_id)
-    return None
+        case = _case_row(sb, owner_id)
+        entity = _entity_subject(sb, case.get("entity_id"))
+        return {
+            "case_id": case.get("entity_id"),
+            "company_name": entity.get("company_name"),
+            **audit_subject.for_case(case, module=audit_subject.DOCUMENTS),
+        }
+
+    if owner_kind == "entity":
+        entity = _entity_subject(sb, owner_id)
+        return {
+            "case_id": owner_id,
+            "company_name": entity.get("company_name"),
+            **audit_subject.for_company(
+                entity or {"id": owner_id}, module=audit_subject.DOCUMENTS),
+        }
+
+    try:
+        person = (sb.table("persons").select("id, full_name")
+                  .eq("id", owner_id).single().execute()).data or {}
+    except Exception:  # noqa: BLE001
+        person = {"id": owner_id}
+    return {
+        "case_id": None,
+        "company_name": person.get("full_name"),
+        **audit_subject.for_person(
+            person,
+            id_number=audit_subject.primary_id_number(sb, owner_id),
+            module=audit_subject.DOCUMENTS,
+        ),
+    }
 
 
 def _owner_columns(owner_kind: str, owner_id: str) -> dict:
@@ -185,12 +233,11 @@ async def upload_document(
         ).data[0]
 
         await log_event(
-            case_id=_audit_case_id(sb, owner_kind, owner_id),
+            **_audit_owner(sb, owner_kind, owner_id),
             user_id=user["id"],
             user_display_name=user["display_name"],
             action_type="DOCUMENT_VERSION_ADDED",
             event_code=audit_events.GF_DOC_VERSION,   # no Viewpoint equivalent
-            company_name=_owner_name(sb, owner_kind, owner_id),
             entity_type="document",
             entity_id=str(doc["id"]),
             old_value=f"{document_type_code} v{new_version - 1}",
@@ -234,12 +281,11 @@ async def upload_document(
     }).execute()
 
     await log_event(
-        case_id=_audit_case_id(sb, owner_kind, owner_id),
+        **_audit_owner(sb, owner_kind, owner_id),
         user_id=user["id"],
         user_display_name=user["display_name"],
         action_type="DOCUMENT_UPLOADED",
         event_code=audit_events.GF_DOC_UPLOADED,   # no Viewpoint equivalent
-        company_name=_owner_name(sb, owner_kind, owner_id),
         entity_type="document",
         entity_id=str(created["id"]),
         new_value=f"{document_type_code} v1 ({file_name})",
@@ -310,12 +356,11 @@ async def soft_delete_document(*, document_id: str, user: dict) -> dict:
     owner_kind = _owner_kind_of(doc)
     owner_id = doc.get(_OWNER_COLUMN[owner_kind])
     await log_event(
-        case_id=_audit_case_id(sb, owner_kind, owner_id),
+        **_audit_owner(sb, owner_kind, owner_id),
         user_id=user["id"],
         user_display_name=user["display_name"],
         action_type="DOCUMENT_DELETED",
         event_code=audit_events.GF_DOC_DELETED,   # no Viewpoint equivalent
-        company_name=_owner_name(sb, owner_kind, owner_id),
         entity_type="document",
         entity_id=str(document_id),
         old_value=f"{doc.get('document_type_code')} ({doc.get('file_name')})",
