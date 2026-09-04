@@ -438,23 +438,40 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 /* Levi 2026-09-04: "make the filter and sorting buttons bigger, it is very
    difficult to click on these super small buttons". The GLYPHS stay small — a
    header of eleven columns cannot carry eleven loud controls — because the
-   target was never the glyph. Both marks now sit in a 26px box: 324px² of
-   clickable area becomes 676px², comfortably past the 24px minimum for a
-   pointer target.
+   target was never the glyph. Both marks sit in a box far larger than the mark.
 
-   The negative block margin is what keeps that free. Without it a 26px control
-   inside a 9px-padded header grows every table's head from 31px to 44px, which
-   is a visible change to eight screens nobody asked to redesign. -6px puts the
-   row back where it was while the targets stay large. */
-.th-inner { display: flex; align-items: center; gap: 2px; margin: -6px 0; }
+   SECOND PASS, same day, because 26px did not fix it and Levi said so. Three
+   things were wrong and only one of them was size:
+
+   1. SIZE. 26 -> 32px, so 676px² of target becomes 1024px².
+
+   2. VISIBILITY. Resting opacity was .4, which on a --indigo-5 header is very
+      nearly nothing. You cannot aim at what you cannot see, and "hard to click"
+      is what people say about a control they have to hunt for first. .55 at
+      rest, and the whole header lights its controls to .95 on hover.
+
+   3. THE COST OF A NEAR MISS, which was the real complaint. The entire <th> is
+      the sort target, so the funnel is a small island inside a large button and
+      missing it by two pixels does not do nothing — it RE-SORTS THE TABLE and
+      throws away the row you were reading. Two 26px boxes separated by a 2px
+      gap is a trap. The gap is now 5px, and on header hover the funnel takes a
+      visible box of its own so the operator is aiming at something with edges
+      rather than at a faint mark floating in a sort target.
+
+   The negative block margin is what keeps all of this free. Without it a 32px
+   control inside a 9px-padded header grows every table's head, which is a
+   visible change to eight screens nobody asked to redesign. -9px against 32px
+   leaves the same 14px of content the 26px/-6px pair did, so the header row is
+   pixel-identical to before while the targets are half again as large. */
+.th-inner { display: flex; align-items: center; gap: 5px; margin: -9px 0; }
 .th-sort {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; margin-left: 4px;
+  width: 32px; height: 32px; margin-left: 6px;
   border-radius: var(--r-xs);
-  opacity: .4; font-size: 13px; line-height: 1; flex-shrink: 0;
+  opacity: .55; font-size: 13px; line-height: 1; flex-shrink: 0;
   transition: .15s;
 }
-thead th:hover .th-sort { opacity: .85; }
+thead th:hover .th-sort { opacity: .95; }
 tbody tr.clickable { cursor: pointer; }
 .filing-tag {
   display: inline-block; margin-top: 4px; font-size: 9px; font-weight: 700; letter-spacing: .06em;
@@ -1200,12 +1217,20 @@ tbody tr.clickable { cursor: pointer; }
    reads as one control cluster rather than two competing marks. */
 .th-filter {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; margin-left: 0; padding: 0;
-  border-radius: var(--r-xs); color: var(--t-muted); opacity: .4;
+  width: 32px; height: 32px; margin-left: 0; padding: 0;
+  border-radius: var(--r-xs); color: var(--t-muted); opacity: .55;
   transition: .15s; flex-shrink: 0;
 }
-thead th:hover .th-filter { opacity: .85; }
-.th-filter:hover { opacity: 1; color: var(--indigo); background: var(--indigo-10); }
+/* On header hover the funnel takes EDGES, not just more ink. Missing it sorts
+   the table, so the operator needs to see what they are aiming at rather than
+   guess where a faint glyph's hit area ends. It is drawn only on hover: eleven
+   permanently-boxed funnels would be the loud header this design avoids. */
+thead th:hover .th-filter:not(.is-on) { opacity: .95; background: var(--indigo-10); }
+/* Darker than the box the header hover already drew (--indigo-10), or landing
+   on the funnel would look identical to merely being near it. */
+.th-filter:not(.is-on):hover, thead th:hover .th-filter:not(.is-on):hover {
+  opacity: 1; color: var(--indigo); background: var(--indigo-20);
+}
 .th-filter:focus-visible {
   outline: none; opacity: 1;
   box-shadow: 0 0 0 2px var(--indigo-20);
@@ -1213,7 +1238,14 @@ thead th:hover .th-filter { opacity: .85; }
 /* Applied. Solid, full opacity, and it stays that way when the header is not
    hovered — the whole job of this state is to be findable by scanning. */
 .th-filter.is-on, thead th:hover .th-filter.is-on { color: var(--carrot); opacity: 1; }
-.th-filter.is-on:hover { background: var(--carrot-10); color: var(--carrot); }
+/* carrot-20, not carrot-10: the COLUMN is already tinted carrot-10 when a
+   filter is applied (`th.th-filtered`), so a carrot-10 funnel on it is an
+   invisible hover. Both selectors are spelled out because `thead th:hover ...`
+   outranks a bare class chain, and without the second one an applied filter
+   would take the indigo hover meant for the unfiltered case. */
+.th-filter.is-on:hover, thead th:hover .th-filter.is-on:hover {
+  background: var(--carrot-20); color: var(--carrot);
+}
 
 /* The filtered column itself: a tint plus a carrot rule under the header. The
    rule is the registry-ledger detail — an underscored column heading — and it
