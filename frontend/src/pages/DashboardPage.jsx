@@ -7,7 +7,6 @@ import { useAuth } from '../context/AuthContext.jsx'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
-import StatusBadge, { CASE_STATUSES, statusOptions } from '../components/StatusBadge.jsx'
 import { WorkflowBadge, WORKFLOW_LABEL } from '../components/CaseStatusBadge.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import {
@@ -80,8 +79,18 @@ function buildColumns(meId, counts) {
       filter: { kind: TEXT, placeholder: 'Company name' } },
     { col: 'br_number', label: 'BRN', sort: 'br_number',
       filter: { kind: TEXT, placeholder: 'Business Registration No.' } },
-    { col: 'case_status', label: 'Status', sort: 'case_status',
-      filter: { kind: ENUM, options: statusOptions(CASE_STATUSES) } },
+    // STATUS IS GONE (Levi 2026-09-04: "not very useful and taking up space").
+    // `case_status` and `workflow_status` are two names for one position in the
+    // same pipeline, and the next column already gives the useful half: Status
+    // read "Draft" on every open case, because a case leaves draft only when it
+    // is filed, while Workflow said which of Data Verification / Client
+    // Verification / Signing it was actually sitting in. A column whose value is
+    // identical on every visible row is a column that costs width and answers
+    // nothing.
+    //
+    // The FIELD is untouched — it still drives the case detail, the workflow
+    // derivation and `nar1_case_status.derive()`, and the backend still accepts
+    // it as a filter and a sort. Only this listing stops showing it.
     // The counts the removed tab row used to carry, kept where the filter now
     // lives. Losing them would have made this change a straight downgrade for
     // anyone who read the dashboard by scanning those numbers.
@@ -375,7 +384,6 @@ export default function DashboardPage() {
                       <td data-label="Entity ID"><span className="td-id">{c.entity_id || '—'}</span></td>
                       <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>
                       <td data-label="BRN"><span className="td-muted">{c.br_number || '—'}</span></td>
-                      <td data-label="Status"><StatusBadge status={c.case_status} /></td>
                       <td data-label="Workflow">
                         {/* Levi 2026-08-30: one badge, the case's own workflow
                             status. The CR form status (FormBadge) used to stack
