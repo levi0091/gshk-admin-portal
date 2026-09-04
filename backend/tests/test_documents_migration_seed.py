@@ -21,6 +21,13 @@ EXPECTED_TYPES = {
     # Migration 029 (spec §4). Case-scoped, so it is deliberately absent from
     # both document-upload dropdowns — see tests/test_migration_029.py.
     "cr_receipt",
+    # Migration 036. One identity type per `id_document_type` enum value, so a
+    # passport supersedes the passport rather than becoming version 2 of the
+    # HKID, plus the proof-of-address types. `id_scan` and the bare
+    # `address_proof` above are RETIRED (is_active = false), not deleted — the
+    # FK from `documents` means rows already uploaded under them still resolve.
+    "id_hkid", "id_passport", "id_china_id", "id_other",
+    "addr_utility_bill", "addr_bank_statement", "addr_tenancy", "addr_govt_letter",
 }
 
 

@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
-import { formatDate } from '../lib/format.js'
+import { formatDate, formatDateTime } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
+import IdentityDocumentModal from '../components/IdentityDocumentModal.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import AddressBlock from '../components/AddressBlock.jsx'
 import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
@@ -11,6 +12,9 @@ import { useLookups } from '../lib/lookups.js'
 import { useFormContract, fieldWarning } from '../lib/formContract.js'
 import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import { idNumberProblem } from '../lib/hkid.js'
+import {
+  useDocumentSections, groupBySection, fieldsForStoredDocument, identityRules,
+} from '../lib/documentSections.js'
 
 // `lookup` names the controlled vocabulary a field draws from (migration 013,
 // lifted from Viewpoint). Without it these were free-text, which is how the same
@@ -45,15 +49,15 @@ const EDITABLE = [
   { key: 'phone', label: 'Phone' },
 ]
 
-// What an identity document holds, minus Place of Issue (B15 / D3): CR asks
-// for the issuing COUNTRY, never the city, and the column is retained.
-const ID_EDITABLE = [
-  { key: 'id_number', label: 'ID Number' },
-  { key: 'issuing_country', label: 'Issuing Country/Region', lookup: 'cr_country' },
-  { key: 'issue_date', label: 'Issue Date', type: 'date' },
-  { key: 'expiry_date', label: 'Expiry Date', type: 'date' },
-  { key: 'reminder_date', label: 'Renewal Reminder', type: 'date' },
-]
+// What an identity document holds is now decided by its TYPE, and served from
+// `/documents/sections` rather than fixed here (see lib/documentSections.js).
+// CR has no country box beside <hkid> and a Hong Kong identity card does not
+// expire, so an HKID card that offered Issuing Country, Issue Date and Expiry
+// Date was inviting three answers CR has nowhere to put.
+//
+// Place of Issue stays off the screen (B15 / D3) — CR asks for the issuing
+// COUNTRY, never the city — and Renewal Reminder has now joined it (Levi,
+// 2026-09-04: nobody asked for it). Both COLUMNS are retained.
 
 const RELATION_LABEL = {
   officer: 'Director', shareholder: 'Shareholder', beneficial_owner: 'Beneficial Owner',
@@ -89,12 +93,25 @@ function addressText(a) {
  * fix them. The check only refuses a number somebody is typing right now —
  * which is also what the API does, so the two agree.
  */
-function IdentityDocument({ doc, lookups, busy, onSave }) {
+const ID_TYPE_LABEL = {
+  hkid: 'Hong Kong Identity Card',
+  passport: 'Passport',
+  china_id: 'Mainland China Identity Card',
+  other: 'Other Identity Document',
+}
+
+function IdentityDocument({ doc, identityFields, lookups, busy, onSave }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
 
+  // Which fields this TYPE carries — an HKID takes a number and nothing else.
+  // Read, never assumed: a stored value outside the type's fields is shown too,
+  // so a Viewpoint HKID that came with an issuing country does not lose it.
+  const shown = fieldsForStoredDocument(identityFields, doc)
+  const required = identityRules(identityFields, doc.id_type).required || []
+
   const start = () => {
-    setDraft(Object.fromEntries(ID_EDITABLE.map(f => [f.key, doc[f.key] ?? ''])))
+    setDraft(Object.fromEntries(shown.map(f => [f.key, doc[f.key] ?? ''])))
     setEditing(true)
   }
 
@@ -112,8 +129,14 @@ function IdentityDocument({ doc, lookups, busy, onSave }) {
   return (
     <div className="id-doc-group">
       <div className="id-doc-head">
-        {(doc.id_type || '').toUpperCase()}
+        {ID_TYPE_LABEL[doc.id_type] || (doc.id_type || '').toUpperCase()}
         {doc.is_primary && <span className="pri-pill">PRIMARY</span>}
+        {doc.scan_document_id && (
+          <button className="id-doc-scan"
+                  onClick={() => downloadDocument(doc.scan_document_id)}>
+            Scan
+          </button>
+        )}
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
           {editing ? (
             <>
@@ -133,10 +156,10 @@ function IdentityDocument({ doc, lookups, busy, onSave }) {
 
       {editing ? (
         <div className="form-grid">
-          {ID_EDITABLE.map(f => (
+          {shown.map(f => (
             <FormField
               key={f.key}
-              field={f}
+              field={{ ...f, required: required.includes(f.key) }}
               value={draft[f.key]}
               lookups={lookups}
               onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
@@ -150,34 +173,89 @@ function IdentityDocument({ doc, lookups, busy, onSave }) {
         </div>
       ) : (
         <div className="kv-list">
-          <Kv label="ID Number"
-              warning={problem ? { kind: 'invalid', message: problem } : null}>
-            {doc.id_number}
-          </Kv>
-          <Kv label="Issuing Country/Region">{doc.issuing_country}</Kv>
-          {/* Place of Issue removed from the screen (B15 / D3). The column is
-              kept, so no Viewpoint history is destroyed and the decision is
-              reversible. */}
-          <Kv label="Issue Date">{formatDate(doc.issue_date)}</Kv>
-          <Kv label="Expiry Date">{formatDate(doc.expiry_date)}</Kv>
-          <Kv label="Renewal Reminder">{formatDate(doc.reminder_date)}</Kv>
+          {shown.map(f => (
+            <Kv key={f.key} label={f.label}
+                warning={f.key === 'id_number' && problem
+                  ? { kind: 'invalid', message: problem } : null}>
+              {f.type === 'date'
+                ? formatDate(doc[f.key])
+                : displayValue(f, doc[f.key], lookups)}
+            </Kv>
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-/** Document history: grouped by type, newest version current, older preserved. */
-function DocumentHistory({ documents }) {
+/** The current file held under each type in one section. */
+function SectionDocuments({ documents }) {
+  return documents.map(doc => (
+    <div className="sec-doc" key={doc.id}>
+      <div className="sec-doc-l">
+        <div className="sec-doc-type">
+          {doc.document_types?.label || doc.document_type_code}
+        </div>
+        <div className="sec-doc-sub">
+          {[doc.title, doc.file_name,
+            doc.current_version > 1 && `v${doc.current_version}`,
+            formatDateTime(doc.updated_at || doc.created_at)]
+            .filter(Boolean).join(' · ')}
+        </div>
+      </div>
+      <button className="dv-dl" onClick={() => downloadDocument(doc.id)}>Download</button>
+    </div>
+  ))
+}
+
+/**
+ * One document section — a heading, its documents, and its own upload button.
+ *
+ * RENDERED WHETHER OR NOT IT HOLDS ANYTHING. An empty section with a button is
+ * how the first document gets added; the previous screen had one button in the
+ * page header for every kind of document at once, which is how a passport ended
+ * up filed as an "Identity Document Scan".
+ */
+function DocumentSection({ section, count, children, onAdd }) {
+  return (
+    <div className="card mb-16">
+      <div className="card-hdr">
+        <div>
+          <div className="card-title">
+            {section.label} <span className="count-pill">{count}</span>
+          </div>
+          <div className="card-sub">{section.description}</div>
+        </div>
+        <button className="btn btn-outline btn-sm" onClick={onAdd}>
+          {section.is_identity ? 'Add Identity Document' : 'Upload Document'}
+        </button>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * Document history: every upload, grouped by type, newest version current.
+ *
+ * Each group names its SECTION as well as its type (Levi 2026-09-04) — "Passport"
+ * alone does not say whether it was filed as identity or as proof of address,
+ * and the two now live in different sections. The timestamp is the upload's own
+ * datetime, in Hong Kong, because two uploads on one day are otherwise
+ * indistinguishable.
+ */
+function DocumentHistory({ documents, sectionLabels }) {
   if (!documents?.length) {
     return <div className="empty-state" style={{ padding: '16px 0' }}>No documents uploaded yet.</div>
   }
   return documents.map(doc => {
     const versions = [...(doc.document_versions || [])]
       .sort((a, b) => b.version_number - a.version_number)
+    const section = sectionLabels[doc.document_types?.category]
     return (
       <div key={doc.id}>
         <div className="doc-hist-type">
+          {section && <span className="doc-hist-cat">{section}</span>}
           {doc.document_types?.label || doc.document_type_code}
           <span className="cnt">{versions.length} version{versions.length === 1 ? '' : 's'}</span>
         </div>
@@ -190,7 +268,7 @@ function DocumentHistory({ documents }) {
                   {isCurrent ? 'CURRENT' : 'SUPERSEDED'}
                 </span>
                 <span>v{v.version_number} · {v.file_name}</span>
-                <span className="dv-meta">{formatDate(v.created_at)}</span>
+                <span className="dv-meta">{formatDateTime(v.created_at)}</span>
               </span>
               <button className="dv-dl" onClick={() => downloadDocument(doc.id)}>Download</button>
             </div>
@@ -211,8 +289,15 @@ export default function PersonProfilePage() {
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
   const contract = useFormContract()
+  const {
+    sections, identity_fields: identityFields,
+    ready: sectionsReady, error: sectionsError,
+  } = useDocumentSections('person')
   const [busy, setBusy] = useState(false)
-  const [showUpload, setShowUpload] = useState(false)
+  // The section whose upload dialog is open, or null. One piece of state
+  // rather than one flag per section — a second dialog can never open behind
+  // the first.
+  const [uploadInto, setUploadInto] = useState(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -282,6 +367,10 @@ export default function PersonProfilePage() {
   const idDocs = person.identity_documents || []
   const primary = idDocs.find(d => d.is_primary) || idDocs[0]
 
+  // Uploads filed under the section their type belongs to (migration 036).
+  const bySection = groupBySection(person.documents, sections)
+  const sectionLabels = Object.fromEntries(sections.map(s => [s.key, s.label]))
+
   // What CR would refuse, read off the same contract the API enforces (§5.3).
   const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
   const addressWarnings = Object.fromEntries(
@@ -323,18 +412,34 @@ export default function PersonProfilePage() {
               .filter(Boolean).join(' · ')}
           </div>
         </div>
-        <div className="pg-actions">
-          <button className="btn btn-outline" onClick={() => setShowUpload(true)}>Upload Document</button>
-        </div>
+        {/* No page-level Upload button. It offered every document type at once
+            from a place that named no section, which is how a passport got
+            filed as an "Identity Document Scan". Each section carries its own. */}
       </div>
 
-      {showUpload && (
+      {uploadInto?.is_identity && (
+        <IdentityDocumentModal
+          personId={personId}
+          personName={person.full_name}
+          types={uploadInto.types}
+          identityFields={identityFields}
+          existing={idDocs}
+          lookups={lookups}
+          onClose={() => setUploadInto(null)}
+          onSaved={() => { setUploadInto(null); load() }}
+        />
+      )}
+
+      {uploadInto && !uploadInto.is_identity && (
         <UploadDocumentModal
           ownerKind="person"
           ownerId={personId}
           ownerName={person.full_name}
-          onClose={() => setShowUpload(false)}
-          onUploaded={() => { setShowUpload(false); load() }}
+          category={uploadInto.key}
+          sectionLabel={uploadInto.label}
+          existingTypes={(bySection[uploadInto.key] || []).map(d => d.document_type_code)}
+          onClose={() => setUploadInto(null)}
+          onUploaded={() => { setUploadInto(null); load() }}
         />
       )}
 
@@ -401,28 +506,64 @@ export default function PersonProfilePage() {
             )}
           </div>
 
-          {/* Identity Documents */}
-          <div className="card mb-16">
-            <div className="card-hdr">
-              <div>
-                <div className="card-title">
-                  Identity Documents <span className="count-pill">{idDocs.length}</span>
+          {/* "Unavailable" is not "none". If the section catalogue could not be
+              loaded, say so — rendering an empty Identity Documents card would
+              tell the operator this director has no passport on file. */}
+          {!sectionsReady && (
+            <div className="card mb-16">
+              <div className="empty-state" style={{ padding: '16px 0' }}>Loading documents…</div>
+            </div>
+          )}
+          {sectionsReady && sectionsError && (
+            <div className="card mb-16">
+              <div className="card-hdr">
+                <div>
+                  <div className="card-title">Documents</div>
+                  <div className="card-sub">Sections could not be loaded</div>
                 </div>
-                <div className="card-sub">Grouped by document type</div>
+              </div>
+              <div className="reveal-note" style={{ color: '#B91C1C', background: '#FEE2E2' }}>
+                {sectionsError} — this person’s identity documents are not shown
+                below because the section list is unavailable, not because there
+                are none. Reload the page.
               </div>
             </div>
-            {idDocs.length === 0 ? (
-              <div className="empty-state" style={{ padding: '16px 0' }}>No identity documents on file.</div>
-            ) : idDocs.map(d => (
-              <IdentityDocument
-                key={d.id}
-                doc={d}
-                lookups={lookups}
-                busy={busy}
-                onSave={changed => saveIdentityDocument(d.id, changed)}
-              />
-            ))}
-          </div>
+          )}
+
+          {/* One card per section, present whether or not it holds anything. */}
+          {sections.map(section => section.is_identity ? (
+            <DocumentSection key={section.key} section={section}
+                             count={idDocs.length}
+                             onAdd={() => setUploadInto(section)}>
+              {idDocs.length === 0 ? (
+                <div className="empty-state" style={{ padding: '16px 0' }}>
+                  No identity documents on file. CR files every director by their
+                  HKID or passport number — a person holding neither blocks the return.
+                </div>
+              ) : idDocs.map(d => (
+                <IdentityDocument
+                  key={d.id}
+                  doc={d}
+                  identityFields={identityFields}
+                  lookups={lookups}
+                  busy={busy}
+                  onSave={changed => saveIdentityDocument(d.id, changed)}
+                />
+              ))}
+            </DocumentSection>
+          ) : (
+            <DocumentSection key={section.key} section={section}
+                             count={(bySection[section.key] || []).length}
+                             onAdd={() => setUploadInto(section)}>
+              {(bySection[section.key] || []).length === 0 ? (
+                <div className="empty-state" style={{ padding: '16px 0' }}>
+                  Nothing uploaded yet.
+                </div>
+              ) : (
+                <SectionDocuments documents={bySection[section.key]} />
+              )}
+            </DocumentSection>
+          ))}
 
           {/* Document History */}
           <div className="card mb-16">
@@ -430,11 +571,11 @@ export default function PersonProfilePage() {
               <div>
                 <div className="card-title">Document History</div>
                 <div className="card-sub">
-                  All uploads grouped by type · newest version is current, older versions preserved
+                  Every upload, by section and type · newest version is current, older versions preserved
                 </div>
               </div>
             </div>
-            <DocumentHistory documents={person.documents} />
+            <DocumentHistory documents={person.documents} sectionLabels={sectionLabels} />
           </div>
 
           {/* Appointments & Roles — read-only */}

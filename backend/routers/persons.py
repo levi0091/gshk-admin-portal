@@ -14,7 +14,10 @@ from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_subject
-from services import audit_events, document_service, address_service, table_filters as tf
+from services import (
+    audit_events, document_service, document_sections, address_service,
+    table_filters as tf,
+)
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
 from services.tpsi.forms.cr_vocabularies import resolve_country
@@ -33,6 +36,28 @@ _EDITABLE_FIELDS = {
 }
 
 
+class IdentityDocumentIn(BaseModel):
+    """An identity document supplied alongside a new person.
+
+    THE FIELD THAT WAS MISSING. A person could be created with names, a
+    nationality and a date of birth, and no way at all to record the number CR
+    files them by — the profile could only EDIT identity documents, so a person
+    created here had none and no screen offered to add one. Both NAR1 and NNC1
+    carry an individual's HKID or passport number for every director; a person
+    without one blocks the return at `nar1_mapper._individual_id`.
+    """
+
+    class Config:
+        extra = "forbid"
+
+    id_type: str
+    id_number: str
+    issuing_country: Optional[str] = None
+    issue_date: Optional[str] = None
+    expiry_date: Optional[str] = None
+    is_primary: bool = True
+
+
 class CreatePersonRequest(BaseModel):
     full_name: str
     given_names: Optional[str] = None
@@ -48,10 +73,16 @@ class CreatePersonRequest(BaseModel):
     gender: Optional[str] = None
     nationality: Optional[str] = None
     nationality_code: Optional[str] = None
+    # CR asks for nationality of ORIGIN separately from current nationality
+    # (`persons.nationality_origin`, migration 007). It was editable on the
+    # profile and absent from creation, so it could only ever be filled in on a
+    # second visit.
+    nationality_origin: Optional[str] = None
     occupation: Optional[str] = None
     place_of_birth: Optional[str] = None
     marital_status: Optional[str] = None
     residential_address_id: Optional[str] = None
+    identity_document: Optional[IdentityDocumentIn] = None
 
 
 class UpdatePersonRequest(BaseModel):
@@ -291,25 +322,39 @@ async def create_person(
     body: CreatePersonRequest,
     user=Depends(require_permission("persons", "write")),
 ):
+    # Validated BEFORE the person is inserted: a mistyped HKID must refuse the
+    # whole creation, not leave a person behind with no identity document and
+    # an error message the operator has already navigated away from.
+    id_doc = _validated_identity_row(body.identity_document) if body.identity_document else None
+
     sb = get_supabase()
-    row = {k: v for k, v in body.model_dump().items() if v is not None}
+    row = {k: v for k, v in body.model_dump(exclude={"identity_document"}).items()
+           if v is not None}
     created = sb.table("persons").insert(row).execute().data
     if not created:
         raise HTTPException(status_code=400, detail="Person insert failed")
     person = created[0]
+
+    if id_doc:
+        sb.table("person_identity_documents").insert(
+            {**id_doc, "person_id": person["id"]}).execute()
 
     await log_event(
         case_id=None, user_id=user["id"],
         user_display_name=user["display_name"], action_type="PERSON_CREATED",
         event_code=audit_events.VP_NEW_MASTER_FILE,   # Viewpoint: New Master File
         company_name=person["full_name"],             # subject of the event
-        # A person is quoted by an identity number, but a brand-new record has
-        # no document yet — the reference fills itself in on the next edit.
-        **audit_subject.for_person(person),
+        # A person is quoted by their identity number, which now exists at
+        # creation when one was supplied — previously it could not, because
+        # there was no field to type it into.
+        **audit_subject.for_person(
+            person, id_number=(id_doc or {}).get("id_number")),
         entity_type="person", entity_id=str(person["id"]),
-        new_value=person["full_name"], after_state=row,
+        new_value=person["full_name"],
+        after_state={**row, **({"identity_document": id_doc} if id_doc else {})},
     )
-    return person
+    # The screen needs the document back to render the card it just created.
+    return {**person, "identity_documents": [id_doc] if id_doc else []}
 
 
 @router.patch("/{person_id}")
@@ -364,15 +409,118 @@ class UpdateIdentityDocumentRequest(BaseModel):
     issuing_country: Optional[str] = None
     issue_date: Optional[str] = None
     expiry_date: Optional[str] = None
-    reminder_date: Optional[str] = None
     is_primary: Optional[bool] = None
 
 
+#: `reminder_date` is gone from here and from the screen (Levi 2026-09-04:
+#: "remove the renewal reminder, it is not required, i didnt ask for this").
+#: The COLUMN is kept, as `place_of_issue` was — Viewpoint's ReminderDate values
+#: survive and the decision is reversible; nothing writes it any more.
 _ID_DOC_FIELDS = {"id_number", "issuing_country", "issue_date", "expiry_date",
-                  "reminder_date", "is_primary"}
+                  "is_primary"}
 
 #: CR gives the passport number 25 characters (indvPptNo / passportNo).
 _PASSPORT_MAX = 25
+
+
+def _clean_id_number(id_type: str, raw: str) -> str:
+    """CR's rules for an identity number, or a 422 saying which one it broke.
+
+    Shared by the create and the edit path so the two cannot disagree — the
+    same argument the CR form contract makes for lengths (CLAUDE.md §3). What
+    differs between them is only WHEN it runs: editing checks the number only
+    when the number is itself being written (grandfathering, PRD D4), creating
+    always checks, because a new row has no legacy to protect.
+    """
+    number = str(raw or "").strip()
+    if id_type == "hkid" and not is_valid_hkid(number):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{number!r} is not a valid HKID: the check digit does not "
+                "match. If this is not a Hong Kong identity card, change "
+                "the document type instead."
+            ),
+        )
+    if id_type == "passport" and len(number) > _PASSPORT_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"CR allows {_PASSPORT_MAX} characters for a passport "
+                   f"number; this is {len(number)}",
+        )
+    return number
+
+
+def _clean_issuing_country(raw) -> Optional[str]:
+    """`indvPptIssCtry` takes CR's codes, not Viewpoint's.
+
+    The same defect as the address country, where picking the Chinese "Hong
+    Kong" stored 'HK-CH' and killed the return.
+    """
+    country = str(raw or "").strip()
+    if country and resolve_country(country) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"{country!r} is not a country or region the Companies "
+                    "Registry has a code for. Pick one from the list."),
+        )
+    return country or None
+
+
+#: Why a required identity field matters, in the words of the thing that will
+#: refuse it later. A message that says only "required" leaves the operator
+#: guessing whether it is our rule or CR's.
+_MISSING_IDENTITY_FIELD = {
+    ("passport", "issuing_country"): (
+        "CR refuses a passport number without its issuing country — pick the "
+        "country or region that issued this passport."
+    ),
+}
+
+
+def _validated_identity_row(body: IdentityDocumentIn) -> dict:
+    """A `person_identity_documents` row from a create request, CR-checked.
+
+    Runs BEFORE the person is inserted on the create path, so a bad passport
+    number cannot leave a half-made person behind.
+    """
+    id_type = str(body.id_type or "").strip()
+    if id_type not in document_sections.CODE_BY_ID_TYPE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown identity document type {id_type!r}. "
+                   f"Expected one of: "
+                   f"{', '.join(sorted(document_sections.CODE_BY_ID_TYPE))}",
+        )
+
+    row = {
+        "id_type": id_type,
+        "id_number": _clean_id_number(id_type, body.id_number),
+        "is_primary": bool(body.is_primary),
+    }
+    if not row["id_number"]:
+        raise HTTPException(
+            status_code=422, detail="An identity document needs a number")
+
+    allowed = document_sections.identity_fields(id_type)
+    if "issuing_country" in allowed:
+        row["issuing_country"] = _clean_issuing_country(body.issuing_country)
+    if "issue_date" in allowed and body.issue_date:
+        row["issue_date"] = body.issue_date
+    if "expiry_date" in allowed and body.expiry_date:
+        row["expiry_date"] = body.expiry_date
+
+    for field in document_sections.required_identity_fields(id_type):
+        if not row.get(field):
+            raise HTTPException(
+                status_code=422,
+                detail=_MISSING_IDENTITY_FIELD.get(
+                    (id_type, field),
+                    f"{field.replace('_', ' ').title()} is required for this "
+                    "identity document type",
+                ),
+            )
+    return row
 
 
 @router.patch("/{person_id}/identity-documents/{document_id}")
@@ -409,37 +557,12 @@ async def update_identity_document(
         raise HTTPException(status_code=404, detail="Identity document not found")
 
     if "id_number" in updates:
-        number = str(updates["id_number"]).strip()
-        id_type = current.get("id_type")
-        if id_type == "hkid" and not is_valid_hkid(number):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"{number!r} is not a valid HKID: the check digit does not "
-                    "match. If this is not a Hong Kong identity card, change "
-                    "the document type instead."
-                ),
-            )
-        if id_type == "passport" and len(number) > _PASSPORT_MAX:
-            raise HTTPException(
-                status_code=422,
-                detail=f"CR allows {_PASSPORT_MAX} characters for a passport "
-                       f"number; this is {len(number)}",
-            )
-        updates["id_number"] = number
+        updates["id_number"] = _clean_id_number(
+            current.get("id_type"), updates["id_number"])
 
-    # `indvPptIssCtry` is a CR-validated field, so it takes CR's codes and not
-    # Viewpoint's — the same defect as the address country, where picking the
-    # Chinese "Hong Kong" stored 'HK-CH' and killed the return.
     if "issuing_country" in updates:
-        country = str(updates["issuing_country"]).strip()
-        if country and resolve_country(country) is None:
-            raise HTTPException(
-                status_code=422,
-                detail=(f"{country!r} is not a country or region the Companies "
-                        "Registry has a code for. Pick one from the list."),
-            )
-        updates["issuing_country"] = country or None
+        updates["issuing_country"] = _clean_issuing_country(
+            updates["issuing_country"])
 
     updated = (
         sb.table("person_identity_documents").update(updates)
@@ -470,6 +593,143 @@ async def update_identity_document(
         if old_val != new_val
     ])
     return updated
+
+
+@router.post("/{person_id}/identity-documents", status_code=201)
+async def save_identity_document(
+    person_id: str,
+    id_type: str = Form(...),
+    id_number: str = Form(...),
+    issuing_country: Optional[str] = Form(None),
+    issue_date: Optional[str] = Form(None),
+    expiry_date: Optional[str] = Form(None),
+    is_primary: bool = Form(False),
+    title: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    user=Depends(require_permission("persons", "write")),
+):
+    """Record an identity document, and optionally the scan that evidences it.
+
+    THE DEFECT THIS FIXES (Levi 2026-09-04): "when i upload a passport it does
+    not overwrite the existing passport record ... it only simply adds a record
+    into the document history section". Both halves were true and neither was
+    an accident of storage:
+
+      * the upload wrote a `documents` row and NEVER TOUCHED
+        `person_identity_documents`, which is the table NAR1 and NNC1 are
+        actually filed from — so a passport scan and the passport number it
+        shows had no relationship at all; and
+      * every identity scan shared one document type, `id_scan`, and
+        `upload_document` versions in place on `(owner, type)`, so a passport
+        uploaded after an HKID became **version 2 of the HKID**.
+
+    Migration 036 splits the type per `id_document_type`; this route is the
+    other half. It UPSERTS on `(person_id, id_type)` — one passport row per
+    person, replaced in place — while the FILE still versions, so the number is
+    overwritten and the scan's history is preserved. Those are different
+    questions and they now get different answers.
+
+    The file is OPTIONAL here and required in every other section. A passport
+    recorded from a number GSHK already holds is filable; refusing to store it
+    until somebody finds a scan would block a return over evidence CR never asks
+    to see.
+    """
+    row = _validated_identity_row(IdentityDocumentIn(
+        id_type=id_type, id_number=id_number, issuing_country=issuing_country,
+        issue_date=issue_date, expiry_date=expiry_date, is_primary=is_primary,
+    ))
+
+    sb = get_supabase()
+    person = (
+        sb.table("persons").select("id, full_name")
+        .eq("id", person_id).single().execute()
+    ).data
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    held = (
+        sb.table("person_identity_documents").select("*")
+        .eq("person_id", person_id).execute().data
+    ) or []
+    current = next((d for d in held if d.get("id_type") == row["id_type"]), None)
+
+    # The first document a person holds is their primary one whatever the form
+    # said. The profile header and `audit_subject.primary_id_number` both quote
+    # the primary, and a person whose only identity document is not primary
+    # reads as a person with none.
+    if not held:
+        row["is_primary"] = True
+    # `is_primary` PROMOTES and never demotes. Re-recording the passport a
+    # person is quoted by must not quietly stop them being quoted by it —
+    # demotion happens as a consequence of promoting something else, below.
+    elif current and not row["is_primary"]:
+        row["is_primary"] = bool(current.get("is_primary"))
+
+    # The scan first: if Storage refuses, nothing has been changed yet, and the
+    # operator retries one action rather than discovering a number saved against
+    # a file that never arrived.
+    scan = None
+    if file is not None and (file.filename or ""):
+        content = await file.read()
+        # No file is fine; an EMPTY one is not. Ignoring it would report a
+        # successful save of a scan that does not exist.
+        if not content:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{file.filename!r} is empty — attach the scan again, or "
+                       "save the number on its own.",
+            )
+        scan = await document_service.upload_document(
+            owner_kind="person", owner_id=person_id,
+            document_type_code=document_sections.CODE_BY_ID_TYPE[row["id_type"]],
+            file_name=file.filename, content=content,
+            mime_type=file.content_type, title=title, user=user,
+        )
+        row["scan_document_id"] = scan["id"]
+
+    if current:
+        saved = (
+            sb.table("person_identity_documents").update(row)
+            .eq("id", current["id"]).execute()
+        ).data[0]
+    else:
+        saved = (
+            sb.table("person_identity_documents")
+            .insert({**row, "person_id": person_id}).execute()
+        ).data[0]
+
+    # One primary per person, or the header quotes whichever row came back
+    # first. Only enforced on write — a legacy person with two is left alone
+    # until somebody touches one of them.
+    if row.get("is_primary"):
+        (sb.table("person_identity_documents").update({"is_primary": False})
+         .eq("person_id", person_id).neq("id", saved["id"]).execute())
+
+    # `scan_document_id` is excluded: `upload_document` has already written its
+    # own DOCUMENT_UPLOADED / DOCUMENT_VERSION_ADDED row, and logging the id a
+    # second time here would report one upload as two events.
+    subject = audit_subject.for_person(person, id_number=row["id_number"])
+    entries = [
+        dict(
+            case_id=None, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type="PERSON_FIELD_UPDATED",
+            event_code=audit_events.VP_COMPLIANCE,
+            company_name=person.get("full_name"),
+            **subject,
+            entity_type="person", entity_id=str(person_id),
+            old_value=old_val, new_value=new_val,
+            before_state={"field": f"{row['id_type']}.{field}", "old": old_val},
+            after_state={"field": f"{row['id_type']}.{field}", "new": new_val},
+        )
+        for field, new_val in row.items()
+        if field != "scan_document_id"
+        for old_val in [(current or {}).get(field)]
+        if old_val != new_val
+    ]
+    if entries:
+        await log_events(entries)
+    return {**saved, "scan": scan}
 
 
 @router.put("/{person_id}/residential-address")

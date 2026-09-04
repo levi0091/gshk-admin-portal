@@ -6,8 +6,20 @@ import { api } from '../lib/api.js'
  * creates a NEW VERSION server-side — history is preserved, never overwritten.
  *
  * ownerKind: 'entity' (company) | 'person'
+ * category:  optional — the SECTION this upload belongs to (migration 036).
+ *            The button now lives inside a section rather than in the page
+ *            header, so the picker it opens offers that section's types and no
+ *            others. Omitted, it offers everything the owner can hold, which is
+ *            what the company profile's single button still wants.
+ *
+ * Identity documents do NOT come through here: they carry a number, an issuing
+ * country and dates that this modal has nowhere to put, and the number is
+ * overwritten where the file is versioned. `IdentityDocumentModal` owns them.
  */
-export default function UploadDocumentModal({ ownerKind, ownerId, ownerName, existingTypes = [], onClose, onUploaded }) {
+export default function UploadDocumentModal({
+  ownerKind, ownerId, ownerName, existingTypes = [], category = null,
+  sectionLabel = null, onClose, onUploaded,
+}) {
   const [types, setTypes] = useState([])
   const [typeCode, setTypeCode] = useState('')
   const [title, setTitle] = useState('')
@@ -21,10 +33,14 @@ export default function UploadDocumentModal({ ownerKind, ownerId, ownerName, exi
   const ownerType = ownerKind === 'person' ? 'person' : 'company'
 
   useEffect(() => {
-    api.get(`/documents/types?owner_type=${ownerType}`)
-      .then(setTypes)
+    const scope = category ? `&category=${encodeURIComponent(category)}` : ''
+    api.get(`/documents/types?owner_type=${ownerType}${scope}`)
+      // A non-list here used to throw inside render and take the whole profile
+      // down with it — a blank page, for a picker that could simply have been
+      // empty.
+      .then(data => setTypes(Array.isArray(data) ? data : []))
       .catch(err => setError(err.message))
-  }, [ownerType])
+  }, [ownerType, category])
 
   const isNewVersion = typeCode && existingTypes.includes(typeCode)
 
@@ -55,7 +71,9 @@ export default function UploadDocumentModal({ ownerKind, ownerId, ownerName, exi
     <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal" role="dialog" aria-label="Upload Document">
         <div className="modal-hdr">
-          <div className="modal-title">Upload Document</div>
+          <div className="modal-title">
+            {sectionLabel ? `Upload — ${sectionLabel}` : 'Upload Document'}
+          </div>
           <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
         </div>
 
@@ -64,11 +82,7 @@ export default function UploadDocumentModal({ ownerKind, ownerId, ownerName, exi
             Uploading to <b>{ownerName}</b>
           </div>
 
-          {error && (
-            <div style={{ marginBottom: 14, padding: 10, background: '#FEE2E2', borderRadius: 6, color: '#B91C1C', fontSize: 12 }}>
-              {error}
-            </div>
-          )}
+          {error && <div className="modal-error">{error}</div>}
 
           <div className="f-group" style={{ marginBottom: 14 }}>
             <label className="f-label" htmlFor="document_type_code">

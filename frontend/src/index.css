@@ -597,8 +597,32 @@ tbody tr.clickable { cursor: pointer; }
 .id-doc-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--t-head); margin-bottom: 8px; }
 .id-doc-head .pri-pill { font-size: 9.5px; font-weight: 700; color: var(--bang); background: var(--bang-10); padding: 2px 7px; border-radius: 8px; letter-spacing: .03em; }
 
+/* The scan attached to an identity document — evidence for the number beside
+   it, so it sits in the same head rather than in a section of its own. */
+.id-doc-head .id-doc-scan {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .03em; cursor: pointer;
+  color: var(--indigo); background: var(--indigo-10); border: none;
+  padding: 2px 7px; border-radius: 8px;
+}
+
+/* One current document per type inside a section (the versions are in
+   Document History, which is the only place that needs to show them). */
+.sec-doc {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; margin-bottom: 8px;
+}
+.sec-doc-type { font-size: 12.5px; font-weight: 700; color: var(--t-head); }
+.sec-doc-sub { font-size: 11px; color: var(--t-muted); margin-top: 2px; }
+
 .doc-hist-type { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: var(--t-head); margin: 14px 0 6px; }
 .doc-hist-type .cnt { font-size: 10px; font-weight: 600; color: var(--t-muted); background: var(--bg-page); border: 1px solid var(--border); border-radius: 8px; padding: 1px 7px; }
+/* Which SECTION the type belongs to. "Passport" alone does not say whether it
+   was filed as identity or as proof of address. */
+.doc-hist-type .doc-hist-cat {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--t-muted); background: var(--bg-page); border: 1px solid var(--border);
+  border-radius: 7px; padding: 1px 6px;
+}
 .doc-ver {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 7px 0 7px 14px; margin-left: 5px; border-left: 2px solid var(--border); font-size: 11px;
@@ -611,6 +635,11 @@ tbody tr.clickable { cursor: pointer; }
 .doc-ver .dv-dl { color: var(--indigo); font-weight: 600; cursor: pointer; background: none; border: none; }
 
 /* ── DOCUMENT UPLOAD + LINK PARTY (wireframe_v7 block 7) ─── */
+/* One definition — it was inlined identically in three modals. */
+.modal-error {
+  margin-bottom: 14px; padding: 10px; border-radius: 6px;
+  background: #FEE2E2; color: #B91C1C; font-size: 12px;
+}
 .upload-owner-line { font-size: 12px; color: var(--t-muted); margin-bottom: 12px; }
 .upload-owner-line b { color: var(--t-head); }
 .drop-zone {

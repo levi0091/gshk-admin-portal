@@ -17,6 +17,7 @@ vi.mock('../lib/api.js', () => ({
 import { api } from '../lib/api.js'
 import { _resetLookups } from '../lib/lookups.js'
 import { _resetFormContract } from '../lib/formContract.js'
+import { _resetDocumentSections } from '../lib/documentSections.js'
 
 const PERSON = {
   id: 'p1', full_name: 'John Smith Junior', given_names: 'John Smith', surname: 'Smith',
@@ -77,10 +78,67 @@ const CONTRACT = {
   },
 }
 
+// The sections a person's documents are filed under, and the fields each
+// identity type carries — as GET /documents/sections serves them (migration
+// 036). WHICH FIELDS AN IDENTITY DOCUMENT SHOWS IS THIS PAYLOAD'S ANSWER, not
+// the screen's: CR has no country box beside <hkid> and a Hong Kong identity
+// card does not expire, so an HKID takes a number and nothing else.
+const SECTIONS = {
+  sections: [
+    {
+      key: 'identity', label: 'Identity Documents', is_identity: true,
+      description: 'Passport, HKID and other identity documents',
+      file_required: false,
+      types: [
+        { code: 'id_hkid', label: 'Hong Kong Identity Card', id_type: 'hkid' },
+        { code: 'id_passport', label: 'Passport', id_type: 'passport' },
+        { code: 'id_china_id', label: 'Mainland China Identity Card', id_type: 'china_id' },
+        { code: 'id_other', label: 'Other Identity Document', id_type: 'other' },
+      ],
+    },
+    {
+      key: 'address_proof', label: 'Proof of Address', is_identity: false,
+      description: 'Evidence of the residential address on file',
+      file_required: true,
+      types: [
+        { code: 'addr_utility_bill', label: 'Utility Bill', id_type: null },
+        { code: 'addr_bank_statement', label: 'Bank Statement', id_type: null },
+      ],
+    },
+    {
+      key: 'internal', label: 'Other Documents', is_identity: false,
+      description: 'Anything that does not belong to a section above',
+      file_required: true,
+      types: [{ code: 'other', label: 'Other', id_type: null }],
+    },
+  ],
+  identity_fields: {
+    hkid: { fields: ['id_number'], required: ['id_number'] },
+    passport: {
+      fields: ['id_number', 'issuing_country', 'issue_date', 'expiry_date'],
+      required: ['id_number', 'issuing_country'],
+    },
+    china_id: {
+      fields: ['id_number', 'issuing_country', 'issue_date', 'expiry_date'],
+      required: ['id_number'],
+    },
+    other: {
+      fields: ['id_number', 'issuing_country', 'issue_date', 'expiry_date'],
+      required: ['id_number'],
+    },
+  },
+}
+
 const mockGet = (data) =>
   api.get.mockImplementation(url => {
     if (url === '/lookups') return Promise.resolve(LOOKUPS)
     if (url === '/form-contract') return Promise.resolve(CONTRACT)
+    if (url.startsWith('/documents/sections')) return Promise.resolve(SECTIONS)
+    if (url.startsWith('/documents/types')) {
+      const category = new URL(url, 'http://x').searchParams.get('category')
+      return Promise.resolve(
+        SECTIONS.sections.find(s => s.key === category)?.types || [])
+    }
     return Promise.resolve(data)
   })
 
@@ -88,8 +146,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   _resetLookups()
   _resetFormContract()
+  _resetDocumentSections()
   mockGet(PERSON)
   api.patch.mockResolvedValue({})
+  api.upload.mockResolvedValue({ id: 'i9' })
 })
 
 describe('PersonProfilePage', () => {
@@ -259,8 +319,8 @@ describe('PersonProfilePage — the CR form fields', () => {
     const card = (await screen.findByText(/Identity Documents/)).closest('.card')
 
     await user.click(within(card).getAllByRole('button', { name: 'Edit' })[0])
-    await user.clear(screen.getByLabelText('ID Number'))
-    await user.type(screen.getByLabelText('ID Number'), 'AB987654(3)')
+    await user.clear(screen.getByLabelText(/^ID Number/))
+    await user.type(screen.getByLabelText(/^ID Number/), 'AB987654(3)')
     await user.click(within(card).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
@@ -274,8 +334,8 @@ describe('PersonProfilePage — the CR form fields', () => {
     const card = (await screen.findByText(/Identity Documents/)).closest('.card')
     await user.click(within(card).getAllByRole('button', { name: 'Edit' })[0])
 
-    await user.clear(screen.getByLabelText('ID Number'))
-    await user.type(screen.getByLabelText('ID Number'), 'Z351007(9)')
+    await user.clear(screen.getByLabelText(/^ID Number/))
+    await user.type(screen.getByLabelText(/^ID Number/), 'Z351007(9)')
 
     expect(within(card).getByRole('button', { name: 'Save' })).toBeDisabled()
     expect(screen.getByText(/check digit does not match/)).toBeInTheDocument()
@@ -291,8 +351,8 @@ describe('PersonProfilePage — the CR form fields', () => {
     const card = (await screen.findByText(/Identity Documents/)).closest('.card')
     await user.click(within(card).getAllByRole('button', { name: 'Edit' })[0])
 
-    await user.clear(screen.getByLabelText('ID Number'))
-    await user.type(screen.getByLabelText('ID Number'), '440782198611028063')
+    await user.clear(screen.getByLabelText(/^ID Number/))
+    await user.type(screen.getByLabelText(/^ID Number/), '440782198611028063')
 
     expect(screen.getByText(/change the document type/)).toBeInTheDocument()
   })
@@ -303,8 +363,8 @@ describe('PersonProfilePage — the CR form fields', () => {
     const card = (await screen.findByText(/Identity Documents/)).closest('.card')
 
     await user.click(within(card).getAllByRole('button', { name: 'Edit' })[1])
-    await user.clear(screen.getByLabelText('ID Number'))
-    await user.type(screen.getByLabelText('ID Number'), 'Z351007')
+    await user.clear(screen.getByLabelText(/^ID Number/))
+    await user.type(screen.getByLabelText(/^ID Number/), 'Z351007')
 
     expect(within(card).getByRole('button', { name: 'Save' })).toBeEnabled()
   })
@@ -358,5 +418,159 @@ describe('PersonProfilePage — the CR form fields', () => {
     await screen.findByText('Personal Information')
 
     expect(screen.queryByText(/requires this on the return/)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Document sections (Levi 2026-09-04, migration 036).
+ *
+ * "The upload document button on the top right is not prominent. You should
+ * have it inside the identity documents section... if there are other big
+ * category documents such as proof of address then it should warrant its own
+ * section... If there are no documents the section should still be there but
+ * empty, and there should still be a button to add document to that section."
+ */
+describe('PersonProfilePage — document sections', () => {
+  it('renders a section per category, empty ones included', async () => {
+    renderPage()
+    await screen.findByText(/Identity Documents/)
+
+    expect(screen.getByText('Proof of Address')).toBeInTheDocument()
+    expect(screen.getByText('Other Documents')).toBeInTheDocument()
+    // Nothing has been uploaded as proof of address, and the section is still
+    // there — an empty section with a button is how the first one gets added.
+    const proof = screen.getByText('Proof of Address').closest('.card')
+    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
+    expect(within(proof).getByRole('button', { name: 'Upload Document' })).toBeInTheDocument()
+  })
+
+  it('drops the page-header Upload button in favour of per-section ones', async () => {
+    // One button in the header offered every document type at once from a place
+    // that named no section — which is how a passport got filed as an
+    // "Identity Document Scan".
+    renderPage()
+    await screen.findByText(/Identity Documents/)
+
+    const header = document.querySelector('.pg-hdr')
+    expect(within(header).queryByRole('button', { name: 'Upload Document' })).toBeNull()
+  })
+
+  it('names the identity section button for what it actually does', async () => {
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+    expect(within(card).getByRole('button', { name: 'Add Identity Document' }))
+      .toBeInTheDocument()
+  })
+
+  it('opens the identity dialog scoped to the identity types', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    await user.click(within(card).getByRole('button', { name: 'Add Identity Document' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Identity Document' })
+    expect(within(dialog).getByRole('option', { name: 'Passport' })).toBeInTheDocument()
+    // A Utility Bill is not an identity document and is not offered here.
+    expect(within(dialog).queryByRole('option', { name: 'Utility Bill' })).toBeNull()
+  })
+
+  it('opens a section upload scoped to that section only', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const proof = (await screen.findByText('Proof of Address')).closest('.card')
+
+    await user.click(within(proof).getByRole('button', { name: 'Upload Document' }))
+    await screen.findByRole('dialog', { name: 'Upload Document' })
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
+      '/documents/types?owner_type=person&category=address_proof'))
+  })
+
+  it('says "unavailable", not "none", when the sections cannot be loaded', async () => {
+    // An empty list is indistinguishable from a failed fetch, and a screen that
+    // treats them the same renders a director as holding no identity documents
+    // because a lookup call timed out.
+    api.get.mockImplementation(url => {
+      if (url === '/lookups') return Promise.resolve(LOOKUPS)
+      if (url === '/form-contract') return Promise.resolve(CONTRACT)
+      if (url.startsWith('/documents/sections')) return Promise.reject(new Error('gateway'))
+      return Promise.resolve(PERSON)
+    })
+    renderPage()
+    await screen.findByText('Personal Information')
+
+    expect(await screen.findByText(/not because there\s+are none/)).toBeInTheDocument()
+    expect(screen.queryByText(/No identity documents on file/)).toBeNull()
+  })
+})
+
+/** Levi 2026-09-04, points 3 and 5. */
+describe('PersonProfilePage — the identity card and the history', () => {
+  it('no longer shows a Renewal Reminder (nobody asked for it)', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    expect(screen.queryByText('Renewal Reminder')).not.toBeInTheDocument()
+    await user.click(within(card).getAllByRole('button', { name: 'Edit' })[0])
+    expect(screen.queryByLabelText(/Renewal Reminder/)).not.toBeInTheDocument()
+  })
+
+  it('names the identity document by type rather than shouting the code', async () => {
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    expect(within(card).getByText('Hong Kong Identity Card')).toBeInTheDocument()
+    expect(within(card).getByText('Passport')).toBeInTheDocument()
+  })
+
+  it('offers an HKID no expiry date, because a Hong Kong ID card has none', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+
+    await user.click(within(card).getAllByRole('button', { name: 'Edit' })[0])
+    expect(screen.queryByLabelText('Expiry Date')).not.toBeInTheDocument()
+  })
+
+  it('still shows a stored value the type does not carry, rather than hiding it', async () => {
+    // Viewpoint HKID rows carry an issuing country CR has no box for. Dropping
+    // it from the screen would be quietly discarding data the operator can
+    // still see in the source system.
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+    expect(within(card).getAllByText('Issuing Country/Region').length).toBe(2)
+  })
+
+  it('links straight to the scan attached to an identity document', async () => {
+    mockGet({
+      ...PERSON,
+      identity_documents: [{ id: 'i1', id_type: 'passport', id_number: '987654321',
+                             issuing_country: 'GB', scan_document_id: 'doc-9' }],
+    })
+    renderPage()
+    const card = (await screen.findByText(/Identity Documents/)).closest('.card')
+    expect(within(card).getByRole('button', { name: 'Scan' })).toBeInTheDocument()
+  })
+
+  it('names the section and the exact upload time in Document History', async () => {
+    mockGet({
+      ...PERSON,
+      documents: [{
+        id: 'd1', document_type_code: 'id_passport', current_version: 1,
+        document_types: { code: 'id_passport', label: 'Passport', category: 'identity' },
+        document_versions: [{ id: 'v1', version_number: 1, file_name: 'p.pdf',
+                              created_at: '2026-06-04T09:30:00Z' }],
+      }],
+    })
+    renderPage()
+    await screen.findByText('Document History')
+
+    const history = screen.getByText('Document History').closest('.card')
+    // "Passport" alone does not say whether it was filed as identity or as
+    // proof of address, and the two now live in different sections.
+    expect(within(history).getByText('Identity Documents')).toBeInTheDocument()
+    expect(within(history).getByText(/v1 · p\.pdf/)).toBeInTheDocument()
+    // Hong Kong wall-clock: 09:30 UTC is 17:30 the same day in HK.
+    expect(within(history).getByText(/17:30/)).toBeInTheDocument()
   })
 })
