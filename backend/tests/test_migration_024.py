@@ -355,18 +355,46 @@ def test_the_overdue_flag_is_reachable():
     So the assertion inverts: the column must now REACH the region the predicate
     tests. Asserting a count of overdue cases would instead be asserting a fact
     about today's DEV book, which is nobody's invariant.
+
+    IT SEEDS ITS OWN ROW, and that is the point of this note. The first version
+    read `min(days_to_anniversary)` off the ambient book — a fact about whichever
+    companies happen to exist. On DEV that is 5,930 of them and the minimum sits
+    near -182, so it passed; in CI the `migrations` job creates the database
+    empty, `min()` over no rows is NULL, and the test failed on `assert floor is
+    not None` for a reason with nothing to do with the view. It failed on two
+    commits running, and because a red build is not deployed, that is why the
+    uuid fix riding in the same commit never reached DEV. Assert the ARITHMETIC
+    of the view, which holds on an empty database; never the contents of one.
     """
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT min(days_to_anniversary) FROM company_registry")
-        floor = cur.fetchone()[0]
-        assert floor is not None
-        assert floor < -st.FILING_WINDOW_DAYS, (
-            f"days_to_anniversary bottoms out at {floor}; the overdue predicate "
+        # An anniversary 90 days past: beyond the 42-day window, and still on the
+        # near side of the midpoint where the column counts down to the next one
+        # instead. Built off hk_today() so it means the same thing during the
+        # eight hours a day when UTC and Hong Kong disagree about the date.
+        entity_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO public.entities (id, company_name, status, incorporation_date)
+            VALUES (%s, %s, 'live',
+                    (public.hk_today() - make_interval(days => 90))::date
+                      - make_interval(years => 5))
+            """,
+            (entity_id, f"zz-024-{entity_id[:8]}"),
+        )
+        cur.execute(
+            "SELECT days_to_anniversary FROM public.company_registry WHERE id = %s",
+            (entity_id,),
+        )
+        days = cur.fetchone()[0]
+        assert days is not None, "the view stopped computing the column at all"
+        assert days < -st.FILING_WINDOW_DAYS, (
+            f"an anniversary 90 days past reads {days}; the overdue predicate "
             f"tests < {-st.FILING_WINDOW_DAYS} and is unreachable again"
         )
         # The flag still has to COMPUTE, whatever it currently evaluates to.
         cur.execute(f"SELECT count(*) FROM {VIEW} WHERE workflow_overdue IS NULL")
         assert cur.fetchone()[0] == 0
+        conn.rollback()
 
 
 # --------------------------------------------------------------------------- #
