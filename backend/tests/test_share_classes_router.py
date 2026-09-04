@@ -174,7 +174,7 @@ def test_a_company_with_no_share_capital_can_be_given_some():
     them filing. Editing alone would never unblock one of them."""
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.companies.get_supabase") as msb, \
-         patch("routers.companies.log_event", new=AsyncMock()):
+         patch("routers.companies.log_events", new=AsyncMock()):
         sb = _sb(msb)
         resp = client.post("/companies/e1/share-classes", headers=H, json={
             "class_name": "Ordinary", "currency": "HKD",
@@ -184,6 +184,37 @@ def test_a_company_with_no_share_capital_can_be_given_some():
     written = sb.table.return_value.insert.call_args.args[0]
     assert written["entity_id"] == "e1"
     assert written["class_name"] == "Ordinary"
+
+
+def test_creating_a_share_class_is_audited_field_by_field():
+    """One entry per field, like every other edit — and every VALUE A SCALAR.
+
+    This route used to write the whole `values` dict into `after_state.new`. It
+    left `new_value` NULL, so the row could not be found by the search box or
+    the What-changed filter; and the Audit Log CRASHED on it, because React
+    will not render an object as a child and the throw happens during render,
+    so it blanked the whole screen rather than one cell. It reached DEV.
+    """
+    logged = AsyncMock()
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb, \
+         patch("routers.companies.log_events", new=logged):
+        _sb(msb)
+        resp = client.post("/companies/e1/share-classes", headers=H, json={
+            "class_name": "Ordinary", "currency": "HKD",
+            "total_issued": "100", "issued_amount": "100", "total_paid": "100"})
+
+    assert resp.status_code == 201
+    entries = logged.await_args.args[0]
+    assert {e["after_state"]["field"] for e in entries} == {
+        "share_class.class_name", "share_class.currency",
+        "share_class.total_issued", "share_class.issued_amount",
+        "share_class.total_paid",
+    }
+    for e in entries:
+        # The searchable/filterable column, which the dict left empty.
+        assert e["new_value"] == e["after_state"]["new"]
+        assert isinstance(e["after_state"]["new"], str), e
 
 
 def test_a_new_share_class_is_validated_the_same_way():

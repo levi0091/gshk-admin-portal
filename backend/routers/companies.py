@@ -999,11 +999,8 @@ async def create_share_class(
         )
 
     sb = get_supabase()
-    company = (
-        sb.table("entities").select("company_name")
-        .eq("id", company_id).single().execute()
-    ).data
-    if not company:
+    company = _company_subject(sb, company_id)
+    if not company.get("company_name"):
         raise HTTPException(status_code=404, detail="Company not found")
 
     created = (
@@ -1013,16 +1010,31 @@ async def create_share_class(
     if not created:
         raise HTTPException(status_code=500, detail="Share class not created")
 
-    await log_event(
-        case_id=company_id, user_id=user["id"],
-        user_display_name=user["display_name"],
-        action_type="CASE_FIELD_UPDATED",
-        event_code=audit_events.company_field_code("share_capital"),
-        company_name=company.get("company_name"),
-        **audit_subject.for_company(company),
-        entity_type="share_class", entity_id=str(created[0]["id"]),
-        after_state={"field": "share_class", "new": values},
-    )
+    # ONE ENTRY PER FIELD, exactly as the edit route does — the
+    # `CASE_FIELD_UPDATED` contract, and the reason it matters here twice over.
+    #
+    # This used to write the whole `values` dict into `after_state.new`. Two
+    # consequences: `new_value` was left NULL, so the row could not be found by
+    # the search box or the What-changed filter, which read that column; and the
+    # Audit Log CRASHED on it, because React will not render an object as a
+    # child and a throw during render blanks the entire screen rather than one
+    # cell. The frontend now coerces whatever it is given (`asText`), so the
+    # page can no longer be taken down by history — but the row it was choking
+    # on was genuinely malformed, and this is where that is fixed.
+    await log_events([
+        dict(
+            case_id=company_id, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type="CASE_FIELD_UPDATED",
+            event_code=audit_events.company_field_code("share_capital"),
+            company_name=company.get("company_name"),
+            **audit_subject.for_company(company),
+            entity_type="share_class", entity_id=str(created[0]["id"]),
+            new_value=value,
+            after_state={"field": f"share_class.{field}", "new": value},
+        )
+        for field, value in values.items()
+    ])
     return created[0]
 
 

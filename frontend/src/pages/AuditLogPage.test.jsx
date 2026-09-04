@@ -310,3 +310,99 @@ describe('AuditLogPage — per-column filters', () => {
     })
   })
 })
+
+
+// ---- the row that took the whole screen down -----------------------------
+//
+// React error #31: "objects are not valid as a React child". Thrown DURING
+// RENDER, so it does not blank one cell — it blanks the Audit Log. One row on
+// page 1 was enough, and it reached DEV.
+//
+// `before_state`/`after_state` are free-form JSONB written by ~50 call sites
+// over two years. The page has to survive whatever history contains, so these
+// test the boundary, not the one caller that tripped it.
+describe('AuditLogPage — a value that is not a string (react-error-31)', () => {
+  const withEntry = entry => ({ ...PAYLOAD, entries: [entry] })
+
+  const SHARE_CLASS = {
+    id: 'x1', created_at: '2026-09-04T06:32:03Z', source: 'g_flowdesk',
+    action_type: 'CASE_FIELD_UPDATED', event_code: 'COC',
+    action_label: 'Change Entity Statutory Information',
+    company_name: 'ABC Testing Limited', case_id: 'e9',
+    user_display_name: 'Levi Z.',
+    // Exactly what POST /companies/{id}/share-classes wrote on DEV.
+    after_state: {
+      field: 'share_class',
+      new: {
+        currency: 'HKD', class_name: 'Ordinary', total_paid: '10000',
+        total_issued: '10000', issued_amount: '10000',
+      },
+    },
+  }
+
+  it('renders the row instead of crashing the page', async () => {
+    api.get.mockResolvedValue(withEntry(SHARE_CLASS))
+    renderPage()
+    // The page rendered at all — before the fix this threw and the error
+    // boundary replaced everything with "This screen failed to render".
+    expect(await screen.findByText('ABC Testing Limited')).toBeInTheDocument()
+    expect(screen.queryByText(/failed to render/i)).not.toBeInTheDocument()
+  })
+
+  it('spells the object out rather than dropping it', async () => {
+    api.get.mockResolvedValue(withEntry(SHARE_CLASS))
+    renderPage()
+    const row = (await screen.findByText('ABC Testing Limited')).closest('tr')
+    // Every value the operator needs is still on screen, keyed by its field.
+    expect(within(row).getByText(/class name: Ordinary/)).toBeInTheDocument()
+    expect(within(row).getByText(/currency: HKD/)).toBeInTheDocument()
+    expect(within(row).getByText(/issued amount: 10000/)).toBeInTheDocument()
+  })
+
+  it('survives an array, a number, a boolean and a nested object', async () => {
+    // None of these exist in DEV today. That is the point: the next call site
+    // to write one must not be able to take the screen down.
+    const shapes = [
+      { field: 'recipients', new: ['a@x.com', 'b@x.com'] },
+      { field: 'mortgages_total', new: 0 },
+      { field: 'aoa_agm_waived', new: false },
+      { field: 'address', new: { line1: 'Unit 5', city: { name: 'HK' } } },
+    ]
+    for (const [i, after_state] of shapes.entries()) {
+      api.get.mockResolvedValue(withEntry({
+        ...SHARE_CLASS, id: `s${i}`, after_state,
+      }))
+      const { unmount } = renderPage()
+      expect(await screen.findByText('ABC Testing Limited')).toBeInTheDocument()
+      expect(screen.queryByText(/failed to render/i)).not.toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('still shows a plain string change unchanged', async () => {
+    // The coercion must not disturb the ordinary case, which is every other row.
+    api.get.mockResolvedValue(withEntry({
+      ...SHARE_CLASS,
+      before_state: { field: 'company_name', old: 'Old Co' },
+      after_state: { field: 'company_name', new: 'New Co' },
+    }))
+    renderPage()
+    const row = (await screen.findByText('ABC Testing Limited')).closest('tr')
+    expect(within(row).getByText('Old Co')).toBeInTheDocument()
+    expect(within(row).getByText('New Co')).toBeInTheDocument()
+  })
+
+  it('renders a flag turned OFF, rather than reading it as no value', async () => {
+    // `false` is a real answer here and must survive the coercion.
+    api.get.mockResolvedValue(withEntry({
+      ...SHARE_CLASS,
+      action_type: 'COMPANY_FLAG_CHANGED',
+      before_state: { is_client: true },
+      after_state: { is_client: false },
+    }))
+    renderPage()
+    const row = (await screen.findByText('ABC Testing Limited')).closest('tr')
+    expect(within(row).getByText('true')).toBeInTheDocument()
+    expect(within(row).getByText('false')).toBeInTheDocument()
+  })
+})

@@ -157,6 +157,16 @@ const AUDIT = {
       subject_ref: '61200341 - 000', company_name: 'iTutors Limited',
       case_id: 'e4', created_by: 'JAC', user_display_name: 'JAC',
       new_value: 'Get Started HK Limited (company_secretary)' },
+    // The row that took the whole screen down: an OBJECT in after_state.new.
+    { id: 'a8', created_at: '2026-09-04T06:32:03Z', source: 'g_flowdesk',
+      action_type: 'CASE_FIELD_UPDATED', event_code: 'COC',
+      action_label: 'Change Entity Statutory Information',
+      module: 'body_corporate', subject_kind: 'company', subject_id: 'e5',
+      subject_ref: '98578122', company_name: 'ABC Testing Limited',
+      case_id: 'e5', user_display_name: 'Levi Z.',
+      after_state: { field: 'share_class', new: {
+        currency: 'HKD', class_name: 'Ordinary', total_paid: '10000',
+        total_issued: '10000', issued_amount: '10000' } } },
     // Viewpoint recorded a key that matches no record we imported. Muted and
     // unlinked, with no module invented for it.
     { id: 'a7', created_at: '2026-06-18T12:07:00Z', source: 'viewpoint_import',

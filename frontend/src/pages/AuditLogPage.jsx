@@ -99,7 +99,43 @@ function actionOf(e) {
 }
 
 /**
- * What changed, as a list of {label, old, new}.
+ * Anything the audit trail hands us, as text React can actually render.
+ *
+ * THE WHOLE SCREEN WENT DOWN WITHOUT THIS. `before_state`/`after_state` are
+ * free-form JSONB written by ~50 call sites over two years, and one of them
+ * (`POST /companies/{id}/share-classes`) put a whole object in `new`. React
+ * refuses to render an object as a child — error #31 — and because it throws
+ * during render it takes the entire Audit Log with it, not just that row. One
+ * row on page 1 was enough.
+ *
+ * So this is a boundary, not a patch for one caller. The trail's job is to
+ * display whatever history contains, including rows written before anyone
+ * thought about how they would look, and no future payload may be able to
+ * blank the page. The backend now writes that particular row per-field like
+ * every other edit; this stays regardless.
+ *
+ * An object renders as `key: value; key: value` — the same shape the backend
+ * uses when it flattens a map into `new_value`, so the two read alike.
+ */
+function asText(value) {
+  if (value == null) return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    return value.map(asText).filter(v => v != null && v !== '').join(', ') || null
+  }
+  if (typeof value === 'object') {
+    const parts = Object.entries(value)
+      .map(([k, v]) => [k, asText(v)])
+      .filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`)
+    return parts.length ? parts.join('; ') : null
+  }
+  return String(value)
+}
+
+/**
+ * What changed, as a list of {label, old, new} — every value already text.
  *
  * Viewpoint-imported rows carry `changed_fields`, decoded out of the EventString
  * by the ETL (migration 014). Native rows record a single field edit in
@@ -107,6 +143,14 @@ function actionOf(e) {
  * render identically — which is the whole point of the shared audit model.
  */
 function changesOf(e) {
+  return rawChangesOf(e).map(c => ({
+    label: asText(c.label),
+    old: asText(c.old),
+    new: asText(c.new),
+  }))
+}
+
+function rawChangesOf(e) {
   if (e.changed_fields?.length) return e.changed_fields
 
   if (e.after_state?.field) {
@@ -119,8 +163,8 @@ function changesOf(e) {
   if (e.action_type === 'COMPANY_FLAG_CHANGED' && e.after_state) {
     return Object.keys(e.after_state).map(f => ({
       label: f.replace(/_/g, ' '),
-      old: String(e.before_state?.[f]),
-      new: String(e.after_state[f]),
+      old: e.before_state?.[f],
+      new: e.after_state[f],
     }))
   }
   if (e.old_value || e.new_value) {
