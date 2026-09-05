@@ -48,9 +48,14 @@ const ACTION_STATUSES = ['data_verification', 'client_verification', 'client_rej
                          'signing', 'submission']
 const PENDING_STATUSES = ['awaiting_client']
 
+// LAST, after `completed`, and in neither stat tile. A closed case belongs to
+// nobody's queue: "Action Required" is work waiting on GSHK and "Pending" is
+// work waiting on a client, and a case the client stopped is neither. It stays
+// in the listing and stays filterable — closing ends the work, not the record —
+// so the badge column is how you include or exclude it.
 const WORKFLOW_ORDER = [
   'data_verification', 'awaiting_client', 'client_verification',
-  'client_rejected', 'signing', 'submission', 'completed',
+  'client_rejected', 'signing', 'submission', 'completed', 'closed',
 ]
 
 const ANNIV_HINT =

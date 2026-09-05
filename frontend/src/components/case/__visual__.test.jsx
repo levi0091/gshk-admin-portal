@@ -19,6 +19,7 @@ import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
 import RefusalDetail from './RefusalDetail.jsx'
 import { describeError } from './workflow.js'
+import { ClosedPanel } from '../../pages/CaseWorkflowPage.jsx'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
 const blob = vi.fn(); const upload = vi.fn()
@@ -175,6 +176,23 @@ describe.runIf(SHOOT)('visual harness', () => {
       <StageConfirmation caseRow={{ ...CASE, form_status: { code: 'registered', label: 'Registered' } }}
                          canRead onError={noop} />,
       () => waitFor(() => screen.getByText(/filed & confirmed by CR/)))
+  })
+
+  it('6 · Closed — what replaces all five stages', async () => {
+    // Not a sixth stage: this is what the screen becomes instead of the stepper
+    // and the panels above. Shot with a long reason on purpose — it is free
+    // text somebody typed, `.closed-why` keeps their line breaks, and a
+    // paragraph that escapes its box is the failure a picture catches and an
+    // assertion does not.
+    await dump('6-closed',
+      <ClosedPanel caseRow={{
+        ...CASE,
+        closed_at: '2026-09-05T02:00:00Z',
+        closed_by_name: 'Levi Z.',
+        closed_reason: 'Client is dissolving the company and has instructed us '
+          + 'not to file the 2026 annual return.\n\nConfirmed by email from the '
+          + 'director on 4 September; nothing has been sent to CR.',
+      }} />)
   })
 
   // The refusal banner, drawn exactly as CaseWorkflowPage draws it. Reading

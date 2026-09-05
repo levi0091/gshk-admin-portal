@@ -11,7 +11,9 @@ pure function of those two records, so the badge cannot drift out of step with
 the facts underneath it, and there is no third place for them to disagree.
 
 The seven codes are exactly the seven badges wireframe_v11 renders (bw-data,
-bw-verify, bw-awaiting, bw-rejected, bw-sign, bw-submit, bw-done).
+bw-verify, bw-awaiting, bw-rejected, bw-sign, bw-submit, bw-done). CLOSED is an
+eighth, added after v11: a case the client abandoned finishes somewhere, and
+"Completed" is the one thing it must never be called.
 """
 from services.tpsi.filings import (
     STAGE_EDRIVE,
@@ -31,9 +33,18 @@ SIGNING = "signing"
 SUBMISSION = "submission"
 COMPLETED = "completed"
 
+#: The client no longer wants the return filed. TERMINAL AND PERMANENT: there is
+#: no route back out of it, by design (Levi 2026-09-05).
+#:
+#: A separate code rather than a flag on top of the badge the case happened to
+#: be wearing. "Awaiting Client" on an abandoned case is a queue entry somebody
+#: chases; "Completed" is a claim that a statutory return was filed. Neither is
+#: true, and the dashboard has to be able to filter these out of the work.
+CLOSED = "closed"
+
 WORKFLOW_STATUSES = (
     DATA_VERIFICATION, CLIENT_VERIFICATION, AWAITING_CLIENT, CLIENT_REJECTED,
-    SIGNING, SUBMISSION, COMPLETED,
+    SIGNING, SUBMISSION, COMPLETED, CLOSED,
 )
 
 WORKFLOW_LABELS = {
@@ -44,6 +55,7 @@ WORKFLOW_LABELS = {
     SIGNING: "Signing",
     SUBMISSION: "Submission",
     COMPLETED: "Completed",
+    CLOSED: "Closed",
 }
 
 #: Filing stages that mean the document is finished at CR.
@@ -55,10 +67,26 @@ _FINISHED = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE)
 FILING_WINDOW_DAYS = 42
 
 
+#: The badges that mean nobody is waiting on anything. Used by the overdue
+#: overlay below, and by the dashboard, which must not put either in a queue.
+TERMINAL_STATUSES = (COMPLETED, CLOSED)
+
+
 def _code(case: dict, filing: dict | None) -> str:
     stage = (filing or {}).get("stage")
 
-    # Off-portal completion first: the manual path never calls CR, so its filing
+    # CLOSED WINS OVER EVERYTHING, including a filed return.
+    #
+    # `POST /cases/{id}/close` refuses a case CR already holds, so the portal
+    # cannot produce a row that is both — but a data repair could, and if one
+    # ever does, "closed" is the honest answer: somebody deliberately ended
+    # this case, and that decision is not something a stage lookup may
+    # overrule. Testing it last would let the filing stage speak for a case
+    # whose whole point is that it was abandoned.
+    if case.get("closed_at"):
+        return CLOSED
+
+    # Off-portal completion next: the manual path never calls CR, so its filing
     # is still sitting at 'validated' while the case is genuinely finished.
     # Testing the stage first would report a finished case as still Signing.
     if case.get("manual_receipt"):
@@ -139,10 +167,15 @@ def derive(case: dict, filing: dict | None) -> dict:
         # anniversary. It does NOT say the return was filed late -- that needs
         # a filed date, which DEV holds on 2 of 7,959 rows.
         #
-        # nar1_case_registry (024, restated by 033) carries the identical
-        # predicate; the two must not diverge.
+        # A CLOSED case is never overdue. The overlay exists to say "somebody
+        # still has to file this"; on a case that will never be filed, it is an
+        # alarm about work that was deliberately cancelled -- which is exactly
+        # the noise closing a case exists to remove.
+        #
+        # nar1_case_registry (024, restated by 033 and 039) carries the
+        # identical predicate; the two must not diverge.
         "overdue": (
-            code != COMPLETED
+            code not in TERMINAL_STATUSES
             and days is not None
             and days < -FILING_WINDOW_DAYS
         ),

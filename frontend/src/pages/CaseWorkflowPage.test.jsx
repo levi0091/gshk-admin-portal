@@ -635,3 +635,163 @@ describe('CaseWorkflowPage — the submit gate refuses', () => {
       { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
   })
 })
+
+
+// --------------------------------------------------------------------------- #
+//  Closing a case (Levi 2026-09-05) — permanent, and there is no reopen
+// --------------------------------------------------------------------------- #
+
+const CLOSED = caseAt({
+  workflow_status: { code: 'closed', label: 'Closed',
+                     off_portal: false, overdue: false },
+  form_status: { code: 'validated', label: 'Validated by CR',
+                 failed: false, faults: [] },
+  verification_sent_at: null, client_approved: null,
+  closed_at: '2026-09-05T02:00:00Z',
+  closed_by_name: 'Levi Z.',
+  closed_reason: 'client is dissolving the company',
+})
+
+describe('CaseWorkflowPage — closing a case', () => {
+  it('offers Close on a live case, to someone who may write', async () => {
+    await renderPage()
+    expect(screen.getByRole('button', { name: 'Close case' })).toBeInTheDocument()
+  })
+
+  it('does not offer Close to a read-only role', async () => {
+    auth = { hasPermission: m => m !== 'nar1', isSuperAdmin: false }
+    await renderPage()
+    expect(screen.queryByRole('button', { name: 'Close case' })).toBeNull()
+  })
+
+  it('withholds Close once CR holds the return', async () => {
+    // The backend refuses it with a 409 — closing a filed case would record a
+    // lodged statutory return as one the client abandoned. A button whose one
+    // outcome is a refusal is a broken control, not a feature.
+    routeGet(caseAt({
+      form_status: { code: 'submitted', label: 'Filed with CR',
+                     failed: false, faults: [] },
+    }))
+    // Not `renderPage()`: a filed case opens on Confirmation, which prints the
+    // case number a second time, and its `findByText` then finds two.
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText('Confirmation', { selector: '.pg-title' })
+    expect(screen.queryByRole('button', { name: 'Close case' })).toBeNull()
+  })
+
+  it('will not close until a reason AND the case number are given', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await user.click(screen.getByRole('button', { name: 'Close case' }))
+
+    const confirm = screen.getByRole('button', { name: /Close case permanently/ })
+    expect(confirm).toBeDisabled()
+
+    // A reason alone is not enough.
+    await user.type(screen.getByLabelText(/Why is this case not proceeding/),
+                    'client is dissolving the company')
+    expect(confirm).toBeDisabled()
+
+    // Nor is the wrong case number — this is the check against closing the
+    // case above the one you meant.
+    await user.type(screen.getByLabelText(/to confirm/), 'NAR-2026-0040')
+    expect(confirm).toBeDisabled()
+
+    await user.clear(screen.getByLabelText(/to confirm/))
+    await user.type(screen.getByLabelText(/to confirm/), 'NAR-2026-0041')
+    expect(confirm).toBeEnabled()
+
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('posts the trimmed reason and re-reads the case rather than assuming', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await user.click(screen.getByRole('button', { name: 'Close case' }))
+    await user.type(screen.getByLabelText(/Why is this case not proceeding/),
+                    '  client is dissolving the company  ')
+    await user.type(screen.getByLabelText(/to confirm/), 'NAR-2026-0041')
+
+    routeGet(CLOSED)
+    await user.click(screen.getByRole('button', { name: /Close case permanently/ }))
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/cases/c1/close', { reason: 'client is dissolving the company' }))
+    // The screen never claims the close happened; it asks the server again.
+    await screen.findByText(/cannot be reopened/)
+  })
+
+  it('shows a refusal inside the dialog, where the operator still is', async () => {
+    const user = userEvent.setup()
+    await renderPage()
+    await user.click(screen.getByRole('button', { name: 'Close case' }))
+    await user.type(screen.getByLabelText(/Why is this case not proceeding/), 'stop')
+    await user.type(screen.getByLabelText(/to confirm/), 'NAR-2026-0041')
+
+    post.mockRejectedValueOnce(Object.assign(
+      new Error('the Companies Registry already holds this return'),
+      { status: 409, reason: 'case_filed' }))
+    await user.click(screen.getByRole('button', { name: /Close case permanently/ }))
+
+    // In the dialog, not behind it: a banner on the page under the overlay is
+    // experienced as "I pressed it and nothing happened".
+    const dialog = screen.getByRole('alertdialog', { name: 'Close case' })
+    await within(dialog).findByText(/already holds this return/)
+    // And it can be tried again — the dialog is not left in its busy state.
+    expect(screen.getByRole('button', { name: /Close case permanently/ })).toBeEnabled()
+  })
+})
+
+describe('CaseWorkflowPage — a case that is already closed', () => {
+  beforeEach(() => routeGet(CLOSED))
+
+  it('says so, names who closed it and quotes their reason', async () => {
+    await renderPage()
+    expect(screen.getByText(/cannot be reopened/)).toBeInTheDocument()
+    expect(screen.getByText(/Levi Z\./)).toBeInTheDocument()
+    expect(screen.getByText('client is dissolving the company')).toBeInTheDocument()
+  })
+
+  it('titles itself "Closed" rather than rendering a blank heading', async () => {
+    // `reachedStage` answers 0 for a closed case, `step` follows it, and
+    // `STAGE_LABELS[-1]` is undefined — which rendered the page title AND the
+    // last breadcrumb crumb as nothing at all.
+    await renderPage()
+    expect(screen.getByText('Closed', { selector: '.pg-title' })).toBeInTheDocument()
+    const crumb = document.querySelector('.crumb')
+    expect(within(crumb).getByText('Closed')).toBeInTheDocument()
+    expect(document.querySelector('.pg-title').textContent).not.toBe('')
+  })
+
+  it('replaces the stepper and every stage panel', async () => {
+    // Not greyed-out controls: a closed case has no stage to be in and every
+    // panel below writes. Five disabled buttons where the honest answer is one
+    // sentence is worse than the sentence.
+    await renderPage()
+    expect(document.querySelector('.stepper')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Validate/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Send/i })).toBeNull()
+  })
+
+  it('offers neither Close nor Restart', async () => {
+    await renderPage()
+    expect(screen.queryByRole('button', { name: 'Close case' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Restart/ })).toBeNull()
+  })
+
+  it('still shows the badges and the way back to the record', async () => {
+    // Closing ends the WORK, not the record.
+    await renderPage()
+    const strip = document.querySelector('.live-strip')
+    expect(within(strip).getByText('Closed')).toBeInTheDocument()
+    expect(within(strip).getByText('Validated by CR')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Company profile' })).toBeInTheDocument()
+  })
+
+  it('renders a reason containing markup as text, not as markup', async () => {
+    routeGet(caseAt({ ...CLOSED, closed_reason: '<img src=x onerror=alert(1)>' }))
+    await renderPage()
+    expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
+    expect(document.querySelector('.closed-why img')).toBeNull()
+  })
+})

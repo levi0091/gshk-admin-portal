@@ -142,6 +142,31 @@ def supersede(filing_id: str) -> bool:
     return bool(rows)
 
 
+def supersede_all_for_case(nar1_case_id: str) -> int:
+    """Retire EVERY un-filed attempt on one case. Returns how many moved.
+
+    `supersede()` takes one filing id, and every existing caller feeds it
+    `current_filing()` — the NEWEST non-superseded row. That is the right answer
+    for a restart, which opens a replacement. It is the wrong answer for closing
+    a case: nothing stops a second draft existing alongside the live one (see
+    `nar1_cases.blocking_filing`, which exists because of exactly that), and
+    retiring only the newest would leave the other live on a case that has
+    ended.
+
+    Conditional on the stage inside the UPDATE, like `supersede()`: a submit
+    landing mid-flight cannot be un-filed here.
+    """
+    rows = (
+        get_supabase().table(_TABLE)
+        .update({"stage": STAGE_SUPERSEDED})
+        .eq("nar1_case_id", nar1_case_id)
+        .not_.in_("stage", list(TERMINAL_STAGES))
+        .execute()
+        .data
+    )
+    return len(rows or [])
+
+
 #: Stages whose XML may still be rebuilt from the live company record.
 #:
 #: Deliberately excludes STAGE_VALIDATED and everything after it. From
@@ -343,6 +368,17 @@ class ManualCompletionInterlock(SubmitGateError):
     """
 
 
+class CaseClosedInterlock(SubmitGateError):
+    """The case behind this filing was permanently closed.
+
+    A SubmitGateError for the same reason ManualCompletionInterlock is: it makes
+    `submit_filing` refuse, audit (TPSI_SUBMISSION_FAILED) and 409 exactly like
+    every other guard on the chargeable call, with no new branch. `sign` and
+    `upload_edrive` raise it too and their routes handle it explicitly, so the
+    refusal surfaces before CR is contacted rather than at the charge.
+    """
+
+
 class DriftDetected(SubmitGateError):
     """The stored return no longer matches the company record (spec §6).
 
@@ -433,38 +469,69 @@ def _refuse_if_drifted(filing: dict) -> None:
         raise DriftDetected(differences)
 
 
-def manual_completion(filing: dict) -> dict | None:
-    """The off-portal completion recorded against this filing's case, or None.
+def case_of(filing: dict) -> dict:
+    """The nar1_cases row behind this filing, or {}.
 
-    A filing with no `nar1_case_id` (NNC1, or a bare TPSI filing) has no case to
-    have been completed, so there is nothing to check.
+    ONE query, read by BOTH interlocks below. It replaced a narrower
+    `manual_completion()` when case closure arrived: two functions each doing
+    their own SELECT is two round trips on every signature and every submit, and
+    — the reason that matters — a second un-patched database reader is exactly
+    how a test goes green locally and red in CI, having quietly talked to DEV.
+
+    A filing with no `nar1_case_id` (NNC1, or a bare TPSI filing) has no case at
+    all, so there is nothing to read and nothing to refuse.
     """
     case_id = filing.get("nar1_case_id")
     if not case_id:
-        return None
+        return {}
     rows = (
         get_supabase().table("nar1_cases")
-        .select("id,case_no,manual_receipt,manual_submitted_at")
+        .select("id,case_no,manual_receipt,manual_submitted_at,closed_at,"
+                "closed_reason")
         .eq("id", case_id)
         .limit(1)
         .execute()
         .data
     )
-    case = (rows or [None])[0] or {}
-    return case if case.get("manual_receipt") else None
+    return (rows or [None])[0] or {}
 
 
-def _refuse_if_filed_off_portal(filing: dict, action: str) -> None:
-    case = manual_completion(filing)
-    if case is None:
-        return
-    raise ManualCompletionInterlock(
-        f"case {case.get('case_no') or case.get('id')} was already filed "
-        f"off-portal (wet signature, receipt recorded "
-        f"{case.get('manual_submitted_at') or 'earlier'}) — {action} would lodge "
-        "the same annual return with CR a second time and charge the deposit "
-        "account for it"
-    )
+def _refuse_if_case_finished(filing: dict, action: str) -> None:
+    """Refuse anything that would put this form in front of CR after the case
+    behind it has ended — by a paper filing, or by being closed.
+
+    CLOSURE IS CHECKED FIRST. A closed case is over whatever else is true of it,
+    and naming the closure is what tells the operator that no amount of fixing
+    the filing will help.
+
+    THE SECOND LOCK, NOT THE ONLY ONE. `POST /cases/{id}/close` supersedes every
+    live filing on the way out, so this normally never fires — the stage gates
+    refuse first. It exists because that cleanup is best-effort and is allowed
+    to fail (the case is closed the instant its UPDATE lands, and a 500 there
+    would report a failed close over a case that is genuinely shut). A signed
+    filing left live on a closed case is one chargeable, irreversible call from
+    lodging a return the client cancelled, which is not a state to leave
+    guarded by a button.
+    """
+    case = case_of(filing)
+
+    if case.get("closed_at"):
+        raise CaseClosedInterlock(
+            f"case {case.get('case_no') or case.get('id')} was closed and is "
+            f"not proceeding — {action} would lodge an annual return the "
+            "client cancelled, and charge the deposit account for it. Closing "
+            "cannot be undone; open a new case if the return is going ahead "
+            "after all."
+        )
+
+    if case.get("manual_receipt"):
+        raise ManualCompletionInterlock(
+            f"case {case.get('case_no') or case.get('id')} was already filed "
+            f"off-portal (wet signature, receipt recorded "
+            f"{case.get('manual_submitted_at') or 'earlier'}) — {action} would "
+            "lodge the same annual return with CR a second time and charge the "
+            "deposit account for it"
+        )
 
 
 class SignatoryMismatch(Exception):
@@ -518,7 +585,7 @@ def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str)
     # First, and before the stage check: a signature on a case already filed on
     # paper is the step that arms the chargeable one. Naming the real obstacle
     # here beats letting it surface a step later, at the charge.
-    _refuse_if_filed_off_portal(filing, "signing this filing")
+    _refuse_if_case_finished(filing, "signing this filing")
     if filing["stage"] != STAGE_VALIDATED:
         raise ValueError("filing must be validated before it can be signed")
 
@@ -577,7 +644,7 @@ def upload_edrive(client, filing_id: str) -> dict:
     # e-Drive is a lodgement channel, not a preview: STAGE_EDRIVE is one of
     # nar1_cases.CR_FILED_STAGES precisely because CR holds the return after it.
     # Blocking only sign/submit would leave this door open from 'validated'.
-    _refuse_if_filed_off_portal(filing, "sending it to CR e-Drive")
+    _refuse_if_case_finished(filing, "sending it to CR e-Drive")
     if filing["stage"] not in (STAGE_VALIDATED, STAGE_SIGNED):
         raise ValueError("filing must be validated before it can go to e-Drive")
 
@@ -777,7 +844,7 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
     # BEFORE any CR traffic at all, including the free balance read: this is the
     # chargeable, irreversible one, and a case already filed on paper must never
     # get as far as a request that could spend.
-    _refuse_if_filed_off_portal(filing, "submitting it to CR")
+    _refuse_if_case_finished(filing, "submitting it to CR")
     # Spec §6. Also before any CR traffic, including the free balance read: the
     # client approved the document as it stood, and a return whose particulars
     # have moved since is not the one they approved.

@@ -13,9 +13,10 @@ import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
 import {
-  STAGE_LABELS, reachedStage, isValidated, isSubmitted, describeError,
+  STAGE_LABELS, reachedStage, isValidated, isSubmitted, isClosed, describeError,
   persistedFailure,
 } from '../components/case/workflow.js'
+import CloseCaseModal from '../components/case/CloseCaseModal.jsx'
 import { scrollToTop } from '../lib/scroll.js'
 import { caseWorkflowCaps } from '../lib/screenCapabilities.js'
 
@@ -49,6 +50,7 @@ export default function CaseWorkflowPage() {
   // enumerated across every combination by the permission matrix test.
   const caps = caseWorkflowCaps(can)
   const canWrite = caps.editCase
+  const canClose = caps.closeCase
   const canValidate = caps.validate
   const canSubmit = caps.submit
   const canReadTpsi = can('tpsi', 'read')
@@ -59,6 +61,7 @@ export default function CaseWorkflowPage() {
   const [notice, setNotice] = useState(null)
   const [step, setStep] = useState(null)
   const [confirmRestart, setConfirmRestart] = useState(false)
+  const [confirmClose, setConfirmClose] = useState(false)
 
   // WHY THIS EXISTS. The failure banner sits above the stage content, and the
   // buttons that produce a failure — Validate, Send, Apply signature, Submit —
@@ -165,6 +168,11 @@ export default function CaseWorkflowPage() {
   const c = caseRow
   const { text: annivText, due } = labelForDays(c.days_to_anniversary)
   const current = step ?? 1
+  // `reachedStage` answers 0 for a closed case — no stage is reachable — and
+  // `step` follows it, so `STAGE_LABELS[current - 1]` is `STAGE_LABELS[-1]`:
+  // undefined, rendering the page title and the last breadcrumb crumb BLANK.
+  // The screen has a name of its own here, and it is the one the badge uses.
+  const heading = isClosed(c) ? 'Closed' : STAGE_LABELS[current - 1]
 
   // `onGo` is the stage's own "Continue to X →" button (v11 gives every panel
   // one). Separate from `onChanged`, which advances only when an action
@@ -223,12 +231,12 @@ export default function CaseWorkflowPage() {
         <span className="crumb-sep">›</span>
         <span>{c.case_type || 'NAR1'} · Annual Return{c.ar_period_year ? ` ${c.ar_period_year}` : ''}</span>
         <span className="crumb-sep">›</span>
-        <span className="crumb-here">{STAGE_LABELS[current - 1]}</span>
+        <span className="crumb-here">{heading}</span>
       </div>
 
       <div className="pg-hdr">
         <div>
-          <div className="pg-title">{STAGE_LABELS[current - 1]}</div>
+          <div className="pg-title">{heading}</div>
           <div className="pg-sub">
             Case {c.case_no || '—'} · Annual Return ({c.case_type || 'NAR1'})
             {c.company_name ? ` · ${c.company_name}` : ''}
@@ -262,10 +270,27 @@ export default function CaseWorkflowPage() {
               "Filed with CR", where its confirmation dialog promises to
               discard a snapshot and clear an approval that the filing in the
               register was built on. */}
-          {canWrite && isValidated(c) && !isSubmitted(c) && (
+          {/* And GONE once the case is closed, for the same reason it is gone
+              once the return is filed: the backend refuses it with a 409, and
+              its confirmation promises to send the case "back to Data
+              Verification" — a stage a closed case can never re-enter. */}
+          {canWrite && !isClosed(c) && isValidated(c) && !isSubmitted(c) && (
             <button className="btn btn-outline" disabled={restarting}
                     onClick={() => setConfirmRestart(true)}>
               {restarting ? 'Restarting…' : 'Restart verification'}
+            </button>
+          )}
+          {/* CLOSE, and it is the last thing on the bar for a reason: it ends
+              the case and there is no undo. Withheld once CR holds the return
+              — the backend refuses that with a 409, and a button whose one
+              outcome is a refusal is a broken control, exactly as Restart's
+              own `isSubmitted` guard reasons. Withheld on an already-closed
+              case too, though that branch renders the closed panel and never
+              reaches this bar. */}
+          {canClose && !isClosed(c) && !isSubmitted(c) && (
+            <button className="btn btn-outline btn-danger-outline"
+                    onClick={() => setConfirmClose(true)}>
+              Close case
             </button>
           )}
           {/* NO Save button, though v11 draws one beside Restart. Every stage
@@ -343,7 +368,8 @@ export default function CaseWorkflowPage() {
                     restarted. Those are the same conditions the header button
                     applies; disagreeing with it would put a button here that
                     fails when pressed. */}
-                {banner.offerRestart && canWrite && isValidated(c) && !isSubmitted(c) && (
+                {banner.offerRestart && canWrite && !isClosed(c)
+                  && isValidated(c) && !isSubmitted(c) && (
                   <button className="btn btn-outline btn-sm" disabled={restarting}
                           onClick={() => setConfirmRestart(true)}>
                     {restarting ? 'Restarting…' : 'Restart verification'}
@@ -377,31 +403,44 @@ export default function CaseWorkflowPage() {
         </div>
       )}
 
-      <CaseStepper
-        caseRow={c}
-        step={current}
-        // Moving somewhere clears the "that stage is locked" note. Leaving it up
-        // would have it explaining a refusal the operator has already moved past.
-        onGo={n => { setStep(n); setNotice(null) }}
-        // A locked stage is guidance, not a failure — it informs, and it does
-        // not scroll the page out from under a click on the stepper.
-        onLocked={inform}
-      />
+      {/* THE WHOLE SCREEN, in place of the stepper and the five stages.
+          A closed case has no stage to be in and nothing left to do in it, and
+          every panel below writes: rendering them greyed would be five
+          disabled controls where the honest answer is one sentence. What stays
+          is the header, both badges, and the record of what happened — closing
+          ends the WORK, not the record, and the company profile and the audit
+          trail are both one click away in the bar above. */}
+      {isClosed(c) ? (
+        <ClosedPanel caseRow={c} />
+      ) : (
+        <>
+        <CaseStepper
+          caseRow={c}
+          step={current}
+          // Moving somewhere clears the "that stage is locked" note. Leaving it up
+          // would have it explaining a refusal the operator has already moved past.
+          onGo={n => { setStep(n); setNotice(null) }}
+          // A locked stage is guidance, not a failure — it informs, and it does
+          // not scroll the page out from under a click on the stepper.
+          onLocked={inform}
+        />
 
-      {current === 1 && (
-        <StageDataVerification {...stageProps} canWrite={canWrite} canValidate={canValidate} />
-      )}
-      {current === 2 && (
-        <StageClientVerification {...stageProps} canWrite={canWrite} />
-      )}
-      {current === 3 && (
-        <StageSigning {...stageProps} canWrite={canWrite && canValidate} />
-      )}
-      {current === 4 && (
-        <StageSubmission {...stageProps} canSubmit={canSubmit} />
-      )}
-      {current === 5 && (
-        <StageConfirmation caseRow={c} canRead={canReadTpsi} onError={setFailure} />
+        {current === 1 && (
+          <StageDataVerification {...stageProps} canWrite={canWrite} canValidate={canValidate} />
+        )}
+        {current === 2 && (
+          <StageClientVerification {...stageProps} canWrite={canWrite} />
+        )}
+        {current === 3 && (
+          <StageSigning {...stageProps} canWrite={canWrite && canValidate} />
+        )}
+        {current === 4 && (
+          <StageSubmission {...stageProps} canSubmit={canSubmit} />
+        )}
+        {current === 5 && (
+          <StageConfirmation caseRow={c} canRead={canReadTpsi} onError={setFailure} />
+        )}
+        </>
       )}
 
       {/* No audit trail here (Levi 2026-08-26). Every action on this case is
@@ -443,6 +482,62 @@ export default function CaseWorkflowPage() {
           </div>
         </div>
       )}
+
+      {/* Its own component, not another `modal-confirm` card: closing asks for
+          a REASON and for the case number to be typed back, and neither fits a
+          340px confirmation tile. See CloseCaseModal for why it asks for both. */}
+      {confirmClose && (
+        <CloseCaseModal
+          caseRow={c}
+          onClose={() => setConfirmClose(false)}
+          onClosed={async () => {
+            setConfirmClose(false)
+            setFailure(null)
+            setNotice(null)
+            await load()
+          }}
+        />
+      )}
     </>
+  )
+}
+
+
+/**
+ * What is left of a case that ended: who closed it, when, and why.
+ *
+ * The reason is quoted rather than paraphrased — it is somebody's own words and
+ * the only record of why this case stopped. `white-space: pre-wrap` on
+ * `.closed-why` keeps their line breaks; React escapes the text, so a reason
+ * containing markup is shown, not run.
+ */
+export function ClosedPanel({ caseRow: c }) {
+  // "Closed 5 Sept 2026, 10:00 by Levi Z." — and NOT "Levi Z..". Display names
+  // ending in a full stop are ordinary (initials), and appending the sentence's
+  // own one unconditionally doubles it.
+  const lead = `Closed ${formatDateTime(c.closed_at)}`
+    + (c.closed_by_name ? ` by ${c.closed_by_name}` : '')
+  const opener = lead.endsWith('.') ? lead : `${lead}.`
+
+  return (
+    <div className="closed-panel" role="status">
+      <div className="closed-hd">
+        <span aria-hidden="true">■</span>
+        This case was closed and cannot be reopened
+      </div>
+      <div className="closed-sub">
+        {opener}{' '}
+        Nothing further was filed with the Companies Registry for this return.
+        If it is going ahead after all, open a new case from the company
+        profile.
+      </div>
+
+      {c.closed_reason && (
+        <div className="closed-why">
+          <div className="closed-why-l">Reason given</div>
+          {c.closed_reason}
+        </div>
+      )}
+    </div>
   )
 }

@@ -101,6 +101,15 @@ NAR1_MANUAL_SIGN_UPLOADED = "NAR1_MANUAL_SIGN_UPLOADED"
 NAR1_MANUAL_SUBMISSION_RECORDED = "NAR1_MANUAL_SUBMISSION_RECORDED"
 NAR1_MANUAL_RECEIPT_ENTERED = "NAR1_MANUAL_RECEIPT_ENTERED"
 
+# ---- Closing a case (Levi 2026-09-05) --------------------------------------
+#   Seeded in audit_event_types by migration 039. Its own code rather than a
+#   CASE_STATUS_CHANGED with "closed" in the value: closing is irreversible and
+#   ends the case, and it must be findable in the trail by filtering on the
+#   event rather than by reading the new value of every status change ever
+#   written. It is also the ONLY record of WHY -- nothing else on the case says
+#   the client walked away.
+NAR1_CASE_CLOSED = "NAR1_CASE_CLOSED"
+
 # Company field -> the Viewpoint folder that owns it.
 _COMPANY_FIELD_CODES = {
     # Master file (names)

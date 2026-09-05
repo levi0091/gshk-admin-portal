@@ -609,6 +609,21 @@ async def prepare_filing(
     except Exception as exc:
         raise _handle(exc)
 
+    # The one door `filings._refuse_if_case_finished` cannot cover: it guards a
+    # filing that already exists, and this route makes a new one. Closing a case
+    # supersedes every live filing, so without this a closed case could be given
+    # a fresh draft and walked back up the whole chain.
+    if case.get("closed_at"):
+        raise HTTPException(409, {
+            "message": (
+                f"case {case.get('case_no') or case.get('id')} was closed and "
+                "is not proceeding, so no filing may be opened against it. "
+                "Closing cannot be undone; open a new case if the return is "
+                "going ahead after all."
+            ),
+            "reason": "case_closed",
+        })
+
     if case.get("manual_receipt"):
         raise HTTPException(
             409,
@@ -996,6 +1011,12 @@ async def sign_filing(
         # 409, like the off-portal interlock below: the request is well formed,
         # the filing is simply not one this user may sign.
         raise HTTPException(409, str(exc))
+    except filings.CaseClosedInterlock as exc:
+        # Its own branch above the off-portal one: both are 409, and both would
+        # be caught by a bare `SubmitGateError`, but the two say different
+        # things and the operator's next move differs. Never a 400 — nothing
+        # about the request is malformed; the case simply ended.
+        raise HTTPException(409, {"message": str(exc), "reason": "case_closed"})
     except filings.ManualCompletionInterlock as exc:
         # 409, not 400: nothing about the request is malformed — the case was
         # filed off-portal and this filing must not go any further towards the
@@ -1023,6 +1044,12 @@ async def edrive_filing(
 ):
     try:
         result = filings.upload_edrive(client_for(user), filing_id)
+    except filings.CaseClosedInterlock as exc:
+        # Its own branch above the off-portal one: both are 409, and both would
+        # be caught by a bare `SubmitGateError`, but the two say different
+        # things and the operator's next move differs. Never a 400 — nothing
+        # about the request is malformed; the case simply ended.
+        raise HTTPException(409, {"message": str(exc), "reason": "case_closed"})
     except filings.ManualCompletionInterlock as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:

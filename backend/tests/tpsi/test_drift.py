@@ -262,7 +262,7 @@ def test_submit_refuses_when_the_company_record_has_moved():
     )
     client = MagicMock()
     with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
-         patch("services.tpsi.filings.manual_completion", return_value=None), \
+         patch("services.tpsi.filings.case_of", return_value={}), \
          patch("services.tpsi.drift.current_xml_for", return_value=xml_for(moved)):
         with pytest.raises(filings.DriftDetected) as exc:
             filings.submit(client, "f1", True, "N00061980009")
@@ -277,7 +277,7 @@ def test_submit_refuses_when_the_company_record_has_moved():
 def test_submit_proceeds_when_nothing_has_moved():
     client = MagicMock()
     with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
-         patch("services.tpsi.filings.manual_completion", return_value=None), \
+         patch("services.tpsi.filings.case_of", return_value={}), \
          patch("services.tpsi.drift.current_xml_for", return_value=xml_for(BASE)), \
          patch("services.tpsi.filings.fee_quote_for") as quote, \
          patch("services.tpsi.reads.check_balance", return_value=0):
@@ -298,7 +298,7 @@ def test_a_gate_that_cannot_run_refuses_rather_than_waving_the_filing_through():
     not sent to restart verification for a problem restarting cannot fix."""
     client = MagicMock()
     with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
-         patch("services.tpsi.filings.manual_completion", return_value=None), \
+         patch("services.tpsi.filings.case_of", return_value={}), \
          patch("services.tpsi.drift.current_xml_for",
                side_effect=drift.DriftError("supabase is down")):
         with pytest.raises(filings.SubmitGateError) as exc:
@@ -324,7 +324,7 @@ def test_an_unfilable_company_is_refused_with_its_faults_as_a_list():
               "country 'HK-CH' — correct the address",
               "entity: no BR number — CR rejects a NAR1 without one"]
     with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
-         patch("services.tpsi.filings.manual_completion", return_value=None), \
+         patch("services.tpsi.filings.case_of", return_value={}), \
          patch("services.tpsi.drift.current_xml_for",
                side_effect=drift.DriftError("the company record has changed "
                                             "and can no longer be made into a "
@@ -346,12 +346,51 @@ def test_the_drift_gate_runs_before_the_off_portal_interlock_is_satisfied():
     the company for a filing that can never be sent."""
     client = MagicMock()
     with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
-         patch("services.tpsi.filings.manual_completion",
-               return_value={"id": "c1", "case_no": "NAR-1"}), \
+         patch("services.tpsi.filings.case_of",
+               return_value={"id": "c1", "case_no": "NAR-1",
+                             "manual_receipt": {"caseNo": "180256934"},
+                             "manual_submitted_at": "2026-08-18T02:00:00+00:00"}), \
          patch("services.tpsi.drift.current_xml_for") as rebuild:
         with pytest.raises(filings.ManualCompletionInterlock):
             filings.submit(client, "f1", True, "N00061980009")
     rebuild.assert_not_called()
+
+
+def test_a_closed_case_is_refused_before_the_drift_gate_reloads_the_company():
+    """Same ordering rule, the other interlock. A case the client cancelled is
+    refused on its own terms, not by a comparison that would reload the whole
+    company graph for a filing that can never be sent.
+
+    THE SECOND LOCK. Closing supersedes every live filing, so `_check_gate`
+    normally refuses first — but that cleanup is best-effort by design, and a
+    signed filing left behind on a closed case is one chargeable call from
+    lodging a return the client stopped."""
+    client = MagicMock()
+    with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
+         patch("services.tpsi.filings.case_of",
+               return_value={"id": "c1", "case_no": "NAR-1",
+                             "closed_at": "2026-09-05T02:00:00+00:00",
+                             "closed_reason": "client is dissolving the company"}), \
+         patch("services.tpsi.drift.current_xml_for") as rebuild:
+        with pytest.raises(filings.CaseClosedInterlock, match="closed"):
+            filings.submit(client, "f1", True, "N00061980009")
+    rebuild.assert_not_called()
+    # Not one byte to CR, the free balance read included.
+    client.post_form.assert_not_called()
+
+
+def test_closure_is_reported_ahead_of_an_off_portal_filing():
+    """A case that is both must name the closure. It is the fact that decides
+    what the operator does next: no amount of correcting the filing reopens a
+    closed case."""
+    client = MagicMock()
+    with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
+         patch("services.tpsi.filings.case_of",
+               return_value={"id": "c1", "case_no": "NAR-1",
+                             "closed_at": "2026-09-05T02:00:00+00:00",
+                             "manual_receipt": {"caseNo": "1"}}):
+        with pytest.raises(filings.CaseClosedInterlock):
+            filings.submit(client, "f1", True, "N00061980009")
 
 
 def test_a_non_nar1_filing_is_not_drift_checked():
@@ -361,7 +400,7 @@ def test_a_non_nar1_filing_is_not_drift_checked():
     which is where everything stood before this gate existed."""
     client = MagicMock()
     with patch("services.tpsi.filings.get_filing",
-               return_value=_filing(form_code="Nnc1")),          patch("services.tpsi.filings.manual_completion", return_value=None),          patch("services.tpsi.drift.current_xml_for") as rebuild,          patch("services.tpsi.filings.fee_quote_for") as quote,          patch("services.tpsi.reads.check_balance", return_value=0):
+               return_value=_filing(form_code="Nnc1")),          patch("services.tpsi.filings.case_of", return_value={}),          patch("services.tpsi.drift.current_xml_for") as rebuild,          patch("services.tpsi.filings.fee_quote_for") as quote,          patch("services.tpsi.reads.check_balance", return_value=0):
         quote.return_value = MagicMock(amount=0, band="on time", certain=True)
         with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={}):
             filings.submit(client, "f1", True, "N00061980009")

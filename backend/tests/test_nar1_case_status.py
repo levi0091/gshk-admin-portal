@@ -123,9 +123,18 @@ def test_every_code_has_a_label():
     assert set(st.WORKFLOW_LABELS) == set(st.WORKFLOW_STATUSES)
 
 
-def test_there_are_exactly_seven_badges():
-    """wireframe_v11 defines seven. An eighth would have nowhere to render."""
-    assert len(st.WORKFLOW_STATUSES) == 7
+def test_there_are_exactly_eight_badges():
+    """wireframe_v11 defines seven; CLOSED is the eighth, added 2026-09-05.
+
+    The count is asserted rather than the membership because a NINTH added
+    without a home would have nowhere to render: every code needs a label here,
+    a class in `CaseStatusBadge.jsx`, a branch in the SQL view (migration 039)
+    and a place in the dashboard's `WORKFLOW_ORDER`. Four files, and the count
+    is the cheap tripwire that says to visit them.
+    """
+    assert len(st.WORKFLOW_STATUSES) == 8
+    assert st.CLOSED in st.WORKFLOW_STATUSES
+    assert set(st.WORKFLOW_LABELS) == set(st.WORKFLOW_STATUSES)
 
 
 # ---- badge_from_row — the dashboard's read-back of the SQL answer ---------
@@ -184,3 +193,54 @@ def test_the_module_does_no_io():
     import inspect
     src = inspect.getsource(st)
     assert "supabase" not in src.lower()
+
+
+# ---- CLOSED — terminal, and above everything else -------------------------
+#
+# `POST /cases/{id}/close` refuses a case CR already holds, so the portal cannot
+# write a row that is both closed and filed. These tests fix the ORDER anyway:
+# `_code` is also fed rows by the dashboard view and by any future repair, and
+# the branch order is the whole contract between the two implementations.
+
+def test_a_closed_case_reads_closed_whatever_stage_its_filing_is_at():
+    """The one badge that is not derived from where the work got to."""
+    for stage in (None, "draft", "validated", "signed", "validation_failed"):
+        filing = {"stage": stage} if stage else None
+        badge = st.derive({"closed_at": "2026-09-05T02:00:00Z"}, filing)
+        assert badge["code"] == st.CLOSED, stage
+        assert badge["label"] == "Closed"
+
+
+def test_closed_beats_a_filed_return_rather_than_the_other_way_round():
+    """Not reachable through the API — the close route refuses a filed case —
+    but if a repair ever writes one, somebody deliberately ended this case and a
+    stage lookup must not overrule that."""
+    closed_and_filed = {"closed_at": "2026-09-05T02:00:00Z",
+                        "manual_receipt": {"caseNo": "1"}}
+    assert st.derive(closed_and_filed, {"stage": "submitted"})["code"] == st.CLOSED
+
+
+def test_an_open_case_is_unaffected_by_the_new_branch():
+    """The guard is `closed_at`, not "the key is present"."""
+    assert st.derive({"closed_at": None}, None)["code"] == st.DATA_VERIFICATION
+    assert st.derive({}, None)["code"] == st.DATA_VERIFICATION
+
+
+def test_a_closed_case_is_never_overdue():
+    """The overlay says "somebody still has to file this". On a case that will
+    never be filed it is an alarm about work that was deliberately cancelled —
+    exactly the noise closing a case exists to remove."""
+    long_past = {"closed_at": "2026-09-05T02:00:00Z", "days_to_anniversary": -200}
+    assert st.derive(long_past, None)["overdue"] is False
+    # The same case, still open, IS overdue — so the test above is about the
+    # closure and not about the day count.
+    assert st.derive({"days_to_anniversary": -200}, None)["overdue"] is True
+
+
+def test_badge_from_row_carries_the_closed_code_through():
+    """The dashboard reads the view's answer back rather than re-deriving it;
+    an unknown code raises a KeyError on the label map, which is how a view that
+    drifted from Python is meant to fail."""
+    badge = st.badge_from_row({"workflow_status": st.CLOSED})
+    assert badge == {"code": st.CLOSED, "label": "Closed",
+                     "off_portal": False, "overdue": False}

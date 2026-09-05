@@ -98,6 +98,42 @@ def claim_manual_submission(case_id: str, patch: dict) -> dict | None:
     return rows[0] if rows else None
 
 
+#: The badge is derived, so closure is stored as EVIDENCE, not as a status:
+#: when, by whom, and why. `closed_at IS NOT NULL` is the predicate everywhere
+#: -- here, in nar1_case_status._code, in the SQL view (migration 039) and in
+#: every guard -- so there is one fact rather than a flag and a timestamp that
+#: can disagree.
+def close_case(case_id: str, *, user_id: str, reason: str) -> dict | None:
+    """Close a case permanently. Returns the updated row, or None if it was
+    ALREADY closed.
+
+    Conditional on `closed_at IS NULL` INSIDE the update, not read-then-written,
+    for the same reason `claim_manual_submission` is: two concurrent requests
+    both see an open case and both write. Last write wins on one row, so there
+    would never be two closures -- but the trail would carry two
+    NAR1_CASE_CLOSED entries for one decision, naming two people and two
+    reasons, and audit_log is insert-only so neither could be taken back. The
+    condition belongs where Postgres settles it.
+
+    None is therefore a REFUSAL, not a failure: the caller answers 409 and the
+    first close stands, reason and all.
+    """
+    rows = (
+        get_supabase().table(_TABLE)
+        .update({
+            "closed_at": _now(),
+            "closed_by": user_id,
+            "closed_reason": reason,
+            "updated_at": _now(),
+        })
+        .eq("id", case_id)
+        .is_("closed_at", None)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
 def current_filing(case_id: str) -> dict | None:
     """The filing that represents this case right now.
 
@@ -300,6 +336,7 @@ _SORTABLE = {
     # The display name, not the uuid: sorting by `created_by` would order the
     # dashboard by a value nobody can read off the screen.
     "created_by_name",
+    "closed_at",
 }
 
 #: Columns the per-column header filters may narrow on (services/table_filters).
@@ -333,6 +370,7 @@ _FILTERABLE = {
     "days_to_anniversary": tf.number(),
     "created_at": tf.timestamp(),
     "updated_at": tf.timestamp(),
+    "closed_at": tf.timestamp(),
 }
 
 #: Newest case first (Levi 2026-08-31). A case you just opened is the one you
@@ -355,7 +393,7 @@ _LIST_COLS = (
     "filing_id, filing_stage, verification_sent_at, client_response_at, "
     "client_approved, manual_receipt_present, manual_submitted_at, created_at, "
     "updated_at, days_to_anniversary, workflow_status, workflow_off_portal, "
-    "workflow_overdue"
+    "workflow_overdue, closed_at, closed_by_name, closed_reason"
 )
 
 
@@ -495,9 +533,14 @@ async def list_dashboard(
 #: later. Read the SAME view rather than re-joining `entities` here: a second
 #: join is a second definition of days_to_anniversary, and 019 pins that to
 #: Asia/Hong_Kong for a reason.
+#: `closed_by_name` is the odd one out and belongs here anyway: like
+#: `created_by_name` it is a display name the view already joins, and the case
+#: row itself holds only the uuid. A Closed banner naming a uuid is a banner
+#: nobody can read, and re-joining `users` here would be a second definition of
+#: the same lookup.
 _HEADER_COLS = (
     "company_name", "company_name_zh", "br_number", "cr_number",
-    "days_to_anniversary", "case_type",
+    "days_to_anniversary", "case_type", "closed_by_name",
 )
 
 

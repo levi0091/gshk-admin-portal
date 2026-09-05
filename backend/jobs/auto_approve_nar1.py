@@ -92,6 +92,13 @@ def skip_reason(case: dict) -> str | None:
     Returned as text rather than a boolean so the run's report says WHICH
     exclusion applied — "skipped 41" tells an operator nothing they can act on.
     """
+    # BEFORE every other exclusion, because it is the one that would be worst
+    # to get wrong: this job approves on SILENCE, and a closed case is silent
+    # by definition. Approving one would write a client approval — with
+    # `client_approval_source` saying nobody objected — onto a case the client
+    # explicitly asked to stop, and put it in an insert-only trail.
+    if case.get("closed_at"):
+        return "the case was closed"
     if case.get("client_approved") is not None:
         return "the client already answered"
     if not case.get("verification_sent_at"):

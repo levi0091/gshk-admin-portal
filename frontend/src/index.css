@@ -62,6 +62,15 @@ a { text-decoration: none; color: inherit; }
 .btn-ghost:hover { color: var(--indigo); background: var(--indigo-5); }
 .btn-danger { background: #C53030; color: #fff; border: none; }
 .btn-danger:hover { background: #A42828; }
+/* A destructive action sitting in an ordinary action bar. Outlined, not solid:
+   in the page header it is one of four buttons and a filled red would be the
+   loudest thing on a screen whose actual work is elsewhere — but it must not
+   read as identical to "Back to cases" either. The solid `.btn-danger` is kept
+   for the confirmation, where the press is the irreversible one. */
+.btn-danger-outline {
+  color: #C53030; border-color: #FCA5A5; background: #fff;
+}
+.btn-danger-outline:hover { background: #FEF5F5; border-color: #C53030; }
 .btn-lg { padding: 0 24px; height: 44px; font-size: 14px; border-radius: var(--r); }
 .btn-sm { padding: 0 10px; height: 28px; font-size: 11px; border-radius: var(--r-xs); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -88,6 +97,13 @@ a { text-decoration: none; color: inherit; }
 .f-select { text-overflow: ellipsis; }
 .f-input:focus, .f-select:focus {
   border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
+}
+/* The same field, allowed to be more than one line. `.f-input` pins height to
+   36px, which flattens a <textarea> to a single squashed row; this restores the
+   vertical padding that height was standing in for and lets `rows` decide. */
+.f-textarea {
+  height: auto; min-height: 72px; padding: 9px 11px;
+  line-height: 1.5; resize: vertical;
 }
 .f-hint { font-size: 11px; color: var(--t-muted); }
 /* A settled value shown where an input used to be — the signatory on the
@@ -211,6 +227,33 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .modal-confirm-text { font-size: 12px; color: var(--t-muted); margin-top: 6px; }
 .modal-confirm-actions {
   display: flex; justify-content: center; gap: 10px; margin-top: 18px;
+}
+
+/* The case is over. Grey, not red: closing is a decision somebody made on
+   purpose, not a fault — an alarm-coloured panel would read as one. It carries
+   the whole screen where the stepper and the five stages used to be, because
+   there is nothing left on this case to do. */
+.closed-panel {
+  border: 1px solid var(--border); border-left: 3px solid var(--t-muted);
+  border-radius: var(--r-lg); background: #F7F8FC;
+  padding: 20px 24px; margin-bottom: 16px;
+}
+.closed-hd {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 700; color: var(--t-head);
+}
+.closed-sub { font-size: 12px; color: var(--t-muted); margin-top: 4px; }
+/* The reason, quoted rather than paraphrased — it is somebody's own words and
+   the only record of why this case ended. */
+.closed-why {
+  margin-top: 14px; padding: 12px 14px; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--r);
+  font-size: 13px; color: var(--t-body); white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.closed-why-l {
+  font-size: 11px; font-weight: 600; color: var(--t-muted);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
 }
 
 /* ── PAGE CHROME ─────────────────────────────────────────── */
@@ -1052,6 +1095,10 @@ tbody tr.clickable { cursor: pointer; }
 .badge.bw-submit::before    { background: var(--carrot); }
 .badge.bw-done      { background: var(--bang-10);   color: var(--bang); }
 .badge.bw-done::before      { background: var(--bang); }
+/* Grey, and the only grey badge here. A closed case is finished but NOT done:
+   green would read as "filed", which is the one thing it must never say. */
+.badge.bw-closed    { background: #EDEEF4;          color: var(--t-muted); }
+.badge.bw-closed::before    { background: var(--t-muted); }
 
 .badge.bf-draft      { background: var(--indigo-10); color: var(--indigo); }
 .badge.bf-validated  { background: var(--bang-10);   color: var(--bang); }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   STAGE_LABELS, reachedStage, stageDone, signedOff, isValidated, isSubmitted,
-  describeError, verificationBlock, persistedFailure,
+  describeError, verificationBlock, persistedFailure, isClosed,
 } from './workflow.js'
 
 // A case at the very start: nothing validated, nothing sent, nothing signed.
@@ -439,5 +439,58 @@ describe('persistedFailure', () => {
     // A banner reading "The Companies Registry rejected this return." with an
     // empty list underneath is worse than the badge alone.
     expect(persistedFailure(failed('validation_failed', []))).toBeNull()
+  })
+})
+
+
+describe('a closed case', () => {
+  it('is read off `closed_at`, not off the badge', () => {
+    // The timestamp is the fact the backend stores and every one of its own
+    // guards reads. Matching on `workflow_status.code === "closed"` would be a
+    // second definition free to disagree with it — on a case whose badge came
+    // back as a bare string, say.
+    expect(isClosed({ closed_at: '2026-09-05T02:00:00Z' })).toBe(true)
+    expect(isClosed({ workflow_status: { code: 'closed' } })).toBe(false)
+    expect(isClosed({ closed_at: null })).toBe(false)
+    expect(isClosed({})).toBe(false)
+    expect(isClosed(null)).toBe(false)
+  })
+
+  it('has no reachable stage, however far the work had got', () => {
+    // `CaseWorkflowPage` renders the closed panel instead of the stepper, so
+    // nothing asks — but this must not answer "5" to whatever does, because
+    // every button behind stage 5 writes.
+    const done = withStage('submitted', {
+      verification_sent_at: '2026-08-01', client_approved: true,
+      manual_submitted_at: '2026-08-18',
+    })
+    expect(reachedStage(done)).toBe(5)
+    expect(reachedStage({ ...done, closed_at: '2026-09-05T02:00:00Z' })).toBe(0)
+  })
+
+  it('reports a case_closed 409 with the backend\'s own message and nothing added', () => {
+    // Every other 409 on this screen describes something that can be put right.
+    // This one cannot, and the backend's message already says what to do
+    // instead — a second sentence under it is the same refusal, said less well.
+    const described = describeError({
+      status: 409, reason: 'case_closed',
+      message: 'case NAR-2026-0041 was closed and cannot be changed',
+    })
+    expect(described.message).toBe(
+      'case NAR-2026-0041 was closed and cannot be changed')
+    expect(described.reason).toBe('case_closed')
+    expect(described.hint).toBeNull()
+    expect(described.offerRestart).toBe(false)
+    expect(described.retry).toBe(false)
+  })
+
+  it('does not mistake it for one of the three submit-gate refusals', () => {
+    // Those three all carry "Nothing was sent to the Companies Registry and
+    // nothing was charged", which is about a submit nobody attempted here.
+    const described = describeError({
+      status: 409, reason: 'case_closed', message: 'closed',
+    })
+    expect(described.reassurance).toBeUndefined()
+    expect(described.remedy).toBeUndefined()
   })
 })

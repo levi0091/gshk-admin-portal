@@ -64,7 +64,13 @@ APPROVED = [None, True, False]
 #: why they belong in the table: nothing else would ever catch the divergence.
 MANUAL = [None, '{"caseNo": "1"}', "{}", "null"]
 
-COMBINATIONS = list(itertools.product(STAGES, SENT, APPROVED, MANUAL))
+#: Migration 039. A FIFTH axis rather than a handful of extra cases, because
+#: `closed` is the FIRST branch of both implementations: it has to beat every
+#: other combination, and "beats everything" is a claim about the whole table.
+#: 240 rows become 480, still one batched insert and one read.
+CLOSED = [None, "2026-09-05T02:00:00Z"]
+
+COMBINATIONS = list(itertools.product(STAGES, SENT, APPROVED, MANUAL, CLOSED))
 
 
 def _conn():
@@ -83,6 +89,7 @@ def _expected(row: dict) -> dict:
         "client_approved": row["client_approved"],
         "manual_receipt": row["manual_receipt"],
         "days_to_anniversary": row["days_to_anniversary"],
+        "closed_at": row["closed_at"],
     }
     filing = {"stage": row["filing_stage"]} if row["filing_stage"] else None
     return st.derive(case, filing)
@@ -107,20 +114,22 @@ def registry_rows():
             )
 
             cases, filings = [], []
-            for index, (stage, sent, approved, manual) in enumerate(COMBINATIONS):
+            for index, (stage, sent, approved, manual, closed) in enumerate(
+                    COMBINATIONS):
                 case_id = str(uuid.uuid4())
                 cases.append((case_id, entity_id, f"PARITY-{index:04d}",
-                              sent, approved, manual))
+                              sent, approved, manual, closed))
                 if stage:
                     filings.append((entity_id, case_id, "Nar1", stage))
-                ids[(stage, sent, approved, manual)] = case_id
+                ids[(stage, sent, approved, manual, closed)] = case_id
 
             execute_values(
                 cur,
                 "INSERT INTO nar1_cases (id, entity_id, nar1_type, case_no, "
-                "verification_sent_at, client_approved, manual_receipt) VALUES %s",
+                "verification_sent_at, client_approved, manual_receipt, "
+                "closed_at) VALUES %s",
                 cases,
-                template="(%s, %s, 'annual_return', %s, %s, %s, %s::jsonb)",
+                template="(%s, %s, 'annual_return', %s, %s, %s, %s::jsonb, %s)",
             )
             execute_values(
                 cur,
@@ -134,7 +143,9 @@ def registry_rows():
                 f"       r.workflow_overdue, r.days_to_anniversary, r.filing_stage, "
                 f"       r.filing_id, r.manual_receipt_present, r.case_no, "
                 f"       r.company_name, r.br_number, r.case_type, r.entity_id, "
-                f"       c.verification_sent_at, c.client_approved, c.manual_receipt "
+                f"       r.closed_by_name, r.closed_reason, "
+                f"       c.verification_sent_at, c.client_approved, "
+                f"       c.manual_receipt, c.closed_at "
                 f"FROM {VIEW} r JOIN nar1_cases c ON c.id = r.id "
                 f"WHERE r.entity_id = %s",
                 (entity_id,),
@@ -190,10 +201,40 @@ def test_manual_receipt_present_mirrors_pythons_truthiness_not_null_ness(registr
     an empty receipt would show as filed on the dashboard while the case detail
     still showed it in Data Verification.
     """
-    for (stage, sent, approved, manual), row in registry_rows.items():
+    for (stage, sent, approved, manual, _closed), row in registry_rows.items():
         assert row["manual_receipt_present"] is bool(row["manual_receipt"]), (
             f"manual_receipt {manual!r} -> present={row['manual_receipt_present']}"
         )
+
+
+# --------------------------------------------------------------------------- #
+#  Closure (migration 039) — the branch that has to come first
+# --------------------------------------------------------------------------- #
+
+def test_every_closed_row_reads_closed_whatever_else_is_true_of_it(registry_rows):
+    """The parity test already compares the two implementations. This says what
+    the ANSWER is, so a change that moved the branch in BOTH at once — leaving
+    them in agreement and both wrong — still fails."""
+    for key, row in registry_rows.items():
+        closed = key[4]
+        assert (row["workflow_status"] == "closed") is bool(closed), key
+
+
+def test_a_closed_row_is_never_flagged_overdue(registry_rows):
+    """`workflow_overdue` gained 'closed' alongside 'completed' in 039. These
+    fixtures have an anniversary inside the window so nothing is overdue anyway;
+    what this pins is that the closed rows are not the exception."""
+    assert not [k for k, r in registry_rows.items()
+                if r["workflow_status"] == "closed" and r["workflow_overdue"]]
+
+
+def test_the_view_carries_the_closer_and_the_reason(registry_rows):
+    """The workflow screen names who closed a case and why. `nar1_cases` holds
+    only the uuid, so `closed_by_name` has to be joined here — a banner that
+    names a uuid is one nobody can read."""
+    row = next(iter(registry_rows.values()))
+    assert "closed_by_name" in row
+    assert "closed_reason" in row
 
 
 # --------------------------------------------------------------------------- #

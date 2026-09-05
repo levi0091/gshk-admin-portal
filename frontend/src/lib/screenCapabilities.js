@@ -94,6 +94,13 @@ export function caseWorkflowCaps(can) {
     // PATCH /cases/{id}
     editCase: can('nar1', 'write'),
     restartVerification: can('nar1', 'write'),
+    // POST /cases/{id}/close — IRREVERSIBLE, and `nar1:write` deliberately.
+    // The two writes on `tpsi:submit` are there because they spend money or
+    // commit a filing; closing does neither. Its own entry rather than reusing
+    // `editCase`: this file is what the screens read to decide what to render,
+    // and "the button that ends a case for good" is not the same control as
+    // "the button that ticks AML", however the two happen to be gated today.
+    closeCase: can('nar1', 'write'),
     // POST /cases/{id}/verification/send and /response
     sendToClient: can('nar1', 'write'),
     recordClientAnswer: can('nar1', 'write'),

@@ -137,6 +137,11 @@ async def test_a_board_of_three_produces_ONE_approval_not_three():
     ({"verification_sent_at": None}, "was ever sent"),
     ({"manual_receipt": {"caseNo": "1"}}, "off-portal"),
     ({"manual_submitted_at": "2026-08-01T00:00:00Z"}, "off-portal"),
+    # THE WORST ONE TO GET WRONG. This job approves on SILENCE, and a closed
+    # case is silent by definition — so without the exclusion it would write a
+    # client approval, sourced as "nobody objected", onto a case the client
+    # explicitly asked to stop, into an insert-only trail.
+    ({"closed_at": "2026-09-05T02:00:00Z"}, "was closed"),
 ])
 async def test_cases_that_must_not_be_auto_approved(overrides, expected):
     with _Stack(*_world(cases=[case(**overrides)])) as entered:
@@ -156,6 +161,18 @@ async def test_a_return_CR_already_holds_is_never_auto_approved():
     assert report["approved"] == 0
     assert "Companies Registry already holds" in report["skipped_detail"][0][1]
     entered[3].assert_not_called()
+
+
+def test_closure_is_the_first_exclusion_tested():
+    """A closed case that is ALSO filed off-portal must report the closure.
+
+    Not cosmetic: `skipped_detail` is what an operator reads to decide whether
+    a skip needs acting on, and "already filed off-portal" invites somebody to
+    go looking for a filing on a case that simply ended."""
+    both = case(closed_at="2026-09-05T02:00:00Z",
+                manual_receipt={"caseNo": "1"},
+                manual_submitted_at="2026-08-01T00:00:00Z")
+    assert job.skip_reason(both) == "the case was closed"
 
 
 @pytest.mark.asyncio

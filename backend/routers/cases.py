@@ -73,6 +73,35 @@ def _audit_target(case: dict) -> dict:
     return target
 
 
+def _refuse_if_closed(case: dict, action: str) -> None:
+    """A closed case accepts no writes. Ever.
+
+    Closing is permanent and there is no reopen (Levi 2026-09-05), so this is
+    not a soft state a later request may talk its way out of -- it is the whole
+    meaning of the feature. Every write route on a case calls this, because a
+    guard on the button alone protects nothing: the API is the surface, and an
+    operator with a stale tab, a queued retry or a bookmarked stage is the
+    ordinary way a write arrives at a case that ended while they were reading
+    it.
+
+    409, not 403: the caller's permissions are fine and the request is well
+    formed. The case is simply over. `reason` rides alongside the message the
+    way the submit gate's does, so the screen can recognise this refusal
+    without matching on prose.
+    """
+    if not case.get("closed_at"):
+        return
+    raise HTTPException(409, {
+        "message": (
+            f"case {case.get('case_no') or case.get('id')} was closed and "
+            f"cannot be changed - {action} would write to a case that was "
+            "permanently ended. Closing cannot be undone; open a new case if "
+            "this return is going ahead after all."
+        ),
+        "reason": "case_closed",
+    })
+
+
 class CaseIn(BaseModel):
     entity_id: str
     form_code: str = "Nar1"
@@ -237,6 +266,11 @@ async def patch_case(
     except LookupError as exc:
         raise HTTPException(404, str(exc))
 
+    # BEFORE the diffing, so a no-op PATCH on a closed case refuses too. A
+    # silent 200 that changed nothing reads as "the edit went through", and
+    # that is how someone learns a dead screen is live when it is not.
+    _refuse_if_closed(before, "editing it")
+
     patch: dict = {}
     events: list[tuple[str, str, str | None, str | None]] = []
 
@@ -394,6 +428,170 @@ async def patch_case(
 
 
 # --------------------------------------------------------------------------- #
+#  Closing a case — permanent, and the only way out that is not a filing
+#
+#  Levi 2026-09-05: "when the user no longer wants to proceed with the case
+#  he/she can trigger to close it. closing it will be a permanent action and
+#  the case will not be able to be reopened."
+#
+#  THERE IS NO REOPEN ROUTE, and that is the feature, not an omission. If one
+#  existed, "permanent" would be a label on a button rather than a property of
+#  the system, and every guard below would be advisory. A case closed by
+#  mistake is corrected by opening a NEW case, which leaves both the mistake
+#  and the correction in the trail — which is what a statutory record wants
+#  anyway.
+# --------------------------------------------------------------------------- #
+
+#: Long enough for a sentence explaining a client's decision, short enough that
+#: nobody pastes an email thread into an insert-only audit trail.
+_MAX_CLOSE_REASON = 1000
+
+
+class CaseCloseIn(BaseModel):
+    """`reason` is REQUIRED, and it is the whole reason this has a body.
+
+    Everything else about a closure can be reconstructed — when, from
+    `closed_at`; by whom, from `closed_by`. Why cannot be. Six months later the
+    case is a dead row with no filing and no client answer, and without this
+    field the only honest reading is "somebody closed it", which is exactly the
+    question being asked.
+    """
+    reason: str
+
+
+@router.post("/{case_id}/close")
+async def close_case(
+    case_id: str, body: CaseCloseIn,
+    user=Depends(require_permission("nar1", "write")),
+):
+    """End a case the client is not proceeding with. IRREVERSIBLE.
+
+    `nar1:write`, not `tpsi:submit`. The two NAR1 writes that sit on
+    `tpsi:submit` are there because they spend money or commit a filing
+    (CLAUDE.md); this does neither — it is a workflow decision about a case,
+    which is precisely what the `nar1` module gates. It is irreversible, but
+    irreversibility is not the thing `tpsi:submit` protects.
+
+    Three refusals, most specific first, so the answer names the real obstacle:
+
+    * ALREADY CLOSED -> 409, and the first closure stands with its own reason
+      and its own author. Settled inside the UPDATE (`nar1_cases.close_case`),
+      not by the read above, so two concurrent requests cannot both write.
+    * FILED -> 409. A case CR already holds is Completed. Closing it would
+      relabel a lodged statutory return as one the client abandoned, in the
+      badge, on the dashboard and in the trail — and that is a false statement
+      about the register, not merely an untidy status.
+    * NO REASON -> 400.
+
+    A SIGNED-BUT-UNSUBMITTED filing is NOT refused; it is SUPERSEDED. That is
+    the loaded gun `nar1_cases.manual_conflict` describes — `filings._check_gate`
+    passes on a signed row, so a signed filing left live on a closed case is one
+    chargeable, irreversible call from filing a return the client cancelled.
+    Retiring it is the point of closing, so refusing here would leave the
+    dangerous state in place and offer no way to clear it.
+    """
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(
+            400, "a reason is required: it is the only record of WHY this case "
+                 "was closed, and closing cannot be undone")
+    if len(reason) > _MAX_CLOSE_REASON:
+        raise HTTPException(
+            400, f"the reason must be {_MAX_CLOSE_REASON} characters or fewer")
+
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    _refuse_if_closed(case, "closing it again")
+
+    # Both roads to the register count, exactly as `restart_verification` counts
+    # them: `manual_submitted_at`/`manual_receipt` is the off-portal filing, and
+    # a CR_FILED_STAGES filing is ours. Same fact, arrived at differently.
+    filed = nar1_cases.blocking_filing(case_id)
+    if (case.get("manual_submitted_at") or case.get("manual_receipt")
+            or (filed and filed.get("stage") in nar1_cases.CR_FILED_STAGES)):
+        raise HTTPException(409, {
+            "message": (
+                "the Companies Registry already holds this return, so the case "
+                "cannot be closed as not proceeding — it is complete. Closing "
+                "it would record a filed statutory return as one the client "
+                "abandoned."
+            ),
+            "reason": "case_filed",
+        })
+
+    # ---- the write, and it is the point of no return ------------------------
+    closed = nar1_cases.close_case(case_id, user_id=user["id"], reason=reason)
+    if closed is None:
+        # Another request closed it between the read and here. Its reason and
+        # its author stand; ours is not written and not audited.
+        raise HTTPException(409, {
+            "message": "this case was closed by another request a moment ago",
+            "reason": "case_closed",
+        })
+
+    # ---- and now the things that must not outlive it ------------------------
+    #
+    # Both are best-effort and neither may undo the closure: the case IS closed
+    # the instant the UPDATE lands, every guard in this file already reads that
+    # fact, and a 500 here would report a failed close over a case that is
+    # genuinely shut. They are reported instead, so a partial cleanup is
+    # visible rather than silent.
+    outcome = {"filings_superseded": 0, "approval_links_revoked": True}
+
+    # A live filing on a closed case is the loaded gun: `filings._check_gate`
+    # PASSES on a signed row, so one left behind is a single chargeable,
+    # irreversible call from lodging a return the client cancelled.
+    #
+    # ALL of them, not `current_filing()`'s newest — nothing stops a second
+    # draft existing beside the live one (`blocking_filing` exists because of
+    # exactly that), and retiring one of two is a cleanup that reports success
+    # having left the gun loaded. The stage filter lives inside the UPDATE, so
+    # a submit landing between the guard above and this line cannot be
+    # un-filed here.
+    try:
+        outcome["filings_superseded"] = tpsi_filings.supersede_all_for_case(case_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cases] WARN: live filings could not be superseded while "
+              f"closing case {case_id}: {exc}", file=sys.stderr)
+
+    # EVERY OUTSTANDING CONFIRM LINK STOPS WORKING. A director holding the
+    # verification email could otherwise approve a return that will never be
+    # filed, and the portal would record a client consenting to a cancelled
+    # case. `public_approval` refuses a closed case as well, so this is the
+    # second of two locks, not the only one.
+    try:
+        nar1_approvals.supersede_outstanding(case_id)
+    except Exception as exc:  # noqa: BLE001
+        outcome["approval_links_revoked"] = False
+        print(f"[cases] WARN: outstanding approval links could not be "
+              f"superseded while closing case {case_id}: {exc}", file=sys.stderr)
+
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.NAR1_CASE_CLOSED, event_code=ev.NAR1_CASE_CLOSED,
+        **_audit_target(case),
+        # The badge it was wearing when it ended. Without it the trail says a
+        # case was closed and cannot say what was left undone, which is the
+        # first thing anyone reviewing an abandoned case wants.
+        old_value=nar1_case_status.derive(case, filed)["label"],
+        new_value="Closed",
+        # The reason is operator free text about a business decision — no
+        # credential, no personal particular — and it is the one fact this row
+        # exists to preserve.
+        metadata={
+            "case_no": case.get("case_no"),
+            "reason": reason,
+            "filing_stage_at_close": (filed or {}).get("stage"),
+            **outcome,
+        },
+    )
+    return {**nar1_cases.composite(case_id), **outcome}
+
+
+# --------------------------------------------------------------------------- #
 #  The manual (wet-signature, off-portal) path — BE-6
 #
 #  NOTHING below calls CR. The filing happens on paper, outside the portal, and
@@ -432,6 +630,8 @@ async def manual_sign(
         case = nar1_cases.get_case(case_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+
+    _refuse_if_closed(case, "uploading a signed form against it")
 
     if case.get("manual_receipt"):
         raise HTTPException(
@@ -555,6 +755,8 @@ async def manual_receipt(
     except LookupError as exc:
         raise HTTPException(404, str(exc))
 
+    _refuse_if_closed(case, "recording a CR receipt against it")
+
     if case.get("manual_receipt"):
         raise HTTPException(
             409,
@@ -649,6 +851,8 @@ async def manual_submit(
         case = nar1_cases.get_case(case_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+
+    _refuse_if_closed(case, "declaring it filed off-portal")
 
     if case.get("manual_receipt"):
         raise HTTPException(
@@ -871,6 +1075,11 @@ async def send_verification(
         case = nar1_cases.get_case(case_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+
+    # Before the gate, and it is a different refusal: the gate explains why a
+    # return is not ready to show a client, which on a closed case would be
+    # advice about work nobody is going to do.
+    _refuse_if_closed(case, "mailing its directors")
 
     filing = nar1_cases.current_filing(case_id)
     refusal = _verification_gate(case, filing)
@@ -1203,6 +1412,8 @@ async def record_verification_response(
         case = nar1_cases.get_case(case_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+
+    _refuse_if_closed(case, "recording a client decision on it")
 
     if not case.get("verification_sent_at"):
         raise HTTPException(

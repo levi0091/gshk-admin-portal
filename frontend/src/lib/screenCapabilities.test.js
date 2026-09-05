@@ -81,6 +81,7 @@ const CONTRACT = [
   ['caseWorkflow', caseWorkflowCaps, {
     editCase: 'nar1:write',
     restartVerification: 'nar1:write',
+    closeCase: 'nar1:write',
     sendToClient: 'nar1:write',
     recordClientAnswer: 'nar1:write',
     uploadSignedScan: 'nar1:write',

@@ -16,6 +16,7 @@
  *   node scripts/shoot-modals.mjs
  */
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, it, vi, beforeEach } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -24,6 +25,7 @@ import AddPersonModal from './AddPersonModal.jsx'
 import IdentityDocumentModal from './IdentityDocumentModal.jsx'
 import UploadDocumentModal from './UploadDocumentModal.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
+import CloseCaseModal from './case/CloseCaseModal.jsx'
 import { RemoveDocumentBody } from './DocumentSections.jsx'
 
 const get = vi.fn()
@@ -188,6 +190,26 @@ describe.runIf(SHOOT)('modal visual harness', () => {
         category="address_proof" sectionLabel="Proof of Address"
         onClose={noop} onUploaded={noop} />,
       () => waitFor(() => screen.getByRole('option', { name: 'Tenancy Agreement' })))
+  })
+
+  it('close a case — the one dialog with no undo behind it', async () => {
+    // Shot FILLED IN, via `settle`. Empty it shows a disabled button and a
+    // collapsed textarea, which is the state an operator spends two seconds in;
+    // what wants looking at is the warning against a three-line reason and a
+    // confirm field, in a `modal-sm` that has to hold both without the warning
+    // text and the labels colliding.
+    const user = userEvent.setup()
+    await dump('m7-close-case',
+      <CloseCaseModal
+        caseRow={{ id: 'c1', case_no: 'NAR-2026-0041',
+                   company_name: 'Harbour Tech Ltd.' }}
+        onClose={noop} onClosed={noop} />,
+      async () => {
+        await user.type(screen.getByLabelText(/Why is this case not proceeding/),
+                        'Client is dissolving the company and has instructed '
+                        + 'us not to file the 2026 annual return.')
+        await user.type(screen.getByLabelText(/to confirm/), 'NAR-2026-0041')
+      })
   })
 
   it('remove a document', async () => {

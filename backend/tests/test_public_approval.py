@@ -292,6 +292,31 @@ def test_an_expired_token_is_unavailable(client, method):
 
 
 @pytest.mark.parametrize("method", ["get", "post"])
+def test_a_closed_case_is_unavailable_and_says_nothing_about_why(client, method):
+    """The reader is a company director on the public internet holding a link
+    from an email, and this route authenticates nobody. That the case was
+    cancelled, by whom and for what reason is GSHK's business with their
+    client — so it is the same "no longer available" page as every other miss.
+
+    THE SECOND LOCK. Closing supersedes every outstanding token, so a link
+    normally stops working before it reaches here. That cleanup is best-effort
+    by design; a token store that would not write is a reason to shout on
+    stderr, not a reason to let a director approve a return nobody will file.
+    """
+    closed = {**CASE, "closed_at": "2026-09-05T02:00:00+00:00",
+              "closed_reason": "client is dissolving the company"}
+    with _Stack(*_world(approval=row(), case=closed)) as entered:
+        response = getattr(client, method)(PATH)
+    _unavailable(response)
+    # Not one word of it on a page anybody with the link can fetch.
+    assert "dissolving" not in response.text
+    assert "closed" not in response.text.lower()
+    # And nothing was written: `update_case` is entered[3], `claim` is [4].
+    entered[3].assert_not_called()
+    entered[4].assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
 def test_a_superseded_token_is_unavailable(client, method):
     """Verification was restarted: the document this link approves has been
     discarded and rebuilt, and consenting to it now would record approval of

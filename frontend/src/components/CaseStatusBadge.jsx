@@ -1,7 +1,7 @@
 /**
  * The two NAR1 case status vocabularies — kept apart on purpose.
  *
- * `WorkflowBadge` answers "where is this case in GSHK's process" (7 values).
+ * `WorkflowBadge` answers "where is this case in GSHK's process" (8 values).
  * `FormBadge` answers "what has the Companies Registry done with the filing"
  * (10 stages). wireframe_v11 shows them side by side on the same row, and the
  * backend derives them from two different records (D-6, the single-writer
@@ -25,10 +25,16 @@ export const WORKFLOW_LABEL = {
   signing: 'Signing',
   submission: 'Submission',
   completed: 'Completed',
+  closed: 'Closed',
 }
 
 // Carrot = act on me · Indigo = waiting on someone else · Green = done
-// · Red = refused. Same semantics as the dashboard filter tabs.
+// · Red = refused · Grey = over. Same semantics as the dashboard filter tabs.
+//
+// `closed` is deliberately the ONLY grey one, and deliberately not the green
+// `completed` wears: a return that was filed and a case the client abandoned
+// are both finished, and reading them as the same thing at a glance is the one
+// mistake this badge must not invite.
 export const WORKFLOW_CLASS = {
   data_verification: 'bw-data',
   client_verification: 'bw-verify',
@@ -37,6 +43,7 @@ export const WORKFLOW_CLASS = {
   signing: 'bw-sign',
   submission: 'bw-submit',
   completed: 'bw-done',
+  closed: 'bw-closed',
 }
 
 export const FORM_LABEL = {

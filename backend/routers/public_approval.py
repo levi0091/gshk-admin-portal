@@ -328,6 +328,19 @@ def _decided(case: dict) -> HTMLResponse | None:
     route ask this one function, so they cannot answer the same case
     differently.
     """
+    # CLOSED FIRST, and as "unavailable" rather than anything more specific.
+    # The reader is a company director on the public internet holding a link
+    # from an email, and the page must not tell them the case was cancelled,
+    # by whom, or why — that is GSHK's business with their client, and this
+    # route authenticates nobody.
+    #
+    # Closing supersedes every outstanding token, so a link normally stops
+    # working before it reaches this line. This is the second lock: a token
+    # store that would not write is a reason to shout on stderr, not a reason
+    # to let a director approve a return that will never be filed.
+    if case.get("closed_at"):
+        return _unavailable()
+
     decision = case.get("client_approved")
     if decision is True:
         approved = nar1_approvals.approved_row_for(case["id"])

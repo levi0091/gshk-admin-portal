@@ -329,6 +329,34 @@ def test_prepare_rebuilds_a_rejected_draft_instead_of_opening_a_second_filing(cl
     assert response.json()["id"] == "f9"
 
 
+def test_prepare_refuses_to_open_a_filing_on_a_CLOSED_case(client):
+    """The one door `filings._refuse_if_case_finished` cannot cover: it guards a
+    filing that already exists, and this route makes a new one.
+
+    Closing supersedes every live filing precisely so the chain refuses at each
+    stage gate. Without this, a fresh draft would put a closed case back at the
+    start of that chain with nothing in its way.
+    """
+    p = _prepare_patches(
+        case=MagicMock(return_value={"id": "c1", "entity_id": "e1",
+                                     "case_no": "NAR-2026-0041",
+                                     "manual_receipt": None,
+                                     "closed_at": "2026-09-05T02:00:00+00:00"}),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["reason"] == "case_closed"
+    assert "NAR-2026-0041" in detail["message"]
+    p["create"].assert_not_called()
+    p["rebuild"].assert_not_called()
+    # Refused before the company graph is even loaded — no work at all for a
+    # filing that can never be sent.
+    p["load"].assert_not_awaited()
+
+
 def test_prepare_leaves_a_frozen_snapshot_alone(client):
     """A validated filing is not rebuilt here. Discarding a CR-signed snapshot
     is `Restart verification`'s job, which supersedes the row and says so."""

@@ -121,6 +121,50 @@ def test_update_case_stamps_updated_at_alongside_the_patch():
     sb.table.return_value.update.return_value.eq.assert_called_with("id", "c1")
 
 
+# ---- close_case -----------------------------------------------------------
+
+
+def _close_chain():
+    """The PostgREST chain close_case() builds, with the guard recorded."""
+    sb = MagicMock()
+    chain = sb.table.return_value.update.return_value.eq.return_value.is_
+    return sb, chain
+
+
+def test_close_case_writes_when_who_and_why_together():
+    """All three, or the row cannot answer the questions anyone asks of a closed
+    case six months later."""
+    sb, chain = _close_chain()
+    chain.return_value.execute.return_value.data = [{"id": "c1"}]
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        assert nar1_cases.close_case(
+            "c1", user_id="u1", reason="client is dissolving the company"
+        ) == {"id": "c1"}
+
+    payload = sb.table.return_value.update.call_args[0][0]
+    assert payload["closed_by"] == "u1"
+    assert payload["closed_reason"] == "client is dissolving the company"
+    assert payload["closed_at"] is not None
+    assert payload["updated_at"] is not None
+
+
+def test_close_case_settles_the_race_INSIDE_the_update():
+    """Not read-then-write. Two concurrent requests both see an open case and
+    both write; last write wins on one row, so there is never a second closure —
+    but the trail would carry two NAR1_CASE_CLOSED entries for one decision,
+    naming two people and two reasons, and audit_log is insert-only so neither
+    could be taken back.
+
+    None is the refusal, and the caller answers 409 on it."""
+    sb, chain = _close_chain()
+    chain.return_value.execute.return_value.data = []
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        assert nar1_cases.close_case("c1", user_id="u2", reason="second") is None
+
+    # The guard is the UPDATE's own filter, where Postgres settles it.
+    assert chain.call_args.args == ("closed_at", None)
+
+
 # ---- current_filing ---------------------------------------------------
 
 

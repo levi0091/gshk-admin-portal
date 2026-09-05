@@ -35,6 +35,22 @@ export function signedOff(c) {
       || CR_HOLDS.has(c.form_status?.code)
 }
 
+/**
+ * Is this case permanently closed?
+ *
+ * `closed_at`, not a badge code: the timestamp is the fact the backend stores
+ * and every one of its own guards reads, and matching on
+ * `workflow_status.code === 'closed'` would be a second definition that can
+ * disagree with it — on a case whose badge came back as a bare string, say.
+ *
+ * There is no reopen, here or anywhere: closing is irreversible by design
+ * (Levi 2026-09-05), which is exactly why this is a plain read of a fact and
+ * not a state the screen can talk itself out of.
+ */
+export function isClosed(c) {
+  return Boolean(c?.closed_at)
+}
+
 export function isValidated(c) {
   return VALIDATED_STAGES.has(c.form_status?.code)
 }
@@ -52,6 +68,10 @@ export function isSubmitted(c) {
  */
 export function reachedStage(c) {
   if (!c) return 1
+  // A closed case has no reachable stage. `CaseWorkflowPage` renders the closed
+  // panel instead of the stepper, so nothing asks — but this must not answer
+  // "5" to whatever does, because every button behind stage 5 writes.
+  if (isClosed(c)) return 0
   if (!isValidated(c)) return 1
   if (!(c.verification_sent_at && c.client_approved)) return 2
   if (!signedOff(c)) return 3
@@ -253,6 +273,15 @@ export function describeError(err) {
     // sentence is not a second piece of information; it is the same refusal,
     // said less well (Levi 2026-09-03).
     case 409: {
+      // THE CASE IS OVER. Its own branch, above the gate, because every other
+      // 409 on this screen describes something that can be put right — and
+      // this one cannot. The backend's message already says what happened and
+      // what to do instead (open a new case), so a second sentence underneath
+      // it would only be the same refusal, said less well.
+      if (err?.reason === 'case_closed') {
+        return { message, problems: null, reason: 'case_closed',
+                 hint: null, offerRestart: false, retry: false }
+      }
       const gate = GATE_REFUSALS[err?.reason]
       if (gate) {
         return {
