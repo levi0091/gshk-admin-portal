@@ -17,6 +17,7 @@ import {
   persistedFailure,
 } from '../components/case/workflow.js'
 import { scrollToTop } from '../lib/scroll.js'
+import { caseWorkflowCaps } from '../lib/screenCapabilities.js'
 
 /**
  * The NAR1 case workflow (wireframe_v11 `s20`).
@@ -41,10 +42,15 @@ export default function CaseWorkflowPage() {
   const navigate = useNavigate()
   const { hasPermission, isSuperAdmin } = useAuth()
 
+  // `hasPermission` already returns true for a super admin; the `||` is kept
+  // for the tests that mock the context without that behaviour.
   const can = (mod, perm) => isSuperAdmin || hasPermission(mod, perm)
-  const canWrite = can('nar1', 'write')
-  const canValidate = can('tpsi', 'write')
-  const canSubmit = can('tpsi', 'submit')
+  // Which control needs which module and level: `lib/screenCapabilities.js`,
+  // enumerated across every combination by the permission matrix test.
+  const caps = caseWorkflowCaps(can)
+  const canWrite = caps.editCase
+  const canValidate = caps.validate
+  const canSubmit = caps.submit
   const canReadTpsi = can('tpsi', 'read')
 
   const [caseRow, setCaseRow] = useState(undefined)
@@ -236,8 +242,16 @@ export default function CaseWorkflowPage() {
         <div className="pg-actions">
           {/* v11 states the module a screen belongs to, because permissions are
               granted per module and "why can't I press this" is otherwise
-              unanswerable without opening the role. */}
-          <span className="perm-tag">Module: <b>case_management</b></span>
+              unanswerable without opening the role.
+
+              IT USED TO SAY `case_management`, WHICH IS NOT A MODULE. Nothing
+              of that name exists in `role_permissions` and no role can be given
+              it, so the one tag whose entire job is to answer "what do I ask
+              for" named something an administrator could not grant. This screen
+              runs on `nar1` for the case and `tpsi` for the CR calls — two
+              modules, held independently, which is why the stages below refuse
+              separately. */}
+          <span className="perm-tag">Modules: <b>nar1</b>, <b>tpsi</b></span>
           {/* In the HEADER, not inside stage 1 (v11). Restart is what you reach
               for when something is wrong at Client Verification or Signing —
               which is exactly where the button used to be unreachable, because

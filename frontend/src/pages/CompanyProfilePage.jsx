@@ -21,7 +21,7 @@ import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
-import { needsPermission, disabledReason } from '../lib/permissions.js'
+import { companyProfileCaps } from '../lib/screenCapabilities.js'
 
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
@@ -103,14 +103,44 @@ function partyName(row) {
     || '—'
 }
 
-function FlagToggle({ on, label, sub, onToggle, busy, disabled = false, reason }) {
+/**
+ * `Is Client` / `Is Corporate Party` — a control AND a fact.
+ *
+ * THE ONLY THING ON THIS SCREEN THAT IS NOT SIMPLY HIDDEN when the role cannot
+ * write, and the exception is deliberate: unlike an Edit button, this element
+ * carries information. Which flags are on decides which tiles the profile shows
+ * at all, so a reader who cannot see them cannot tell a client company from a
+ * corporate party, and would read a missing Cases pane as a missing feature.
+ *
+ * So the SWITCH goes and the STATE stays: `canWrite` false renders the same
+ * label and the same On/Off, as static text with no `role="switch"` and nothing
+ * to click. Nothing here can be pressed to no effect, which is the rule; the
+ * fact survives, which is why the rule does not simply delete it.
+ */
+function FlagToggle({ on, label, sub, onToggle, busy, canWrite = true }) {
+  if (!canWrite) {
+    return (
+      <div className={`flag-toggle is-static${on ? '' : ' is-off'}`}
+           data-testid={`flag-${label}`}>
+        <span className={`flag-switch ${on ? 'on' : 'off'}`} aria-hidden="true">
+          <span className="flag-knob" />
+        </span>
+        <span className="flag-tog-txt">
+          <span className="flag-tog-lbl">{label}</span>
+          {/* The sub-line explains what TOGGLING does, which is not on offer.
+              What a reader needs instead is the value. */}
+          <span className="flag-tog-sub">{on ? 'Yes' : 'No'}</span>
+        </span>
+      </div>
+    )
+  }
+
   return (
     <button
       type="button"
       className={`flag-toggle${on ? '' : ' is-off'}`}
       onClick={onToggle}
-      disabled={busy || disabled}
-      title={disabled ? reason : undefined}
+      disabled={busy}
       role="switch"
       aria-checked={on}
       aria-label={label}
@@ -161,22 +191,20 @@ export default function CompanyProfilePage() {
   // The document the Remove dialog is about, or null.
   const [removing, setRemoving] = useState(null)
   const [newCase, setNewCase] = useState(false)
-  const { hasPermission, isSuperAdmin } = useAuth()
-  // nar1:read shows cases; nar1:write is what opens one.
-  const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
+  const { hasPermission } = useAuth()
   // WHAT A READER MAY DO HERE. `companies:read` opens this page (the route
-  // guard saw to that); everything that WRITES needs `companies:write`, and
-  // the API refuses it independently — this only stops the screen offering an
-  // action it knows will be refused, and says why.
-  //
-  // Documents are a SEPARATE module with three levels, so they are asked
-  // separately: a role can hold `companies:write` and still not be allowed to
-  // delete a filed document.
-  const canWrite = hasPermission('companies', 'write')
-  const canUploadDoc = hasPermission('documents', 'write')
-  const canRemoveDoc = hasPermission('documents', 'delete')
-  const canDownloadDoc = hasPermission('documents', 'read')
-  const noWrite = needsPermission('companies', 'write')
+  // guard saw to that); everything that WRITES is asked for by name in
+  // `lib/screenCapabilities.js`, which is where the module and level for each
+  // control live and what the permission matrix test enumerates. The API
+  // refuses each independently — this only stops the screen OFFERING an action
+  // it knows will be refused, and every control below is rendered
+  // conditionally, never disabled (Levi 2026-09-04).
+  const caps = companyProfileCaps(hasPermission)
+  const canWrite = caps.editCompany
+  const canUploadDoc = caps.uploadDocument
+  const canRemoveDoc = caps.removeDocument
+  const canDownloadDoc = caps.downloadDocument
+  const canOpenCase = caps.openCase
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
   const [linkModal, setLinkModal] = useState(null)
   const {
@@ -441,11 +469,11 @@ export default function CompanyProfilePage() {
 
           <div className="flag-panel">
             <FlagToggle on={isClient} label="Is Client" busy={busy}
-                        disabled={!canWrite} reason={noWrite}
+                        canWrite={canWrite}
                         sub="Reveals client tiles + Cases pane"
                         onToggle={() => toggleFlag('is_client')} />
             <FlagToggle on={isCorp} label="Is Corporate Party" busy={busy}
-                        disabled={!canWrite} reason={noWrite}
+                        canWrite={canWrite}
                         sub="Acts as director / secretary / shareholder elsewhere"
                         onToggle={() => toggleFlag('is_corporate_party')} />
           </div>
@@ -502,10 +530,10 @@ export default function CompanyProfilePage() {
         />
       )}
 
-      {/* SAID ONCE, AT THE TOP. Every control below also carries its own
-          reason, but a tooltip is only found by somebody who already suspects;
-          this is the sentence that stops a reader deciding the page is
-          broken. */}
+      {/* SAID ONCE, AT THE TOP, AND NOWHERE ELSE. The controls below are not
+          rendered at all for this role, so this banner is the ONLY thing on the
+          screen that explains their absence — without it the page reads as a
+          product that cannot edit a company, rather than a role that cannot. */}
       {!canWrite && (
         <ReadOnlyNote module="companies" what="this company's full profile" />
       )}
@@ -531,12 +559,8 @@ export default function CompanyProfilePage() {
                     {busy ? 'Saving…' : 'Save'}
                   </button>
                 </div>
-              ) : (
-                <button className="btn-edit" onClick={startEdit}
-                        disabled={!canWrite}
-                        title={disabledReason(canWrite, 'companies', 'write')}>
-                  Edit
-                </button>
+              ) : canWrite && (
+                <button className="btn-edit" onClick={startEdit}>Edit</button>
               )}
             </div>
 
@@ -645,8 +669,7 @@ export default function CompanyProfilePage() {
             <DocumentSection key={section.key} section={section}
                              count={(bySection[section.key] || []).length}
                              onAdd={() => setUploadInto(section)}
-                             canAdd={canUploadDoc}
-                             addReason={needsPermission('documents', 'write')}>
+                             canAdd={canUploadDoc}>
               {(bySection[section.key] || []).length === 0 ? (
                 <div className="empty-state" style={{ padding: '16px 0' }}>
                   Nothing uploaded yet.
@@ -657,9 +680,7 @@ export default function CompanyProfilePage() {
                   busy={busy}
                   onRemove={doc => setRemoving(doc)}
                   canDownload={canDownloadDoc}
-                  downloadReason={needsPermission('documents', 'read')}
                   canRemove={canRemoveDoc}
-                  removeReason={needsPermission('documents', 'delete')}
                 />
               )}
             </DocumentSection>
@@ -675,8 +696,7 @@ export default function CompanyProfilePage() {
               </div>
             </div>
             <DocumentHistory documents={company.documents} sectionLabels={sectionLabels}
-                             canDownload={canDownloadDoc}
-                             downloadReason={needsPermission('documents', 'read')} />
+                             canDownload={canDownloadDoc} />
           </div>
 
           {/* Corporate Party Details — gated on is_corporate_party */}
@@ -704,12 +724,8 @@ export default function CompanyProfilePage() {
                       {busy ? 'Saving…' : 'Save'}
                     </button>
                   </div>
-                ) : (
-                  <button className="btn-edit" onClick={startCorpEdit}
-                          disabled={!canWrite}
-                          title={disabledReason(canWrite, 'companies', 'write')}>
-                    Edit
-                  </button>
+                ) : canWrite && (
+                  <button className="btn-edit" onClick={startCorpEdit}>Edit</button>
                 )}
               </div>
               {corpEditing ? (
@@ -798,10 +814,17 @@ export default function CompanyProfilePage() {
                          onAdd={() => setLinkModal({ relation: 'shareholders' })}
                          onEdit={row => setLinkModal({ relation: 'shareholders', link: row })}
                          onRemove={row => unlinkParty('shareholders', row)}
-                         note={'Transferring shares? Edit the outgoing holder and set '
+                         /* Only for a reader who HAS those buttons. It is an
+                            instruction for using Edit and Remove, so on a
+                            read-only screen it describes controls that are not
+                            there — which is exactly the confusion hiding them
+                            was meant to end. */
+                         note={canWrite
+                           ? 'Transferring shares? Edit the outgoing holder and set '
                              + 'Status to Former, then add the new holder — or raise an '
                              + 'existing holder’s Shares Held. Remove deletes the record '
-                             + 'that they ever held the shares.'}
+                             + 'that they ever held the shares.'
+                           : null}
                          render={s => (
                            <>
                              {/* CR's shareCapitalList states the class and its
@@ -912,25 +935,32 @@ export default function CompanyProfilePage() {
                 </div>
                 {/* The annual return is started from the company it is for.
                     Without this the only route was the dashboard, where you
-                    then had to search back to the company you were already on. */}
-                {/* Rendered for every reader, disabled for the ones who may
-                    not press it — the same rule as the rest of this screen. It
-                    already had a disabled state (a company that cannot file),
-                    and hiding it for a permission while disabling it for data
-                    made the same button mean two different things. */}
-                <button className="btn btn-outline btn-sm"
-                        disabled={!canOpenCase || filingProblems.length > 0}
-                        title={disabledReason(canOpenCase, 'nar1', 'write')}
-                        onClick={() => setNewCase(true)}>
-                  + New case
-                </button>
+                    then had to search back to the company you were already on.
+
+                    TWO DIFFERENT REASONS THIS BUTTON CAN BE OFF, and they are
+                    not treated the same. A missing PERMISSION hides it — there
+                    is nothing this reader can do about it here. A company that
+                    cannot FILE leaves it visible and disabled, because that is
+                    a data problem somebody on this screen can go and fix, and
+                    the list of what to fix prints directly underneath. */}
+                {canOpenCase && (
+                  <button className="btn btn-outline btn-sm"
+                          disabled={filingProblems.length > 0}
+                          onClick={() => setNewCase(true)}>
+                    + New case
+                  </button>
+                )}
               </div>
               {/* WHY THE REFUSAL IS PRINTED HERE. 453 of 5,930 client
                   companies cannot produce a valid return (OQ-2), and a
                   disabled button with no explanation is the exact shape of
                   "I clicked it and nothing happened". The reason belongs
                   beside the control that is refusing, not in a page banner a
-                  screen and a half above it. */}
+                  screen and a half above it.
+
+                  Shown to every reader, not only to `nar1:write`: it names
+                  fields on THIS company that are missing, which is work for
+                  whoever maintains the profile. */}
               {filingProblems.length > 0 && (
                 <div className="reveal-note" role="note">
                   <b>This company cannot file an annual return yet.</b>
@@ -981,7 +1011,6 @@ export default function CompanyProfilePage() {
  */
 function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
                             canWrite = true }) {
-  const writeReason = needsPermission('companies', 'write')
   const rows = classes || []
   // The row being edited, the string 'new' while adding, or null. The editor
   // itself is a dialog now (components/ShareClassModal.jsx) — inline, its two
@@ -1005,11 +1034,11 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
             Section 11 of the annual return — one row per class of shares
           </div>
         </div>
-        <button className="btn btn-outline btn-sm" onClick={() => setEditing('new')}
-                disabled={!canWrite}
-                title={canWrite ? undefined : writeReason}>
-          + Add a class
-        </button>
+        {canWrite && (
+          <button className="btn btn-outline btn-sm" onClick={() => setEditing('new')}>
+            + Add a class
+          </button>
+        )}
       </div>
 
       {editing && (
@@ -1041,13 +1070,11 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
                 with an empty title bar carrying nothing but an Edit button. */}
             {row.class_name || <span className="td-muted">Unnamed class</span>}
             {row.currency && <span className="member-role-tag">{row.currency}</span>}
-            <span style={{ marginLeft: 'auto' }}>
-              <button className="btn-edit" onClick={() => setEditing(row)}
-                      disabled={!canWrite}
-                      title={canWrite ? undefined : writeReason}>
-                Edit
-              </button>
-            </span>
+            {canWrite && (
+              <span style={{ marginLeft: 'auto' }}>
+                <button className="btn-edit" onClick={() => setEditing(row)}>Edit</button>
+              </span>
+            )}
           </div>
           <div className="kv-list">
             {SHARE_CLASS_FIELDS.map(f => (
@@ -1072,7 +1099,9 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
 function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
                      onAdd, onEdit, onRemove, busy, note, canWrite = true }) {
   const list = rows || []
-  const writeReason = needsPermission('companies', 'write')
+  // `relation` says the tile CAN be edited; `canWrite` says this reader may.
+  // Both are required for any of the three controls to render at all.
+  const editable = Boolean(relation) && canWrite
   return (
     <div className="card mb-16">
       <div className="card-hdr">
@@ -1080,12 +1109,8 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
           <div className="card-title">{title} <span className="count-pill">{list.length}</span></div>
           <div className="card-sub">{sub}</div>
         </div>
-        {relation && (
-          <button className="btn btn-outline btn-sm" onClick={onAdd}
-                  disabled={!canWrite}
-                  title={canWrite ? undefined : writeReason}>
-            + Add
-          </button>
+        {editable && (
+          <button className="btn btn-outline btn-sm" onClick={onAdd}>+ Add</button>
         )}
       </div>
       {note && <div className="reveal-note" role="note">{note}</div>}
@@ -1098,17 +1123,12 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
             {/* Brian's B10 — NAR1 says Body Corporate, so the portal does. */}
             {row.corporate_entity_id && <span className="member-role-tag">Body Corporate</span>}
             {row.is_current === false && <span className="member-role-tag">Former</span>}
-            {relation && (
+            {editable && (
               <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                <button className="btn-edit" onClick={() => onEdit(row)}
-                        disabled={!canWrite}
-                        title={canWrite ? undefined : writeReason}>
-                  Edit
-                </button>
+                <button className="btn-edit" onClick={() => onEdit(row)}>Edit</button>
                 {/* `onRemove(row)`, not `row.id` — the caller needs the whole
                     row to name the party in its confirmation. */}
-                <button className="btn-edit" disabled={busy || !canWrite}
-                        title={canWrite ? undefined : writeReason}
+                <button className="btn-edit" disabled={busy}
                         onClick={() => onRemove(row)}>Remove</button>
               </span>
             )}

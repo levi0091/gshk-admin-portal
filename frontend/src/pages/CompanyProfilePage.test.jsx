@@ -800,14 +800,14 @@ describe('CompanyProfilePage — the CR form fields', () => {
 })
 
 /**
- * A role that may READ a company but not change it (Levi 2026-09-04).
+ * A role that may READ a company but not change it.
  *
- * "I should only be able to click around the company profile but all these
- * buttons should be disabled for me." DISABLED, not hidden: hiding them makes
- * the screen look like a different, smaller product, and a reader who has been
- * told a feature exists then cannot find it. The backend refuses each of these
- * independently — this stops the screen offering what it knows will be refused,
- * and says why.
+ * THE RULE IS "DO NOT RENDER IT" (Levi 2026-09-04, reversing the disabled form
+ * shipped hours earlier): "we should not even show the edit, add or remove
+ * button. do not just make it disabled you should not even render it if it
+ * cannot be clicked." So every assertion here is an ABSENCE — and the one
+ * assertion that is not is the banner, which is what stops the absence reading
+ * as a missing feature.
  */
 describe('CompanyProfilePage — a read-only role', () => {
   const holding = (...perms) => (module, permission) =>
@@ -841,62 +841,93 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(screen.getByText('Director(s)')).toBeInTheDocument()
   })
 
-  it('disables Edit on Company Information, and says why on the button', async () => {
+  it('renders NO Edit button on Company Information at all', async () => {
     renderPage()
     const card = (await screen.findByText('Company Information')).closest('.card')
 
-    const edit = within(card).getByRole('button', { name: /^Edit$/ })
-    expect(edit).toBeDisabled()
-    expect(edit).toHaveAttribute('title', expect.stringContaining('companies (write)'))
+    expect(within(card).queryByRole('button', { name: /^Edit$/ }))
+      .not.toBeInTheDocument()
   })
 
-  it('disables the Is Client / Is Corporate Party switches', async () => {
-    // They are one click from rewriting what the whole screen shows.
+  it('renders no clickable switch for Is Client / Is Corporate Party', async () => {
     renderPage()
     await screen.findByText('Company Information')
 
-    expect(screen.getByRole('switch', { name: 'Is Client' })).toBeDisabled()
-    expect(screen.getByRole('switch', { name: 'Is Corporate Party' })).toBeDisabled()
+    expect(screen.queryByRole('switch', { name: 'Is Client' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Is Corporate Party' }))
+      .not.toBeInTheDocument()
   })
 
-  it('disables every party tile action', async () => {
+  it('still SHOWS which flags are set — they decide what the page contains', async () => {
+    // The one exception to hiding, and it is not a control: which flags are on
+    // is why the client tiles and the Cases pane are there at all, so a reader
+    // who cannot see them cannot tell a client from a corporate party.
+    renderPage()
+    await screen.findByText('Company Information')
+
+    const flag = screen.getByTestId('flag-Is Client')
+    expect(flag).toHaveTextContent('Is Client')
+    expect(flag).toHaveTextContent('Yes')
+    expect(screen.getByTestId('flag-Is Corporate Party')).toHaveTextContent('No')
+  })
+
+  it('renders no Add, Edit or Remove on any party tile', async () => {
     renderPage()
     const tile = (await screen.findByText('Director(s)')).closest('.card')
 
-    expect(within(tile).getByRole('button', { name: /\+ Add/ })).toBeDisabled()
-    for (const b of within(tile).getAllByRole('button', { name: /^Edit$|^Remove$/ })) {
-      expect(b).toBeDisabled()
-    }
+    expect(within(tile).queryByRole('button', { name: /\+ Add/ })).not.toBeInTheDocument()
+    expect(within(tile).queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
+    expect(within(tile).queryByRole('button', { name: /^Remove$/ })).not.toBeInTheDocument()
+    // The party itself is still listed — that is the reading half.
+    expect(within(tile).getByText('John Smith')).toBeInTheDocument()
   })
 
-  it('disables Add and Edit on share capital', async () => {
+  it('renders no Add or Edit on share capital, but still lists the classes', async () => {
     renderPage()
     const tile = (await screen.findByText(/Share Capital/)).closest('.card')
 
-    expect(within(tile).getByRole('button', { name: /Add a class/ })).toBeDisabled()
-    expect(within(tile).getByRole('button', { name: /^Edit$/ })).toBeDisabled()
+    expect(within(tile).queryByRole('button', { name: /Add a class/ }))
+      .not.toBeInTheDocument()
+    expect(within(tile).queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
+    // "Ordinary" is both the block heading and the Class of Shares row.
+    expect(within(tile).getAllByText('Ordinary').length).toBeGreaterThan(0)
   })
 
-  it('disables + New case, which is a different module again', async () => {
+  it('renders no + New case, which is a different module again', async () => {
     // `nar1:write`, not `companies:write` — a role that may edit a company
     // profile is not thereby entitled to drive a statutory filing.
     renderPage()
     await screen.findByText('Cases')
 
-    const button = screen.getByRole('button', { name: /New case/ })
-    expect(button).toBeDisabled()
-    expect(button).toHaveAttribute('title', expect.stringContaining('nar1 (write)'))
+    expect(screen.queryByRole('button', { name: /New case/ })).not.toBeInTheDocument()
   })
 
-  it('disables document upload — a THIRD module, asked separately', async () => {
+  it('renders no upload button — a THIRD module, asked separately', async () => {
     // `documents:write`. A role can hold `companies:write` and still not be
     // allowed to file documents, and vice versa.
     renderPage()
     await screen.findByText('Document History')
     const card = sectionCard('Certificates')
 
-    expect(within(card).getByRole('button', { name: /Upload Document/ }))
-      .toBeDisabled()
+    expect(within(card).queryByRole('button', { name: /Upload Document/ }))
+      .not.toBeInTheDocument()
+    // The SECTION still renders: what is on file is a fact worth reading.
+    expect(card).toBeInTheDocument()
+  })
+
+  it('renders no Download or Remove beside a filed document', async () => {
+    // Three separate grants: `documents:read` downloads, `documents:delete`
+    // removes. This role holds neither.
+    renderPage()
+    await screen.findByText('Document History')
+    const card = sectionCard('Certificates')
+
+    expect(within(card).queryByRole('button', { name: 'Download' }))
+      .not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Remove' }))
+      .not.toBeInTheDocument()
+    // ...and the document is still named.
+    expect(within(card).getByText('Certificate of Incorporation')).toBeInTheDocument()
   })
 
   it('lets a role that holds documents:write upload, on a company it cannot edit', async () => {
@@ -910,7 +941,12 @@ describe('CompanyProfilePage — a read-only role', () => {
 
     expect(within(card).getByRole('button', { name: /Upload Document/ }))
       .toBeEnabled()
+    // Download comes with documents:read; Remove needs documents:delete, which
+    // this role does not hold.
+    expect(within(card).getByRole('button', { name: 'Download' })).toBeEnabled()
+    expect(within(card).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+    // ...and still no company Edit.
     expect(within(screen.getByText('Company Information').closest('.card'))
-      .getByRole('button', { name: /^Edit$/ })).toBeDisabled()
+      .queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
   })
 })

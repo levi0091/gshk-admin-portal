@@ -34,7 +34,8 @@ function Row({ label, children, empty = 'Not on record' }) {
   )
 }
 
-export default function ReturnDataCard({ caseId, reloadKey, onChanged }) {
+export default function ReturnDataCard({ caseId, reloadKey, onChanged,
+                                         canWrite = true }) {
   const [data, setData] = useState(undefined)
   const [error, setError] = useState(null)
   // Kept apart from `error`: a failed LOAD means there is no card to draw and
@@ -158,18 +159,29 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged }) {
           <div className="kv-row">
             <span className="kv-key">Signing capacity</span>
             <span className="kv-val">
-              <select
-                className="f-input"
-                aria-label="Signing capacity"
-                value={data.signatory_capacity || ''}
-                disabled={saving}
-                onChange={e => saveCapacity(e.target.value)}
-              >
-                <option value="">Choose how the signatory signs…</option>
-                {(data.signatory_capacity_options || []).map(opt => (
-                  <option key={opt} value={opt}>{opt}</option>
-                ))}
-              </select>
+              {/* Gated on `nar1:write` — this writes `PATCH /cases/{id}`,
+                  which the API refuses without it. It had NO gate at all
+                  before: a read-only role could pick a capacity and collect a
+                  403 for it. Read-only shows the CHOSEN VALUE rather than
+                  nothing, because which capacity was picked decides whether
+                  CR will accept the signature. */}
+              {canWrite ? (
+                <select
+                  className="f-input"
+                  aria-label="Signing capacity"
+                  value={data.signatory_capacity || ''}
+                  disabled={saving}
+                  onChange={e => saveCapacity(e.target.value)}
+                >
+                  <option value="">Choose how the signatory signs…</option>
+                  {(data.signatory_capacity_options || []).map(opt => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              ) : (
+                data.signatory_capacity
+                  || <span className="td-muted">Not chosen yet</span>
+              )}
               {saveError && (
                 <div className="f-hint" style={{ color: 'var(--carrot)', marginTop: 6 }}>
                   {saveError.message}

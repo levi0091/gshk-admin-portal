@@ -271,13 +271,15 @@ describe('PersonsRegistryPage — write access', () => {
     expect(screen.getByRole('button', { name: /Add Person/ })).toBeEnabled()
   })
 
-  it('disables + Add Person for a persons:read-only role, with the reason', async () => {
+  it('renders no + Add Person for a persons:read-only role, and says why', async () => {
     auth.hasPermission = (m, p) => `${m}:${p}` === 'persons:read'
     renderPage()
     await screen.findByText('John Smith')
 
-    const add = screen.getByRole('button', { name: /Add Person/ })
-    expect(add).toBeDisabled()
-    expect(add).toHaveAttribute('title', expect.stringContaining('persons (write)'))
+    expect(screen.queryByRole('button', { name: /Add Person/ }))
+      .not.toBeInTheDocument()
+    const note = screen.getAllByRole('note')
+      .find(n => /Read-only/.test(n.textContent))
+    expect(note).toHaveTextContent('persons (write)')
   })
 })

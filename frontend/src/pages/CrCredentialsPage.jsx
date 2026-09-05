@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { api } from '../lib/api.js'
 import { formatDate } from '../lib/format.js'
 import { useAuth } from '../context/AuthContext.jsx'
+import { crCredentialsCaps } from '../lib/screenCapabilities.js'
 
 /**
  * Settings -> CR Credentials (wireframe_v11 s21).
@@ -366,26 +367,48 @@ function MinePane({ canWrite, onNotice, onError }) {
                 </div>
               </div>
 
-              <div className="f-group">
-                <label className="f-label" htmlFor="cr-eservice-id">e-Service (e-Reg) user ID</label>
-                <input
-                  id="cr-eservice-id" className="f-input" value={eserviceUserId}
-                  onChange={(e) => setEserviceUserId(e.target.value)}
-                  disabled={!canWrite}
-                />
-                <span className="f-hint">
-                  Your individual e-Filing account. CR rejects a signature from a corporate account.
-                </span>
-              </div>
+              {/* A FORM FIELD IS A CONTROL. Without `tpsi:write` these were a
+                  disabled text box and a password box that could not be typed
+                  into — the second especially is pure noise, since whether a
+                  password is stored is already reported in Status beside it.
+                  Read-only gets the VALUE and nothing to type in. */}
+              {canWrite ? (
+                <>
+                  <div className="f-group">
+                    <label className="f-label" htmlFor="cr-eservice-id">e-Service (e-Reg) user ID</label>
+                    <input
+                      id="cr-eservice-id" className="f-input" value={eserviceUserId}
+                      onChange={(e) => setEserviceUserId(e.target.value)}
+                    />
+                    <span className="f-hint">
+                      Your individual e-Filing account. CR rejects a signature from a corporate account.
+                    </span>
+                  </div>
 
-              <SecretField
-                id="cr-eservice-password"
-                label="e-Service signing password"
-                hint={meta.eservice_password_hint}
-                value={password}
-                onChange={setPassword}
-                help="Required to sign a NAR1. A return is signed with the e-Service account of whoever is signed in, so without this password stored you cannot sign at all."
-              />
+                  <SecretField
+                    id="cr-eservice-password"
+                    label="e-Service signing password"
+                    hint={meta.eservice_password_hint}
+                    value={password}
+                    onChange={setPassword}
+                    help="Required to sign a NAR1. A return is signed with the e-Service account of whoever is signed in, so without this password stored you cannot sign at all."
+                  />
+                </>
+              ) : (
+                <>
+                  <Meta label="e-Service (e-Reg) user ID">
+                    {eserviceUserId || <span className="td-muted">Not set</span>}
+                  </Meta>
+                  <Meta label="e-Service signing password">
+                    {meta.has_eservice_password
+                      ? <span style={{ color: 'var(--bang)' }}>Stored</span>
+                      : <span className="td-muted">Not set</span>}
+                  </Meta>
+                  <div className="f-hint" style={{ marginTop: 12 }}>
+                    Changing these requires the <b>tpsi:write</b> permission.
+                  </div>
+                </>
+              )}
             </div>
 
             {canWrite && (
@@ -451,7 +474,11 @@ export function paneFor(isSuperAdmin, tab) {
 
 export default function CrCredentialsPage() {
   const { hasPermission, isSuperAdmin } = useAuth()
-  const canWrite = isSuperAdmin || hasPermission('tpsi', 'write')
+  // `lib/screenCapabilities.js` — the shared presenter credential is
+  // `super_admin` itself, not a tpsi level, so the two are separate booleans.
+  const canWrite = crCredentialsCaps(
+    (m, p) => isSuperAdmin || hasPermission(m, p), isSuperAdmin,
+  ).editOwnCredential
 
   // An ordinary user has one pane and never learns the shared tab exists.
   const [tab, setTab] = useState('shared')

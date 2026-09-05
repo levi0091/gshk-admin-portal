@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
 import { describeError, signedOff } from './workflow.js'
+import { ActionWithheld } from '../RequirePermission.jsx'
 
 /**
  * Stage 3 — Signing (wireframe_v11 `cmwp3`). e-Sign (FE-2) and manual (FE-4).
@@ -119,7 +120,8 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
           or whether nobody answered and a job approved it on their silence. */}
       <ClientApproval approval={caseRow.client_approval} />
 
-      <MethodChoice method={method} disabled={!canWrite || done || busy !== null}
+      <MethodChoice method={method} readOnly={!canWrite}
+                    disabled={done || busy !== null}
                     onPick={setMethod} />
 
       {method === 'esign' && <Preflight preflight={preflight} cred={cred} />}
@@ -181,18 +183,25 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
             )}
           </div>
 
-          {canWrite && (
-            <div className="action-bar">
-              <div className="ab-note">Signing contacts CR. Nothing is charged and nothing is filed.</div>
-              <div className="ab-actions">
-                <span className="perm-tag">Requires <b>tpsi:write</b></span>
-                <button className="btn btn-action" disabled={busy !== null || !canSign}
-                        onClick={sign}>
-                  {busy === 'sign' ? 'Signing at CR…' : 'Apply signature'}
-                </button>
-              </div>
+          <div className="action-bar">
+            <div className="ab-note">Signing contacts CR. Nothing is charged and nothing is filed.</div>
+            <div className="ab-actions">
+              {canWrite ? (
+                <>
+                  <span className="perm-tag">Requires <b>tpsi:write</b></span>
+                  <button className="btn btn-action" disabled={busy !== null || !canSign}
+                          onClick={sign}>
+                    {busy === 'sign' ? 'Signing at CR…' : 'Apply signature'}
+                  </button>
+                </>
+              ) : (
+                // The bar used to vanish outright, leaving a stage titled
+                // "Apply the signature" with no signature to apply and no
+                // explanation.
+                <ActionWithheld module="tpsi" action="signing" />
+              )}
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -218,13 +227,40 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
  * v11's `cm-method` radiogroup. Two cards, each carrying the consequence of
  * choosing it — which is the whole reason this is not a toggle.
  */
-function MethodChoice({ method, disabled, onPick }) {
+function MethodChoice({ method, disabled, readOnly = false, onPick }) {
   const options = [
     ['esign', 'e-Sign',
      "CR e-Service PIN signing. The fee is drawn from the GSHK deposit account when you submit."],
     ['manual', 'Manual — pen & paper',
      'The signatory signs a printed NAR1. Filed off-portal: no CR API call and no fee deducted here.'],
   ]
+
+  // A CHOICE THIS ROLE CANNOT MAKE IS NOT A CHOICE, so it stops being a
+  // radiogroup: only the method actually chosen is drawn, as a card with
+  // nothing to press. Showing both greyed-out options would still be asking a
+  // question, and the unchosen one would be inviting an answer.
+  if (readOnly) {
+    const chosen = options.find(([value]) => value === method)
+    return (
+      <div className="meth-group">
+        <div className="meth-lbl">Signing method</div>
+        {chosen ? (
+          <div className="meth-opt sel is-static" data-testid="signing-method">
+            <span className="meth-radio" aria-hidden="true" />
+            <span className="meth-body">
+              <b>{chosen[1]}</b>
+              <span className="meth-sub">{chosen[2]}</span>
+            </span>
+          </div>
+        ) : (
+          <div className="empty-state" style={{ padding: '12px 0' }}>
+            No signing method chosen yet.
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="meth-group" role="radiogroup" aria-label="Signing method">
       <div className="meth-lbl">Signing method</div>
@@ -368,6 +404,10 @@ function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) 
         </div>
       </div>
 
+      {/* `!canWrite` stays on this one, and it is not an oversight: the input
+          is `visually-hidden` and only ever opened by the zone below, which is
+          not rendered at all without the permission. Nothing a user can see is
+          disabled here — this is the belt behind the braces. */}
       <input ref={fileInput} type="file" className="visually-hidden"
              accept="application/pdf,image/*" aria-label="Wet-signed NAR1"
              disabled={!canWrite || busy !== null}
@@ -397,8 +437,8 @@ function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) 
             </button>
           )}
         </div>
-      ) : (
-        <button type="button" className="up-zone" disabled={!canWrite || busy !== null}
+      ) : canWrite ? (
+        <button type="button" className="up-zone" disabled={busy !== null}
                 onClick={() => fileInput.current?.click()}>
           <span className="up-arrow" aria-hidden="true">⬆</span>
           <span className="up-txt">
@@ -408,6 +448,14 @@ function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) 
             </span>
           </span>
         </button>
+      ) : (
+        // A drop zone that refuses the drop is worse than no drop zone. The
+        // fact that nothing is attached still has to be said, though — it is
+        // why this case is stuck.
+        <div className="empty-state" style={{ padding: '16px 0' }}>
+          No signed scan attached yet.{' '}
+          <ActionWithheld module="nar1" action="uploading it" />
+        </div>
       )}
     </div>
   )

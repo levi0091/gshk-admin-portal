@@ -21,7 +21,7 @@ import {
 } from '../lib/documentSections.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
-import { needsPermission, disabledReason } from '../lib/permissions.js'
+import { personProfileCaps } from '../lib/screenCapabilities.js'
 
 // `lookup` names the controlled vocabulary a field draws from (migration 013,
 // lifted from Viewpoint). Without it these were free-text, which is how the same
@@ -125,7 +125,6 @@ function IdentityDocument({
   // `documents:read` instead. Two facts, two permissions.
   canWrite = true, canDownloadScan = true,
 }) {
-  const writeReason = needsPermission('persons', 'write')
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
 
@@ -172,32 +171,27 @@ function IdentityDocument({
               {/* Only where there is a choice to make. One document is the
                   primary one by definition, and a button that cannot change
                   anything is noise. */}
-              {canChoosePrimary && (
+              {canChoosePrimary && canWrite && (
                 <button className="btn-edit" onClick={onMakePrimary}
-                        disabled={busy || !canWrite}
-                        title={canWrite ? undefined : writeReason}>
+                        disabled={busy}>
                   Make primary
                 </button>
               )}
-              {doc.scan_document_id && (
+              {doc.scan_document_id && canDownloadScan && (
                 <button className="btn-edit"
-                        disabled={!canDownloadScan}
-                        title={canDownloadScan
-                          ? undefined : needsPermission('documents', 'read')}
                         onClick={() => downloadDocument(doc.scan_document_id)}>
                   Download scan
                 </button>
               )}
-              <button className="btn-edit" onClick={start}
-                      disabled={!canWrite}
-                      title={canWrite ? undefined : writeReason}>
-                Edit
-              </button>
-              <button className="btn-edit btn-edit-danger" onClick={onRemove}
-                      disabled={busy || !canWrite}
-                      title={canWrite ? undefined : writeReason}>
-                Remove
-              </button>
+              {canWrite && (
+                <>
+                  <button className="btn-edit" onClick={start}>Edit</button>
+                  <button className="btn-edit btn-edit-danger" onClick={onRemove}
+                          disabled={busy}>
+                    Remove
+                  </button>
+                </>
+              )}
             </>
           )}
         </span>
@@ -259,13 +253,14 @@ export default function PersonProfilePage() {
   const { hasPermission } = useAuth()
   // `persons:read` opened this page. The person's own fields and their
   // identity RECORDS are `persons:write`; uploaded files are the separate
-  // `documents` module, which a role can hold independently. The API enforces
-  // each of these on its own — this only stops the screen offering what it
-  // knows will be refused.
-  const canWrite = hasPermission('persons', 'write')
-  const canUploadDoc = hasPermission('documents', 'write')
-  const canRemoveDoc = hasPermission('documents', 'delete')
-  const canDownloadDoc = hasPermission('documents', 'read')
+  // `documents` module, which a role can hold independently. Which control
+  // needs which is declared in `lib/screenCapabilities.js` and enumerated by
+  // the permission matrix test; the API enforces each on its own.
+  const caps = personProfileCaps(hasPermission)
+  const canWrite = caps.editPerson
+  const canUploadDoc = caps.uploadDocument
+  const canRemoveDoc = caps.removeDocument
+  const canDownloadDoc = caps.downloadDocument
 
   const load = useCallback(() => {
     setLoading(true)
@@ -505,12 +500,8 @@ export default function PersonProfilePage() {
                     {busy ? 'Saving…' : 'Save'}
                   </button>
                 </div>
-              ) : (
-                <button className="btn-edit" onClick={startEdit}
-                        disabled={!canWrite}
-                        title={disabledReason(canWrite, 'persons', 'write')}>
-                  Edit
-                </button>
+              ) : canWrite && (
+                <button className="btn-edit" onClick={startEdit}>Edit</button>
               )}
             </div>
 
@@ -587,8 +578,7 @@ export default function PersonProfilePage() {
                                 POST /persons/{id}/identity-documents, which is
                                 gated on `persons:write` — NOT on `documents`,
                                 even though it can carry a scan. */
-                             canAdd={canWrite}
-                             addReason={needsPermission('persons', 'write')}>
+                             canAdd={canWrite}>
               {idDocs.length === 0 ? (
                 <div className="empty-state" style={{ padding: '16px 0' }}>
                   No identity documents on file. CR files every director by their
@@ -615,8 +605,7 @@ export default function PersonProfilePage() {
             <DocumentSection key={section.key} section={section}
                              count={(bySection[section.key] || []).length}
                              onAdd={() => setUploadInto(section)}
-                             canAdd={canUploadDoc}
-                             addReason={needsPermission('documents', 'write')}>
+                             canAdd={canUploadDoc}>
               {(bySection[section.key] || []).length === 0 ? (
                 <div className="empty-state" style={{ padding: '16px 0' }}>
                   Nothing uploaded yet.
@@ -627,9 +616,7 @@ export default function PersonProfilePage() {
                   busy={busy}
                   onRemove={doc => setRemoving({ kind: 'document', doc })}
                   canDownload={canDownloadDoc}
-                  downloadReason={needsPermission('documents', 'read')}
                   canRemove={canRemoveDoc}
-                  removeReason={needsPermission('documents', 'delete')}
                 />
               )}
             </DocumentSection>
@@ -646,8 +633,7 @@ export default function PersonProfilePage() {
               </div>
             </div>
             <DocumentHistory documents={person.documents} sectionLabels={sectionLabels}
-                             canDownload={canDownloadDoc}
-                             downloadReason={needsPermission('documents', 'read')} />
+                             canDownload={canDownloadDoc} />
           </div>
 
           {/* Appointments & Roles — read-only */}

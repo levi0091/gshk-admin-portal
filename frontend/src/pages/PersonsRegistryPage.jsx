@@ -5,7 +5,8 @@ import { formatDate } from '../lib/format.js'
 import RoleTags, { initials } from '../components/RoleTags.jsx'
 import AddPersonModal from '../components/AddPersonModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { disabledReason } from '../lib/permissions.js'
+import { ReadOnlyNote } from '../components/RequirePermission.jsx'
+import { personsRegistryCaps } from '../lib/screenCapabilities.js'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
@@ -58,7 +59,7 @@ const COLUMNS = [
 export default function PersonsRegistryPage() {
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
-  const canWrite = hasPermission('persons', 'write')
+  const canWrite = personsRegistryCaps(hasPermission).addPerson
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -124,15 +125,20 @@ export default function PersonsRegistryPage() {
         </div>
         <div className="pg-actions">
           {/* `persons:read` gets this list; creating a person is
-              `persons:write`. Disabled rather than hidden — see the company
-              registry. */}
-          <button className="btn btn-action" onClick={() => setShowAdd(true)}
-                  disabled={!canWrite}
-                  title={disabledReason(canWrite, 'persons', 'write')}>
-            + Add Person
-          </button>
+              `persons:write`, and without it the button is not rendered — see
+              the company registry. */}
+          {canWrite && (
+            <button className="btn btn-action" onClick={() => setShowAdd(true)}>
+              + Add Person
+            </button>
+          )}
         </div>
       </div>
+
+      {!canWrite && (
+        <ReadOnlyNote module="persons" what="every person in the registry"
+                      verb="Adding one" />
+      )}
 
       {showAdd && (
         <AddPersonModal

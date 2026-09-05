@@ -569,14 +569,18 @@ describe('CompanyRegistryPage — a read-only role', () => {
     expect(await screen.findByText('Harbour Tech Ltd.')).toBeInTheDocument()
   })
 
-  it('disables + Add Company, and says which permission is missing', async () => {
+  it('renders no + Add Company at all, and says why', async () => {
     auth.hasPermission = (m, p) => `${m}:${p}` === 'companies:read'
     renderPage()
     await screen.findByText('Harbour Tech Ltd.')
 
-    const add = screen.getByRole('button', { name: /Add Company/ })
-    expect(add).toBeDisabled()
-    expect(add).toHaveAttribute('title', expect.stringContaining('companies (write)'))
+    expect(screen.queryByRole('button', { name: /Add Company/ }))
+      .not.toBeInTheDocument()
+    // The missing button has to be accounted for, or the screen reads as a
+    // product that cannot add a company.
+    const note = screen.getAllByRole('note')
+      .find(n => /Read-only/.test(n.textContent))
+    expect(note).toHaveTextContent('companies (write)')
   })
 
   it('leaves it enabled for a role that holds companies:write', async () => {

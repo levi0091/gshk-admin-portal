@@ -342,9 +342,16 @@ describe('CaseWorkflowPage — restart verification', () => {
     expect(screen.queryByRole('button', { name: /Restart verification/ })).toBeNull()
   })
 
-  it('names the module the screen belongs to', async () => {
+  it('names the modules the screen belongs to, and they are REAL ones', async () => {
+    // It used to say `case_management`, which is not a module: nothing of that
+    // name exists in `role_permissions` and no administrator could grant it.
+    // The one tag whose job is to answer "what do I ask for" was naming
+    // something unaskable.
     await renderPage()
-    expect(screen.getByText(/case_management/)).toBeInTheDocument()
+    expect(screen.getByText(/Modules:/)).toBeInTheDocument()
+    expect(screen.getByText('nar1')).toBeInTheDocument()
+    expect(screen.getByText('tpsi')).toBeInTheDocument()
+    expect(screen.queryByText(/case_management/)).not.toBeInTheDocument()
   })
 })
 

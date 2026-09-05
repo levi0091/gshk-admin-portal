@@ -378,6 +378,30 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
     )
   }
 
+  // NOTHING HAS BEEN RECORDED YET — the `recorded` branch above caught that
+  // case — so for a role that cannot record one, every field below would be an
+  // empty box it may not type in and an upload zone that refuses the file.
+  // Draw the card, say what is outstanding, and stop.
+  if (!canSubmit) {
+    return (
+      <div className="card mb-16">
+        <div className="card-hdr">
+          <div>
+            <div className="card-title">Record the Companies Registry receipt</div>
+            <div className="card-sub">
+              This return was filed outside the portal, and CR's receipt has not
+              been recorded against the case yet.
+            </div>
+          </div>
+        </div>
+        <div className="f-hint" style={{ marginTop: 12 }}>
+          Recording a filing requires the <b>tpsi:submit</b> permission — it
+          closes the case as filed, exactly as a real submission does.
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="card mb-16">
       <div className="card-hdr">
@@ -401,7 +425,7 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
           <div className="f-group" key={key}>
             <label className="f-label" htmlFor={`rc-${key}`}>{label}</label>
             <input id={`rc-${key}`} className="f-input" value={fields[key]}
-                   disabled={!canSubmit || busy}
+                   disabled={busy}
                    onChange={e => setField(key, e.target.value)} />
           </div>
         ))}
@@ -415,7 +439,7 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
             <div className="f-group" key={key}>
               <label className="f-label" htmlFor={`rl-${i}-${key}`}>{label}</label>
               <input id={`rl-${i}-${key}`} className="f-input" value={line[key]}
-                     disabled={!canSubmit || busy}
+                     disabled={busy}
                      onChange={e => setLine(i, key, e.target.value)} />
             </div>
           ))}
@@ -425,7 +449,7 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
       <div className="tile-sec-lbl">CR receipt document</div>
       <input ref={fileInput} type="file" className="visually-hidden"
              accept="application/pdf,image/*" aria-label="CR filing receipt"
-             disabled={!canSubmit || busy || uploading}
+             disabled={busy || uploading}
              onChange={e => uploadReceipt(e.target.files?.[0])} />
 
       {attached ? (
@@ -443,17 +467,17 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
               <code>NAR1_MANUAL_RECEIPT_ENTERED</code> written to the audit log
             </span>
           </span>
-          {canSubmit && (
-            <button type="button" className="btn btn-outline btn-sm"
-                    style={{ marginLeft: 'auto' }} disabled={busy || uploading}
-                    onClick={() => fileInput.current?.click()}>
-              Replace
-            </button>
-          )}
+          {/* `canSubmit` is guaranteed here — the branch above returns for a
+              role without it — so this is unconditional now. */}
+          <button type="button" className="btn btn-outline btn-sm"
+                  style={{ marginLeft: 'auto' }} disabled={busy || uploading}
+                  onClick={() => fileInput.current?.click()}>
+            Replace
+          </button>
         </div>
       ) : (
         <button type="button" className="up-zone"
-                disabled={!canSubmit || busy || uploading}
+                disabled={busy || uploading}
                 onClick={() => fileInput.current?.click()}>
           <span className="up-arrow" aria-hidden="true">⬆</span>
           <span className="up-txt">
@@ -466,7 +490,7 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
         </button>
       )}
 
-      {canSubmit && (
+      {(
         <div className="action-bar">
           <div className="ab-note">
             <button type="button" className="btn btn-outline btn-sm"
@@ -493,12 +517,6 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
               {busy ? 'Recording…' : 'Record the filing'}
             </button>
           </div>
-        </div>
-      )}
-      {!canSubmit && (
-        <div className="f-hint" style={{ marginTop: 12 }}>
-          Recording a filing requires the <b>tpsi:submit</b> permission — it
-          closes the case as filed, exactly as a real submission does.
         </div>
       )}
     </div>

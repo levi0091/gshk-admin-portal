@@ -561,6 +561,11 @@ tbody tr.clickable { cursor: pointer; }
 }
 .flag-toggle:hover { border-color: var(--t-muted); }
 .flag-toggle.is-off { background: var(--bg-page); }
+/* The read-only form: same box, same colours, but nothing about it invites a
+   click. A hover highlight on something that cannot be pressed is the same lie
+   as a disabled button. */
+.flag-toggle.is-static { cursor: default; }
+.flag-toggle.is-static:hover { border-color: var(--border); }
 .flag-switch { flex-shrink: 0; width: 32px; height: 18px; border-radius: 9px; position: relative; transition: background .15s; }
 .flag-switch.on { background: var(--bang); }
 .flag-switch.off { background: #C7CAD9; }
@@ -575,6 +580,17 @@ tbody tr.clickable { cursor: pointer; }
   display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600;
   color: var(--carrot); background: var(--carrot-10); border-radius: 6px; padding: 5px 9px; margin-bottom: 10px;
 }
+/* The read-only banner. NOT `.reveal-note`, which is `display:flex` with a gap
+   — built for a short one-line label, and it spaced this sentence out into
+   drifting fragments with the permission chip marooned between them. This is a
+   paragraph that happens to contain a chip, so it is a block. */
+.ro-note {
+  display: block; font-size: 12px; line-height: 1.7; font-weight: 500;
+  color: var(--indigo); background: var(--indigo-10);
+  border-radius: 6px; padding: 9px 12px; margin-bottom: 12px;
+}
+.ro-note b { font-weight: 700; }
+.ro-note .role-tag { margin: 0; vertical-align: baseline; }
 .corp-tile { border-left: 3px solid var(--carrot); }
 .acts-as-chip {
   display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 8px;
@@ -860,6 +876,10 @@ tbody tr.clickable { cursor: pointer; }
 .meth-opt:hover:not(:disabled) { border-color: var(--indigo-20); }
 .meth-opt.sel { border-color: var(--carrot); background: var(--carrot-10); }
 .meth-opt:disabled { cursor: not-allowed; opacity: .55; }
+/* The chosen method, shown to a role that may not change it: full opacity —
+   this is the answer, not a greyed-out offer. */
+.meth-opt.is-static { cursor: default; opacity: 1; }
+.meth-opt.is-static:hover { border-color: var(--carrot); }
 .meth-radio {
   flex: 0 0 auto; width: 15px; height: 15px; margin-top: 1px;
   border: 1.5px solid var(--indigo-20); border-radius: 50%; background: #fff;
@@ -1176,9 +1196,20 @@ tbody tr.clickable { cursor: pointer; }
 .check-row.checked .check-box { background: var(--bang); border-color: var(--bang); }
 .check-box svg { opacity: 0; transition: .15s; }
 .check-row.checked .check-box svg { opacity: 1; }
+/* Read-only: the same fact, nothing to press. No pointer, no hover — both
+   would promise a click that is not on offer. */
+.check-row.is-static { cursor: default; }
+.check-row.is-static:hover { border-color: var(--border); }
+.check-row.is-static.checked:hover { border-color: #B3D5C8; }
 .check-txt { font-size: 13px; color: var(--t-body); line-height: 1.5; }
 .check-txt b { color: var(--t-head); font-weight: 700; }
 .check-txt .cx-sub { font-size: 11.5px; color: var(--t-muted); margin-top: 2px; }
+/* The state spelt out, because a static tick alone is easy to misread. */
+.check-state {
+  margin-left: 8px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--t-muted);
+}
+.check-row.is-static.checked .check-state { color: var(--bang); }
 
 /* CR returns EVERY fault at once so one pass fixes them all — the panel is
    built to show all of them, never just the first. */

@@ -809,10 +809,11 @@ describe('PersonProfilePage — the tester role (persons read+write, no document
     await screen.findByText(/Identity Documents/)
     const proof = sectionCard('Proof of Address')
 
-    const upload = within(proof).getByRole('button', { name: /Upload Document/ })
-    expect(upload).toBeDisabled()
-    expect(upload).toHaveAttribute('title',
-      expect.stringContaining('documents (write)'))
+    // No upload button at all — but the section still renders, because "there
+    // is nothing filed under Proof of Address" is itself worth knowing.
+    expect(within(proof).queryByRole('button', { name: /Upload Document/ }))
+      .not.toBeInTheDocument()
+    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
   })
 })
 
@@ -844,24 +845,37 @@ describe('PersonProfilePage — a persons:read-only role', () => {
     expect(screen.getByText('British (BNO)')).toBeInTheDocument()
   })
 
-  it('disables Edit, with the reason on the button', async () => {
+  it('renders no Edit at all', async () => {
     renderPage()
     const card = (await screen.findByText('Personal Information')).closest('.card')
 
-    const edit = within(card).getByRole('button', { name: /^Edit$/ })
-    expect(edit).toBeDisabled()
-    expect(edit).toHaveAttribute('title', expect.stringContaining('persons (write)'))
+    expect(within(card).queryByRole('button', { name: /^Edit$/ }))
+      .not.toBeInTheDocument()
   })
 
-  it('disables every identity-document action', async () => {
+  it('renders no identity-document action, but still lists the documents', async () => {
     renderPage()
     await screen.findByText(/Identity Documents/)
     const card = sectionCard('Identity Documents')
 
-    expect(within(card).getByRole('button', { name: /Add Identity Document/ }))
-      .toBeDisabled()
-    for (const b of within(card).getAllByRole('button', { name: /^Edit$|^Remove$/ })) {
-      expect(b).toBeDisabled()
-    }
+    expect(within(card).queryByRole('button', { name: /Add Identity Document/ }))
+      .not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /^Remove$/ })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /Make primary/ }))
+      .not.toBeInTheDocument()
+    // The reading half survives: CR files every director by an identity
+    // number, so which ones are on record is the point of the card.
+    expect(within(card).getAllByText(/Hong Kong Identity Card|Passport/).length)
+      .toBeGreaterThan(0)
+  })
+
+  it('renders no Download scan without documents:read', async () => {
+    renderPage()
+    await screen.findByText(/Identity Documents/)
+    const card = sectionCard('Identity Documents')
+
+    expect(within(card).queryByRole('button', { name: /Download scan/ }))
+      .not.toBeInTheDocument()
   })
 })

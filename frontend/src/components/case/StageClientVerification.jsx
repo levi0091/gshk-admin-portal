@@ -6,6 +6,7 @@ import { downloadFilingPdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
 import { describeError, verificationBlock, isSubmitted } from './workflow.js'
+import { ActionWithheld } from '../RequirePermission.jsx'
 
 // Zoom bounds for the embedded preview. 60% still shows a full A4 page on a
 // laptop; past 200% the object viewport is taller than any screen and the
@@ -318,7 +319,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             over GSHK's name is the mistake this exists to slow down. */}
         <CheckRow
           checked={reviewed}
-          disabled={!canWrite || busy !== null || Boolean(blocked)
+          readOnly={!canWrite}
+          disabled={busy !== null || Boolean(blocked)
                     || Boolean(caseRow.verification_sent_at)}
           onToggle={setReviewed}
           title="I have reviewed this return and it is correct"
@@ -329,7 +331,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           recipients={recipients}
           to={to || []}
           onChange={setTo}
-          disabled={!canWrite || busy !== null || to === null || Boolean(blocked)}
+          readOnly={!canWrite}
+          disabled={busy !== null || to === null || Boolean(blocked)}
           maxRecipients={maxRecipients}
         />
 
@@ -381,7 +384,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             offered. A disabled button beside a warning explaining why you may
             not press it is worse than no button: it invites the press. What
             stays above is the record — who it went to, when, what they said. */}
-        {canWrite && !filed && (
+        {!filed && (canWrite ? (
           <div className="action-bar">
             <div className="ab-note">
               {blocked
@@ -405,7 +408,18 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               </button>
             </div>
           </div>
-        )}
+        ) : (
+          // The bar was simply absent before, which left a stage whose entire
+          // purpose — get this to the client — had vanished without a word.
+          <div className="action-bar">
+            <div className="ab-note">
+              This return has not been sent to the client yet.
+            </div>
+            <div className="ab-actions">
+              <ActionWithheld module="nar1" action="sending it to the client" />
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="card mb-16">
@@ -456,7 +470,13 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             </div>
           </div>
         ) : (
-          <div className="empty-state" style={{ padding: 16 }}>No answer recorded yet.</div>
+          <div className="action-bar">
+            <div className="ab-note">No answer recorded yet.</div>
+            <div className="ab-actions">
+              <ActionWithheld module="nar1"
+                              action="recording the client's reply" />
+            </div>
+          </div>
         )}
       </div>
     </>

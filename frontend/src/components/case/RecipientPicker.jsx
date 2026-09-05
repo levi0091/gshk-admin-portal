@@ -31,6 +31,12 @@ export function isAddress(value) {
 
 export default function RecipientPicker({
   recipients, to, onChange, disabled, maxRecipients = 20,
+  // PERMISSION, not a transient state. `disabled` covers "a send is running"
+  // or "the recipients have not loaded" — temporary, and the controls come
+  // back. `readOnly` means this role may never send at all, so the ways to
+  // change the list are not rendered; the LIST itself still is, because who
+  // the return is going to is exactly what a reader is here to check.
+  readOnly = false,
 }) {
   const [draft, setDraft] = useState('')
   const [addError, setAddError] = useState(null)
@@ -100,9 +106,11 @@ export default function RecipientPicker({
               <span className="chip" key={address}>
                 {known && <span className="chip-name">{known.name}</span>}
                 <span className="chip-addr">{address}</span>
-                <button type="button" className="chip-x" disabled={disabled}
-                        aria-label={`Remove ${address}`}
-                        onClick={() => remove(address)}>×</button>
+                {!readOnly && (
+                  <button type="button" className="chip-x" disabled={disabled}
+                          aria-label={`Remove ${address}`}
+                          onClick={() => remove(address)}>×</button>
+                )}
               </span>
             )
           })}
@@ -131,20 +139,22 @@ export default function RecipientPicker({
         </div>
       )}
 
-      <div className="recip-add">
-        <input className="f-input" value={draft} disabled={disabled}
-               aria-label="Add a recipient"
-               placeholder="someone.else@example.com"
-               onChange={e => { setDraft(e.target.value); setAddError(null) }}
-               // Enter adds the address rather than submitting anything — this
-               // sits above a Send button and must never reach it.
-               onKeyDown={e => {
-                 if (e.key === 'Enter') { e.preventDefault(); add(draft) }
-               }} />
-        <button type="button" className="btn btn-outline"
-                disabled={disabled || !draft.trim()}
-                onClick={() => add(draft)}>Add recipient</button>
-      </div>
+      {!readOnly && (
+        <div className="recip-add">
+          <input className="f-input" value={draft} disabled={disabled}
+                 aria-label="Add a recipient"
+                 placeholder="someone.else@example.com"
+                 onChange={e => { setDraft(e.target.value); setAddError(null) }}
+                 // Enter adds the address rather than submitting anything — this
+                 // sits above a Send button and must never reach it.
+                 onKeyDown={e => {
+                   if (e.key === 'Enter') { e.preventDefault(); add(draft) }
+                 }} />
+          <button type="button" className="btn btn-outline"
+                  disabled={disabled || !draft.trim()}
+                  onClick={() => add(draft)}>Add recipient</button>
+        </div>
+      )}
       {addError && (
         <div className="f-hint" role="alert" style={{ color: '#C53030', marginTop: 6 }}>
           {addError}

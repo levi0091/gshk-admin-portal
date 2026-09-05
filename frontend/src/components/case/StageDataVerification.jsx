@@ -4,6 +4,7 @@ import { formatDateTime } from '../../lib/format.js'
 import CheckRow from './CheckRow.jsx'
 import ReturnDataCard from './ReturnDataCard.jsx'
 import { describeError, isValidated, rebuildBeforeValidate } from './workflow.js'
+import { ActionWithheld } from '../RequirePermission.jsx'
 
 /**
  * Stage 1 — Data Verification (FE-3).
@@ -95,7 +96,7 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
       {/* The return itself, first — the wireframe opens this stage with the
           data, and everything below it is a decision about that data. */}
       <ReturnDataCard caseId={caseRow.id} reloadKey={caseRow.updated_at}
-                      onChanged={onChanged} />
+                      onChanged={onChanged} canWrite={canWrite} />
 
       <div className="card mb-16">
         <div className="card-hdr">
@@ -108,16 +109,21 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           </div>
         </div>
 
+        {/* `readOnly` rather than `disabled` without `nar1:write`: whether
+            these were ticked is the reason the case can or cannot advance, so
+            the FACT has to stay readable even when the tick is not on offer. */}
         <CheckRow
           checked={Boolean(caseRow.aml_cleared)}
-          disabled={!canWrite || busy !== null}
+          readOnly={!canWrite}
+          disabled={busy !== null}
           onToggle={v => patch('aml_cleared', v)}
           title="AML screening cleared"
           sub="Anti-money-laundering checks completed for this client."
         />
         <CheckRow
           checked={Boolean(caseRow.accounts_ready)}
-          disabled={!canWrite || busy !== null}
+          readOnly={!canWrite}
+          disabled={busy !== null}
           onToggle={v => patch('accounts_ready', v)}
           title="e-Reg accounts created"
           sub="Every signatory holds an individual e-Filing account with the Companies Registry, and CR has associated it with this company."
@@ -186,14 +192,27 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
                     : 'Builds the return and asks CR to check it.'}
               </div>
               <div className="ab-actions">
-                <span className="perm-tag">
-                  Requires <b>tpsi:read</b> — validation is free
-                </span>
-                <button className="btn btn-action"
-                        disabled={!canValidate || !prechecksDone || busy !== null}
-                        onClick={runValidation}>
-                  {busy === 'validate' ? 'Checking with CR…' : 'Validate with CR'}
-                </button>
+                {canValidate ? (
+                  <>
+                    {/* `tpsi:write`, not `tpsi:read` as this tag used to say.
+                        Validating REBUILDS the draft first (`filings/prepare`,
+                        `tpsi:write`) and only then asks CR to check it
+                        (`filings/{id}/validate`, `tpsi:read`) — so a role with
+                        read alone could never complete the action this tag was
+                        promising it. Still free: CR charges for the submit. */}
+                    <span className="perm-tag">
+                      Requires <b>tpsi:write</b> — validation is free
+                    </span>
+                    <button className="btn btn-action"
+                            disabled={!prechecksDone || busy !== null}
+                            onClick={runValidation}>
+                      {busy === 'validate' ? 'Checking with CR…' : 'Validate with CR'}
+                    </button>
+                  </>
+                ) : (
+                  <ActionWithheld module="tpsi" permission="write"
+                                  action="validating with CR" />
+                )}
               </div>
             </div>
           </>

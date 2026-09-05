@@ -6,7 +6,8 @@ import StatusBadge, {
 } from '../components/StatusBadge.jsx'
 import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { disabledReason } from '../lib/permissions.js'
+import { ReadOnlyNote } from '../components/RequirePermission.jsx'
+import { companyRegistryCaps } from '../lib/screenCapabilities.js'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
@@ -86,7 +87,7 @@ const COLUMNS = [
 export default function CompanyRegistryPage() {
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
-  const canWrite = hasPermission('companies', 'write')
+  const canWrite = companyRegistryCaps(hasPermission).addCompany
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -156,16 +157,22 @@ export default function CompanyRegistryPage() {
         </div>
         <div className="pg-actions">
           {/* `companies:read` gets this list; creating a row is
-              `companies:write`. Disabled rather than hidden, so a read-only
-              role sees the same screen with one action withheld and a reason
-              on it. */}
-          <button className="btn btn-action" onClick={() => setShowAdd(true)}
-                  disabled={!canWrite}
-                  title={disabledReason(canWrite, 'companies', 'write')}>
-            + Add Company
-          </button>
+              `companies:write`, and without it the button is not rendered at
+              all (Levi 2026-09-04). The banner below carries the reason — a
+              missing button with no explanation reads as a missing feature. */}
+          {canWrite && (
+            <button className="btn btn-action" onClick={() => setShowAdd(true)}>
+              + Add Company
+            </button>
+          )}
         </div>
       </div>
+
+      {/* The missing "+ Add Company" is otherwise unexplained. */}
+      {!canWrite && (
+        <ReadOnlyNote module="companies" what="every company in the registry"
+                      verb="Adding one" />
+      )}
 
       {showAdd && (
         <AddCompanyModal

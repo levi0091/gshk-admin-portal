@@ -1349,3 +1349,214 @@ describe('Confirmation', () => {
     expect(screen.getByText(/No receipt recorded/)).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Permissions — every stage, every combination that changes what renders
+//
+// The workflow is where the levels actually separate: `nar1:write` drives the
+// case, `tpsi:write` talks to CR, and `tpsi:submit` spends money. A role can
+// hold any one without the others, and each stage has to withhold exactly its
+// own actions — WITHOUT rendering them disabled (Levi 2026-09-04).
+// ---------------------------------------------------------------------------
+
+describe('Stage permissions — controls are absent, never merely disabled', () => {
+  const noDisabledButtons = () =>
+    screen.queryAllByRole('button')
+      .filter(b => b.hasAttribute('disabled'))
+      .map(b => b.textContent.trim())
+
+  describe('Data Verification without nar1:write', () => {
+    const renderIt = (over = {}) => render(
+      <StageDataVerification caseRow={at(over)} canWrite={false} canValidate
+                             onChanged={onChanged} onError={onError} />)
+
+    it('renders the manual checks as facts, not as tick targets', async () => {
+      renderIt({ aml_cleared: true, accounts_ready: false })
+      await screen.findByText('Manual checks')
+
+      // The ANSWER survives — it is why the case can or cannot advance — but
+      // there is nothing to press.
+      const aml = screen.getByTestId('check-AML screening cleared')
+      expect(aml).toHaveTextContent('Yes')
+      expect(screen.getByTestId('check-e-Reg accounts created'))
+        .toHaveTextContent('No')
+      expect(screen.queryByRole('button', { name: /AML screening cleared/ }))
+        .not.toBeInTheDocument()
+    })
+
+    it('offers no signing-capacity picker', async () => {
+      renderIt()
+      await screen.findByText('Manual checks')
+      expect(screen.queryByLabelText('Signing capacity')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Data Verification without tpsi:write', () => {
+    const renderIt = () => render(
+      <StageDataVerification caseRow={at({ form_status: { code: 'draft' }, filing_id: null })}
+                             canWrite canValidate={false}
+                             onChanged={onChanged} onError={onError} />)
+
+    it('renders no Validate button, and says who can', async () => {
+      renderIt()
+      await screen.findByText('Manual checks')
+
+      expect(screen.queryByRole('button', { name: /Validate with CR/ }))
+        .not.toBeInTheDocument()
+      expect(screen.getByText(/validating with CR is not available to your role/))
+        .toBeInTheDocument()
+    })
+
+    it('leaves no disabled button behind', async () => {
+      renderIt()
+      await screen.findByText('Manual checks')
+      expect(noDisabledButtons()).toEqual([])
+    })
+  })
+
+  describe('Data Verification WITH tpsi:write', () => {
+    it('asks for tpsi:write, not tpsi:read', async () => {
+      // Validating rebuilds the draft first (`filings/prepare`, tpsi:write) and
+      // only then asks CR to check it. The tag used to promise `tpsi:read`,
+      // which could never complete the action.
+      render(<StageDataVerification caseRow={at({ form_status: { code: 'draft' }, filing_id: null })}
+                                    canWrite canValidate
+                                    onChanged={onChanged} onError={onError} />)
+      await screen.findByText('Manual checks')
+
+      expect(screen.getByRole('button', { name: /Validate with CR/ })).toBeInTheDocument()
+      const tag = screen.getByText(/validation is free/)
+      expect(tag).toHaveTextContent('tpsi:write')
+      expect(tag).not.toHaveTextContent('tpsi:read')
+    })
+  })
+
+  describe('Client Verification without nar1:write', () => {
+    const renderIt = (over = {}) => renderRouted(
+      <StageClientVerification caseRow={at(over)} canWrite={false}
+                               onChanged={onChanged} onError={onError} onWarn={onWarn} />)
+
+    it('renders no Send, no reviewed tick and no recipient editing', async () => {
+      renderIt()
+      await screen.findByText(/Client's answer/)
+
+      expect(screen.queryByRole('button', { name: /Send to client/ }))
+        .not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Client approved/ }))
+        .not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Client declined/ }))
+        .not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Add recipient/ }))
+        .not.toBeInTheDocument()
+    })
+
+    it('still SHOWS who the return would go to', async () => {
+      // The recipient list is the thing a reviewer is here to check. Only the
+      // ways to change it are gone.
+      renderIt()
+      await screen.findByText(/Client's answer/)
+
+      const chips = await screen.findByTestId('recipient-chips')
+      expect(chips).toHaveTextContent('chan@example.com')
+      expect(within(chips).queryByRole('button', { name: /Remove chan/ }))
+        .not.toBeInTheDocument()
+    })
+
+    it('says who can send, rather than showing an empty stage', async () => {
+      renderIt()
+      await screen.findByText(/Client's answer/)
+      expect(screen.getByText(/sending it to the client is not available/))
+        .toBeInTheDocument()
+    })
+  })
+
+  describe('Signing without nar1:write', () => {
+    it('shows the chosen method as a fact, with no radio to change it', async () => {
+      renderRouted(<StageSigning caseRow={at({ signing_method: 'manual' })}
+                                 canWrite={false} onChanged={onChanged}
+                                 onError={onError} />)
+      await screen.findByText('Signing method')
+
+      expect(screen.getByTestId('signing-method')).toHaveTextContent('Manual')
+      expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+    })
+
+    it('renders no upload zone for the wet-signed scan', async () => {
+      renderRouted(<StageSigning caseRow={at({ signing_method: 'manual' })}
+                                 canWrite={false} onChanged={onChanged}
+                                 onError={onError} />)
+      await screen.findByText('Signing method')
+
+      expect(screen.queryByRole('button', { name: /Choose the signed PDF/ }))
+        .not.toBeInTheDocument()
+      expect(screen.getByText(/No signed scan attached yet/)).toBeInTheDocument()
+    })
+  })
+
+  describe('Signing without tpsi:write', () => {
+    it('renders no Apply signature, and names the permission', async () => {
+      renderRouted(<StageSigning caseRow={at({ signing_method: 'esign' })}
+                                 canWrite={false} onChanged={onChanged}
+                                 onError={onError} />)
+      await screen.findByText('Signing method')
+
+      expect(screen.queryByRole('button', { name: /Apply signature/ }))
+        .not.toBeInTheDocument()
+      expect(screen.getByText(/signing is not available to your role/))
+        .toBeInTheDocument()
+    })
+  })
+
+  describe('Submission without tpsi:submit', () => {
+    it('renders no submit gate on the e-Sign path', async () => {
+      render(<StageSubmission caseRow={at({ signing_method: 'esign' })}
+                              canSubmit={false} onChanged={onChanged}
+                              onError={onError} />)
+      await waitFor(() => expect(get).toHaveBeenCalled())
+
+      expect(screen.queryByRole('button', { name: /Submit NAR1/ }))
+        .not.toBeInTheDocument()
+      expect(await screen.findByText(/Filing requires the/)).toBeInTheDocument()
+    })
+
+    it('renders no receipt FORM on the manual path — the fields are controls too', async () => {
+      render(<StageSubmission caseRow={at({ signing_method: 'manual' })}
+                              canSubmit={false} onChanged={onChanged}
+                              onError={onError} />)
+      await screen.findByText(/Record the Companies Registry receipt/)
+
+      // Nothing has been recorded yet, so every field would be an empty box
+      // this role may not type in, above an upload zone that refuses the file.
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Record the filing/ }))
+        .not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Choose the receipt/ }))
+        .not.toBeInTheDocument()
+      expect(screen.getByText(/requires the/)).toHaveTextContent('tpsi:submit')
+    })
+
+    it('leaves no disabled button behind on either path', async () => {
+      for (const method of ['esign', 'manual']) {
+        const { unmount } = render(
+          <StageSubmission caseRow={at({ signing_method: method })}
+                           canSubmit={false} onChanged={onChanged} onError={onError} />)
+        await waitFor(() => expect(get).toHaveBeenCalled())
+        expect(noDisabledButtons(), method).toEqual([])
+        unmount()
+      }
+    })
+  })
+
+  describe('Submission WITH tpsi:submit', () => {
+    it('gives the manual path its form back', async () => {
+      render(<StageSubmission caseRow={at({ signing_method: 'manual' })}
+                              canSubmit onChanged={onChanged} onError={onError} />)
+      await screen.findByText(/Record the Companies Registry receipt/)
+
+      expect(screen.queryAllByRole('textbox').length).toBeGreaterThan(0)
+      expect(screen.getByRole('button', { name: /Record the filing/ }))
+        .toBeInTheDocument()
+    })
+  })
+})

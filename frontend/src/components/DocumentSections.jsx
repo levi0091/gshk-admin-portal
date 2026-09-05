@@ -53,7 +53,7 @@ export function TypeChip({ doc }) {
  * passport ended up filed as an "Identity Document Scan".
  */
 export function DocumentSection({ section, count, children, onAdd,
-                                  canAdd = true, addReason }) {
+                                  canAdd = true }) {
   return (
     <div className="card mb-16">
       <div className="card-hdr">
@@ -63,16 +63,16 @@ export function DocumentSection({ section, count, children, onAdd,
           </div>
           <div className="card-sub">{section.description}</div>
         </div>
-        {/* DISABLED RATHER THAN REMOVED for a role that may only read. The
-            section still has to render — an operator needs to see what is on
-            file — and a button that vanishes makes the screen look like a
-            different, smaller product rather than the same one with less
-            granted. `canAdd` defaults true so a caller that has not been
-            taught about permissions behaves exactly as it did. */}
-        <button className="btn btn-outline btn-sm" onClick={onAdd}
-                disabled={!canAdd} title={canAdd ? undefined : addReason}>
-          {section.is_identity ? 'Add Identity Document' : 'Upload Document'}
-        </button>
+        {/* NOT RENDERED for a role that may not upload (Levi 2026-09-04). The
+            SECTION still renders — an operator needs to see what is on file,
+            and an empty section is itself a fact — but the button that would
+            do nothing is gone. `canAdd` defaults true so a caller that has not
+            been taught about permissions behaves exactly as it did. */}
+        {canAdd && (
+          <button className="btn btn-outline btn-sm" onClick={onAdd}>
+            {section.is_identity ? 'Add Identity Document' : 'Upload Document'}
+          </button>
+        )}
       </div>
       {children}
     </div>
@@ -87,8 +87,7 @@ export function DocumentSection({ section, count, children, onAdd,
  * for what is on file; the history is where they look for what happened to it.
  */
 export function SectionDocuments({ documents, busy, onRemove,
-                                   canDownload = true, downloadReason,
-                                   canRemove = true, removeReason }) {
+                                   canDownload = true, canRemove = true }) {
   return documents.map(doc => (
     <div className="sec-doc" key={doc.id}>
       <div className="sec-doc-l">
@@ -104,18 +103,20 @@ export function SectionDocuments({ documents, busy, onRemove,
       </div>
       <div className="sec-doc-actions">
         {/* Download is `documents:read` and Remove is `documents:delete` —
-            two different permissions, so they disable independently. A role
-            that may read the file but not destroy it is the common case. */}
-        <button className="dv-dl" onClick={() => downloadDocument(doc.id)}
-                disabled={!canDownload}
-                title={canDownload ? undefined : downloadReason}>
-          Download
-        </button>
-        <button className="dv-dl dv-rm" onClick={() => onRemove(doc)}
-                disabled={busy || !canRemove}
-                title={canRemove ? undefined : removeReason}>
-          Remove
-        </button>
+            two different permissions, so they appear and disappear
+            independently. A role that may read the file but not destroy it is
+            the common case, and it should see exactly one button here. */}
+        {canDownload && (
+          <button className="dv-dl" onClick={() => downloadDocument(doc.id)}>
+            Download
+          </button>
+        )}
+        {canRemove && (
+          <button className="dv-dl dv-rm" onClick={() => onRemove(doc)}
+                  disabled={busy}>
+            Remove
+          </button>
+        )}
       </div>
     </div>
   ))
@@ -134,7 +135,7 @@ export function SectionDocuments({ documents, busy, onRemove,
  * that it once existed does not leave at all.
  */
 export function DocumentHistory({ documents, sectionLabels,
-                                  canDownload = true, downloadReason }) {
+                                  canDownload = true }) {
   if (!documents?.length) {
     return <div className="empty-state" style={{ padding: '16px 0' }}>No documents uploaded yet.</div>
   }
@@ -172,16 +173,14 @@ export function DocumentHistory({ documents, sectionLabels,
               </span>
               {/* A removed document is not downloadable — `create_signed_url`
                   404s a deleted one, so offering the button would be a lie. */}
-              {!removed && (
+              {!removed && canDownload && (
                 // THE VERSION, not the document. Every button in this list used
                 // to sign the CURRENT version's path, so v1 and v2 both handed
                 // back v3 under three different file names — the older bytes
                 // were in `document_versions.storage_path` the whole time and
                 // nothing read them.
                 <button className="dv-dl"
-                        onClick={() => downloadDocument(doc.id, latest ? null : v.version_number)}
-                        disabled={!canDownload}
-                        title={canDownload ? undefined : downloadReason}>
+                        onClick={() => downloadDocument(doc.id, latest ? null : v.version_number)}>
                   Download
                 </button>
               )}
