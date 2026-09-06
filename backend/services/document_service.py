@@ -20,18 +20,42 @@ from fastapi import HTTPException
 
 from db.supabase import get_supabase
 from services.audit_service import log_event
+from services import audit_subject
 from services import audit_events
 
 BUCKET = "gflowdesk-documents"
 _SIGNED_URL_TTL = 3600  # seconds
 
-_OWNER_KINDS = {"entity", "person"}
+#: `receipt` is a NAR1 CASE, not a company and not a person (migration 029).
+#: A CR filing receipt belongs to one annual return: owning it by entity would
+#: make next year's upload version over this year's evidence, because
+#: upload_document versions in place on (owner, document_type).
+_OWNER_KINDS = {"entity", "person", "receipt"}
+
+#: Owner kinds whose id is a `nar1_cases.id`. Kept as a set rather than an
+#: `== "receipt"` test so a second case-owned section does not have to find
+#: every branch again.
+_CASE_OWNER_KINDS = {"receipt"}
+
+_OWNER_COLUMN = {
+    "entity": "entity_id",
+    "person": "person_id",
+    "receipt": "nar1_case_id",
+}
 
 
 def _storage_path(owner_kind: str, owner_id: str, document_type_code: str,
                   version: int, file_name: str) -> str:
-    """Path convention (OQ-5): /{entity|person}/{id}/{document_type}/{version}/{file}."""
+    """Path convention (OQ-5): /{entity|person}/{id}/{document_type}/{version}/{file}.
+
+    `receipt` is the exception spec §4 specifies literally:
+    `receipt/{nar1_case_id}/{version}/{file}` — no type segment, because a case
+    section carries exactly one document type (`cr_receipt`) and a constant
+    directory between the id and the version says nothing.
+    """
     safe_name = (file_name or "file").replace("/", "_")
+    if owner_kind in _CASE_OWNER_KINDS:
+        return f"{owner_kind}/{owner_id}/{version}/{safe_name}"
     return f"{owner_kind}/{owner_id}/{document_type_code}/{version}/{safe_name}"
 
 
@@ -46,25 +70,110 @@ def _upload_bytes(sb, path: str, content: bytes, mime_type: Optional[str]) -> No
         raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}")
 
 
-def _owner_name(sb, owner_kind: str, owner_id: Optional[str]) -> Optional[str]:
-    """The company or person the document belongs to — recorded on the audit row
-    so the trail names the subject without a join."""
-    if not owner_id:
-        return None
+def _case_row(sb, case_id: str) -> dict:
+    """The NAR1 case a document hangs off — its company, and its case number.
+
+    `audit_log.case_id` holds an ENTITY id (routers/cases.py::_audit_target), so
+    a case-owned document has to resolve through to the entity or its audit row
+    lands in an id space no company query returns — the defect _audit_target
+    exists to document. The case number comes back in the same select because
+    the trail quotes it beside the company name.
+    """
     try:
-        if owner_kind == "entity":
-            row = (sb.table("entities").select("company_name")
-                   .eq("id", owner_id).single().execute()).data
-            return (row or {}).get("company_name")
-        row = (sb.table("persons").select("full_name")
-               .eq("id", owner_id).single().execute()).data
-        return (row or {}).get("full_name")
-    except Exception:
-        return None
+        row = (sb.table("nar1_cases").select("id, entity_id, case_no")
+               .eq("id", case_id).single().execute()).data
+        return row or {"id": case_id}
+    except Exception:  # noqa: BLE001
+        return {"id": case_id}
+
+
+def _case_entity_id(sb, case_id: str) -> Optional[str]:
+    return _case_row(sb, case_id).get("entity_id")
+
+
+def _entity_subject(sb, entity_id: Optional[str]) -> dict:
+    if not entity_id:
+        return {}
+    try:
+        row = (sb.table("entities").select("id, company_name, br_number")
+               .eq("id", entity_id).single().execute()).data
+    except Exception:  # noqa: BLE001
+        return {}
+    return row or {}
+
+
+def _audit_owner(sb, owner_kind: str, owner_id: Optional[str]) -> dict:
+    """Everything an audit row needs to say WHICH record a document belongs to.
+
+    One helper, one pass, because the three answers are the same lookup:
+
+      case_id        the ENTITY id, never a case id (routers/cases.py
+                     ::_audit_target) — this is how a company's whole trail is
+                     queried, and a case id there is invisible to it.
+      company_name   the company or person the document hangs off.
+      subject_*      module, kind, id and the reference a human quotes, so the
+                     trail reads "Kanenas Holding Limited (69123456)" rather
+                     than naming nothing.
+
+    A CASE-owned document (a CR receipt, a wet-signed return) is filed under its
+    CASE, not its company: it is an artefact of one filing of one year. The
+    company still appears, as the name beside the case number.
+
+    THE MODULE IS THE OWNER'S MODULE, not a `documents` module (Levi
+    2026-09-04). None of the three calls below passes one, so each takes the
+    default for its kind: an id scan on a director is a Natural Person change,
+    a certificate against a company is a Body Corporate change, and a CR receipt
+    on a case is Post-incorporation. A director's history is then one filter
+    away instead of two.
+
+    Swallows every failure — a document upload must not fail because the audit
+    row could not be made prettier.
+    """
+    if not owner_id:
+        return {}
+
+    if owner_kind in _CASE_OWNER_KINDS:
+        case = _case_row(sb, owner_id)
+        entity = _entity_subject(sb, case.get("entity_id"))
+        return {
+            "case_id": case.get("entity_id"),
+            "company_name": entity.get("company_name"),
+            **audit_subject.for_case(case),
+        }
+
+    if owner_kind == "entity":
+        entity = _entity_subject(sb, owner_id)
+        return {
+            "case_id": owner_id,
+            "company_name": entity.get("company_name"),
+            **audit_subject.for_company(entity or {"id": owner_id}),
+        }
+
+    try:
+        person = (sb.table("persons").select("id, full_name")
+                  .eq("id", owner_id).single().execute()).data or {}
+    except Exception:  # noqa: BLE001
+        person = {"id": owner_id}
+    return {
+        "case_id": None,
+        "company_name": person.get("full_name"),
+        **audit_subject.for_person(
+            person,
+            id_number=audit_subject.primary_id_number(sb, owner_id),
+        ),
+    }
 
 
 def _owner_columns(owner_kind: str, owner_id: str) -> dict:
-    return {"entity_id": owner_id} if owner_kind == "entity" else {"person_id": owner_id}
+    return {_OWNER_COLUMN[owner_kind]: owner_id}
+
+
+def _owner_kind_of(doc: dict) -> str:
+    """Which of the three owner columns a stored row actually uses."""
+    for kind, column in _OWNER_COLUMN.items():
+        if doc.get(column):
+            return kind
+    return "entity"
 
 
 async def upload_document(
@@ -92,10 +201,7 @@ async def upload_document(
         .eq("document_type_code", document_type_code)
         .eq("status", "active")
     )
-    if owner_kind == "entity":
-        q = q.eq("entity_id", owner_id)
-    else:
-        q = q.eq("person_id", owner_id)
+    q = q.eq(_OWNER_COLUMN[owner_kind], owner_id)
     existing = (q.execute().data) or []
 
     if existing:
@@ -132,12 +238,11 @@ async def upload_document(
         ).data[0]
 
         await log_event(
-            case_id=owner_id if owner_kind == "entity" else None,
+            **_audit_owner(sb, owner_kind, owner_id),
             user_id=user["id"],
             user_display_name=user["display_name"],
             action_type="DOCUMENT_VERSION_ADDED",
             event_code=audit_events.GF_DOC_VERSION,   # no Viewpoint equivalent
-            company_name=_owner_name(sb, owner_kind, owner_id),
             entity_type="document",
             entity_id=str(doc["id"]),
             old_value=f"{document_type_code} v{new_version - 1}",
@@ -181,12 +286,11 @@ async def upload_document(
     }).execute()
 
     await log_event(
-        case_id=owner_id if owner_kind == "entity" else None,
+        **_audit_owner(sb, owner_kind, owner_id),
         user_id=user["id"],
         user_display_name=user["display_name"],
         action_type="DOCUMENT_UPLOADED",
         event_code=audit_events.GF_DOC_UPLOADED,   # no Viewpoint equivalent
-        company_name=_owner_name(sb, owner_kind, owner_id),
         entity_type="document",
         entity_id=str(created["id"]),
         new_value=f"{document_type_code} v1 ({file_name})",
@@ -196,31 +300,43 @@ async def upload_document(
     return created
 
 
-def list_documents(*, owner_kind: str, owner_id: str) -> list[dict]:
-    """Active + superseded documents for an owner, with version history.
+def list_documents(*, owner_kind: str, owner_id: str,
+                   include_deleted: bool = False) -> list[dict]:
+    """Documents for an owner, with version history.
 
     Embeds document_types so the UI can say WHAT the document is ("Certificate of
     Incorporation") and not just the uploaded file name.
+
+    `include_deleted` is what makes "remove it from the section, keep it in the
+    history" possible (Levi 2026-09-04). A soft delete retains the object and
+    the row on purpose (OQ-2); filtering the row out of every read as well threw
+    away the half of that decision the trail depends on. A profile asks for
+    everything and shows removed documents only in Document History, marked;
+    every other caller still gets the live set by default.
     """
     sb = get_supabase()
     q = (
         sb.table("documents")
         .select("*, document_versions(*), document_types(code, label, category)")
-        .neq("status", "deleted")
     )
-    if owner_kind == "entity":
-        q = q.eq("entity_id", owner_id)
-    else:
-        q = q.eq("person_id", owner_id)
+    if not include_deleted:
+        q = q.neq("status", "deleted")
+    q = q.eq(_OWNER_COLUMN[owner_kind], owner_id)
     return (q.order("document_type_code").execute().data) or []
 
 
-def create_signed_url(document_id: str) -> dict:
+def create_signed_url(document_id: str, version_number: int | None = None) -> dict:
     """Signed URL that DOWNLOADS the file rather than rendering it in the tab.
 
     Supabase serves objects inline by default, so a PDF just opens in the
     browser. Passing `download` makes Storage return
     Content-Disposition: attachment, which is what a "Download" button should do.
+
+    `version_number` names a SUPERSEDED version. Without it the document history
+    was a list of versions whose Download buttons all fetched the current one:
+    the screen offered v1, v2 and v3, and handed back v3 three times under three
+    file names. Every version keeps its own `storage_path`, so the older bytes
+    were there the whole time — nothing was reading them.
     """
     sb = get_supabase()
     doc = (
@@ -231,10 +347,24 @@ def create_signed_url(document_id: str) -> dict:
     if doc.get("status") == "deleted":
         raise HTTPException(status_code=404, detail="Document deleted")
 
-    file_name = doc.get("file_name") or "document"
+    source = doc
+    if version_number is not None and version_number != doc.get("current_version"):
+        version = (
+            sb.table("document_versions").select("*")
+            .eq("document_id", document_id).eq("version_number", version_number)
+            .limit(1).execute()
+        ).data
+        if not version:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Version {version_number} of this document does not exist",
+            )
+        source = version[0]
+
+    file_name = source.get("file_name") or doc.get("file_name") or "document"
     try:
-        signed = sb.storage.from_(doc.get("storage_bucket") or BUCKET).create_signed_url(
-            doc["storage_path"], _SIGNED_URL_TTL, options={"download": file_name}
+        signed = sb.storage.from_(source.get("storage_bucket") or BUCKET).create_signed_url(
+            source["storage_path"], _SIGNED_URL_TTL, options={"download": file_name}
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Signed URL failed: {exc}")
@@ -254,15 +384,17 @@ async def soft_delete_document(*, document_id: str, user: dict) -> dict:
         sb.table("documents").update({"status": "deleted"}).eq("id", document_id).execute()
     ).data[0]
 
-    owner_kind = "entity" if doc.get("entity_id") else "person"
-    owner_id = doc.get("entity_id") or doc.get("person_id")
+    # Read back off the row, so a case-owned receipt (migration 029) is named
+    # and filed under its company like every other document rather than
+    # logging a null owner.
+    owner_kind = _owner_kind_of(doc)
+    owner_id = doc.get(_OWNER_COLUMN[owner_kind])
     await log_event(
-        case_id=doc.get("entity_id"),
+        **_audit_owner(sb, owner_kind, owner_id),
         user_id=user["id"],
         user_display_name=user["display_name"],
         action_type="DOCUMENT_DELETED",
         event_code=audit_events.GF_DOC_DELETED,   # no Viewpoint equivalent
-        company_name=_owner_name(sb, owner_kind, owner_id),
         entity_type="document",
         entity_id=str(document_id),
         old_value=f"{doc.get('document_type_code')} ({doc.get('file_name')})",

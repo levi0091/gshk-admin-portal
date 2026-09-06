@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
-import FaultPanel from './FaultPanel.jsx'
+import { formatDateTime } from '../../lib/format.js'
 import { describeError, signedOff } from './workflow.js'
+import { ActionWithheld } from '../RequirePermission.jsx'
 
 /**
  * Stage 3 — Signing (wireframe_v11 `cmwp3`). e-Sign (FE-2) and manual (FE-4).
@@ -28,15 +29,12 @@ import { describeError, signedOff } from './workflow.js'
 export default function StageSigning({ caseRow, canWrite, onChanged, onError, onGo }) {
   const method = caseRow.signing_method || 'esign'
   const [busy, setBusy] = useState(null)
-  const [failure, setFailure] = useState(null)
   const [cred, setCred] = useState(null)
   const [preflight, setPreflight] = useState(undefined)
   const fileInput = useRef(null)
 
   const done = signedOff(caseRow)
   const filingId = caseRow.filing_id
-  const faults = caseRow.form_status?.code === 'signing_failed'
-    ? caseRow.form_status.faults : null
 
   // Read once, and never block the screen on it: a credential lookup that
   // fails must not hide the manual route, which needs no credential at all.
@@ -84,7 +82,7 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
   }
 
   async function sign() {
-    onError(null); setFailure(null); setBusy('sign')
+    onError(null); setBusy('sign')
     try {
       // No body. The backend takes the signatory from the session and refuses
       // the withdrawn fields, so anything sent here would be a 400 rather than
@@ -92,9 +90,7 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
       await api.post(`/tpsi/filings/${caseRow.filing_id}/sign`, {})
       onChanged()
     } catch (e) {
-      const described = describeError(e)
-      setFailure(described)
-      onError(described)
+      onError(describeError(e))
     } finally {
       setBusy(null)
     }
@@ -118,22 +114,18 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
 
   return (
     <>
-      <MethodChoice method={method} disabled={!canWrite || done || busy !== null}
+      {/* WHAT AUTHORISES THIS SIGNATURE, at the top of the screen that applies
+          it (Levi 2026-09-01). Signing commits the return; the operator about
+          to do it should be able to see whether a named director agreed to it
+          or whether nobody answered and a job approved it on their silence. */}
+      <ClientApproval approval={caseRow.client_approval} />
+
+      <MethodChoice method={method} readOnly={!canWrite}
+                    disabled={done || busy !== null}
                     onPick={setMethod} />
 
       {method === 'esign' && <Preflight preflight={preflight} cred={cred} />}
 
-      {method === 'esign' && (
-        <div className="alert al-info" role="note" style={{ marginBottom: 16 }}>
-          <span className="al-icon">🖊</span>
-          <div className="al-body">
-            A NAR1 carries <b>one signature</b> by a single authorised{' '}
-            <b>individual</b> — a director, or the company secretary's authorised
-            representative. Signing calls <code>verifyPinSigningNar1</code> and is{' '}
-            <b>free</b>; nothing is charged until Submission.
-          </div>
-        </div>
-      )}
 
       {/* The manual card is NOT replaced by a success alert once a scan is
           attached — it keeps its own done state (v11 `cm-upload-done`), which
@@ -142,17 +134,7 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
       {method === 'manual' ? (
         <ManualUpload caseRow={caseRow} canWrite={canWrite} busy={busy}
                       fileInput={fileInput} onPick={upload} attached={done} />
-      ) : done ? (
-        <div className="card mb-16">
-          <div className="alert al-success" role="status">
-            <span className="al-icon">✓</span>
-            <div className="al-body">
-              The return is signed at CR. It has not been filed yet, and nothing
-              has been charged.
-            </div>
-          </div>
-        </div>
-      ) : (
+      ) : done ? null : (
         <div className="card mb-16">
           <div className="card-hdr">
             <div>
@@ -164,14 +146,12 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
             </div>
           </div>
 
-          {failure?.hint && (
-            <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-              <span className="al-icon">⚠</span><div className="al-body">{failure.hint}</div>
-            </div>
-          )}
-          <FaultPanel faults={faults} title="The Companies Registry refused the signature" />
+          {/* NOTHING ABOUT THE LAST FAILURE IS DRAWN HERE — not CR's faults
+              and not the hint. The page banner is the single surface and the
+              page scrolls to it, so a copy here is a second box saying less
+              about the same refusal (Levi 2026-09-03). */}
 
-          <div className="f-group" style={{ marginTop: faults?.length ? 16 : 0 }}>
+          <div className="f-group">
             <span className="f-label">Signing as</span>
             {cred === null ? (
               <div className="f-static" aria-busy="true">Checking your credentials…</div>
@@ -190,30 +170,38 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
                 </span>
               </>
             ) : (
-              <div className="alert al-warn" role="status">
-                <span className="al-icon">⚠</span>
-                <div className="al-body">
-                  <b>You have no e-Service signing password stored,</b> so you
-                  cannot sign this return. Add one under{' '}
-                  <Link to="/cr-credentials">CR Credentials</Link> — it is the{' '}
-                  <b>signing</b> password, not the TPSI login one.
-                </div>
+              // A card note, not an alert: this is the state of the field it
+              // sits under — you have no credential — rather than the outcome
+              // of anything pressed. Alerts on the workflow mean "what you
+              // just did was refused" and live at the top of the page.
+              <div className="card-note card-note-warn" role="status">
+                <b>You have no e-Service signing password stored,</b> so you
+                cannot sign this return. Add one under{' '}
+                <Link to="/cr-credentials">CR Credentials</Link> — it is the{' '}
+                <b>signing</b> password, not the TPSI login one.
               </div>
             )}
           </div>
 
-          {canWrite && (
-            <div className="action-bar">
-              <div className="ab-note">Signing contacts CR. Nothing is charged and nothing is filed.</div>
-              <div className="ab-actions">
-                <span className="perm-tag">Requires <b>tpsi:write</b></span>
-                <button className="btn btn-action" disabled={busy !== null || !canSign}
-                        onClick={sign}>
-                  {busy === 'sign' ? 'Signing at CR…' : 'Apply signature'}
-                </button>
-              </div>
+          <div className="action-bar">
+            <div className="ab-note">Signing contacts CR. Nothing is charged and nothing is filed.</div>
+            <div className="ab-actions">
+              {canWrite ? (
+                <>
+                  <span className="perm-tag">Requires <b>tpsi:write</b></span>
+                  <button className="btn btn-action" disabled={busy !== null || !canSign}
+                          onClick={sign}>
+                    {busy === 'sign' ? 'Signing at CR…' : 'Apply signature'}
+                  </button>
+                </>
+              ) : (
+                // The bar used to vanish outright, leaving a stage titled
+                // "Apply the signature" with no signature to apply and no
+                // explanation.
+                <ActionWithheld module="tpsi" action="signing" />
+              )}
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -239,13 +227,40 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
  * v11's `cm-method` radiogroup. Two cards, each carrying the consequence of
  * choosing it — which is the whole reason this is not a toggle.
  */
-function MethodChoice({ method, disabled, onPick }) {
+function MethodChoice({ method, disabled, readOnly = false, onPick }) {
   const options = [
     ['esign', 'e-Sign',
      "CR e-Service PIN signing. The fee is drawn from the GSHK deposit account when you submit."],
     ['manual', 'Manual — pen & paper',
      'The signatory signs a printed NAR1. Filed off-portal: no CR API call and no fee deducted here.'],
   ]
+
+  // A CHOICE THIS ROLE CANNOT MAKE IS NOT A CHOICE, so it stops being a
+  // radiogroup: only the method actually chosen is drawn, as a card with
+  // nothing to press. Showing both greyed-out options would still be asking a
+  // question, and the unchosen one would be inviting an answer.
+  if (readOnly) {
+    const chosen = options.find(([value]) => value === method)
+    return (
+      <div className="meth-group">
+        <div className="meth-lbl">Signing method</div>
+        {chosen ? (
+          <div className="meth-opt sel is-static" data-testid="signing-method">
+            <span className="meth-radio" aria-hidden="true" />
+            <span className="meth-body">
+              <b>{chosen[1]}</b>
+              <span className="meth-sub">{chosen[2]}</span>
+            </span>
+          </div>
+        ) : (
+          <div className="empty-state" style={{ padding: '12px 0' }}>
+            No signing method chosen yet.
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="meth-group" role="radiogroup" aria-label="Signing method">
       <div className="meth-lbl">Signing method</div>
@@ -343,6 +358,39 @@ function Preflight({ preflight, cred }) {
  * attached there was nothing on screen saying so, or saying that attaching it
  * had been written to the audit trail.
  */
+/**
+ * Who approved this return, and how (spec §5).
+ *
+ * A BARE "Approved" IS NEVER RENDERED. The three sources carry different
+ * evidence: a self-service confirmation has a director, a timestamp and an IP
+ * behind it; a relayed reply has a staff member's word; a timeout approval has
+ * nobody's. Collapsing them would let a return nobody ever answered look, on
+ * the screen that signs it, exactly like one a director confirmed.
+ *
+ * Renders nothing when there is no approval — the stepper already refuses to
+ * reach this stage without one, and an empty card would only take up room.
+ */
+function ClientApproval({ approval }) {
+  if (!approval) return null
+  return (
+    <div className={`alert ${approval.system ? 'al-warn' : 'al-success'}`}
+         role="status" style={{ marginBottom: 16 }}
+         data-testid="client-approval-provenance">
+      <span className="al-icon">{approval.system ? '⚠' : '✓'}</span>
+      <div className="al-body">
+        <b>{approval.summary}</b>
+        {approval.responded_at && <> · {formatDateTime(approval.responded_at)}</>}
+        {approval.system && (
+          <div style={{ marginTop: 4 }}>
+            Nobody confirmed this return. If that is not what you expect, stop
+            and check with the client before signing.
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) {
   return (
     <div className="card mb-16">
@@ -356,6 +404,10 @@ function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) 
         </div>
       </div>
 
+      {/* `!canWrite` stays on this one, and it is not an oversight: the input
+          is `visually-hidden` and only ever opened by the zone below, which is
+          not rendered at all without the permission. Nothing a user can see is
+          disabled here — this is the belt behind the braces. */}
       <input ref={fileInput} type="file" className="visually-hidden"
              accept="application/pdf,image/*" aria-label="Wet-signed NAR1"
              disabled={!canWrite || busy !== null}
@@ -385,8 +437,8 @@ function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) 
             </button>
           )}
         </div>
-      ) : (
-        <button type="button" className="up-zone" disabled={!canWrite || busy !== null}
+      ) : canWrite ? (
+        <button type="button" className="up-zone" disabled={busy !== null}
                 onClick={() => fileInput.current?.click()}>
           <span className="up-arrow" aria-hidden="true">⬆</span>
           <span className="up-txt">
@@ -396,6 +448,14 @@ function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) 
             </span>
           </span>
         </button>
+      ) : (
+        // A drop zone that refuses the drop is worse than no drop zone. The
+        // fact that nothing is attached still has to be said, though — it is
+        // why this case is stuck.
+        <div className="empty-state" style={{ padding: '16px 0' }}>
+          No signed scan attached yet.{' '}
+          <ActionWithheld module="nar1" action="uploading it" />
+        </div>
       )}
     </div>
   )

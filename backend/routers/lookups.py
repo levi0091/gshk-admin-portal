@@ -14,8 +14,112 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from middleware.auth import require_any_permission
 from db.supabase import get_supabase
+from services.cr_forms import control_nature
+from services.cr_forms.record_types import RECORD_TYPES
+from services.tpsi.forms.cr_vocabularies import (
+    BUSINESS_NATURE,
+    COMPANY_TYPE,
+    COUNTRY_OPTIONS,
+    CURRENCY,
+    DISTRICT_CODES,
+)
 
 router = APIRouter()
+
+#: CR's Hong Kong District codes, served alongside Viewpoint's vocabularies but
+#: NOT stored with them.
+#:
+#: For a HK address CR reads District as a controlled code, not free text:
+#: sending "WAN CHAI" was refused live on 2026-08-27 ("Please input valid
+#: District") while "WANCHAI" passed. The address form therefore needs the same
+#: 125 values `nar1_mapper` validates against — and seeding them into
+#: `lookup_values` would create a SECOND copy that can drift from the one that
+#: decides whether a filing is accepted. One owner per vocabulary: CR owns
+#: this, so it is read from CR's own set at import time.
+#:
+#: The label is the code. CR's codes are names with the spaces removed, and
+#: "WANCHAI" cannot be turned back into "Wan Chai" reliably — inventing a
+#: prettier label risks showing an operator something CR has never heard of.
+_CR_DISTRICTS = [{"code": code, "label": code} for code in sorted(DISTRICT_CODES)]
+
+#: CR's 88 business nature codes. The label IS the description, because picking
+#: a code is what fills the description in — CR derives `natureDesc` from
+#: `nature` after web-form validation, so the two are never independently
+#: chosen. Viewpoint holds no business nature whatsoever (BusNames.BusNature is
+#: empty on all 5,028 rows), so this list is the only guard against an operator
+#: inventing a code.
+_CR_BUSINESS_NATURE = [
+    {"code": code, "label": description}
+    for code, description in sorted(BUSINESS_NATURE.items())
+]
+
+#: The three currencies GSHK's book actually files in, offered first.
+#:
+#: Alphabetical order buried HKD at position 22 of 54, behind AED, AFA, ALL and
+#: eighteen others nobody here has ever filed. This is the same reasoning that
+#: puts Private first in `_CR_COMPANY_TYPE` and Hong Kong first on the address
+#: form: the list stays complete, the common answer stops being a scroll.
+_CURRENCY_PINNED = ("EUR", "HKD", "USD")
+
+#: CR's 54 currency codes, which are NOT ISO 4217 — CR wants RMB, NTD, WON and
+#: NIS where ISO says CNY, TWD, KRW and ILS. `lookup_values` separately holds
+#: 162 ISO codes lifted from Viewpoint; offering those on a share capital form
+#: produces a filing CR refuses, so anything bound for CR reads this instead.
+#:
+#: Pinned first, then the rest alphabetically. A pinned code that CR ever drops
+#: simply disappears rather than being served as a code CR would refuse.
+_CR_CURRENCY = [
+    {"code": code, "label": f"{code} - {CURRENCY[code]}"}
+    for code in _CURRENCY_PINNED if code in CURRENCY
+] + [
+    {"code": code, "label": f"{code} - {description}"}
+    for code, description in sorted(CURRENCY.items())
+    if code not in _CURRENCY_PINNED
+]
+
+#: Class-of-shares names, offered as a starting point and NOT a closed list.
+#:
+#: CR validates nothing here: `clsOfShares` is free text of 100 characters on
+#: NAR1 and NNC1 alike (see `cr_forms/contract.py`), and a company is free to
+#: constitute a class called anything. What this fixes is spelling — an operator
+#: typing the class by hand produced "ORDINARY", "ordinary" and "Ordinary
+#: Shares" for one class, and `share_classes` has a UNIQUE (entity_id,
+#: class_name), so the same class under two spellings becomes two classes and
+#: Schedule 1 files the members twice.
+#:
+#: The screen pairs this with a free-text escape, so an unusual class is still
+#: typed rather than forced into the nearest listed one.
+_SHARE_CLASS_NAME = [
+    {"code": name, "label": name}
+    for name in ("Ordinary", "Ordinary A", "Ordinary B", "Preference")
+]
+
+#: CR's three company types. Deliberately NOT sorted — Private first, because
+#: it is what 5,711 of the 5,930 companies in the book are.
+#:
+#: `entities.company_type` held free text before this (Viewpoint's own
+#: descriptions, e.g. "Private company limited by shares"). Those values are
+#: not dropped: `optionsFor` on the front end always offers the stored value
+#: back, flagged, so a legacy record renders rather than silently blanking on
+#: the next save.
+_CR_COMPANY_TYPE = [{"code": code, "label": label} for code, label in COMPANY_TYPE]
+
+#: The registers NAR1 s16 asks a company to locate, in render order.
+_CR_RECORD_TYPE = [{"code": code, "label": label} for code, label in RECORD_TYPES]
+
+#: CR's Country & Region sheet, for every field CR validates a country on:
+#: an address's `ctryRegion` and a passport's `indvPptIssCtry`.
+#:
+#: `lookup_values.country` is NOT usable for these. It carries 270 Viewpoint
+#: rows, 20 of which resolve to no CR code at all -- US states, UK constituent
+#: countries, Labuan, Zaire, and three labelled only in Chinese. Picking the
+#: Chinese Hong Kong stored 'HK-CH' and killed the return at Data
+#: Verification. Same rule as the district and currency lists above: the
+#: vocabulary that decides whether a filing is accepted owns the dropdown.
+#:
+#: `lookup_values.country` stays for `place_of_birth` and the other fields CR
+#: never sees.
+_CR_COUNTRY = [{"code": code, "label": label} for code, label in COUNTRY_OPTIONS]
 
 # Reference data for both the company and the person forms — a role holding
 # either one may read it.
@@ -51,6 +155,23 @@ def _all() -> dict[str, list[dict]]:
         grouped.setdefault(row["category"], []).append(
             {"code": row["code"], "label": row["label"]}
         )
+    # Rides along with the Viewpoint categories so the address form costs no
+    # extra round trip — the whole point of serving these in one response.
+    grouped["cr_district"] = _CR_DISTRICTS
+    grouped["cr_business_nature"] = _CR_BUSINESS_NATURE
+    grouped["cr_currency"] = _CR_CURRENCY
+    grouped["cr_company_type"] = _CR_COMPANY_TYPE
+    grouped["cr_record_type"] = _CR_RECORD_TYPE
+    grouped["cr_country"] = _CR_COUNTRY
+    grouped["share_class_name"] = _SHARE_CLASS_NAME
+    # The portal's own beneficial-owner vocabularies (Companies Ordinance
+    # Part 12 Div 2A), not CR's — hence no `cr_` prefix. Served here so the
+    # dropdown and the write check read the same list.
+    grouped["bo_owner_type"] = [
+        {"code": code, "label": label} for code, label in control_nature.OWNER_TYPES]
+    grouped["bo_nature_of_control"] = [
+        {"code": code, "label": label}
+        for code, label in control_nature.NATURE_OF_CONTROL]
     _cache = (time.monotonic(), grouped)
     return grouped
 

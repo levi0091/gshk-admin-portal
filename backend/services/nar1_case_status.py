@@ -11,7 +11,9 @@ pure function of those two records, so the badge cannot drift out of step with
 the facts underneath it, and there is no third place for them to disagree.
 
 The seven codes are exactly the seven badges wireframe_v11 renders (bw-data,
-bw-verify, bw-awaiting, bw-rejected, bw-sign, bw-submit, bw-done).
+bw-verify, bw-awaiting, bw-rejected, bw-sign, bw-submit, bw-done). CLOSED is an
+eighth, added after v11: a case the client abandoned finishes somewhere, and
+"Completed" is the one thing it must never be called.
 """
 from services.tpsi.filings import (
     STAGE_EDRIVE,
@@ -31,9 +33,18 @@ SIGNING = "signing"
 SUBMISSION = "submission"
 COMPLETED = "completed"
 
+#: The client no longer wants the return filed. TERMINAL AND PERMANENT: there is
+#: no route back out of it, by design (Levi 2026-09-05).
+#:
+#: A separate code rather than a flag on top of the badge the case happened to
+#: be wearing. "Awaiting Client" on an abandoned case is a queue entry somebody
+#: chases; "Completed" is a claim that a statutory return was filed. Neither is
+#: true, and the dashboard has to be able to filter these out of the work.
+CLOSED = "closed"
+
 WORKFLOW_STATUSES = (
     DATA_VERIFICATION, CLIENT_VERIFICATION, AWAITING_CLIENT, CLIENT_REJECTED,
-    SIGNING, SUBMISSION, COMPLETED,
+    SIGNING, SUBMISSION, COMPLETED, CLOSED,
 )
 
 WORKFLOW_LABELS = {
@@ -44,21 +55,38 @@ WORKFLOW_LABELS = {
     SIGNING: "Signing",
     SUBMISSION: "Submission",
     COMPLETED: "Completed",
+    CLOSED: "Closed",
 }
 
 #: Filing stages that mean the document is finished at CR.
 _FINISHED = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE)
 
 #: 42 days after the anniversary the statutory filing window closes. Negative
-#: days_to_anniversary counts UP from a passed anniversary (migration 019), so
-#: anything below this is out of time.
+#: days_to_anniversary counts UP from a passed anniversary (migration 019, floor
+#: removed by 033), so anything below this is out of time.
 FILING_WINDOW_DAYS = 42
+
+
+#: The badges that mean nobody is waiting on anything. Used by the overdue
+#: overlay below, and by the dashboard, which must not put either in a queue.
+TERMINAL_STATUSES = (COMPLETED, CLOSED)
 
 
 def _code(case: dict, filing: dict | None) -> str:
     stage = (filing or {}).get("stage")
 
-    # Off-portal completion first: the manual path never calls CR, so its filing
+    # CLOSED WINS OVER EVERYTHING, including a filed return.
+    #
+    # `POST /cases/{id}/close` refuses a case CR already holds, so the portal
+    # cannot produce a row that is both — but a data repair could, and if one
+    # ever does, "closed" is the honest answer: somebody deliberately ended
+    # this case, and that decision is not something a stage lookup may
+    # overrule. Testing it last would let the filing stage speak for a case
+    # whose whole point is that it was abandoned.
+    if case.get("closed_at"):
+        return CLOSED
+
+    # Off-portal completion next: the manual path never calls CR, so its filing
     # is still sitting at 'validated' while the case is genuinely finished.
     # Testing the stage first would report a finished case as still Signing.
     if case.get("manual_receipt"):
@@ -128,19 +156,26 @@ def derive(case: dict, filing: dict | None) -> dict:
         # step. Meaningless once filed -- whether it was filed LATE is a
         # different question this badge does not answer.
         #
-        # PERMANENTLY FALSE, AND THAT IS THE DECISION, NOT A BUG.
-        # migration 019 floors days_to_anniversary at -FILING_WINDOW_DAYS, so
-        # `days < -42` can never hold: verified on DEV, 5,998 rows, range
-        # exactly [-42, 322], zero matches. Levi 2026-08-22: the overdue badge
-        # is not needed, so the floor stays and this stays dead.
+        # LIVE since migration 033, having been permanently false before it.
+        # 019 floored days_to_anniversary at -FILING_WINDOW_DAYS, so `days <
+        # -42` could not hold -- verified on DEV at the time, 5,998 rows, range
+        # exactly [-42, 322], zero matches. Levi 2026-09-04 asked for the floor
+        # to go ("we should not floor the days to anniversary at -42"), 033
+        # removed it, and this comparison started meaning what it says.
         #
-        # Left in place deliberately rather than deleted -- the flag is part of
-        # the response shape and of nar1_case_registry (migration 024). If you
-        # are here because you want an overdue badge, the change is to the
-        # CLAMP in migration 019, not to this comparison; raising the threshold
-        # here alone would still never fire.
+        # It fires on a case that is not complete more than 42 days after its
+        # anniversary. It does NOT say the return was filed late -- that needs
+        # a filed date, which DEV holds on 2 of 7,959 rows.
+        #
+        # A CLOSED case is never overdue. The overlay exists to say "somebody
+        # still has to file this"; on a case that will never be filed, it is an
+        # alarm about work that was deliberately cancelled -- which is exactly
+        # the noise closing a case exists to remove.
+        #
+        # nar1_case_registry (024, restated by 033 and 039) carries the
+        # identical predicate; the two must not diverge.
         "overdue": (
-            code != COMPLETED
+            code not in TERMINAL_STATUSES
             and days is not None
             and days < -FILING_WINDOW_DAYS
         ),

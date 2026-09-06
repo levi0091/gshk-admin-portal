@@ -16,6 +16,15 @@ does — what action, on which company, old -> new, by whom:
   company_name      <- the entity (or person) the event is about, resolved via
                        case_id, else via source_keycode -> vp_source_key.
   user_display_name <- created_by (the Viewpoint user code) where missing.
+  module            <- which surface the change belongs to. Viewpoint has only
+                       two of the five (a company edit, a person edit); it never
+                       recorded a NAR1 case workflow, a document or a CR filing,
+                       so those stay NULL on an imported row rather than being
+                       invented.
+  subject_*          <- WHICH RECORD: kind, id, name and the reference a human
+                       quotes (BRN / identity number). Migration 034 does this
+                       once; these steps repeat it after a fresh import, which
+                       is the only time new unlabelled rows appear.
   old/new_value     <- collapsed where Viewpoint packed a whole field map into
                        one string. "AdNrS1=2311; AdNrS2=2311; ... AdNrSU=2311"
                        is 15 fields all set to the same value; that is one
@@ -79,6 +88,209 @@ _STEPS: list[tuple[str, str]] = [
         UPDATE audit_log
         SET user_display_name = created_by
         WHERE user_display_name IS NULL AND created_by IS NOT NULL
+    """),
+    # WHICH RECORD the event is about (migration 034). A RefCode resolves to an
+    # entity OR a person; resolving it against `entities` alone is what left
+    # every person-scoped Viewpoint event printing a raw key nobody can read.
+    # ---- NATIVE rows -------------------------------------------------------
+    # Migration 034 classifies every G-FlowDesk row that existed when it ran.
+    # These repeat it for rows written SINCE, which is not hypothetical: a red
+    # Backend CI stops Railway deploying, so the portal keeps writing with the
+    # old code against the new schema and every row in that window lands with no
+    # module and no subject. 29 of them did on 2026-09-04. Same statements,
+    # same `IS NULL` guards, so running this changes nothing when there is
+    # nothing to fix.
+    ("native subject (tpsi filings, from the filing itself)", """
+        UPDATE audit_log a
+        SET subject_kind = 'case', subject_id = f.nar1_case_id,
+            subject_ref = c.case_no, module = 'cr_filing',
+            case_id = COALESCE(f.entity_id, a.case_id),
+            company_name = COALESCE(a.company_name, e.company_name)
+        FROM tpsi_filings f
+        LEFT JOIN nar1_cases c ON c.id = f.nar1_case_id
+        LEFT JOIN entities   e ON e.id = f.entity_id
+        WHERE a.source = 'g_flowdesk' AND a.entity_type = 'tpsi_filing'
+          AND a.subject_kind IS NULL
+          AND a.entity_id = f.id::text AND f.nar1_case_id IS NOT NULL
+    """),
+    ("native subject (tpsi filings with no case)", """
+        UPDATE audit_log a
+        SET subject_kind = 'company', subject_id = f.entity_id,
+            subject_ref = e.br_number, module = 'cr_filing',
+            case_id = f.entity_id,
+            company_name = COALESCE(a.company_name, e.company_name)
+        FROM tpsi_filings f
+        LEFT JOIN entities e ON e.id = f.entity_id
+        WHERE a.source = 'g_flowdesk' AND a.entity_type = 'tpsi_filing'
+          AND a.subject_kind IS NULL
+          AND a.entity_id = f.id::text AND f.nar1_case_id IS NULL
+          AND f.entity_id IS NOT NULL
+    """),
+    ("native subject_kind", """
+        UPDATE audit_log
+        SET subject_kind = CASE
+              WHEN entity_type = 'nar1_case' THEN 'case'
+              WHEN entity_type = 'person'    THEN 'person'
+              WHEN entity_type IN ('entity','share_class',
+                                   'entity_record_location') THEN 'company'
+              WHEN entity_type IN ('document','address') THEN CASE
+                     WHEN EXISTS (SELECT 1 FROM entities e
+                                  WHERE e.id = audit_log.case_id) THEN 'company'
+                     WHEN EXISTS (SELECT 1 FROM persons p
+                                  WHERE p.id = audit_log.case_id) THEN 'person'
+                     WHEN case_id IS NULL THEN 'person'
+                   END
+            END
+        WHERE source = 'g_flowdesk' AND subject_kind IS NULL
+          -- Only the types the CASE above can resolve. Without this the
+          -- statement writes NULL over NULL for every tpsi/tpsi_credential row
+          -- (which is ABOUT no company by design) and reports them as updated
+          -- on every run, so "0 rows" would never mean "nothing left to do".
+          AND entity_type IN ('nar1_case', 'person', 'entity', 'share_class',
+                              'entity_record_location', 'document', 'address')
+    """),
+    ("native module", """
+        UPDATE audit_log
+        SET module = CASE
+              WHEN entity_type = 'nar1_case' THEN 'post_incorporation'
+              WHEN entity_type = 'person'    THEN 'natural_person'
+              WHEN entity_type IN ('entity','share_class',
+                                   'entity_record_location') THEN 'body_corporate'
+              -- A document and an address take the module of whatever they
+              -- hang off — there is no `documents` module (audit_subject
+              -- ._MODULE_FOR_KIND). `subject_kind` is already settled by the
+              -- step above, so this reads it rather than re-deriving it.
+              WHEN entity_type IN ('address', 'document')
+                   THEN CASE subject_kind
+                          WHEN 'person'  THEN 'natural_person'
+                          WHEN 'case'    THEN 'post_incorporation'
+                          WHEN 'company' THEN 'body_corporate'
+                        END
+              WHEN entity_type IN ('tpsi','tpsi_filing','tpsi_credential')
+                   THEN 'cr_filing'
+            END
+        WHERE source = 'g_flowdesk' AND module IS NULL
+          -- One arm per branch the CASE can actually resolve. A document or
+          -- address whose subject_kind is still NULL now comes out NULL (it
+          -- used to fall back to body_corporate, which was a guess); without
+          -- this guard the statement rewrites NULL over NULL and reports those
+          -- rows as updated on every run, so "0 rows" would stop meaning
+          -- "nothing left to do".
+          AND (entity_type IN ('nar1_case', 'person', 'entity', 'share_class',
+                               'entity_record_location', 'tpsi', 'tpsi_filing',
+                               'tpsi_credential')
+            OR (entity_type IN ('address', 'document')
+                AND subject_kind IN ('person', 'case', 'company')))
+    """),
+    # The retired `documents` module, repaired here as well as in migration 037
+    # ON PURPOSE. 037 relabels history once; this runs whenever it is needed,
+    # and it IS needed again: a red Backend CI means Railway never deploys, so
+    # the portal keeps writing `documents` from the old code long after the
+    # migration has run (it happened within minutes on 2026-09-04 — one upload).
+    # The step above cannot catch those: it only touches `module IS NULL`, and
+    # these rows have a module, just the wrong one.
+    ("retired 'documents' module", """
+        UPDATE audit_log
+        SET module = CASE subject_kind
+              WHEN 'person'  THEN 'natural_person'
+              WHEN 'company' THEN 'body_corporate'
+              WHEN 'case'    THEN 'post_incorporation'
+            END
+        WHERE module = 'documents'
+          -- Only where the kind resolves. A row we cannot attribute keeps the
+          -- retired label rather than being rewritten to NULL: a NULL module
+          -- renders as a dash and reads as "imported from Viewpoint", which a
+          -- document upload never is.
+          AND subject_kind IN ('person', 'company', 'case')
+    """),
+    ("native subject_id", r"""
+        UPDATE audit_log
+        SET subject_id = CASE
+              WHEN subject_kind = 'case'   THEN entity_id::uuid
+              WHEN subject_kind = 'person' THEN COALESCE(
+                     CASE WHEN entity_type = 'person' THEN entity_id::uuid END,
+                     case_id)
+              WHEN subject_kind = 'company' THEN case_id
+            END
+        WHERE source = 'g_flowdesk' AND subject_id IS NULL
+          -- One arm per branch of the CASE, so this matches exactly the rows
+          -- the CASE can resolve. Two jobs at once: a row that would come out
+          -- NULL (a CR credential, a person-owned document written before the
+          -- owner id was recorded) is not rewritten with the NULL it already
+          -- has — otherwise "0 rows" would never mean "nothing left to do" —
+          -- and `entity_id::uuid` is only reached where entity_id IS a uuid.
+          -- That column is TEXT and holds 'shared' for the firm's CR
+          -- credential; an unguarded cast aborts the whole statement.
+          AND ((subject_kind = 'case'
+                AND entity_id ~ '^[0-9a-fA-F-]{36}$')
+            OR (subject_kind = 'person' AND entity_type = 'person'
+                AND entity_id ~ '^[0-9a-fA-F-]{36}$')
+            OR (subject_kind = 'person' AND entity_type <> 'person'
+                AND case_id IS NOT NULL)
+            OR (subject_kind = 'company' AND case_id IS NOT NULL))
+    """),
+    ("native reference (company BRN)", """
+        UPDATE audit_log a
+        SET subject_ref = e.br_number
+        FROM entities e
+        WHERE a.subject_kind = 'company' AND a.subject_ref IS NULL
+          AND a.subject_id = e.id AND e.br_number IS NOT NULL
+    """),
+    ("native reference (case number)", """
+        UPDATE audit_log a
+        SET subject_ref = c.case_no
+        FROM nar1_cases c
+        WHERE a.subject_kind = 'case' AND a.subject_ref IS NULL
+          AND a.subject_id = c.id AND c.case_no IS NOT NULL
+    """),
+    # ---- VIEWPOINT rows ----------------------------------------------------
+    ("subject (via entity keycode)", """
+        UPDATE audit_log a
+        SET subject_kind = 'company',
+            subject_id   = e.id,
+            subject_ref  = e.br_number,
+            module       = 'body_corporate'
+        FROM entities e
+        WHERE a.subject_kind IS NULL
+          AND a.source_keycode = e.vp_source_key
+    """),
+    ("subject (via person keycode)", """
+        UPDATE audit_log a
+        SET subject_kind = 'person',
+            subject_id   = p.id,
+            module       = 'natural_person'
+        FROM persons p
+        WHERE a.subject_kind IS NULL
+          AND a.source_keycode = p.vp_source_key
+    """),
+    ("subject (via case_id)", """
+        UPDATE audit_log a
+        SET subject_kind = 'company',
+            subject_id   = e.id,
+            subject_ref  = e.br_number,
+            module       = 'body_corporate'
+        FROM entities e
+        WHERE a.subject_kind IS NULL
+          AND a.case_id = e.id
+    """),
+    # The identity document a person is quoted by, ordered exactly like
+    # `person_registry`'s lateral join (migration 009).
+    ("subject reference (person identity document)", """
+        UPDATE audit_log a
+        SET subject_ref = (
+              SELECT d.id_number
+              FROM person_identity_documents d
+              WHERE d.person_id = a.subject_id
+              ORDER BY d.is_primary DESC, d.created_at ASC
+              LIMIT 1
+            )
+        WHERE a.subject_kind = 'person'
+          AND a.subject_ref IS NULL
+          AND a.subject_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM person_identity_documents d
+            WHERE d.person_id = a.subject_id
+          )
     """),
     # Collapse "k=v; k=v; ..." maps where every value is identical. The raw
     # string is kept in metadata so nothing is lost.

@@ -187,10 +187,13 @@ def test_restart_verification_discards_the_cr_signed_snapshot(client):
     sup.assert_called_once_with("f1")
 
 
-def test_restarting_a_case_cr_already_holds_does_not_retire_the_filing(client):
-    """A restart cannot un-file a return. `supersede()` filters on the stage
-    inside the UPDATE and answers False; the case must not then record a
-    superseded filing that never moved."""
+def test_restarting_a_case_cr_already_holds_writes_nothing_at_all(client):
+    """A restart cannot un-file a return. It is now refused outright (409), and
+    the point this test has always protected still holds underneath: no row is
+    updated and no audit event is written for a transition that never happened.
+
+    `supersede()` remains the second line of defence — it filters on the stage
+    inside the UPDATE — so a submit landing after the guard cannot be un-filed."""
     logged = []
     with _super(), \
          patch("routers.cases.nar1_cases.get_case",
@@ -207,7 +210,7 @@ def test_restarting_a_case_cr_already_holds_does_not_retire_the_filing(client):
                new=AsyncMock(side_effect=lambda **kw: logged.append(kw))):
         response = client.patch("/cases/c1", headers=H,
                                 json={"restart_verification": True})
-    assert response.status_code == 200
+    assert response.status_code == 409
     spy.assert_not_called()
     assert logged == []
 
@@ -405,13 +408,61 @@ def test_dashboard_passes_every_filter_through_to_the_query(client):
     assert response.status_code == 200
     kwargs = spy.call_args.kwargs
     assert kwargs["search"] == "acme"
-    assert kwargs["workflow_status"] == "awaiting_client"
+    assert kwargs["workflow_statuses"] == ["awaiting_client"]
     assert kwargs["anniv_op"] == "lte"
     assert kwargs["anniv_days"] == 30
     assert kwargs["sort"] == "case_no"
     assert kwargs["direction"] == "desc"
     assert kwargs["page"] == 2
     assert kwargs["page_size"] == 10
+
+
+def test_dashboard_takes_several_workflow_statuses_at_once(client):
+    """"Action Required" is five badges, not one.
+
+    The tile counts every case whose next move belongs to GSHK, so clicking it
+    has to be able to ask for all five — otherwise the number on the tile and
+    the rows it filters to are different sets.
+    """
+    spy = _dashboard([])
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", spy):
+        response = client.get(
+            "/cases?scope=dashboard&workflow_status=signing,submission", headers=H)
+    assert response.status_code == 200
+    assert spy.call_args.kwargs["workflow_statuses"] == ["signing", "submission"]
+
+
+def test_dashboard_rejects_an_unknown_status_inside_a_list(client):
+    """One bad name refuses the whole request rather than being dropped from the
+    list — a silently narrowed selection is a wrong answer told confidently."""
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", _dashboard([])):
+        response = client.get(
+            "/cases?scope=dashboard&workflow_status=signing,not_a_status", headers=H)
+    assert response.status_code == 422
+    assert "not_a_status" in response.json()["detail"]
+
+
+def test_dashboard_passes_column_filters_through_to_the_query(client):
+    spy = _dashboard([])
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", spy):
+        response = client.get(
+            "/cases?scope=dashboard&filter=company_name:contains:acme"
+            "&filter=days_to_anniversary:lte:60",
+            headers=H,
+        )
+    assert response.status_code == 200
+    assert [(f.column, f.op, f.value) for f in spy.call_args.kwargs["filters"]] == [
+        ("company_name", "contains", "acme"),
+        ("days_to_anniversary", "lte", 60),
+    ]
+
+
+def test_dashboard_refuses_a_filter_on_an_unlisted_column(client):
+    with _super(), patch("routers.cases.nar1_cases.list_dashboard", _dashboard([])):
+        response = client.get(
+            "/cases?scope=dashboard&filter=signing_method:contains:x", headers=H)
+    assert response.status_code == 422
+    assert "signing_method" in response.json()["detail"]
 
 
 def test_dashboard_rejects_an_unknown_comparison(client):
@@ -515,3 +566,72 @@ def test_the_dashboard_route_does_not_shadow_the_single_case_route(client):
          patch("routers.cases.nar1_cases.list_dashboard", _dashboard([])):
         assert client.get("/cases/c1", headers=H).status_code == 200
     assert spy.call_args.args[0] == "c1"
+
+
+# --- restart is refused once CR holds the return ----------------------------
+#
+# WHY THIS EXISTS (Levi 2026-08-31). `supersede()` already declined to retire a
+# filed filing, so the FILING was safe — but the handler went on to clear
+# verification_sent_at, client_approved and client_response_at anyway. A
+# completed case would lose the client's recorded approval and drop back to
+# Client Verification while CR held the registered return: a case reporting it
+# is waiting on a client whose answer was acted on days ago.
+
+
+def _filed_case(**over):
+    row = {"id": "c1", "entity_id": "e1", "verification_sent_at": "2026-08-31T11:52:00Z",
+           "client_approved": True, "client_response_at": "2026-08-31T12:10:00Z",
+           "manual_submitted_at": None, "manual_receipt": None}
+    row.update(over)
+    return row
+
+
+def test_restart_is_refused_once_cr_holds_the_return(client):
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=_filed_case()), \
+         patch("routers.cases.nar1_cases.current_filing",
+               return_value={"id": "f1", "stage": "submitted"}), \
+         patch("routers.cases.nar1_cases.update_case") as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"restart_verification": True})
+    assert response.status_code == 409
+    # The client's approval is a record of something that happened, and the
+    # return built on it is in the register. Neither is ours to erase.
+    spy.assert_not_called()
+    assert "registry" in response.json()["detail"].lower()
+
+
+def test_restart_is_refused_on_a_case_filed_off_portal(client):
+    """The paper path reaches the register by a different road and arrives at
+    the same place: a return that has been filed."""
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value=_filed_case(manual_submitted_at="2026-08-30T09:00:00Z")), \
+         patch("routers.cases.nar1_cases.current_filing", return_value=None), \
+         patch("routers.cases.nar1_cases.update_case") as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"restart_verification": True})
+    assert response.status_code == 409
+    spy.assert_not_called()
+
+
+def test_restart_still_works_on_a_return_cr_has_only_validated(client):
+    """The guard is "has it been FILED", not "has CR seen it". A validated
+    snapshot is exactly what Restart exists to discard."""
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=_filed_case()), \
+         patch("routers.cases.nar1_cases.current_filing",
+               return_value={"id": "f1", "stage": "validated"}), \
+         patch("routers.cases.tpsi_filings.supersede", return_value=True), \
+         patch("routers.cases.nar1_cases.update_case",
+               return_value={"id": "c1"}) as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"restart_verification": True})
+    assert response.status_code == 200
+    assert spy.call_args.args[1]["client_approved"] is None

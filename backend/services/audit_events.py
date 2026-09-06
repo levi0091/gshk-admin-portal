@@ -101,6 +101,15 @@ NAR1_MANUAL_SIGN_UPLOADED = "NAR1_MANUAL_SIGN_UPLOADED"
 NAR1_MANUAL_SUBMISSION_RECORDED = "NAR1_MANUAL_SUBMISSION_RECORDED"
 NAR1_MANUAL_RECEIPT_ENTERED = "NAR1_MANUAL_RECEIPT_ENTERED"
 
+# ---- Closing a case (Levi 2026-09-05) --------------------------------------
+#   Seeded in audit_event_types by migration 039. Its own code rather than a
+#   CASE_STATUS_CHANGED with "closed" in the value: closing is irreversible and
+#   ends the case, and it must be findable in the trail by filtering on the
+#   event rather than by reading the new value of every status change ever
+#   written. It is also the ONLY record of WHY -- nothing else on the case says
+#   the client walked away.
+NAR1_CASE_CLOSED = "NAR1_CASE_CLOSED"
+
 # Company field -> the Viewpoint folder that owns it.
 _COMPANY_FIELD_CODES = {
     # Master file (names)
@@ -117,6 +126,16 @@ _COMPANY_FIELD_CODES = {
     "tcsp_licence_no": VP_STATUTORY,
     "tcsp_exemption_reason": VP_STATUTORY,
     "date_name_changed": VP_STATUTORY,
+    # NAR1 s2/s3 and s9. Statutory rather than general: these are figures the
+    # annual return states, and an edit to them changes what gets filed.
+    "business_nature_code": VP_STATUTORY,
+    "business_nature_desc": VP_STATUTORY,
+    "mortgages_total": VP_STATUTORY,
+    # NAR1 s16 — where a statutory register is kept. Statutory for the same
+    # reason: moving the Register of Members changes what the return says.
+    "record_location": VP_STATUTORY,
+    # NAR1 s11 — the share capital the return states.
+    "share_capital": VP_STATUTORY,
     # M&A / dates folder
     "ar_last_date": VP_MA_DATES,
     "ar_next_date": VP_MA_DATES,
@@ -127,6 +146,9 @@ _COMPANY_FIELD_CODES = {
     "aoa_agm_waived": VP_MA_DATES,
     # Registered office
     "registered_address_id": VP_REG_OFFICE,
+    # NAR1 s6 `telNo`. Statutory rather than general for the same reason as the
+    # figures above: this number is printed on the return CR receives.
+    "company_phone": VP_STATUTORY,
     # General folder
     "case_notes": VP_GENERAL,
     "assigned_to": VP_GENERAL,
@@ -142,6 +164,13 @@ _PERSON_FIELD_CODES = {
     "surname": VP_MASTER_DETAILS,
     "full_name_zh": VP_MASTER_DETAILS,
     "former_name": VP_MASTER_DETAILS,
+    # CR's "Previous Names (Chinese)" and "Alias". Filed with the other names
+    # as ADC, matching `former_name` above, even though Viewpoint keeps their
+    # source columns on `Compliance` — the audit trail groups by what a reader
+    # is looking for, and someone chasing a name change looks under names.
+    "former_name_zh": VP_MASTER_DETAILS,
+    "alias_en": VP_MASTER_DETAILS,
+    "alias_zh": VP_MASTER_DETAILS,
     "email": VP_MASTER_DETAILS,
     "phone": VP_MASTER_DETAILS,
     "residential_address_id": VP_MASTER_DETAILS,
@@ -202,3 +231,20 @@ def party_code(relation: str, operation: str) -> Optional[str]:
 #   NAR1-only code would split one concept across two vocabularies.
 EMAIL_SENT = "EMAIL_SENT"
 CLIENT_APPROVAL_RECEIVED = "CLIENT_APPROVAL_RECEIVED"
+
+# ---- Client SELF-approval (spec §5) ----------------------------------------
+#   Seeded by migration 030 with origin='g_flowdesk' and category='nar1'. Unlike
+#   the two above these are NOT in migration 012's _NATIVE list, and there is no
+#   FK from audit_log to audit_event_types -- an unseeded code writes fine and
+#   then renders unlabelled in the trail, which is what migration 022 exists to
+#   repair. If these ever appear without a label, that migration did not run.
+#
+#   CLIENT_APPROVAL_RECEIVED above is UNCHANGED and still fires for the
+#   staff-relayed reply. Three codes for three routes, because the remedy when
+#   one of them is wrong differs in each case: a self-service approval can be
+#   checked against an IP, a relayed one against a mailbox, and an auto-approval
+#   against nothing at all -- which is exactly why it must be distinguishable at
+#   a glance rather than merged into "client approved".
+CLIENT_APPROVAL_LINK_SENT = "CLIENT_APPROVAL_LINK_SENT"
+CLIENT_APPROVAL_SELF_SERVICE = "CLIENT_APPROVAL_SELF_SERVICE"
+CLIENT_APPROVAL_AUTO_APPROVED = "CLIENT_APPROVAL_AUTO_APPROVED"

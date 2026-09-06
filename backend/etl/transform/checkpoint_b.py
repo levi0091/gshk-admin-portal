@@ -58,6 +58,12 @@ def transform_share_classes(
             "nominal_value": row.get("NomValShare"),
             "votes_per_share": row.get("VotesPerShare"),
             "total_issued": row.get("Issued"),
+            # CR's "Total Amount": what the issued shares are WORTH, which is
+            # not the same number as how many there are. Left None rather than
+            # defaulted from the count -- 24 of Viewpoint's 5,740 rows have no
+            # StatedCap, and guessing would reintroduce the exact conflation
+            # this column exists to end.
+            "issued_amount": row.get("StatedCap"),
             "total_paid": row.get("PaidCap"),
         })
     return out

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -371,11 +371,30 @@ describe('CrCredentialsPage — my e-Service signing', () => {
     expect(put.mock.calls[0][1].eservice_password).toBeNull()
   })
 
-  it('hides the write controls from a read-only user', async () => {
+  it('hides every write control from a read-only user, fields included', async () => {
+    // A form field IS a control. A disabled text box and a password box that
+    // cannot be typed into are the same broken promise as a disabled button —
+    // and whether a password is stored is already reported in Status.
     auth = { hasPermission: () => false, isSuperAdmin: false }
     await renderPage()
-    await screen.findByLabelText('e-Service (e-Reg) user ID')
+    await screen.findByText('Signing identity')
+
+    expect(screen.queryByLabelText('e-Service (e-Reg) user ID')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/e-Service signing password/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Update credentials/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Clear signing password/ }))
+      .not.toBeInTheDocument()
+  })
+
+  it('still tells a read-only user what is on record, and what to ask for', async () => {
+    auth = { hasPermission: () => false, isSuperAdmin: false }
+    await renderPage()
+    await screen.findByText('Signing identity')
+
+    // The card is not empty — it reports the same two facts as read-only rows.
+    const card = screen.getByText('Signing identity').closest('.card')
+    expect(within(card).getByText('e-Service (e-Reg) user ID')).toBeInTheDocument()
+    expect(within(card).getByText(/tpsi:write/)).toBeInTheDocument()
   })
 
   it('carries no explanatory banners — Levi 2026-08-30', async () => {

@@ -276,6 +276,10 @@ def _prepare_patches(**overrides):
         "blocking": MagicMock(return_value=None),
         "case": MagicMock(return_value={"id": "c1", "entity_id": "e1",
                                         "manual_receipt": None}),
+        # The case's live attempt, and the rebuild that refreshes it in place.
+        # Default: the case has no filing yet, so prepare opens one.
+        "current": MagicMock(return_value=None),
+        "rebuild": MagicMock(return_value={"id": "f9", "stage": "draft"}),
     }
     defaults.update(overrides)
     return defaults
@@ -296,7 +300,100 @@ def _with_prepare(p):
         patch("routers.tpsi.nar1_cases.blocking_filing", new=p["blocking"]))
     stack.enter_context(
         patch("routers.tpsi.nar1_cases.get_case", new=p["case"]))
+    stack.enter_context(
+        patch("routers.tpsi.nar1_cases.current_filing", new=p["current"]))
+    stack.enter_context(
+        patch("routers.tpsi.filings.rebuild_draft", new=p["rebuild"]))
     return stack
+
+
+# WHY THESE EXIST. `filings.validate()` re-sends the stored request_xml
+# verbatim, so until prepare could refresh a draft in place, every correction an
+# operator made between two validation attempts was invisible to CR: the same
+# bytes went twice and CR gave the same answer twice, which reads on screen as
+# "I changed it and nothing happened".
+
+
+def test_prepare_rebuilds_a_rejected_draft_instead_of_opening_a_second_filing(client):
+    p = _prepare_patches(
+        current=MagicMock(return_value={"id": "f9", "stage": "validation_failed"}),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["rebuild"].call_args.args == ("f9", "<cr:brNo>1</cr:brNo>")
+    # A second row would sort ahead of the first and hide it -- the same defect
+    # `blocking_filing` documents for the filed stages.
+    p["create"].assert_not_called()
+    assert response.json()["id"] == "f9"
+
+
+def test_prepare_refuses_to_open_a_filing_on_a_CLOSED_case(client):
+    """The one door `filings._refuse_if_case_finished` cannot cover: it guards a
+    filing that already exists, and this route makes a new one.
+
+    Closing supersedes every live filing precisely so the chain refuses at each
+    stage gate. Without this, a fresh draft would put a closed case back at the
+    start of that chain with nothing in its way.
+    """
+    p = _prepare_patches(
+        case=MagicMock(return_value={"id": "c1", "entity_id": "e1",
+                                     "case_no": "NAR-2026-0041",
+                                     "manual_receipt": None,
+                                     "closed_at": "2026-09-05T02:00:00+00:00"}),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["reason"] == "case_closed"
+    assert "NAR-2026-0041" in detail["message"]
+    p["create"].assert_not_called()
+    p["rebuild"].assert_not_called()
+    # Refused before the company graph is even loaded — no work at all for a
+    # filing that can never be sent.
+    p["load"].assert_not_awaited()
+
+
+def test_prepare_leaves_a_frozen_snapshot_alone(client):
+    """A validated filing is not rebuilt here. Discarding a CR-signed snapshot
+    is `Restart verification`'s job, which supersedes the row and says so."""
+    p = _prepare_patches(
+        current=MagicMock(return_value={"id": "f9", "stage": "validated"}),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    p["rebuild"].assert_not_called()
+    p["create"].assert_called_once()
+
+
+def test_prepare_opens_a_filing_when_the_case_has_none(client):
+    p = _prepare_patches()
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    p["rebuild"].assert_not_called()
+    p["create"].assert_called_once()
+
+
+def test_prepare_opens_a_filing_when_the_rebuild_loses_a_race(client):
+    """rebuild_draft is conditional in the UPDATE. If a validate landed first,
+    no row moves -- and prepare must not then return a filing it did not
+    actually refresh."""
+    p = _prepare_patches(
+        current=MagicMock(return_value={"id": "f9", "stage": "draft"}),
+        rebuild=MagicMock(return_value=None),
+    )
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    p["create"].assert_called_once()
 
 
 def test_prepare_builds_the_xml_server_side(client):
@@ -411,7 +508,15 @@ def test_prepare_audits_the_filing_it_opened(client):
     assert response.status_code == 201
     assert logged["action_type"] == "TPSI_FILING_CREATED"
     assert logged["entity_id"] == "f1"
-    assert logged["case_id"] == "c1"
+    # `audit_log.case_id` holds the ENTITY id, not the case id -- the convention
+    # routers/cases.py::_audit_target documents, and the one a company-scoped
+    # audit query relies on. This route used to write the CASE id here, which
+    # put every CR filing event in an id space no company trail could return.
+    assert logged["case_id"] == "e1"
+    # The case is still named -- as the SUBJECT, which is what it is.
+    assert logged["subject_kind"] == "case"
+    assert logged["subject_id"] == "c1"
+    assert logged["module"] == "cr_filing"
     assert logged["metadata"]["form_code"] == "Nar1"
     # The built XML is not audit metadata: it is the whole statutory return and
     # it is already stored on the filing row.
@@ -583,7 +688,9 @@ def test_validate_filing_cr_fault_is_handled_not_a_500(client):
          patch("routers.tpsi.filings.validate",
                side_effect=TpsiValidationError([("ERR_MSG_REQUIRED", "brNo is required")])):
         response = client.post("/tpsi/filings/f1/validate", headers=H)
-    assert response.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert response.status_code == 422
 
 
 # ---- filings: POST /tpsi/filings/{id}/edrive --------------------------------
@@ -774,7 +881,9 @@ def test_sign_filing_cr_fault_is_handled_not_a_500(client):
          patch("routers.tpsi.filings.sign",
                side_effect=TpsiSignatureError([("ERR_MSG_SIGNATORY_NOT_AUTH", "not authorised")])):
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
-    assert response.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -864,6 +973,58 @@ def test_submit_gate_refusal_is_409_not_500(client):
                                json={"deposit_account": "ACC", "confirm": False})
     assert response.status_code == 409
     assert "TPSI_SUBMISSION_FAILED" in events
+
+
+def test_an_unfilable_record_409s_with_its_faults_as_a_json_list(client):
+    """The gate collects one fault per thing wrong with the company and the
+    screen draws one card per fault. The general SubmitGateError branch below
+    it answers `detail: str(exc)`, which would flatten the list back into the
+    run-on sentence this branch exists to replace."""
+    from services.tpsi.filings import RecordCheckFailed
+
+    faults = ["corporate party ACME LIMITED: no CR region code is known for "
+              "country 'HK-CH' — correct the address",
+              "entity: no BR number — CR rejects a NAR1 without one"]
+
+    async def fake_log(**kwargs):
+        pass
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.submit",
+               side_effect=RecordCheckFailed("the company record has changed",
+                                             problems=faults,
+                                             reason="record_unusable")), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"deposit_account": "ACC", "confirm": True})
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["problems"] == faults
+    # The reason is what decides whether Restart verification is offered.
+    assert detail["reason"] == "record_unusable"
+
+
+def test_a_check_that_could_not_run_409s_without_offering_a_restart(client):
+    """Supabase being down is not fixed by restarting verification, so the
+    reason must not say it is."""
+    from services.tpsi.filings import RecordCheckFailed
+
+    async def fake_log(**kwargs):
+        pass
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.submit",
+               side_effect=RecordCheckFailed("the return could not be checked")), \
+         patch("routers.tpsi.log_event", side_effect=fake_log):
+        response = client.post("/tpsi/filings/f1/submit", headers=H,
+                               json={"deposit_account": "ACC", "confirm": True})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "check_failed"
+    assert response.json()["detail"]["problems"] == []
 
 
 def test_submit_requires_the_submit_permission_not_merely_write(client):
@@ -1113,7 +1274,11 @@ def test_pdf_returns_pdf_bytes_and_audits_generation(client):
     assert response.headers["content-type"] == "application/pdf"
     assert response.content.startswith(b"%PDF-")
     assert logged["action_type"] == "DOCUMENT_GENERATED"
-    assert logged["case_id"] == "c1"
+    # The CASE is the subject; `case_id` carries the entity (see
+    # test_prepare_audits_the_filing_it_opened). This stub row names no entity,
+    # so there is none to carry -- naming the case is the point.
+    assert logged["subject_kind"] == "case"
+    assert logged["subject_id"] == "c1"
 
 
 def test_pdf_renders_the_validated_snapshot_not_the_request_xml(client):
@@ -1199,6 +1364,27 @@ def test_pdf_is_a_clean_422_when_the_stored_payload_has_no_form_model(client):
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 422
+
+
+def test_pdf_is_a_clean_422_for_an_uncoverable_character(client):
+    """M5 (final review): `AppearanceError` -- raised when a character has no
+    glyph in either embedded face -- was not in this handler's except tuple,
+    so a real missing-glyph failure on Railway would have surfaced as an
+    opaque 500 instead of naming the character. `fill.render` already
+    translates `AppearanceError` into `FormFillError` internally, so this
+    also stands as a belt-and-braces check on the route itself."""
+    from services.nar1_form.appearance import AppearanceError
+    row = {"stage": "validated", "form_code": "Nar1", "validated_xml": "<x/>",
+           "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               side_effect=AppearanceError(
+                   "cannot draw '杨' (U+6768): no glyph in NAR1-CJK")), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+    assert response.status_code == 422
+    assert "U+6768" in response.text
 
 
 def test_pdf_without_a_token_is_rejected_before_the_db_is_touched(client):
@@ -1447,7 +1633,9 @@ def test_a_validation_refusal_carries_EVERY_fault_not_a_joined_string():
     ])
     http = _handle_for_test(exc)
 
-    assert http.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert http.status_code == 422
     assert http.detail["problems"] == [
         ["ERR_MSG_INVALID_DISTRICT", "Please input valid District."],
         ["ERR_MSG_MANDATORY", "Please check selectPersonId field."],
@@ -1518,7 +1706,126 @@ def test_sign_surfaces_CRs_faults_through_the_route(client):
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
 
-    assert response.status_code == 502
+    # 422 since 2026-08-31: a CR refusal is a business answer, and a 5xx body
+    # gets replaced by the edge before the fault list can reach the browser.
+    assert response.status_code == 422
     body = response.json()["detail"]
     assert body["kind"] == "signature"
     assert body["problems"][0][1] == "Signatory not associated with this company."
+
+
+# ---- the defaulted signing capacity (Levi 2026-08-31) -----------------------
+
+def test_prepare_falls_back_to_the_default_capacity_for_a_body_corporate(client):
+    """The picker on Data Verification shows this default, so prepare has to
+    use the same one. If it did not, the screen would show a capacity while
+    the filing refused for want of it — the operator would see an answer and a
+    refusal to the same question."""
+    p = _prepare_patches(case=MagicMock(return_value={
+        "id": "c1", "entity_id": "e1", "manual_receipt": None,
+        "signatory_capacity": None,
+    }))
+    with _with_prepare(p), \
+         patch("routers.tpsi.nar1_mapper._derive_signatory",
+               return_value={"is_corporate": True, "name": "Get Started HK Limited"}):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["map"].call_args.kwargs["signatory_capacity"] == (
+        "Director of the Company Secretary (Body Corporate)"
+    )
+
+
+def test_prepare_keeps_the_operators_stored_capacity_over_the_default(client):
+    chosen = "Company Secretary of the Company Secretary (Body Corporate)"
+    p = _prepare_patches(case=MagicMock(return_value={
+        "id": "c1", "entity_id": "e1", "manual_receipt": None,
+        "signatory_capacity": chosen,
+    }))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["map"].call_args.kwargs["signatory_capacity"] == chosen
+
+
+def test_prepare_invents_no_capacity_for_an_individual_signatory(client):
+    """CR keeps two vocabularies. A "(Body Corporate)" capacity on a natural
+    person is a misstatement, so an individual is still answered explicitly."""
+    p = _prepare_patches(case=MagicMock(return_value={
+        "id": "c1", "entity_id": "e1", "manual_receipt": None,
+        "signatory_capacity": None,
+    }))
+    with _with_prepare(p), \
+         patch("routers.tpsi.nar1_mapper._derive_signatory",
+               return_value={"is_corporate": False, "name": "CHAN Tai Man"}):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 201
+    assert p["map"].call_args.kwargs["signatory_capacity"] is None
+
+
+# ---- CR business rejections must not be 5xx (2026-08-31) --------------------
+#
+# A CR validation fault is a SUCCESSFUL exchange: CR was reached, understood the
+# request, and said no. Returning 502 for it was a category error with a real
+# cost — a 5xx lets Cloudflare and Railway replace the response body with their
+# own HTML error page, so the structured `problems` never reached the browser.
+# `api.js` then fell back to `resp.statusText` and the operator saw
+# "Bad Gateway" instead of CR's actual words, "Br No does not exist."
+#
+# 502 stays for genuine upstream failures — transport, auth, unavailability.
+
+def test_a_cr_validation_fault_is_not_a_5xx(client):
+    """The regression that mattered: a 5xx body is not ours to keep."""
+    from services.tpsi.errors import TpsiValidationError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate",
+               side_effect=TpsiValidationError([("ERROR", "Br No does not exist.")])):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code < 500, (
+        "a CR rejection returned a 5xx; an edge proxy may replace the body and "
+        "the operator loses CR's actual fault list"
+    )
+    assert response.status_code == 422
+
+
+def test_the_cr_fault_list_survives_in_the_response(client):
+    """What the fault panel renders. CR reports every problem at once."""
+    from services.tpsi.errors import TpsiValidationError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate",
+               side_effect=TpsiValidationError([("ERROR", "Br No does not exist.")])):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    detail = response.json()["detail"]
+    assert detail["kind"] == "validation"
+    assert detail["problems"] == [["ERROR", "Br No does not exist."]]
+
+
+def test_a_signature_refusal_is_also_not_a_5xx(client):
+    from services.tpsi.errors import TpsiSignatureError
+
+    with _super(), \
+         patch("routers.tpsi.credentials.load_eservice", return_value=("DIRECTOR2", "pw")), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.sign",
+               side_effect=TpsiSignatureError([("ERR_MSG_SIGNATORY_NOT_AUTH", "not authorised")])):
+        response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
+    assert response.status_code == 422
+    assert response.json()["detail"]["kind"] == "signature"
+
+
+def test_a_transport_failure_is_still_a_502(client):
+    """The distinction being drawn: CR refusing is not CR being unreachable."""
+    from services.tpsi.errors import TpsiError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate",
+               side_effect=TpsiError("connection reset by peer")):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code == 502

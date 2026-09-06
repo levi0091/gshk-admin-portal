@@ -8,13 +8,42 @@ async function getAuthHeaders() {
   return { Authorization: `Bearer ${session.access_token}` }
 }
 
+/**
+ * `fetch`, with its one useless failure message replaced.
+ *
+ * When the request never completes — the network is down, or the server
+ * answered with an error that carried no CORS headers, which is what a FastAPI
+ * 500 looks like from the browser — `fetch` REJECTS rather than resolving, and
+ * every screen prints the browser's own words: "Failed to fetch". Levi read
+ * that on the dashboard on 2026-09-04 and reasonably took it for an empty
+ * table. It named neither the request nor anything to do about it, and the
+ * actual cause (a uuid column filtered with `ilike`, fixed in
+ * `services/table_filters.py`) was three layers away.
+ *
+ * An AbortError is left exactly as it is — every listing aborts superseded
+ * requests on purpose, and `useAbortableGet` recognises it by name.
+ */
+async function sendOrExplain(url, init) {
+  try {
+    return await fetch(url, init)
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e
+    const err = new Error(
+      'Could not reach the server. Check your connection and try again — if it '
+      + 'keeps happening the API may be down or still starting up.')
+    err.cause = e
+    err.offline = true
+    throw err
+  }
+}
+
 export async function apiFetch(path, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     ...(await getAuthHeaders()),
     ...(options.headers || {}),
   }
-  const resp = await fetch(`${BASE}${path}`, { ...options, headers })
+  const resp = await sendOrExplain(`${BASE}${path}`, { ...options, headers })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
     // The status rides on the error because the NAR1 workflow has to tell four
@@ -78,6 +107,17 @@ export function describeApiError(detail, fallback = 'API error') {
     // different remedies in different places — carrying only the message would
     // send the operator to edit a form when the problem is their CR account.
     if (detail.kind) e.kind = detail.kind
+    // WHICH GATE refused, for the 409s the submit gate raises: `drift`,
+    // `record_unusable` or `check_failed`. They are three different situations
+    // with three different remedies — and one of them (check_failed) must NOT
+    // offer to restart verification, because restarting cannot fix a company
+    // record that would not load.
+    if (detail.reason) e.reason = detail.reason
+    // Spec §6's drift refusal: which filed particulars moved, with both values.
+    // Carried like `problems` rather than flattened into the message — the
+    // Submission stage renders it as a table, and a sentence cannot show two
+    // values per row.
+    if (Array.isArray(detail.differences)) e.differences = detail.differences
     return e
   }
 
@@ -122,10 +162,34 @@ async function apiBlob(path, options = {}) {
   return resp.blob()
 }
 
+/**
+ * GET a route that has no token — currently `/auth/super-admins`, read by the
+ * login screen.
+ *
+ * Separate from `api.get` rather than a flag on it: `getAuthHeaders` THROWS
+ * when there is no session, which is the correct behaviour everywhere else in
+ * the app and exactly wrong on the one screen that runs before sign-in. A
+ * caller cannot reach an authenticated route through this by accident — it
+ * sends no Authorization header at all, so the backend refuses it.
+ */
+export async function apiPublicGet(path) {
+  const resp = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+    const e = describeApiError(err.detail, resp.statusText)
+    e.status = resp.status
+    throw e
+  }
+  return resp.json()
+}
+
 export const api = {
   // `options` carries the AbortSignal from useAbortableGet; apiFetch already
   // spreads it into fetch(), so nothing else needs to change.
   get: (path, options) => apiFetch(path, options),
+  publicGet: apiPublicGet,
   post: (path, body) => apiFetch(path, { method: 'POST', body: JSON.stringify(body) }),
   put: (path, body) => apiFetch(path, { method: 'PUT', body: JSON.stringify(body) }),
   patch: (path, body) => apiFetch(path, { method: 'PATCH', body: JSON.stringify(body) }),

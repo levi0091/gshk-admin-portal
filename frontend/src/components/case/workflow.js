@@ -35,6 +35,22 @@ export function signedOff(c) {
       || CR_HOLDS.has(c.form_status?.code)
 }
 
+/**
+ * Is this case permanently closed?
+ *
+ * `closed_at`, not a badge code: the timestamp is the fact the backend stores
+ * and every one of its own guards reads, and matching on
+ * `workflow_status.code === 'closed'` would be a second definition that can
+ * disagree with it — on a case whose badge came back as a bare string, say.
+ *
+ * There is no reopen, here or anywhere: closing is irreversible by design
+ * (Levi 2026-09-05), which is exactly why this is a plain read of a fact and
+ * not a state the screen can talk itself out of.
+ */
+export function isClosed(c) {
+  return Boolean(c?.closed_at)
+}
+
 export function isValidated(c) {
   return VALIDATED_STAGES.has(c.form_status?.code)
 }
@@ -52,6 +68,10 @@ export function isSubmitted(c) {
  */
 export function reachedStage(c) {
   if (!c) return 1
+  // A closed case has no reachable stage. `CaseWorkflowPage` renders the closed
+  // panel instead of the stepper, so nothing asks — but this must not answer
+  // "5" to whatever does, because every button behind stage 5 writes.
+  if (isClosed(c)) return 0
   if (!isValidated(c)) return 1
   if (!(c.verification_sent_at && c.client_approved)) return 2
   if (!signedOff(c)) return 3
@@ -76,10 +96,14 @@ export function verificationBlock(c) {
     return 'This case was completed off-portal, so there is nothing left for '
       + 'the client to approve.'
   }
-  if (CR_HOLDS.has(c.form_status?.code)) {
-    return 'The Companies Registry already holds this return. Asking the '
-      + 'client to approve it now is a request their answer cannot change.'
-  }
+  // NOT a "block" any more (Levi 2026-08-31). On a case CR already holds,
+  // Client Verification is history: the stage shows a green tick, the send
+  // happened, the client answered. Warning that asking them now would be
+  // pointless is a caution about something nobody is attempting, on a screen
+  // whose every other line says the work is done.
+  //
+  // The send is still not offered there — StageClientVerification withholds it
+  // on `isSubmitted`, so this does not put a dead button back on the screen.
   if (c.form_status?.code === 'validation_failed') {
     return 'The last validation of this return failed. Re-validate it on Data '
       + 'Verification before sending it to the client.'
@@ -128,6 +152,94 @@ const CR_REFUSAL_HINTS = {
     'The Companies Registry refused this. Fix what it reported — do not simply retry.',
 }
 
+/**
+ * A CR refusal recorded on the case, in `describeError`'s shape — or null.
+ *
+ * ONE ERROR SURFACE, NOT TWO (Levi 2026-08-31). A rejection used to be drawn
+ * twice on the same screen: the page banner showed the request that had just
+ * failed, and the stage's own FaultPanel showed the identical faults read back
+ * off `form_status`. Two copies of one refusal read as two different problems,
+ * and neither told you which to fix first.
+ *
+ * The banner is now the only place a CR refusal appears, which means it has to
+ * be able to show one recorded EARLIER as well as one that just happened —
+ * otherwise reloading the page leaves a "Rejected at validation" badge with no
+ * reason anywhere on screen.
+ */
+const PERSISTED_FAILURES = {
+  validation_failed: {
+    message: 'The Companies Registry rejected this return.',
+    hint: 'CR returns every problem at once, so fix them all before '
+      + 're-validating. Nothing was charged — validateFormNar1 is free.',
+  },
+  signing_failed: {
+    message: 'The Companies Registry refused the signature.',
+    hint: CR_REFUSAL_HINTS.signature,
+  },
+  submission_failed: {
+    message: 'The Companies Registry refused the submission.',
+    hint: CR_REFUSAL_HINTS.default,
+  },
+}
+
+export function persistedFailure(c) {
+  const status = c?.form_status
+  if (!status?.failed) return null
+  // A banner with an empty list under it is worse than the badge alone.
+  const problems = Array.isArray(status.faults) && status.faults.length
+    ? status.faults : null
+  if (!problems) return null
+  const known = PERSISTED_FAILURES[status.code]
+  return {
+    message: known?.message || 'The Companies Registry refused this filing.',
+    problems,
+    // No `kind`: what CR sent is stored, but the classification `_handle` made
+    // at the time is not, and inventing one here could bold "Account locked"
+    // over a refusal that was nothing of the sort.
+    kind: null,
+    hint: known?.hint || CR_REFUSAL_HINTS.default,
+    retry: false,
+  }
+}
+
+/**
+ * The three refusals the pre-submit gate can produce, in the operator's words.
+ *
+ * They are three different situations with three different remedies, and the
+ * screen used to render all of them as one sentence spliced together with
+ * colons and semicolons (Levi 2026-09-03). What each `message` must do is say
+ * WHAT HAPPENED in one line; the evidence goes in the cards below it, and the
+ * `remedy` says what to do next.
+ *
+ * `restart` is the load-bearing flag. Restarting verification rebuilds the
+ * return from today's record — which fixes a mismatch and fixes an unfilable
+ * record once the profile is corrected, and fixes NOTHING when the check
+ * itself could not run. Offering it there sends someone to discard a
+ * CR-signed snapshot for a problem discarding cannot touch.
+ */
+const GATE_REFUSALS = {
+  drift: {
+    message: 'The company record changed after this return was approved.',
+    remedy: 'Check which record is right. If the company profile is the '
+      + 'correct one, restart verification — that rebuilds the return from '
+      + "today's record and sends it to the client to approve again.",
+    restart: true,
+  },
+  record_unusable: {
+    message: 'The company record can no longer produce a NAR1.',
+    remedy: 'Correct these details on the company profile, then restart '
+      + 'verification to rebuild the return. The Companies Registry would '
+      + 'reject the filing as it stands, after taking the fee.',
+    restart: true,
+  },
+  check_failed: {
+    message: 'The return could not be checked against the company record.',
+    remedy: 'Filing stays blocked until the check can run. Restarting '
+      + 'verification will not help — this is not a problem with the return.',
+    restart: false,
+  },
+}
+
 export function describeError(err) {
   const message = err?.message || 'Something went wrong.'
   // Every specific reason the backend gathered, carried through so the caller
@@ -136,6 +248,11 @@ export function describeError(err) {
   // workflow used to do.
   const problems = Array.isArray(err?.problems) && err.problems.length
     ? err.problems : null
+  // Spec §6's field-by-field drift, carried the same way `problems` is. The
+  // page renders one comparison card per entry; a sentence cannot show two
+  // values per row.
+  const differences = Array.isArray(err?.differences) && err.differences.length
+    ? err.differences : null
 
   switch (err?.status) {
     case 400:
@@ -149,16 +266,69 @@ export function describeError(err) {
       }
     case 403:
       return { message, problems, hint: 'Your role does not allow this action.', retry: false }
-    case 409:
+    // 409 IS THE SUBMIT GATE, mostly. Four different refusals arrive here and
+    // they used to share one hint — "The case is not in a state that allows
+    // this yet" — printed underneath whatever the backend had said. Beneath a
+    // message that already names the country code CR will not take, that
+    // sentence is not a second piece of information; it is the same refusal,
+    // said less well (Levi 2026-09-03).
+    case 409: {
+      // THE CASE IS OVER. Its own branch, above the gate, because every other
+      // 409 on this screen describes something that can be put right — and
+      // this one cannot. The backend's message already says what happened and
+      // what to do instead (open a new case), so a second sentence underneath
+      // it would only be the same refusal, said less well.
+      if (err?.reason === 'case_closed') {
+        return { message, problems: null, reason: 'case_closed',
+                 hint: null, offerRestart: false, retry: false }
+      }
+      const gate = GATE_REFUSALS[err?.reason]
+      if (gate) {
+        return {
+          // OUR headline, not the backend's. The gate's own message is a
+          // developer sentence ("the company record has changed and can no
+          // longer be made into a NAR1, so it was not submitted"); what the
+          // operator needs on the first line is the situation, with the
+          // detail in the cards below.
+          message: gate.message,
+          problems,
+          differences,
+          reason: err.reason,
+          // Constant across all three, and first: an operator who has just
+          // pressed a button marked "deducts HK$2,610" needs to know that did
+          // not happen before they read anything else.
+          reassurance: 'Nothing was sent to the Companies Registry and '
+            + 'nothing was charged.',
+          remedy: gate.remedy,
+          offerRestart: gate.restart,
+          hint: null,
+          retry: false,
+        }
+      }
       return {
         message,
         problems,
         hint: /password/i.test(message)
           ? 'The shared TPSI password needs changing in Settings → CR Credentials before this can proceed.'
-          : 'The case is not in a state that allows this yet.',
+          // Only when the message did not already explain itself. The gate
+          // says things like "filing is 'draft' — it must be signed", and a
+          // generic restatement under a specific reason is noise.
+          : (problems ? null : 'The case is not in a state that allows this yet.'),
         retry: false,
       }
-    case 502:
+    }
+    // A CR REFUSAL. 422 since 2026-08-31, not 502: CR was reached and answered
+    // — it just said no. While this was a 5xx, Cloudflare and Railway replaced
+    // the JSON body with their own HTML error page, `api.js` fell back to
+    // `resp.statusText`, and the operator read "Bad Gateway" where CR had
+    // actually said "Br No does not exist."
+    // An unlabelled refusal still lands here and still gets CR_REFUSAL_HINTS
+    // .default — "do not simply retry" is the safe advice when we cannot tell
+    // WHICH refusal it was, and it is the one this endpoint family can produce.
+    // (FastAPI's own 422 for a malformed body would read a little
+    // CR-flavoured, but that is a caller bug that should never reach an
+    // operator, and the advice it gives is not harmful.)
+    case 422:
       return {
         message,
         problems,
@@ -173,6 +343,17 @@ export function describeError(err) {
         hint: CR_REFUSAL_HINTS[err?.kind] || CR_REFUSAL_HINTS.default,
         retry: false,
       }
+    // CR could not be REACHED, or refused our login — the transport failed
+    // rather than the return. It must not claim CR rejected anything, and it
+    // must NOT auto-retry: a repeated auth failure is exactly what makes CR
+    // lock the account.
+    case 502:
+      return {
+        message,
+        problems,
+        hint: 'The Companies Registry could not be reached. Nothing was filed and nothing was charged. If this repeats, stop — a repeated login failure is what locks a CR account.',
+        retry: false,
+      }
     case 503:
       return {
         message,
@@ -183,4 +364,29 @@ export function describeError(err) {
     default:
       return { message, problems, hint: null, retry: true }
   }
+}
+
+/**
+ * Stages whose XML may still be rebuilt from the live company record.
+ * Mirrors `services/tpsi/filings.REBUILDABLE_STAGES` — the backend enforces it
+ * inside the UPDATE; this only decides whether asking is worthwhile.
+ */
+const REBUILDABLE_STAGES = new Set(['draft', 'validation_failed'])
+
+/**
+ * Should the return be rebuilt before CR is asked again?
+ *
+ * Yes for a case with no filing, and for one CR has not validated. `validate`
+ * re-sends the STORED request_xml, so re-validating without rebuilding sends
+ * bytes CR has already refused and reports the same answer as though nothing
+ * had been fixed.
+ *
+ * No once the snapshot is frozen: from `validated` onward the case reads its
+ * own snapshot, and rewriting it under a client who has approved it is the
+ * "show one document, file another" failure the verification gate exists to
+ * prevent. `Restart verification` is how a snapshot is discarded.
+ */
+export function rebuildBeforeValidate(c) {
+  if (!c?.filing_id) return true
+  return REBUILDABLE_STAGES.has(c.form_status?.code)
 }

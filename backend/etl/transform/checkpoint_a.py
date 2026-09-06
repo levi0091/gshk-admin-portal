@@ -1,23 +1,75 @@
 from etl.reference_data import decode_id_type, decode_officer_role, AMBIGUOUS_OFFICER_CODES
 from etl.reconciliation import ReconciliationReport
+from services.tpsi.forms.cr_vocabularies import canonical_country
 
 
-def _collapse_line3(*parts: str | None) -> str | None:
-    non_empty = [p.strip() for p in parts if p and p.strip()]
-    return ", ".join(non_empty) if non_empty else None
+def _pack_address_lines(*parts: str | None) -> list[str | None]:
+    """Viewpoint's five address lines -> the three CR gives us, losing nothing.
+
+    CR's NAR1 has three free-text street slots (`flatFlrBlk`, `bldg`,
+    `stEstLotVlg`), each capped at 60 characters. Viewpoint has five source
+    lines. Two rules keep the result filable:
+
+    1. COMPACT FIRST. Viewpoint frequently leaves `Address`/`Address2` empty
+       and starts at `Address3`. Mapping positionally then left line1 and line2
+       empty while line3 carried everything — that single mistake is why 874 of
+       8,035 rows held a line over CR's limit while the source held only 25.
+
+    2. MERGE ONLY WHEN FORCED, and merge the ADJACENT PAIR WITH THE SMALLEST
+       COMBINED LENGTH. Three or fewer lines map one-to-one. Above that,
+       something must join, and joining the shortest neighbours minimises the
+       longest resulting line: over the real book that leaves 27 rows above 60
+       versus 275 for the obvious "merge the tail" rule.
+
+    Which fragment ends up under "Building" versus "Street" is therefore chosen
+    by fit, not by meaning. CR validates length, not semantics, and a return
+    that files beats one that is notionally better arranged and rejected.
+
+    Never truncates: a single source line already over 60 is passed through
+    whole, for the reconciliation report to name. Silently trimming a statutory
+    address is worse than loading one a later validation catches.
+    """
+    lines = [p.strip() for p in parts if p and p.strip()]
+    while len(lines) > 3:
+        i = min(range(len(lines) - 1),
+                key=lambda n: len(lines[n]) + len(lines[n + 1]))
+        lines[i:i + 2] = [f"{lines[i]}, {lines[i + 1]}"]
+    return lines + [None] * (3 - len(lines))
+
+
+def _country(value):
+    """Viewpoint's country code, rewritten to the one CR can file.
+
+    Viewpoint carries sub-national and renamed codes CR has no entry for --
+    'HK-CH' (its Chinese-labelled Hong Kong), 'GB-ENG', 'US-DE', 'ZR'. Passed
+    through untouched, they load cleanly, pass every check on the profile, and
+    kill the NAR1 weeks later at Data Verification with "no CR region code is
+    known for country 'HK-CH'".
+
+    Normalising HERE and not only in a backfill is the difference between
+    fixing it once and fixing it after every reimport -- `reimport_addresses`
+    rewrites this column from source. `canonical_country` returns None for
+    anything it has no justified parent for, and those are left exactly as
+    Viewpoint has them for the reconciliation report to name.
+    """
+    return canonical_country(value) or value
 
 
 def transform_address(row: dict) -> dict:
     """VP Addresses row -> addresses insert dict."""
-    country = (row.get("Country") or "").strip().upper()
+    country = (_country(row.get("Country")) or "").strip().upper()
+    line1, line2, line3 = _pack_address_lines(
+        row.get("Address"), row.get("Address2"), row.get("Address3"),
+        row.get("Address4"), row.get("Address5"),
+    )
     return {
         "vp_source_key": str(row["AddrNr"]),
-        "line1": row.get("Address"),
-        "line2": row.get("Address2"),
-        "line3": _collapse_line3(row.get("Address3"), row.get("Address4"), row.get("Address5")),
+        "line1": line1,
+        "line2": line2,
+        "line3": line3,
         "city": row.get("City"),
         "state_region": row.get("State"),
-        "country": row.get("Country"),
+        "country": _country(row.get("Country")),
         "postal_code": row.get("PostalCode"),
         "line1_zh": row.get("AddressLoc1"),
         "line2_zh": row.get("AddressLoc2"),
@@ -29,14 +81,21 @@ def transform_address(row: dict) -> dict:
 def transform_person(row: dict) -> dict:
     """Joined RefMaster (RefType='I') + Compliance row -> persons insert dict."""
     full_name = (row.get("Name") or row.get("SearchName") or "UNKNOWN").strip()
-    former_name = row.get("FormerName") or row.get("Aliases")
     return {
         "vp_source_key": row["RefCode"],
         "full_name": full_name,
         "given_names": row.get("GivenNames"),
         "surname": None,
         "full_name_zh": row.get("ChnsName"),
-        "former_name": former_name,
+        # Previous name and alias are DIFFERENT facts and CR asks for them in
+        # different fields: indvPrevEngName is a name you no longer use,
+        # indvAlsEngName one you also use. This used to be
+        # `FormerName or Aliases` -- one column for both -- which filed a
+        # person's current alias as a name they had abandoned.
+        "former_name": row.get("FormerName"),
+        "former_name_zh": row.get("ChnsFormerName"),
+        "alias_en": row.get("Aliases"),
+        "alias_zh": row.get("ChnsAliases"),
         "email": row.get("Email"),
         "phone": None,
         "date_of_birth": row.get("BirthDate"),
@@ -76,7 +135,11 @@ def transform_entity(row: dict, bus_name: dict | None) -> dict:
         "created_at": row.get("DateEntered"),
         "registered_address_id": None,  # backfilled in Checkpoint C from RefAddress
         "incorporation_date": row.get("IncorpDate"),
-        "incorporation_place": row.get("IncorpPlace") or "Hong Kong",
+        # Canonicalised on the way in. The default used to be the literal
+        # "Hong Kong", which FILES but cannot be selected in a dropdown
+        # keyed by alpha-2 -- 251 companies rendered as "Hong Kong (not in
+        # list)" and a backfill had to go back for them.
+        "incorporation_place": _country(row.get("IncorpPlace")) or "HK",
         "ar_last_date": row.get("DateLastAnRe"),
         "ar_next_date": row.get("DateNextAnRe"),
         "ar_due_date": row.get("DateDueAnRe"),
@@ -115,7 +178,7 @@ def transform_identity_document(
         "person_id": person_id,
         "id_type": decode_id_type(row.get("IdType")),
         "id_number": id_number,
-        "issuing_country": row.get("Country"),
+        "issuing_country": _country(row.get("Country")),
         "issue_date": row.get("FromDate"),
         "expiry_date": row.get("ToDate"),
         "is_primary": False,
@@ -153,7 +216,7 @@ def transform_compliance_identity_documents(
             "person_id": person_id,
             "id_type": "passport",
             "id_number": row["PassportNr"],
-            "issuing_country": row.get("PasPlaceIssue"),
+            "issuing_country": _country(row.get("PasPlaceIssue")),
             "issue_date": row.get("PasDateIssue"),
             "expiry_date": row.get("PasDateExpire"),
             "is_primary": False,

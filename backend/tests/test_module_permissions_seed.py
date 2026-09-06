@@ -111,8 +111,31 @@ def test_person_registry_view_role_flags_match_distinct_persons():
 def test_audit_entity_id_is_indexed():
     """Migration 010: person-scoped audit events carry case_id=NULL and
     entity_id=<person id>. Without an index on entity_id that read seq-scans the
-    whole audit_log (226k rows) and hits the statement timeout."""
+    whole audit_log (226k rows) and hits the statement timeout.
+
+    TWO ASSERTIONS, and only one of them is about a plan. The index either
+    exists or it does not, and that is checkable anywhere. Whether the PLANNER
+    reaches for it depends on the table having enough rows to be worth an index
+    — which CI's `audit_log` does not, being empty.
+
+    This used to assert the plan unconditionally and pass in CI, but only by
+    accident: with no statistics at all Postgres falls back to a default
+    estimate of a large table and picks the index. Migration 035 runs `ANALYZE`
+    (it must, or DEV keeps the plans it chose before its indexes existed), the
+    empty table then honestly reported 0 rows, and the planner correctly chose a
+    sequential scan — failing a test on a database where nothing was wrong.
+    """
     with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'audit_log' AND indexname LIKE 'idx_audit_log_entity%'"
+        )
+        assert cur.fetchone()[0] >= 1, "migration 010's entity_id index is missing"
+
+        cur.execute("SELECT count(*) FROM audit_log")
+        if cur.fetchone()[0] < 5_000:
+            pytest.skip("audit_log is too small for its plan to mean anything")
+
         cur.execute(
             "EXPLAIN SELECT * FROM audit_log "
             "WHERE entity_id = 'probe' ORDER BY created_at DESC"

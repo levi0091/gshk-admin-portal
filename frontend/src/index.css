@@ -62,6 +62,15 @@ a { text-decoration: none; color: inherit; }
 .btn-ghost:hover { color: var(--indigo); background: var(--indigo-5); }
 .btn-danger { background: #C53030; color: #fff; border: none; }
 .btn-danger:hover { background: #A42828; }
+/* A destructive action sitting in an ordinary action bar. Outlined, not solid:
+   in the page header it is one of four buttons and a filled red would be the
+   loudest thing on a screen whose actual work is elsewhere — but it must not
+   read as identical to "Back to cases" either. The solid `.btn-danger` is kept
+   for the confirmation, where the press is the irreversible one. */
+.btn-danger-outline {
+  color: #C53030; border-color: #FCA5A5; background: #fff;
+}
+.btn-danger-outline:hover { background: #FEF5F5; border-color: #C53030; }
 .btn-lg { padding: 0 24px; height: 44px; font-size: 14px; border-radius: var(--r); }
 .btn-sm { padding: 0 10px; height: 28px; font-size: 11px; border-radius: var(--r-xs); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -74,9 +83,27 @@ a { text-decoration: none; color: inherit; }
   height: 36px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
   padding: 0 11px; font-size: 13px; color: var(--t-body);
   background: #fff; transition: .15s; outline: none; font-family: var(--font);
+  /* A control fills its column and is never wider than it.
+     WHY BOTH: a <select> takes its min-content width from its LONGEST OPTION
+     and a date <input> from its dd/mm/yyyy spinner, and min-width defaults to
+     `auto`, so either will refuse to shrink and push itself out through the
+     side of the modal. `cr_country` alone offers names like "United Kingdom of
+     Great Britain and Northern Ireland"; two of those side by side blew a
+     520px dialog out to roughly 740. */
+  width: 100%; min-width: 0;
 }
+/* A long option truncates instead of being clipped mid-glyph. `appearance:
+   none` below means the browser draws no ellipsis of its own. */
+.f-select { text-overflow: ellipsis; }
 .f-input:focus, .f-select:focus {
   border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
+}
+/* The same field, allowed to be more than one line. `.f-input` pins height to
+   36px, which flattens a <textarea> to a single squashed row; this restores the
+   vertical padding that height was standing in for and lets `rows` decide. */
+.f-textarea {
+  height: auto; min-height: 72px; padding: 9px 11px;
+  line-height: 1.5; resize: vertical;
 }
 .f-hint { font-size: 11px; color: var(--t-muted); }
 /* A settled value shown where an input used to be — the signatory on the
@@ -157,7 +184,19 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   background: #fff; border-radius: var(--r-xl);
   width: 100%; max-width: 520px; margin: 20px; box-shadow: var(--sh-lg);
   position: relative;
+  /* A tall form scrolls inside the dialog; the page behind it never does. */
+  max-height: calc(100vh - 40px); display: flex; flex-direction: column;
 }
+.modal-body { overflow-y: auto; }
+.modal-hdr, .modal-footer { flex-shrink: 0; }
+/* Sixteen fields in two columns. At 520px a country name had ~230px and the
+   dialog read as a wall; the extra 120px is what makes the pairs legible. */
+.modal-lg { max-width: 640px; }
+/* One question, two buttons. */
+.modal-sm { max-width: 420px; }
+.confirm-body { font-size: 13px; color: var(--t-body); line-height: 1.55; }
+.confirm-body p + p { margin-top: 10px; }
+.confirm-note { font-size: 12px; color: var(--t-muted); }
 .modal-hdr {
   display: flex; align-items: center; justify-content: space-between;
   padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
@@ -188,6 +227,33 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .modal-confirm-text { font-size: 12px; color: var(--t-muted); margin-top: 6px; }
 .modal-confirm-actions {
   display: flex; justify-content: center; gap: 10px; margin-top: 18px;
+}
+
+/* The case is over. Grey, not red: closing is a decision somebody made on
+   purpose, not a fault — an alarm-coloured panel would read as one. It carries
+   the whole screen where the stepper and the five stages used to be, because
+   there is nothing left on this case to do. */
+.closed-panel {
+  border: 1px solid var(--border); border-left: 3px solid var(--t-muted);
+  border-radius: var(--r-lg); background: #F7F8FC;
+  padding: 20px 24px; margin-bottom: 16px;
+}
+.closed-hd {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 700; color: var(--t-head);
+}
+.closed-sub { font-size: 12px; color: var(--t-muted); margin-top: 4px; }
+/* The reason, quoted rather than paraphrased — it is somebody's own words and
+   the only record of why this case ended. */
+.closed-why {
+  margin-top: 14px; padding: 12px 14px; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--r);
+  font-size: 13px; color: var(--t-body); white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.closed-why-l {
+  font-size: 11px; font-weight: 600; color: var(--t-muted);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
 }
 
 /* ── PAGE CHROME ─────────────────────────────────────────── */
@@ -252,6 +318,26 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .empty-state {
   text-align: center; padding: 40px 20px; color: var(--t-muted); font-size: 13px;
 }
+/* An empty table states the fact, then offers the way out of it. The heading
+   carries the weight because it is the answer; the button is the only thing
+   here worth clicking, so nothing else competes with it.
+
+   STICKY, and that is the whole trick. This cell spans eleven columns, so it is
+   as wide as the TABLE — and `text-align: center` then centres the message in
+   the table rather than in the part of it anyone can see. On the dashboard that
+   put "No records found" a full screen to the right of the scroll position:
+   the operator gets a blank white box and has to scroll sideways to be told
+   why. `position: sticky; left: 0` with `width: fit-content` pins the block to
+   the left edge of the scrollport instead, so it is legible at every scroll
+   position, on every one of these tables, whatever their width. */
+.empty-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  position: sticky; left: 0; width: fit-content;
+  padding-left: 4px; text-align: left;
+}
+.empty-row-hd { font-size: 14px; font-weight: 600; color: var(--t-head); }
+.empty-row-sub { color: var(--t-muted); max-width: 42ch; }
+.empty-row .btn { margin-top: 6px; }
 .tag { display: inline-flex; padding: 2px 8px; background: var(--indigo-10); color: var(--indigo-80); font-size: 11px; font-weight: 600; border-radius: var(--r-xs); }
 
 /* ── LOGIN (wireframe_v7 s1) ─────────────────────────────── */
@@ -410,31 +496,48 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 /* anniversary passed, still inside the 42-day NAR1 filing window */
 .td-anniv-due { font-size: 11px; font-weight: 700; color: var(--carrot); }
 
-/* Days-to-anniversary filter (wireframe_v11 s9) — one control, not four loose
-   inputs: the operator and the day count are meaningless apart. */
-.anniv-bar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
-  padding: 11px 14px; border: 1px solid var(--border);
-  border-radius: var(--r-lg); background: var(--bg-card);
+/* `.anniv-bar` lived here — a standalone Days-to-anniversary control pinned
+   above the registry table. It is gone (Levi 2026-09-03): the range is the
+   Days-to-anniversary column's own filter now, like every other column's, and a
+   second place to look for something the header can say was the whole problem.
+   See `.colf-pair` below for the two-bound editor that replaced it. */
+/* Levi 2026-09-04: "make the filter and sorting buttons bigger, it is very
+   difficult to click on these super small buttons". The GLYPHS stay small — a
+   header of eleven columns cannot carry eleven loud controls — because the
+   target was never the glyph. Both marks sit in a box far larger than the mark.
+
+   SECOND PASS, same day, because 26px did not fix it and Levi said so. Three
+   things were wrong and only one of them was size:
+
+   1. SIZE. 26 -> 32px, so 676px² of target becomes 1024px².
+
+   2. VISIBILITY. Resting opacity was .4, which on a --indigo-5 header is very
+      nearly nothing. You cannot aim at what you cannot see, and "hard to click"
+      is what people say about a control they have to hunt for first. .55 at
+      rest, and the whole header lights its controls to .95 on hover.
+
+   3. THE COST OF A NEAR MISS, which was the real complaint. The entire <th> is
+      the sort target, so the funnel is a small island inside a large button and
+      missing it by two pixels does not do nothing — it RE-SORTS THE TABLE and
+      throws away the row you were reading. Two 26px boxes separated by a 2px
+      gap is a trap. The gap is now 5px, and on header hover the funnel takes a
+      visible box of its own so the operator is aiming at something with edges
+      rather than at a faint mark floating in a sort target.
+
+   The negative block margin is what keeps all of this free. Without it a 32px
+   control inside a 9px-padded header grows every table's head, which is a
+   visible change to eight screens nobody asked to redesign. -9px against 32px
+   leaves the same 14px of content the 26px/-6px pair did, so the header row is
+   pixel-identical to before while the targets are half again as large. */
+.th-inner { display: flex; align-items: center; gap: 5px; margin: -9px 0; }
+.th-sort {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; margin-left: 6px;
+  border-radius: var(--r-xs);
+  opacity: .55; font-size: 13px; line-height: 1; flex-shrink: 0;
+  transition: .15s;
 }
-.anniv-lbl { font-size: 11px; font-weight: 700; color: var(--t-head); }
-.anniv-bar select, .anniv-bar input {
-  height: 32px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
-  padding: 0 9px; font-size: 12px; font-family: var(--font);
-  color: var(--t-body); background: #fff; outline: none;
-}
-.anniv-bar select:focus, .anniv-bar input:focus { border-color: var(--indigo); }
-.anniv-bar select { width: 64px; text-align: center; }
-.anniv-bar input { width: 76px; }
-.anniv-unit { font-size: 11px; color: var(--t-muted); }
-.anniv-default {
-  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--indigo); background: var(--indigo-10); padding: 3px 8px; border-radius: 20px;
-}
-.anniv-hint { flex-basis: 100%; font-size: 11px; color: var(--t-muted); }
-.th-inner { display: flex; align-items: center; gap: 5px; }
-.th-sort { opacity: .4; font-size: 10px; }
-thead th:hover .th-sort { opacity: .85; }
+thead th:hover .th-sort { opacity: .95; }
 tbody tr.clickable { cursor: pointer; }
 .filing-tag {
   display: inline-block; margin-top: 4px; font-size: 9px; font-weight: 700; letter-spacing: .06em;
@@ -501,6 +604,11 @@ tbody tr.clickable { cursor: pointer; }
 }
 .flag-toggle:hover { border-color: var(--t-muted); }
 .flag-toggle.is-off { background: var(--bg-page); }
+/* The read-only form: same box, same colours, but nothing about it invites a
+   click. A hover highlight on something that cannot be pressed is the same lie
+   as a disabled button. */
+.flag-toggle.is-static { cursor: default; }
+.flag-toggle.is-static:hover { border-color: var(--border); }
 .flag-switch { flex-shrink: 0; width: 32px; height: 18px; border-radius: 9px; position: relative; transition: background .15s; }
 .flag-switch.on { background: var(--bang); }
 .flag-switch.off { background: #C7CAD9; }
@@ -515,6 +623,17 @@ tbody tr.clickable { cursor: pointer; }
   display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600;
   color: var(--carrot); background: var(--carrot-10); border-radius: 6px; padding: 5px 9px; margin-bottom: 10px;
 }
+/* The read-only banner. NOT `.reveal-note`, which is `display:flex` with a gap
+   — built for a short one-line label, and it spaced this sentence out into
+   drifting fragments with the permission chip marooned between them. This is a
+   paragraph that happens to contain a chip, so it is a block. */
+.ro-note {
+  display: block; font-size: 12px; line-height: 1.7; font-weight: 500;
+  color: var(--indigo); background: var(--indigo-10);
+  border-radius: 6px; padding: 9px 12px; margin-bottom: 12px;
+}
+.ro-note b { font-weight: 700; }
+.ro-note .role-tag { margin: 0; vertical-align: baseline; }
 .corp-tile { border-left: 3px solid var(--carrot); }
 .acts-as-chip {
   display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 8px;
@@ -534,8 +653,15 @@ tbody tr.clickable { cursor: pointer; }
 .case-acc-id { font-size: 10px; color: var(--t-muted); letter-spacing: .02em; margin-top: 1px; }
 .case-acc-body { padding: 14px 14px 4px; }
 
-/* Add Company form grid */
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+/* Two-column form grid — Add Company, Add Person, both profile editors.
+   `minmax(0, 1fr)` rather than `1fr`: a bare `1fr` is `minmax(auto, 1fr)`, and
+   an `auto` minimum is the track's MIN-CONTENT width, which a <select> takes
+   from its longest option. The track then refuses to shrink and the grid
+   overflows its container — the modal, in every case where this bit. The
+   `> *` rule reaches the plain wrapper <div>s the add-person modal puts around
+   each field to carry its error hint, which `.f-group` does not match. */
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.form-grid > * { min-width: 0; }
 .form-grid .full { grid-column: 1 / -1; }
 
 /* ── PERSONS REGISTRY + PERSON PROFILE (wireframe_v7 s10/s11) ── */
@@ -560,20 +686,95 @@ tbody tr.clickable { cursor: pointer; }
 .id-doc-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--t-head); margin-bottom: 8px; }
 .id-doc-head .pri-pill { font-size: 9.5px; font-weight: 700; color: var(--bang); background: var(--bang-10); padding: 2px 7px; border-radius: 8px; letter-spacing: .03em; }
 
+/* The card's actions sit right, wrap on a narrow column rather than pushing
+   the document type out of the card. */
+.id-doc-head .id-doc-actions {
+  margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px;
+}
+/* Destructive, and only on hover — a Remove that is red at rest reads as a
+   warning about the document rather than an action on it. */
+.btn-edit-danger:hover { border-color: #F2B8B8; color: #C53030; }
+
+/* One current document per type inside a section (the versions are in
+   Document History, which is the only place that needs to show them). */
+.sec-doc {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; margin-bottom: 8px;
+}
+.sec-doc-l { min-width: 0; }
+.sec-doc-type { display: flex; align-items: center; margin-bottom: 3px; }
+.sec-doc-sub {
+  font-size: 11px; color: var(--t-muted); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sec-doc-actions { display: flex; gap: 12px; flex-shrink: 0; }
+.dv-rm { color: var(--t-muted) !important; }
+.dv-rm:hover { color: #C53030 !important; }
+
 .doc-hist-type { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: var(--t-head); margin: 14px 0 6px; }
 .doc-hist-type .cnt { font-size: 10px; font-weight: 600; color: var(--t-muted); background: var(--bg-page); border: 1px solid var(--border); border-radius: 8px; padding: 1px 7px; }
+/* Which SECTION the type belongs to. "Passport" alone does not say whether it
+   was filed as identity or as proof of address. */
+.doc-hist-type .doc-hist-cat {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--t-muted); background: var(--bg-page); border: 1px solid var(--border);
+  border-radius: 7px; padding: 1px 6px;
+}
 .doc-ver {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 7px 0 7px 14px; margin-left: 5px; border-left: 2px solid var(--border); font-size: 11px;
 }
 .doc-ver .dv-l { display: flex; align-items: center; gap: 8px; color: var(--t-body); }
 .doc-ver .dv-tag { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 7px; }
-.dv-cur { color: var(--bang); background: var(--bang-10); }
-.dv-old { color: var(--t-muted); background: var(--bg-page); }
+.dv-current { color: var(--bang); background: var(--bang-10); }
+.dv-superseded { color: var(--t-muted); background: var(--bg-page); }
+/* A removed document keeps its whole history and loses its emphasis: it is a
+   record of what happened, not something on file any more. The badge does that
+   work; a strikethrough on top of it was a second way of saying the same
+   thing, and it drew itself straight through the section tag beside it. */
+.dv-removed, .dv-rmv { color: #C53030; background: #FDECEC; }
+.dv-rmv { margin-left: 2px; }
+.doc-hist-removed { opacity: .72; }
 .doc-ver .dv-meta { color: var(--t-muted); }
 .doc-ver .dv-dl { color: var(--indigo); font-weight: 600; cursor: pointer; background: none; border: none; }
+.doc-ver .dv-dl:hover { color: var(--carrot); }
+
+/* ── DOCUMENT TYPE CHIP ───────────────────────────────────
+   The document TYPE is the thing being scanned for, so it is the loud element:
+   a chip, uppercase, 11px against the 12px file name beside it. Colour is keyed
+   to the type code (components/DocumentSections.jsx `typeColour`) so the same
+   type is the same colour in its section, in the history, and on every profile.
+
+   COLOUR IS REINFORCEMENT, NEVER THE MESSAGE. Every chip also spells the type
+   out, and CURRENT / SUPERSEDED is a separate tag with its own words — nothing
+   here requires telling two hues apart. That is also why these eight are kept
+   out of the brand's semantic colours: --carrot means "needs attention" and
+   --bang means "approved" everywhere else in this app, and a document type that
+   happened to hash onto one of those would be claiming a status it does not
+   have. c1 and c2 are the brand's indigo and a muted carrot because the
+   palette has to look like this product; the other six are extensions used for
+   nothing but this chip. */
+.doc-type-chip {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  font-size: 11px; font-weight: 700; letter-spacing: .03em;
+  padding: 3px 9px; border-radius: var(--r-xs); text-transform: uppercase;
+}
+.doc-type-c0 { color: #242C66; background: #E9EAF0; }
+.doc-type-c1 { color: #9A4114; background: #FEF0EB; }
+.doc-type-c2 { color: #0B5E4A; background: #E4F1EE; }
+.doc-type-c3 { color: #0B5568; background: #E3EFF3; }
+.doc-type-c4 { color: #5E2C74; background: #F0E9F4; }
+.doc-type-c5 { color: #7A5A00; background: #FBF3DC; }
+.doc-type-c6 { color: #8A2544; background: #FAE8ED; }
+.doc-type-c7 { color: #3B4A62; background: #EAEEF3; }
+
 
 /* ── DOCUMENT UPLOAD + LINK PARTY (wireframe_v7 block 7) ─── */
+/* One definition — it was inlined identically in three modals. */
+.modal-error {
+  margin-bottom: 14px; padding: 10px; border-radius: 6px;
+  background: #FEE2E2; color: #B91C1C; font-size: 12px;
+}
 .upload-owner-line { font-size: 12px; color: var(--t-muted); margin-bottom: 12px; }
 .upload-owner-line b { color: var(--t-head); }
 .drop-zone {
@@ -718,6 +919,10 @@ tbody tr.clickable { cursor: pointer; }
 .meth-opt:hover:not(:disabled) { border-color: var(--indigo-20); }
 .meth-opt.sel { border-color: var(--carrot); background: var(--carrot-10); }
 .meth-opt:disabled { cursor: not-allowed; opacity: .55; }
+/* The chosen method, shown to a role that may not change it: full opacity —
+   this is the answer, not a greyed-out offer. */
+.meth-opt.is-static { cursor: default; opacity: 1; }
+.meth-opt.is-static:hover { border-color: var(--carrot); }
 .meth-radio {
   flex: 0 0 auto; width: 15px; height: 15px; margin-top: 1px;
   border: 1.5px solid var(--indigo-20); border-radius: 50%; background: #fff;
@@ -890,6 +1095,10 @@ tbody tr.clickable { cursor: pointer; }
 .badge.bw-submit::before    { background: var(--carrot); }
 .badge.bw-done      { background: var(--bang-10);   color: var(--bang); }
 .badge.bw-done::before      { background: var(--bang); }
+/* Grey, and the only grey badge here. A closed case is finished but NOT done:
+   green would read as "filed", which is the one thing it must never say. */
+.badge.bw-closed    { background: #EDEEF4;          color: var(--t-muted); }
+.badge.bw-closed::before    { background: var(--t-muted); }
 
 .badge.bf-draft      { background: var(--indigo-10); color: var(--indigo); }
 .badge.bf-validated  { background: var(--bang-10);   color: var(--bang); }
@@ -1034,9 +1243,20 @@ tbody tr.clickable { cursor: pointer; }
 .check-row.checked .check-box { background: var(--bang); border-color: var(--bang); }
 .check-box svg { opacity: 0; transition: .15s; }
 .check-row.checked .check-box svg { opacity: 1; }
+/* Read-only: the same fact, nothing to press. No pointer, no hover — both
+   would promise a click that is not on offer. */
+.check-row.is-static { cursor: default; }
+.check-row.is-static:hover { border-color: var(--border); }
+.check-row.is-static.checked:hover { border-color: #B3D5C8; }
 .check-txt { font-size: 13px; color: var(--t-body); line-height: 1.5; }
 .check-txt b { color: var(--t-head); font-weight: 700; }
 .check-txt .cx-sub { font-size: 11.5px; color: var(--t-muted); margin-top: 2px; }
+/* The state spelt out, because a static tick alone is easy to misread. */
+.check-state {
+  margin-left: 8px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--t-muted);
+}
+.check-row.is-static.checked .check-state { color: var(--bang); }
 
 /* CR returns EVERY fault at once so one pass fixes them all — the panel is
    built to show all of them, never just the first. */
@@ -1122,4 +1342,374 @@ tbody tr.clickable { cursor: pointer; }
   .stepper { grid-template-columns: repeat(5, 1fr); padding: 14px 6px 12px; }
   .step-lbl { font-size: 10px; }
   .step-state { display: none; }
+}
+
+/* ---- Address block (registered office / residential address) --------------
+   The five fields CR actually receives. The character counter is the point of
+   the design, not decoration: CR caps each line at 60 and refuses the whole
+   filing over one long line, so the limit is shown where the typing happens. */
+.addr-block { display: grid; gap: 12px; }
+.addr-lbl-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.addr-count {
+  font-size: 11px; font-variant-numeric: tabular-nums; color: var(--t-muted);
+  background: var(--bg-page); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 7px;
+}
+/* Carrot, not red: an over-long line is a thing to fix before saving, not an
+   error that has already happened. */
+.addr-count[data-over="true"] { color: var(--carrot); background: var(--carrot-10); border-color: var(--carrot); }
+.addr-block .f-input[aria-invalid="true"] { border-color: var(--carrot); }
+.addr-over { color: var(--carrot); }
+.addr-block .ab-note { padding: 8px 10px; background: var(--carrot-10); border-radius: 6px; color: var(--t-body); }
+
+/* --- Form-contract highlighting (PRD §5.3) ---------------------------------
+   Carrot, deliberately not red, and for the same reason as .addr-count above:
+   these fields are INCOMPLETE, not wrong. Most of them came out of Viewpoint
+   that way and the save is allowed to proceed. What is red — a refusal — is
+   the much smaller blocking set on the Open case button. */
+.fld-warn {
+  display: block; margin-top: 3px;
+  font-size: 11px; font-weight: 500; line-height: 1.35;
+  color: var(--carrot);
+}
+.warn-pill {
+  display: inline-flex; align-items: center; height: 20px;
+  margin-left: 8px; padding: 0 8px; border-radius: 10px;
+  background: var(--carrot-10); color: var(--carrot);
+  font-size: 11px; font-weight: 700; letter-spacing: .01em;
+  vertical-align: middle;
+}
+/* The reason the Open case button is refusing, next to the button. */
+.filing-problems { margin: 6px 0 0; padding-left: 18px; }
+.filing-problems li { margin-top: 3px; }
+
+/* ── COLUMN FILTERS ──────────────────────────────────────────
+   The funnel in a header, the panel it opens, and the chip row that says what
+   is applied. Sorting already lives in the header (.th-inner); filtering joins
+   it there rather than claiming a toolbar of its own, because eleven columns of
+   visible filter boxes would bury the table they filter.
+
+   No new hues. Carrot is already this system's "act on me" (.filter-tab
+   .ft-action, .td-anniv-due), and a filter is the thing explaining why the row
+   count is what it is — so an applied filter is carrot, and everything dormant
+   stays at the hairline weight .th-sort already established. */
+
+.th-lbl { white-space: nowrap; }
+
+/* Dormant: the same .4 opacity the sort glyph sits at, so a header with both
+   reads as one control cluster rather than two competing marks. */
+.th-filter {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; margin-left: 0; padding: 0;
+  border-radius: var(--r-xs); color: var(--t-muted); opacity: .55;
+  transition: .15s; flex-shrink: 0;
+}
+/* On header hover the funnel takes EDGES, not just more ink. Missing it sorts
+   the table, so the operator needs to see what they are aiming at rather than
+   guess where a faint glyph's hit area ends. It is drawn only on hover: eleven
+   permanently-boxed funnels would be the loud header this design avoids. */
+thead th:hover .th-filter:not(.is-on) { opacity: .95; background: var(--indigo-10); }
+/* Darker than the box the header hover already drew (--indigo-10), or landing
+   on the funnel would look identical to merely being near it. */
+.th-filter:not(.is-on):hover, thead th:hover .th-filter:not(.is-on):hover {
+  opacity: 1; color: var(--indigo); background: var(--indigo-20);
+}
+.th-filter:focus-visible {
+  outline: none; opacity: 1;
+  box-shadow: 0 0 0 2px var(--indigo-20);
+}
+/* Applied. Solid, full opacity, and it stays that way when the header is not
+   hovered — the whole job of this state is to be findable by scanning. */
+.th-filter.is-on, thead th:hover .th-filter.is-on { color: var(--carrot); opacity: 1; }
+/* carrot-20, not carrot-10: the COLUMN is already tinted carrot-10 when a
+   filter is applied (`th.th-filtered`), so a carrot-10 funnel on it is an
+   invisible hover. Both selectors are spelled out because `thead th:hover ...`
+   outranks a bare class chain, and without the second one an applied filter
+   would take the indigo hover meant for the unfiltered case. */
+.th-filter.is-on:hover, thead th:hover .th-filter.is-on:hover {
+  background: var(--carrot-20); color: var(--carrot);
+}
+
+/* The filtered column itself: a tint plus a carrot rule under the header. The
+   rule is the registry-ledger detail — an underscored column heading — and it
+   survives at a glance where a pale tint alone would not. */
+th.th-filtered {
+  background: var(--carrot-10);
+  box-shadow: inset 0 -2px 0 var(--carrot);
+}
+
+/* ── the panel ── */
+.colf {
+  z-index: 1500; width: 248px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--sh-lg);
+  overflow: hidden;
+  animation: colf-in .12s cubic-bezier(.2,.7,.4,1);
+  transform-origin: top left;
+}
+@keyframes colf-in {
+  from { opacity: 0; transform: scale(.97) translateY(-2px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .colf { animation: none; } }
+
+/* The table header's own type treatment, so the panel reads as having grown
+   out of the cell that opened it. */
+.colf-hdr {
+  padding: 8px 12px; background: var(--indigo-5);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--t-muted);
+}
+.colf-body { padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; }
+.colf-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; border-top: 1px solid var(--border); background: var(--indigo-5);
+}
+.colf-clear {
+  font-size: 11px; font-weight: 600; color: var(--t-muted); padding: 4px 2px;
+  border-radius: var(--r-xs);
+}
+.colf-clear:hover { color: var(--carrot); }
+
+.colf-select, .colf-input, .colf-field input {
+  width: 100%; height: 30px; border: 1.5px solid var(--border);
+  border-radius: var(--r-sm); padding: 0 9px;
+  font-size: 12px; font-family: var(--font); color: var(--t-body);
+  background: #fff; outline: none; transition: .15s;
+}
+.colf-select {
+  appearance: none; padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' stroke='%237C80A3' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center;
+}
+.colf-select:focus, .colf-input:focus, .colf-field input:focus {
+  border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
+}
+.colf-input:disabled { background: var(--indigo-5); color: var(--t-muted); }
+
+/* ── enum list ── */
+.colf-bulk { display: flex; gap: 10px; }
+.colf-bulk button { font-size: 11px; font-weight: 600; color: var(--indigo); padding: 0; }
+.colf-bulk button:hover { text-decoration: underline; }
+.colf-list {
+  display: flex; flex-direction: column;
+  max-height: 208px; overflow-y: auto; margin: 0 -4px;
+}
+.colf-opt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 4px; border-radius: var(--r-xs); cursor: pointer; font-size: 12px;
+}
+.colf-opt:hover { background: var(--indigo-5); }
+.colf-opt input { accent-color: var(--indigo); width: 13px; height: 13px; flex-shrink: 0; }
+.colf-opt-lbl { color: var(--t-body); flex: 1; }
+.colf-opt-count { font-size: 11px; color: var(--t-muted); font-variant: tabular-nums; }
+
+/* ── range / date ── */
+.colf-pair { display: flex; align-items: flex-end; gap: 7px; }
+.colf-pair-stack { flex-direction: column; align-items: stretch; }
+.colf-field { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.colf-field > span {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--t-muted);
+}
+.colf-dash { color: var(--t-muted); padding-bottom: 8px; }
+.colf-unit { font-size: 11px; color: var(--t-muted); padding-bottom: 8px; }
+.colf-hint { font-size: 11px; line-height: 1.45; color: var(--t-muted); margin: 0; }
+
+/* ── owner ── */
+.colf-seg {
+  display: flex; border: 1px solid var(--border);
+  border-radius: var(--r-sm); overflow: hidden;
+}
+.colf-seg button {
+  flex: 1; padding: 6px 8px; font-size: 11px; font-weight: 600;
+  color: var(--t-muted); transition: .15s;
+}
+.colf-seg button:hover { background: var(--indigo-5); color: var(--indigo); }
+.colf-seg button.on { background: var(--indigo); color: #fff; }
+
+/* ── ACTIVE FILTER CHIPS ─────────────────────────────────────
+   One line naming every filter narrowing the table, each one removable. Two of
+   these screens filter before the operator touches anything, and a default that
+   hides rows without saying so cannot be told apart from missing data. Defaults
+   get the SAME chip as a hand-set filter — no "Default" badge marking them as
+   someone else's decision. */
+.fchips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.fchips-lbl {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--t-muted); margin-right: 2px;
+}
+.fchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 7px 0 9px; border-radius: 20px;
+  border: 1px solid var(--carrot-20); background: var(--carrot-10);
+  font-size: 11px; transition: .15s;
+}
+.fchip:hover { border-color: var(--carrot); background: #FDE3D7; }
+.fchip:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px var(--carrot-10); border-color: var(--carrot);
+}
+.fchip-col { font-weight: 700; color: var(--carrot); }
+/* The value is the half anyone actually reads, so it takes the high-contrast
+   ink rather than the accent. */
+.fchip-val { color: var(--t-head); }
+.fchip-x { color: var(--carrot); font-size: 14px; line-height: 1; opacity: .7; }
+.fchip:hover .fchip-x { opacity: 1; }
+.fchips-clear {
+  font-size: 11px; font-weight: 600; color: var(--t-muted);
+  padding: 4px 6px; border-radius: var(--r-xs);
+}
+.fchips-clear:hover { color: var(--indigo); text-decoration: underline; }
+
+/* ── STAT CARDS AS FILTERS ───────────────────────────────────
+   The two tiles count the cases whose next move is ours and the cases whose
+   next move is the client's. Reading a number and then hunting for the filter
+   that reproduces it was the gap; the tile IS that filter now. */
+.stat-card.is-filter { cursor: pointer; text-align: left; width: 100%; transition: .15s; }
+.stat-card.is-filter:hover { box-shadow: var(--sh-md); }
+.stat-card.is-filter:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--indigo-20); }
+.stat-card.accent-left.is-on { border-color: var(--carrot); box-shadow: 0 0 0 3px var(--carrot-10); }
+.stat-card.accent-indigo.is-on { border-color: var(--indigo); box-shadow: 0 0 0 3px var(--indigo-10); }
+/* Hidden until it has something to say. Permanently printing "CLICK TO FILTER"
+   under both tiles put a second, louder label beside the numbers the tiles
+   exist to show — so the invitation appears on hover, and the only text that
+   stays is the one describing a filter that IS applied. */
+.stat-on-note {
+  display: block; margin-top: 6px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--carrot);
+  opacity: 0; transition: opacity .15s;
+}
+.stat-card.is-filter:hover .stat-on-note,
+.stat-card.is-filter:focus-visible .stat-on-note,
+.stat-card.is-on .stat-on-note { opacity: 1; }
+.stat-card.accent-indigo .stat-on-note { color: var(--indigo); }
+
+@media (max-width: 720px) {
+  .colf { width: calc(100vw - 24px); max-width: 288px; }
+}
+
+/* ── CARD NOTE — a panel explaining ITSELF, not reporting an action ────────
+   The workflow now keeps one meaning for `.alert`: something you did was
+   refused, drawn once at the top of the page, with the page scrolled to it.
+   Everything else that used to reach for an alert — the fee panel with no
+   figures in it, the preview that would not render, the reason the Send button
+   is not on offer, the missing signing credential — is a panel describing its
+   own state, and says so quietly, where it is.
+
+   Deliberately flatter than an alert: no icon, no coloured fill by default,
+   one rule down the left. It should read as part of the card it sits in, which
+   is what distinguishes it from a refusal at a glance. */
+.card-note {
+  border-left: 3px solid var(--indigo-20);
+  background: var(--indigo-5);
+  border-radius: var(--r-xs);
+  padding: 10px 13px; margin-bottom: 14px;
+  font-size: 13px; color: var(--t-body); line-height: 1.5;
+}
+.card-note b { color: var(--t-head); font-weight: 600; }
+/* Carrot, not red: these are things to know before acting, not refusals of
+   something already attempted. Same reasoning as .fld-warn above. */
+.card-note-warn { border-left-color: var(--carrot); background: var(--carrot-10); }
+.card-note-warn b { color: var(--carrot); }
+
+/* ── WORKFLOW REFUSAL — the evidence under a blocked action ────────────────
+   Levi 2026-09-03. The pre-submit gate used to report itself two ways at once:
+   a run-on sentence in the page banner ("...corporate party CGAHCHBAABBG
+   DIRECTOR COMPANY LIMITED: no CR region code is known for country 'HK-CH' —
+   CR's Country & Region sheet (worksheet v1.0.14) carries no code, alpha-2 or
+   English name...") and a second, vaguer alert half a page below it. One was
+   unreadable and the other was redundant.
+
+   These are the replacement: one card per fault, inside the one banner.
+
+   WHITE CARDS INSIDE A RED SHELL. The shell has already said "stopped". The
+   cards are evidence — somebody has to read a Stockholm street address off one
+   — and tinting evidence with alarm only makes it harder to read. */
+.rf-list {
+  list-style: none; margin: 12px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+/* The carrot rail is what makes a stack of these read as one list of faults
+   rather than a pile of cards, and it is the ONLY accent on the card — the
+   rest of the border is the app's ordinary hairline. A red outline here as
+   well put three alarm colours inside one alert and made the evidence harder
+   to read than the shell it sits in. */
+.rf-card {
+  background: var(--white); border: 1px solid var(--border);
+  border-left: 3px solid var(--carrot);
+  border-radius: var(--r-sm); padding: 11px 14px 12px;
+}
+
+/* WHERE this is, on the record. A coordinate, not prose — hence uppercase,
+   tracked, and small. The last segment is the field itself and carries the
+   weight, because the route through the form is context and the field is the
+   subject. */
+.rf-where {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px;
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  margin-bottom: 9px;
+}
+.rf-where-step { color: var(--t-muted); font-weight: 600; }
+.rf-where-step::after { content: '·'; margin-left: 5px; color: var(--indigo-20); }
+.rf-where-field { color: var(--indigo); font-weight: 700; }
+
+/* THE TWO VALUES, side by side, with the arrow saying which way the change
+   ran. The values are the largest type on the card because the operator's
+   whole question is "which of these is right" — the field name is not what
+   they are deciding between. */
+.rf-compare {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: stretch; gap: 10px;
+}
+.rf-val {
+  background: var(--indigo-5); border: 1px solid var(--border);
+  border-radius: var(--r-xs); padding: 8px 10px; min-width: 0;
+}
+.rf-val-lbl {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--t-muted); margin-bottom: 4px;
+}
+.rf-val-txt {
+  font-size: 14px; font-weight: 600; color: var(--t-head); line-height: 1.4;
+  /* A CR address line runs to 60 characters and a company name further. It
+     wraps inside its pane; it never widens the pane and pushes the page
+     sideways. */
+  overflow-wrap: anywhere;
+}
+/* The changed side, and the only carrot on the card. One accent, one meaning. */
+.rf-val-now { background: var(--carrot-10); border-color: var(--carrot-20); }
+.rf-val-now .rf-val-txt { color: var(--carrot); }
+.rf-absent { font-style: italic; font-weight: 500; color: var(--t-muted); }
+.rf-arrow {
+  align-self: center; color: var(--t-muted);
+  font-size: 15px; line-height: 1; user-select: none;
+}
+
+/* The other card shape: a fault with no pair, because the record cannot make
+   a return at all. Same rail, same eyebrow, so both read as one family. */
+.rf-problem {
+  font-size: 13.5px; font-weight: 600; color: var(--t-head); line-height: 1.45;
+}
+.rf-detail {
+  font-size: 12.5px; color: var(--t-body); line-height: 1.6; margin-top: 5px;
+}
+
+/* What to do about it, under the evidence rather than buried above it. The
+   button is the real Restart control — the same one in the page header, put
+   where the operator is already looking. */
+.rf-remedy {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px;
+  margin-top: 13px; padding-top: 12px; border-top: 1px solid #FCA5A5;
+}
+.rf-remedy-txt {
+  font-size: 12.5px; color: var(--t-body); line-height: 1.55; flex: 1 1 260px;
+}
+
+@media (max-width: 620px) {
+  /* Stacked, with the arrow turned to match. A 1fr/auto/1fr grid at 320px
+     gives each value about eleven characters. */
+  .rf-compare { grid-template-columns: 1fr; }
+  .rf-arrow { transform: rotate(90deg); justify-self: center; }
 }

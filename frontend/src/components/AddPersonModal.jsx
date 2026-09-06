@@ -5,18 +5,40 @@ import { useLookups } from '../lib/lookups.js'
 import useDiscardGuard from '../lib/useDiscardGuard.js'
 import { api } from '../lib/api.js'
 
+// NAR1's labels, and NAR1's fields (PRD §10.5). Marital Status is gone for
+// the same reason it is gone from the profile: neither form asks for it, and
+// the column is retained so nothing is destroyed (D3).
+//
+// THE FOUR THAT WERE MISSING (Levi 2026-09-04). Previous Names in both
+// languages, Nationality Origin and Place of Birth were all editable on the
+// profile and absent here, so every one of them could only ever be filled in on
+// a second visit to a record that had just been created from the same data.
+// `prevNameEng` / `prevNameChi` are CR fields on both NAR1 and NNC1.
+//
+// NO IDENTITY DOCUMENT HERE (Levi 2026-09-04, reversing the block added
+// earlier the same day). The Identity Documents section on the profile already
+// records one, with its scan and its type-specific fields; asking for the type
+// again during creation was a second, weaker way to do the same thing. Creating
+// a person now does exactly one thing, and the profile owns their documents.
 const FIELDS = [
   { key: 'full_name', label: 'Full Name', required: true, full: true, placeholder: 'Legal name as per ID' },
-  { key: 'given_names', label: 'Given Names' },
-  { key: 'surname', label: 'Surname' },
-  { key: 'full_name_zh', label: 'Chinese Name' },
+  { key: 'surname', label: 'Name in English (Surname)' },
+  { key: 'given_names', label: 'Name in English (Other Names)' },
+  { key: 'full_name_zh', label: 'Name in Chinese' },
+  { key: 'former_name', label: 'Previous Names (English)' },
+  { key: 'former_name_zh', label: 'Previous Names (Chinese)' },
+  { key: 'alias_en', label: 'Alias (English)' },
+  { key: 'alias_zh', label: 'Alias (Chinese)' },
   { key: 'date_of_birth', label: 'Date of Birth', type: 'date' },
   { key: 'gender', label: 'Gender', lookup: 'gender' },
   { key: 'nationality', label: 'Nationality', lookup: 'nationality' },
-  { key: 'marital_status', label: 'Marital Status', lookup: 'marital_status' },
+  { key: 'nationality_origin', label: 'Nationality Origin', lookup: 'nationality' },
+  { key: 'place_of_birth', label: 'Place of Birth', lookup: 'cr_country' },
   { key: 'occupation', label: 'Occupation' },
-  { key: 'email', label: 'Email', type: 'email' },
+  { key: 'email', label: 'Email Address', type: 'email' },
   { key: 'phone', label: 'Phone' },
+  // A TCSP licence held by an individual (migration 038).
+  { key: 'tcsp_licence_no', label: 'TCSP Licence No.' },
 ]
 
 export default function AddPersonModal({ onClose, onCreated }) {
@@ -59,18 +81,14 @@ export default function AddPersonModal({ onClose, onCreated }) {
 
   return (
     <div className="overlay" onClick={e => { if (e.target === e.currentTarget) guard.requestClose() }}>
-      <div className="modal" role="dialog" aria-label="New Person">
+      <div className="modal modal-lg" role="dialog" aria-label="New Person">
         <div className="modal-hdr">
           <div className="modal-title">New Person</div>
           <button className="modal-close" onClick={guard.requestClose} aria-label="Close">×</button>
         </div>
 
         <div className="modal-body">
-          {apiError && (
-            <div style={{ marginBottom: 14, padding: 10, background: '#FEE2E2', borderRadius: 6, color: '#B91C1C', fontSize: 12 }}>
-              {apiError}
-            </div>
-          )}
+          {apiError && <div className="modal-error">{apiError}</div>}
           <div className="form-grid">
             {FIELDS.map(f => (
               <div key={f.key}>
@@ -87,7 +105,15 @@ export default function AddPersonModal({ onClose, onCreated }) {
             ))}
           </div>
 
-          <div className="f-legend"><span className="f-req">*</span> Fields marked with an asterisk are required.</div>
+          {/* Identity documents are added on the profile, in their own
+              section, where the scan and the type-specific fields live. Saying
+              so here is what stops the operator hunting for the ID Number box
+              they expected to find on this form. */}
+          <div className="f-legend">
+            <span className="f-req">*</span> Fields marked with an asterisk are required.
+            <br />
+            Add this person’s HKID or passport from their profile, under Identity Documents.
+          </div>
         </div>
 
         <div className="modal-footer">

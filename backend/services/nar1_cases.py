@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from db.supabase import get_supabase
-from services import nar1_case_status
+from services import nar1_approvals, nar1_case_status, table_filters as tf
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.filings import form_status
 
@@ -92,6 +92,42 @@ def claim_manual_submission(case_id: str, patch: dict) -> dict | None:
         .update(patch)
         .eq("id", case_id)
         .is_("manual_receipt", None)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+#: The badge is derived, so closure is stored as EVIDENCE, not as a status:
+#: when, by whom, and why. `closed_at IS NOT NULL` is the predicate everywhere
+#: -- here, in nar1_case_status._code, in the SQL view (migration 039) and in
+#: every guard -- so there is one fact rather than a flag and a timestamp that
+#: can disagree.
+def close_case(case_id: str, *, user_id: str, reason: str) -> dict | None:
+    """Close a case permanently. Returns the updated row, or None if it was
+    ALREADY closed.
+
+    Conditional on `closed_at IS NULL` INSIDE the update, not read-then-written,
+    for the same reason `claim_manual_submission` is: two concurrent requests
+    both see an open case and both write. Last write wins on one row, so there
+    would never be two closures -- but the trail would carry two
+    NAR1_CASE_CLOSED entries for one decision, naming two people and two
+    reasons, and audit_log is insert-only so neither could be taken back. The
+    condition belongs where Postgres settles it.
+
+    None is therefore a REFUSAL, not a failure: the caller answers 409 and the
+    first close stands, reason and all.
+    """
+    rows = (
+        get_supabase().table(_TABLE)
+        .update({
+            "closed_at": _now(),
+            "closed_by": user_id,
+            "closed_reason": reason,
+            "updated_at": _now(),
+        })
+        .eq("id", case_id)
+        .is_("closed_at", None)
         .execute()
         .data
     )
@@ -300,11 +336,53 @@ _SORTABLE = {
     # The display name, not the uuid: sorting by `created_by` would order the
     # dashboard by a value nobody can read off the screen.
     "created_by_name",
+    "closed_at",
 }
 
-#: The deadline is the reason this screen exists, so it is the default order:
-#: soonest first, and negative (already past, still filable) sorts ahead of that.
-_DEFAULT_SORT = "days_to_anniversary"
+#: Columns the per-column header filters may narrow on (services/table_filters).
+#:
+#: `created_by` is here as TEXT and is only ever compared with `eq`: it holds a
+#: uuid, and the one question anyone asks of it — "mine" — is an exact match on
+#: the signed-in user's id. `created_by_name` is the readable half and takes a
+#: `contains`, which is what you want when looking for somebody else's cases.
+#:
+#: `workflow_status` is deliberately ABSENT. It is filtered separately (see
+#: `workflow_statuses` below) because it must not reach the count queries — the
+#: per-badge counts are the thing the operator picks a status FROM, and running
+#: the selection through them would collapse every badge but the chosen one to
+#: zero.
+_FILTERABLE = {
+    "case_no": tf.text(),
+    # uuid, not text — see table_filters._OPS_FOR_KIND. Declaring either of
+    # these as text made the whole dashboard 500 the moment a filter touched it.
+    "entity_id": tf.uuid(),
+    "company_name": tf.text(),
+    "company_name_zh": tf.text(),
+    "br_number": tf.text(),
+    "cr_number": tf.text(),
+    "case_type": tf.enum({"NAR1"}),
+    "case_status": tf.enum({
+        "draft", "pending_aml", "pending_client", "to_verify",
+        "revision_required", "ready_to_submit", "submitted", "approved", "rejected",
+    }),
+    "created_by": tf.uuid(),
+    "created_by_name": tf.text(),
+    "days_to_anniversary": tf.number(),
+    "created_at": tf.timestamp(),
+    "updated_at": tf.timestamp(),
+    "closed_at": tf.timestamp(),
+}
+
+#: Newest case first (Levi 2026-08-31). A case you just opened is the one you
+#: are about to work on, and on a book this size it was landing on page 4 of a
+#: deadline-ordered list. The deadline is still visible on every row, still
+#: filterable, and still one click away as a column sort.
+#:
+#: The direction is part of the default, not a separate knob: "created_at
+#: ascending" is the oldest case in the book, which is nobody's first screen. An
+#: EXPLICIT `sort` still honours `dir`, so a header click behaves as it reads.
+_DEFAULT_SORT = "created_at"
+_DEFAULT_DESC = True
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
 
@@ -315,7 +393,7 @@ _LIST_COLS = (
     "filing_id, filing_stage, verification_sent_at, client_response_at, "
     "client_approved, manual_receipt_present, manual_submitted_at, created_at, "
     "updated_at, days_to_anniversary, workflow_status, workflow_off_portal, "
-    "workflow_overdue"
+    "workflow_overdue, closed_at, closed_by_name, closed_reason"
 )
 
 
@@ -323,8 +401,10 @@ async def list_dashboard(
     *,
     search: str | None = None,
     workflow_status: str | None = None,
+    workflow_statuses: list[str] | None = None,
     anniv_op: str | None = None,
     anniv_days: int | None = None,
+    filters: list[tf.Filter] | None = None,
     sort: str | None = None,
     direction: str = "asc",
     page: int = 1,
@@ -337,16 +417,24 @@ async def list_dashboard(
     a PostgREST order clause, so a caller that skipped the router must not be
     able to reach either -- the same reasoning that put the manual-submission
     interlock in the service rather than the route (Task 10).
+
+    `workflow_status` (one badge) and `workflow_statuses` (several) are the same
+    filter; the singular is kept because it is what every existing caller sends,
+    and the plural exists because the two dashboard tiles each stand for a SET
+    of badges -- "Action Required" is five of them.
     """
     if anniv_op is not None and anniv_op not in _ANNIV_OPS:
         raise ValueError(f"Unknown comparison '{anniv_op}'")
     if (anniv_op is None) != (anniv_days is None):
         raise ValueError("anniv_op and anniv_days must be supplied together")
-    if workflow_status is not None and workflow_status not in nar1_case_status.WORKFLOW_STATUSES:
-        raise ValueError(f"Unknown workflow status '{workflow_status}'")
+    picked = list(workflow_statuses or ([workflow_status] if workflow_status else []))
+    unknown = [s for s in picked if s not in nar1_case_status.WORKFLOW_STATUSES]
+    if unknown:
+        raise ValueError(f"Unknown workflow status '{unknown[0]}'")
     if sort is not None and sort not in _SORTABLE:
         raise ValueError(f"Cannot sort by '{sort}'")
 
+    filters = filters or []
     sb = get_supabase()
 
     def base(cols: str, count: str | None = None):
@@ -372,6 +460,10 @@ async def list_dashboard(
                 f"case_no.ilike.{term},"
                 f"br_number.ilike.{term}"
             )
+        # Column header filters, inside base() for the same reason as the
+        # search: the badge counts and the pager have to describe the set the
+        # rows come from, not a wider one.
+        q = tf.apply(q, filters)
         if anniv_op:
             col = "days_to_anniversary"
             q = getattr(q, anniv_op)(col, anniv_days)
@@ -401,17 +493,22 @@ async def list_dashboard(
     counts.update(zip(nar1_case_status.WORKFLOW_STATUSES, values[1:]))
 
     # Derived from the counts rather than a ninth query — it is the same number.
-    total = counts[workflow_status] if workflow_status else counts["all"]
+    # The badges partition the set (a case wears exactly one), so summing the
+    # picked ones is the size of the selection, not an over-count.
+    total = sum(counts[s] for s in picked) if picked else counts["all"]
 
     q = base(_LIST_COLS)
-    if workflow_status:
-        q = q.eq("workflow_status", workflow_status)
+    if picked:
+        q = q.in_("workflow_status", picked) if len(picked) > 1 \
+            else q.eq("workflow_status", picked[0])
     start = (page - 1) * page_size
     rows = (
         # nullsfirst=False explicitly: Postgres puts NULLs FIRST on a DESC sort,
         # which would open "furthest from anniversary" with every company that
         # has no incorporation date and therefore no answer.
-        q.order(sort or _DEFAULT_SORT, desc=(direction == "desc"), nullsfirst=False)
+        q.order(sort or _DEFAULT_SORT,
+                desc=(direction == "desc") if sort else _DEFAULT_DESC,
+                nullsfirst=False)
         .range(start, start + page_size - 1)
         .execute().data
     ) or []
@@ -436,9 +533,14 @@ async def list_dashboard(
 #: later. Read the SAME view rather than re-joining `entities` here: a second
 #: join is a second definition of days_to_anniversary, and 019 pins that to
 #: Asia/Hong_Kong for a reason.
+#: `closed_by_name` is the odd one out and belongs here anyway: like
+#: `created_by_name` it is a display name the view already joins, and the case
+#: row itself holds only the uuid. A Closed banner naming a uuid is a banner
+#: nobody can read, and re-joining `users` here would be a second definition of
+#: the same lookup.
 _HEADER_COLS = (
     "company_name", "company_name_zh", "br_number", "cr_number",
-    "days_to_anniversary", "case_type",
+    "days_to_anniversary", "case_type", "closed_by_name",
 )
 
 
@@ -482,7 +584,18 @@ def composite(case_id: str) -> dict:
         # key unconditionally. A missing key and a null version are different
         # failures to debug.
         "manual_signed_document_version": case.get("manual_signed_document_version"),
+        # Same reasoning for the CR receipt scan (spec §4, migration 029): the
+        # Submission stage reads these unconditionally to decide whether the
+        # manual submit button is armed, and "key absent" and "null" are
+        # different failures to debug.
+        "manual_receipt_document_id": case.get("manual_receipt_document_id"),
+        "manual_receipt_document_version": case.get("manual_receipt_document_version"),
         "filing_id": (filing or {}).get("id"),
+        # HOW the client decision arrived (spec §5). None when there is none.
+        # The workflow screen and the audit trail both read this rather than
+        # rendering a bare "Approved": a case the 14-day job approved on the
+        # client's silence must never look like one a director agreed to.
+        "client_approval": nar1_approvals.provenance(case),
         "workflow_status": nar1_case_status.derive(case, filing),
         "form_status": form_status(filing) if filing else None,
         "receipt": (filing or {}).get("receipt") or case.get("manual_receipt"),
@@ -626,17 +739,22 @@ def default_recipients(entity_id: str) -> list[dict]:
 
     person_ids = [o["person_id"] for o in officers if o.get("person_id")]
     names: dict[str, str] = {}
+    given: dict[str, str] = {}
     if person_ids:
         for row in (
             get_supabase()
             .table("persons")
-            .select("id,full_name")
+            # `given_names` too: the verification letter greets the reader by
+            # name, and splitting `full_name` on whitespace would greet a
+            # surname-first Hong Kong record as "Hi CHAN".
+            .select("id,full_name,given_names")
             .in_("id", person_ids)
             .execute()
             .data
             or []
         ):
             names[row["id"]] = row.get("full_name") or ""
+            given[row["id"]] = (row.get("given_names") or "").strip() or None
     emails = _person_emails(person_ids)
 
     out = []
@@ -659,6 +777,9 @@ def default_recipients(entity_id: str) -> list[dict]:
         out.append({
             "person_id": person_id,
             "name": name,
+            # None for a corporate officer and for a person with no given names
+            # on record. The email falls back to the full name.
+            "given_names": None if corporate else given.get(person_id or ""),
             "email": email,
             "role": officer.get("role") or "director",
             "party_type": "corporate" if corporate else "individual",

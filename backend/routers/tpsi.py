@@ -9,17 +9,22 @@ not on our own ledger.
 import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
 
 from middleware.auth import require_permission, require_super_admin
+from db.supabase import get_supabase
 from services import audit_events as ev
 from services import nar1_cases
 from services.nar1_form import fill as nar1_form_fill
+from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
+from services import audit_subject
 from services.tpsi import credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
+from services.tpsi.forms.cr_vocabularies import default_capacity
 # Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
 # and services/nar1_cases.py needed it too — a service importing a router is
 # an inverted dependency. Imported here so `routers.tpsi.form_status` still
@@ -176,6 +181,70 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
     )
 
 
+def _filing_subject(
+    row: Optional[dict] = None,
+    *,
+    filing_id: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    nar1_case_id: Optional[str] = None,
+) -> dict:
+    """Which case and which company a CR filing event is about.
+
+    Every `tpsi_filing` audit row used to carry a filing uuid and nothing else,
+    so the whole CR half of the trail rendered with an empty subject — you could
+    see that a return was validated, signed and submitted without being able to
+    tell for whom. `tpsi_filings` already knows: it holds the entity and, for a
+    NAR1, the case.
+
+    ALSO FIXES WHAT WENT INTO `case_id`. Two routes wrote `nar1_case_id` there,
+    but that column holds an ENTITY id by repo convention (routers/cases.py
+    ::_audit_target) — a case id in it is invisible to every company-scoped
+    query, which is exactly the trail these rows belong in. The case id now goes
+    where it belongs, in `subject_id`.
+
+    TWO STAGES, and the split is the point. The IDS come from what the caller
+    already has and cost nothing; the NAMES need a lookup and are best-effort.
+    So a Supabase failure downgrades the row to ids without a company name,
+    rather than dropping the subject altogether.
+
+    TOTALLY DEFENSIVE, and that is not belt-and-braces. This is spread into a
+    `log_event(**...)` call, so it is evaluated by the CALLER — outside the
+    try/except that makes an audit write unable to fail its operation. A raise
+    here would turn a successful, chargeable CR submission into a 500.
+    """
+    try:
+        if row is None and filing_id:
+            row = filings.get_filing(filing_id)
+    except Exception:  # noqa: BLE001
+        row = None
+    row = row or {}
+
+    entity_id = entity_id or row.get("entity_id")
+    case_id = nar1_case_id or row.get("nar1_case_id")
+    if not entity_id and not case_id:
+        return {}
+
+    company: dict = {"id": entity_id} if entity_id else {}
+    case: dict = {"id": case_id} if case_id else {}
+    try:
+        sb = get_supabase()
+        if entity_id:
+            company = (sb.table("entities").select("id, company_name, br_number")
+                       .eq("id", entity_id).single().execute()).data or company
+        if case_id:
+            case = (sb.table("nar1_cases").select("id, case_no")
+                    .eq("id", case_id).single().execute()).data or case
+    except Exception as exc:  # noqa: BLE001
+        print(f"[routers.tpsi] WARN: could not name the audit subject for filing "
+              f"{filing_id or row.get('id')}: {exc}", file=sys.stderr)
+
+    out = {"case_id": entity_id, "company_name": company.get("company_name")}
+    if case_id:
+        return {**out, **audit_subject.for_case(case, module=audit_subject.CR_FILING)}
+    return {**out, **audit_subject.for_company(
+        company, module=audit_subject.CR_FILING)}
+
+
 def _handle(exc: Exception) -> HTTPException:
     """Map a TPSI failure onto a response the UI can act on.
 
@@ -198,7 +267,17 @@ def _handle(exc: Exception) -> HTTPException:
 
     if isinstance(exc, (TpsiValidationError, TpsiSignatureError)):
         signature = isinstance(exc, TpsiSignatureError)
-        return HTTPException(502, {
+        # 422, NOT 502 (fixed 2026-08-31). A CR fault is a SUCCESSFUL exchange:
+        # CR was reached, understood the request, and said no. Calling that a
+        # Bad Gateway was a category error with a real cost — a 5xx lets
+        # Cloudflare and Railway replace the response body with their own HTML
+        # error page, and `api.js` falls back to `resp.statusText` when the body
+        # will not parse as JSON. So the operator saw "502 Bad Gateway" while
+        # CR had actually said "Br No does not exist.", and the fault list this
+        # dict exists to carry never reached the screen at all.
+        #
+        # 502 still means what it says below: CR could not be reached.
+        return HTTPException(422, {
             "message": ("The Companies Registry rejected the signature."
                         if signature else
                         "The Companies Registry rejected this return."),
@@ -530,6 +609,21 @@ async def prepare_filing(
     except Exception as exc:
         raise _handle(exc)
 
+    # The one door `filings._refuse_if_case_finished` cannot cover: it guards a
+    # filing that already exists, and this route makes a new one. Closing a case
+    # supersedes every live filing, so without this a closed case could be given
+    # a fresh draft and walked back up the whole chain.
+    if case.get("closed_at"):
+        raise HTTPException(409, {
+            "message": (
+                f"case {case.get('case_no') or case.get('id')} was closed and "
+                "is not proceeding, so no filing may be opened against it. "
+                "Closing cannot be undone; open a new case if the return is "
+                "going ahead after all."
+            ),
+            "reason": "case_closed",
+        })
+
     if case.get("manual_receipt"):
         raise HTTPException(
             409,
@@ -564,8 +658,6 @@ async def prepare_filing(
     # field, so the value that gets filed is the one the operator saw on screen
     # and the audit trail recorded, not one this call could differ on.
     #
-    # This router still invents NO default. An unchosen capacity stays None and
-    # the mapper still refuses — the refusal simply now has a remedy on screen.
     capacity = None
     if body.nar1_case_id:
         try:
@@ -575,6 +667,29 @@ async def prepare_filing(
             # A bad case id is the /cases endpoints' error to raise, not this
             # one's; prepare must not 404 on a field it merely consults.
             capacity = None
+
+    # REVERSES this router's former "invents NO default" rule (Levi 2026-08-31).
+    #
+    # A body corporate now falls back to the arrangement every real GSHK client
+    # has — GSHK Ltd is the secretary and a GSHK director signs for it — rather
+    # than making the operator answer the same question on every case.
+    #
+    # The fallback has to live here as well as in `nar1_return_data`, and both
+    # must use `default_capacity`: the Data Verification picker shows this value,
+    # so a prepare that ignored it would refuse the filing for want of a
+    # capacity the operator can plainly see on screen.
+    #
+    # An INDIVIDUAL signatory still gets nothing. CR keeps two vocabularies and
+    # a "(Body Corporate)" capacity on a natural person is a misstatement, so
+    # the mapper's refusal stands for that case — with its remedy on screen.
+    if not capacity:
+        try:
+            resolved = nar1_mapper._derive_signatory(graph)
+        except Exception:  # noqa: BLE001 — a graph too thin to resolve is the
+            resolved = None  # mapper's problem to report, not this line's.
+        if resolved:
+            capacity = default_capacity(
+                is_corporate=resolved.get("is_corporate") is True)
 
     try:
         # `signatory` is still passed straight through: an explicit override
@@ -591,23 +706,52 @@ async def prepare_filing(
     except Exception as exc:
         raise _handle(exc)
 
-    try:
-        row = filings.create_filing(
-            entity_id=body.entity_id,
-            form_code="Nar1",
-            form_xml=form_xml,
-            user_id=user["id"],
-            nar1_case_id=body.nar1_case_id,
-            form_filing_id=body.form_filing_id,
-        )
-    except Exception as exc:
-        raise _handle(exc)
+    # REBUILD THE CASE'S OWN DRAFT rather than opening a second filing.
+    #
+    # `filings.validate()` re-sends the stored request_xml verbatim, so a draft
+    # built before the operator fixed an address -- or chose a different signing
+    # capacity -- would go to CR unchanged however many times they pressed
+    # Validate. On case NAR-2026-0065 the case read
+    # `signatory_capacity='Company Secretary'` while its stored XML still said
+    # selectCapacityDesc 'Director', and CR's identical refusal read as "my
+    # correction did nothing".
+    #
+    # Only draft and validation_failed move (REBUILDABLE_STAGES, enforced inside
+    # the UPDATE). A validated filing is left alone: its snapshot is what the
+    # client approves and what gets filed, and discarding one is `Restart
+    # verification`'s job. A rebuild that loses the race returns False and falls
+    # through to a new row rather than reporting a refresh that did not happen.
+    row = None
+    if body.nar1_case_id:
+        try:
+            live = nar1_cases.current_filing(body.nar1_case_id)
+        except Exception:  # noqa: BLE001 — a missing live filing is not an error
+            live = None
+        if live and live.get("stage") in filings.REBUILDABLE_STAGES:
+            try:
+                row = filings.rebuild_draft(live["id"], form_xml)
+            except Exception as exc:
+                raise _handle(exc)
+
+    if row is None:
+        try:
+            row = filings.create_filing(
+                entity_id=body.entity_id,
+                form_code="Nar1",
+                form_xml=form_xml,
+                user_id=user["id"],
+                nar1_case_id=body.nar1_case_id,
+                form_filing_id=body.form_filing_id,
+            )
+        except Exception as exc:
+            raise _handle(exc)
 
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.TPSI_FILING_CREATED, event_code=ev.TPSI_FILING_CREATED,
         entity_type="tpsi_filing", entity_id=row["id"],
-        case_id=body.nar1_case_id,
+        **_filing_subject(row, entity_id=body.entity_id,
+                          nar1_case_id=body.nar1_case_id),
         # Identifiers only. The XML is the whole statutory return and is
         # already stored on the filing row; the signatory dict is not repeated
         # here either, since map_entity's output is what was actually filed.
@@ -646,6 +790,8 @@ async def create_filing(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.TPSI_FILING_CREATED, event_code=ev.TPSI_FILING_CREATED,
         entity_type="tpsi_filing", entity_id=row["id"],
+        **_filing_subject(row, entity_id=body.entity_id,
+                          nar1_case_id=body.nar1_case_id),
         metadata={"form_code": body.form_code, "entity_id": body.entity_id},
     )
     return row
@@ -748,8 +894,12 @@ async def filing_pdf(
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
+            # The day CR's PIN signing succeeded, where it has. A preview taken
+            # before signing is dated today in Hong Kong rather than left with
+            # an empty Date box beside the signature.
+            signed_on=row.get("signed_at") or "",
         )
-    except (ValueError, nar1_form_fill.FormFillError) as exc:
+    except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         # A stored payload CR accepted but we cannot parse is a data problem,
         # not an unhandled 500 that reads like a crash in the renderer.
         raise HTTPException(422, str(exc))
@@ -758,7 +908,7 @@ async def filing_pdf(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.DOCUMENT_GENERATED, event_code=ev.DOCUMENT_GENERATED,
         entity_type="tpsi_filing", entity_id=filing_id,
-        case_id=row.get("nar1_case_id"),
+        **_filing_subject(row),
         # Identifiers and provenance only. The document's whole content is the
         # statutory return, and it is already stored on the filing row.
         metadata={"document": "NAR1+Schedule", "source": "validated_xml",
@@ -791,6 +941,7 @@ async def validate_filing(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.TPSI_VALIDATE, event_code=ev.TPSI_VALIDATE,
         entity_type="tpsi_filing", entity_id=filing_id,
+        **_filing_subject(filing_id=filing_id),
         metadata={"stage": row["stage"]},
     )
     return {"filing_id": filing_id, "stage": row["stage"], "form_status": form_status(row)}
@@ -860,6 +1011,12 @@ async def sign_filing(
         # 409, like the off-portal interlock below: the request is well formed,
         # the filing is simply not one this user may sign.
         raise HTTPException(409, str(exc))
+    except filings.CaseClosedInterlock as exc:
+        # Its own branch above the off-portal one: both are 409, and both would
+        # be caught by a bare `SubmitGateError`, but the two say different
+        # things and the operator's next move differs. Never a 400 — nothing
+        # about the request is malformed; the case simply ended.
+        raise HTTPException(409, {"message": str(exc), "reason": "case_closed"})
     except filings.ManualCompletionInterlock as exc:
         # 409, not 400: nothing about the request is malformed — the case was
         # filed off-portal and this filing must not go any further towards the
@@ -874,6 +1031,7 @@ async def sign_filing(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.TPSI_SIGN, event_code=ev.TPSI_SIGN,
         entity_type="tpsi_filing", entity_id=filing_id,
+        **_filing_subject(filing_id=filing_id),
         # signatory id only — never the password (audit_service also scrubs it)
         metadata={"signatory": signatory, "result": result["result"]},
     )
@@ -886,6 +1044,12 @@ async def edrive_filing(
 ):
     try:
         result = filings.upload_edrive(client_for(user), filing_id)
+    except filings.CaseClosedInterlock as exc:
+        # Its own branch above the off-portal one: both are 409, and both would
+        # be caught by a bare `SubmitGateError`, but the two say different
+        # things and the operator's next move differs. Never a 400 — nothing
+        # about the request is malformed; the case simply ended.
+        raise HTTPException(409, {"message": str(exc), "reason": "case_closed"})
     except filings.ManualCompletionInterlock as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
@@ -897,6 +1061,7 @@ async def edrive_filing(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.TPSI_EDRIVE, event_code=ev.TPSI_EDRIVE,
         entity_type="tpsi_filing", entity_id=filing_id,
+        **_filing_subject(filing_id=filing_id),
         metadata={"result": result["result"]},
     )
     return result
@@ -978,6 +1143,7 @@ async def preview_filing(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.TPSI_PREVIEWED, event_code=ev.TPSI_PREVIEWED,
         entity_type="tpsi_filing", entity_id=filing_id,
+        **_filing_subject(filing_id=filing_id),
         metadata={"fee": result["fee"], "sufficient": result["sufficient"]},
     )
     return result
@@ -1013,18 +1179,55 @@ async def submit_filing(
         action_type=ev.TPSI_SUBMISSION_ATTEMPTED,
         event_code=ev.TPSI_SUBMISSION_ATTEMPTED,
         entity_type="tpsi_filing", entity_id=filing_id,
+        **_filing_subject(filing_id=filing_id),
         metadata={"deposit_account": account, "confirm": body.confirm},
     )
     try:
         result = filings.submit(
             client_for(user, shared), filing_id, body.confirm, account
         )
+    except filings.DriftDetected as exc:
+        # Spec §6. Its own branch above the general gate: the operator needs the
+        # FIELDS, and `str(exc)` is only the headline. Audited with the field
+        # names but not the values — an audit row is not the place to repeat a
+        # director's residential address, and the values are one click away on
+        # the two records being compared.
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            **_filing_subject(filing_id=filing_id),
+            metadata={"reason": str(exc), "gate": True, "drift": True,
+                      "fields": [d["field"] for d in exc.differences]},
+        )
+        raise HTTPException(409, {"message": str(exc), "reason": "drift",
+                                  "differences": exc.differences})
+    except filings.RecordCheckFailed as exc:
+        # Its own branch, above the general gate, for the same reason
+        # DriftDetected has one: it carries a LIST. Flattened into
+        # `str(exc)` by the general branch below, the mapper's faults arrived
+        # as one run-on sentence and were drawn as one — which is the thing
+        # being fixed (Levi 2026-09-03). The fault TEXT is audited; it names
+        # parties and countries but no personal particulars.
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            **_filing_subject(filing_id=filing_id),
+            metadata={"reason": str(exc), "gate": True,
+                      "check": exc.reason, "problems": exc.problems},
+        )
+        raise HTTPException(409, {"message": str(exc), "reason": exc.reason,
+                                  "problems": exc.problems})
     except filings.SubmitGateError as exc:
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],
             action_type=ev.TPSI_SUBMISSION_FAILED,
             event_code=ev.TPSI_SUBMISSION_FAILED,
             entity_type="tpsi_filing", entity_id=filing_id,
+            **_filing_subject(filing_id=filing_id),
             metadata={"reason": str(exc), "gate": True},
         )
         raise HTTPException(409, str(exc))
@@ -1034,6 +1237,7 @@ async def submit_filing(
             action_type=ev.TPSI_SUBMISSION_FAILED,
             event_code=ev.TPSI_SUBMISSION_FAILED,
             entity_type="tpsi_filing", entity_id=filing_id,
+            **_filing_subject(filing_id=filing_id),
             metadata={"reason": str(exc)},
         )
         raise _handle(exc)
@@ -1043,6 +1247,7 @@ async def submit_filing(
         action_type=ev.TPSI_SUBMISSION_SUCCESS,
         event_code=ev.TPSI_SUBMISSION_SUCCESS,
         entity_type="tpsi_filing", entity_id=filing_id,
+        **_filing_subject(filing_id=filing_id),
         metadata={
             "caseNo": result["receipt"].get("caseNo"),
             "totalAmount": result["receipt"].get("totalAmount"),

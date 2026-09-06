@@ -65,10 +65,12 @@ describe('the app shell renders the dashboard without crashing', () => {
     renderShell()
     expect(await screen.findByText('NAR-2026-0001')).toBeInTheDocument()
     expect(screen.getByText('G-FlowDesk')).toBeInTheDocument()
-    // The shell's nav link and the page's own phase toggle — proof that both
-    // halves rendered, which is the whole point of this test.
+    // The shell's nav link and something only the page draws — proof that both
+    // halves rendered, which is the whole point of this test. The page's phase
+    // toggle used to be the second half; it is gone (this screen only ever
+    // listed post-incorporation cases), so the stat tile stands in for it.
     expect(screen.getByRole('link', { name: /Post-incorporation/ })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Post-incorporation' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Action Required/ })).toBeInTheDocument()
   })
 
   it('renders for an ordinary user who holds nar1:read', async () => {

@@ -39,6 +39,7 @@ __cause__ and no __context__ — raised outside the `except` block, because
 message that can reach a log is scrubbed of the key as a second guard.
 """
 import base64
+import datetime as _dt
 import html as _html
 import os
 from functools import lru_cache
@@ -197,10 +198,16 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
          reply_to=None) -> dict:
     """Send one message to one or more recipients. Returns who actually got it.
 
-    `to` is an address or a sequence of them — a board of three directors is one
-    message with three recipients, not three messages: the client sees the same
-    thread, and one Resend failure cannot leave two directors informed and the
-    third not.
+    `to` is an address or a sequence of them.
+
+    NOTE FOR CALLERS: this used to carry the rule "a board of three directors is
+    one message with three recipients, not three messages". THAT RULE IS
+    REVERSED for client verification (spec §5): each director now needs their
+    OWN approval link, and a shared link in a shared message would let any
+    recipient approve in another's name. `routers/cases.send_verification`
+    therefore calls this once per recipient and reports which addresses failed.
+    Nothing here changed — one call is still one message — but a new caller
+    should not read the old rule as advice.
 
     `cc` is copied openly, and that is the point: the client can see which
     member of GSHK staff is handling their return, and can reply to all. It is
@@ -371,6 +378,10 @@ _BORDER = "#E2E4ED"
 #: small, so the accent is spent once -- on the rule beside the ask -- and the
 #: masthead eyebrow gets a tint that clears 5.9:1 instead.
 _ON_INDIGO = "#A9AECF"
+#: The accent tint from the design system (`--carrot-10`). Used once, behind
+#: the password specimen: carrot text on white fails AA at that size, and the
+#: tint carries the accent without spending it on something unreadable.
+_CARROT_TINT = "#FEF0EB"
 
 _FONT = "'Outfit','Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
@@ -393,59 +404,146 @@ def _ledger_row(label: str, value: str, first: bool) -> str:
     )
 
 
+#: GSHK's own block, transcribed from `docs/Confirmation NAR1 Notice.pdf`.
+#: HARDCODED, as chosen (Levi 2026-09-01): these are the sender's details, not
+#: the client's, and the sample is the approved wording. They are constants
+#: rather than configuration so a deployment cannot silently change what a
+#: client is told to ring.
+GSHK_OFFICE_PHONE = "+ 852 2813 7600"
+GSHK_RENEWAL_WHATSAPP = "+852 5541 1994"
+GSHK_ADDRESS = ("Suite C, Level 7, World Trust Tower, 50 Stanley Street, "
+                "Central, Hong Kong")
+GSHK_SERVICES = "Corporate Advisory | Company Formation | Accounting Services"
+GSHK_SENDER_TITLE = "Account Manager"
+
+#: The three page references, verbatim from the sample.
+#:
+#: THEY ARE HARDCODED BECAUSE CR'S FORM IS STATIC (spec §1b). CR keeps a
+#: section's page whether or not it has content, so "Page 5" is Page 5 on every
+#: NAR1 ever filed. An earlier draft of this work flagged them as wrong, having
+#: measured them against a renderer that DROPPED empty pages — the renderer was
+#: the bug and it is fixed. If that regressed, this list would quietly misdirect
+#: every client, which is why the fill tests assert a nine-page document.
+NAR1_CHECK_POINTS = (
+    ("Page 2", "Share capital"),
+    ("Page 5", "Director's details"),
+    ("Schedule 1", "Shareholder's details"),
+)
+
+#: The service charge a later amendment attracts. Sample wording: "Any
+#: amendments later will incur a HK$1000 service cost."
+AMENDMENT_FEE = "HK$1000"
+
+
+def _first_name(full_name: str | None) -> str:
+    """What to call the reader.
+
+    Returns the WHOLE name, not a first token. The sample greets "Hi Dominique"
+    because that is a Western given name; this book is mostly Hong Kong
+    directors recorded surname-first, where the first token is the SURNAME and
+    "Hi Chan" is not how anybody is addressed. The caller passes `given_names`
+    when the record has them and the full name otherwise, so the split is made
+    against the database's own field rather than guessed from a string.
+    """
+    return (full_name or "").strip()
+
+
 def verification_email(case: dict, entity: dict,
-                       attachment_name: str | None = None) -> tuple[str, str]:
+                       attachment_name: str | None = None,
+                       approval_url: str | None = None,
+                       deadline=None,
+                       recipient_name: str | None = None,
+                       sender_name: str | None = None) -> tuple[str, str]:
     """The client-verification message: subject and HTML body.
+
+    THE WORDING IS `docs/Confirmation NAR1 Notice.pdf`, VERBATIM (Levi
+    2026-09-01), with the company, the director and the dates substituted. It
+    is the letter GSHK already sends by hand, so a client who has had one
+    before receives the same message from the portal — which is the point:
+    an automated mail that reads differently from the one they know is an
+    automated mail they treat as suspicious.
 
     Every interpolated value is escaped. Company names come out of the Viewpoint
     ETL, and an unescaped one lands in the client's mailbox as live markup.
 
-    Carries NO credential, no link and no link-borne secret — the client
-    confirms by replying, so there is nothing here to steal, replay, or mistake
-    for a phishing link in a message that asks about their company's filings.
+    THE "NO LINK AT ALL" RULE IS REVERSED HERE (spec §5). It was a good rule and
+    its reasoning still stands: a message about somebody's company filings that
+    contains a link is the exact shape of the phishing it would train them to
+    trust. What changed is that replying by hand was the ONLY way to answer, so
+    every approval waited on a staff member reading a mailbox and a client who
+    simply never replied left a case parked with nothing recorded.
+
+    What is done about the original objection rather than around it:
+
+      * the link opens a page that STATES nothing has been changed and asks for
+        one press — it does not act on being fetched, so the mail-security
+        gateway that visits every link in every message cannot approve anything;
+      * that page asks for no credential, no password and no payment detail, so
+        there is nothing on it worth phishing FOR;
+      * the message still asks the client to reply if anything is wrong, so the
+        link is the "yes" path only and the human path is unchanged;
+      * `approval_url` is None when the deployment cannot build one, and the
+        message then reads exactly as it did before.
+
+    `deadline` is the date the auto-approval job will act on, read from the same
+    value that job reads, so the email and the job can never state different
+    dates.
     """
     company = (entity.get("company_name") or "").strip()
     case_no = (case.get("case_no") or "").strip()
     br_number = (entity.get("br_number") or "").strip()
-    period = str(case.get("ar_period_year") or "").strip()
+    greeting_name = _first_name(recipient_name)
+    signer = (sender_name or "").strip() or "Get Started HK Limited"
 
+    # The sample's own subject line.
     subject = (
-        f"Annual Return for {company} — please confirm"
-        if company else "Annual Return — please confirm"
+        f"Compliance Reminder: Registration Due - {company}"
+        if company else "Compliance Reminder: Registration Due"
     )
 
-    # Built row by row so a missing value omits its row rather than rendering
-    # the word "None" at a client. The company is NOT here: it is the masthead,
-    # and repeating it would be one element doing two jobs.
-    pairs = [("Business Registration No.", br_number),
-             ("Return period", period),
-             ("Our reference", case_no)]
-    if not company:
-        # Degenerate case only. Without a masthead name the reader has nothing
-        # telling them which company this concerns, so the ledger takes it back.
-        pairs.insert(0, ("Company", company))
-    rows = [_ledger_row(label, value, i == 0)
-            for i, (label, value) in enumerate([p for p in pairs if p[1]])]
-    ledger = (
-        f'<table role="presentation" width="100%" cellpadding="0" '
-        f'cellspacing="0" border="0" style="border-collapse:separate;'
-        f'border:1px solid {_BORDER};border-radius:8px;margin:26px 0 28px">'
-        f'{"".join(rows)}</table>'
-    ) if rows else ""
+    bullets = "".join(
+        f'<tr><td style="padding:3px 0;font-family:{_FONT};font-size:15px;'
+        f'line-height:1.6;color:{_T_BODY}">'
+        f'<span style="font-weight:600;color:{_T_HEAD}">'
+        f"{_html.escape(where)}:</span> {_html.escape(what)}</td></tr>"
+        for where, what in NAR1_CHECK_POINTS
+    )
+
+    when = _deadline_text(deadline)
+    # "If we do not hear from you by <date>" — omitted entirely when there is no
+    # date, rather than rendered with a blank where a legal deadline should be.
+    by_when = (f"If we do not hear from you by "
+               f"<strong>{_html.escape(when)}</strong>, we will assume you "
+               f"confirm the document and proceed with filing. "
+               if when else
+               "If we do not hear from you, we will assume you confirm the "
+               "document and proceed with filing. ")
 
     attached = ""
     if attachment_name:
         attached = (
             f'<table role="presentation" cellpadding="0" cellspacing="0" '
-            f'border="0" style="margin:26px 0 0"><tr>'
+            f'border="0" style="margin:24px 0 0"><tr>'
             f'<td style="border:1px solid {_BORDER};border-radius:6px;'
             f'padding:10px 14px;background:{_GROUND};font-family:{_FONT};'
             f'font-size:13px;color:{_T_BODY}">'
             f'<span style="{_LABEL}">Attached</span>&nbsp;&nbsp;'
             f'<span style="font-weight:600;color:{_T_HEAD}">'
             f"{_html.escape(attachment_name)}</span>"
-            f'<span style="color:{_T_MUTED}"> — Form NAR1 with Schedule 1'
-            f"</span></td></tr></table>"
+            f"</td></tr></table>"
+        )
+
+    # The reference block. NOT in the sample letter, and kept small and last for
+    # that reason: a client replying about the wrong year is the failure it
+    # prevents, and it costs one line.
+    reference = ""
+    reference_bits = [b for b in (br_number and f"BR {br_number}",
+                                  case_no and f"Ref {case_no}") if b]
+    if reference_bits:
+        reference = (
+            f'<div style="font-family:{_FONT};font-size:12px;color:{_T_MUTED};'
+            f'padding-top:16px">'
+            f"{_html.escape(' · '.join(reference_bits))}</div>"
         )
 
     body = (
@@ -459,8 +557,7 @@ def verification_email(case: dict, entity: dict,
         f'border-collapse:separate;border-radius:10px;overflow:hidden;'
         f'border:1px solid {_BORDER}">'
 
-        # Masthead — the form designation and the company it concerns, which is
-        # how the document itself announces what it is.
+        # Masthead — what this is and whose company it concerns.
         f'<tr><td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
         f'padding:24px 32px">'
         f'<div style="{_LABEL}color:{_ON_INDIGO};padding-bottom:7px">'
@@ -470,47 +567,370 @@ def verification_email(case: dict, entity: dict,
         f'{_html.escape(company) or "Annual Return"}</div>'
         f"</td></tr>"
 
-        # The sheet.
-        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};'
-        f'padding:32px">'
-        f'<div style="font-family:{_FONT};font-size:22px;font-weight:600;'
-        f'color:{_INDIGO};line-height:1.3;letter-spacing:-0.01em;'
-        f'padding-bottom:14px">Please confirm these particulars</div>'
-        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY}">We have prepared this year&rsquo;s annual return '
-        f"for filing with the Companies Registry. It reports the company&rsquo;s "
-        f"directors, secretary, registered office and share capital as they "
-        f"stand on the return date.</div>"
-        f"{ledger}"
+        # The letter.
+        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
 
-        # The ask. One carrot rule, the only accent in the message.
+        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+        f'color:{_T_BODY};padding-bottom:16px">'
+        f'Hi {_html.escape(greeting_name) or "there"},</div>'
+
+        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+        f'color:{_T_BODY}">I enclose herewith the NAR1 for your review. '
+        f"Please carefully check and confirm the following:</div>"
+
+        f'<div style="font-family:{_FONT};font-size:15px;font-weight:600;'
+        f'color:{_T_HEAD};padding:20px 0 6px">'
+        f"1. NAR1 Form - Signature not required</div>"
+
+        f'<table role="presentation" cellpadding="0" cellspacing="0" '
+        f'border="0" style="margin:0 0 6px">{bullets}</table>'
+
+        # The director's duty, the deadline and the amendment charge — the one
+        # paragraph in this message with legal weight, so it gets the single
+        # carrot rule the design spends its accent on.
         f'<table role="presentation" width="100%" cellpadding="0" '
-        f'cellspacing="0" border="0"><tr>'
+        f'cellspacing="0" border="0" style="margin:22px 0 0"><tr>'
         f'<td width="3" bgcolor="{_CARROT}" '
         f'style="width:3px;background:{_CARROT};border-radius:2px">&nbsp;</td>'
         f'<td style="padding:2px 0 2px 18px">'
-        f'<div style="{_LABEL}padding-bottom:7px">What we need from you</div>'
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY}">Open the attached form and check every particular '
-        f"against your own records. Reply to this email to confirm it is "
-        f"correct, or tell us what needs changing and we will revise the form "
-        f"before it is filed.</div>"
+        f'color:{_T_BODY}">Please note that the director has the duty to '
+        f"ensure <strong>ALL</strong> information on NAR1 is correct before "
+        f"registration. {by_when}Any amendments later will incur a "
+        f"{_html.escape(AMENDMENT_FEE)} service cost.</div>"
         f"</td></tr></table>"
+
+        f"{_approval_button(approval_url, None)}"
+        f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
+        f'color:{_T_MUTED};padding-top:14px">'
+        f"{_confirm_instruction(approval_url)}</div>"
+
         f"{attached}"
+
+        # Signature block, from the sample.
+        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+        f'color:{_T_BODY};padding-top:26px">Best regards,</div>'
+        f'<div style="font-family:{_FONT};font-size:15px;font-weight:600;'
+        f'color:{_T_HEAD};padding-top:14px">{_html.escape(signer)}</div>'
+        f'<div style="font-family:{_FONT};font-size:14px;color:{_T_BODY}">'
+        f"{_html.escape(GSHK_SENDER_TITLE)}</div>"
+        f"{reference}"
         f"</td></tr>"
 
-        # Footer.
+        # Footer — GSHK's own block, verbatim.
+        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};'
+        f'padding:18px 32px 22px;border-top:1px solid {_BORDER}">'
+        f'<div style="font-family:{_FONT};font-size:13px;font-weight:600;'
+        f'color:{_T_HEAD};padding-bottom:4px">GET STARTED HK LIMITED</div>'
+        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
+        f'color:{_T_MUTED}">'
+        f"Office: {_html.escape(GSHK_OFFICE_PHONE)} | Renewal whatsapp: "
+        f"{_html.escape(GSHK_RENEWAL_WHATSAPP)}<br>"
+        f"{_html.escape(GSHK_ADDRESS)}<br>"
+        f"{_html.escape(GSHK_SERVICES)}"
+        f"</div></td></tr>"
+
+        f"</table></td></tr></table>"
+    )
+    return subject, body
+
+
+def _confirm_instruction(approval_url: str | None) -> str:
+    """What the reader is asked to do — which differs by whether a link exists.
+
+    Kept as one sentence per case rather than a link appended to a fixed
+    sentence: "Reply to confirm" followed by a Confirm button asks for the same
+    thing twice, and a reader doing both produces two answers for one return.
+    """
+    if approval_url:
+        return ("If it is correct, press <strong>Confirm</strong> below. If "
+                "anything needs changing, reply to this email and tell us what "
+                "is wrong &mdash; we will revise the form before it is filed.")
+    return ("Reply to this email to confirm it is correct, or tell us what "
+            "needs changing and we will revise the form before it is filed.")
+
+
+def _approval_button(approval_url: str | None, deadline) -> str:
+    """The one-press confirmation (spec §5), or nothing at all.
+
+    A BULLETPROOF button: a bordered table cell with the anchor filling it, not
+    a styled `<a>`. Outlook renders mail through Word, which drops padding on
+    inline anchors and leaves a bare blue link where the call to action should
+    be — the same reason this whole message is tables and inline styles.
+
+    The URL is escaped like every other interpolated value. It is ours, not the
+    client's, but the escaping rule in this module has no exceptions: the one
+    place a rule is relaxed is where the next injection lands.
+    """
+    if not approval_url:
+        return ""
+    note = ""
+    when = _deadline_text(deadline)
+    if when:
+        note = (f'<div style="font-family:{_FONT};font-size:13px;'
+                f'line-height:1.6;color:{_T_MUTED};padding-top:12px">'
+                f"If we do not hear from you by {_html.escape(when)}, we will "
+                f"proceed with filing this return as prepared.</div>")
+    return (
+        f'<table role="presentation" cellpadding="0" cellspacing="0" '
+        f'border="0" style="margin:26px 0 0"><tr>'
+        f'<td bgcolor="{_CARROT}" style="background:{_CARROT};'
+        f'border-radius:6px" align="center">'
+        f'<a href="{_html.escape(approval_url, quote=True)}" '
+        f'style="display:inline-block;padding:13px 26px;font-family:{_FONT};'
+        f'font-size:15px;font-weight:600;color:#FFFFFF;text-decoration:none">'
+        f"Confirm these particulars are correct</a>"
+        f"</td></tr></table>"
+        f"{note}"
+    )
+
+
+def _deadline_text(deadline) -> str:
+    """The expiry as a client would read it, in Hong Kong time.
+
+    Accepts a datetime or an ISO string, because the caller gets one from the
+    token issuer and the other from a stored row. An unparseable value yields
+    "" and the sentence is simply omitted — a wrong date on a legal deadline is
+    worse than no date.
+    """
+    if not deadline:
+        return ""
+    moment = deadline
+    if not hasattr(moment, "strftime"):
+        try:
+            moment = _dt.datetime.fromisoformat(
+                str(deadline).replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=_dt.timezone.utc)
+    hkt = moment.astimezone(_dt.timezone(_dt.timedelta(hours=8)))
+    return hkt.strftime("%d %B %Y")
+
+
+#: PROD and DEV, and nothing else. Derived from APP_ENV rather than hardcoded
+#: at the call site: a welcome email that sent a DEV colleague to the production
+#: portal would have them sign in somewhere their account does not exist, and
+#: the reverse would put a production user on the test database.
+_PORTAL_URLS = {
+    True: "https://admin.g-flowdesk.com",
+    False: "https://admin-dev.g-flowdesk.com",
+}
+
+#: Monospace, for the password specimen only. The reader is going to read this
+#: character by character, and a proportional face makes l/1/I and O/0
+#: ambiguous — which is a usability property of a credential, not a style
+#: choice. Every face named is present by default on Windows, macOS or a mail
+#: client's own fallback; there is no webfont to fail to load.
+_MONO = "'SFMono-Regular',Consolas,'Liberation Mono',Menlo,Courier,monospace"
+
+
+def portal_url() -> str:
+    """Where a new user signs in.
+
+    `ADMIN_PORTAL_URL` overrides, for the Cloudflare Pages preview deployments
+    that have their own hostname and are neither of the two below.
+    """
+    override = (os.environ.get("ADMIN_PORTAL_URL") or "").strip()
+    if override.lower().startswith(("http://", "https://")):
+        return override.rstrip("/")
+    return _PORTAL_URLS[app_env.is_production()]
+
+
+def _credential_shell(headline: str, inner: str, footer_note: str) -> str:
+    """The card both credential mails are set in: masthead, sheet, footer.
+
+    Extracted so the welcome mail and the password-reset mail cannot drift
+    apart. They arrive at the same person, days or months apart, and two
+    slightly different renderings of the same envelope is how a reader learns
+    to doubt which one is real. The masthead is the one the client-facing mail
+    wears, so all three read as one system.
+    """
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" bgcolor="{_GROUND}" '
+        f'style="background:{_GROUND};margin:0;padding:0">'
+        f'<tr><td align="center" style="padding:28px 12px">'
+
+        f'<table role="presentation" width="600" cellpadding="0" '
+        f'cellspacing="0" border="0" style="width:600px;max-width:600px;'
+        f'border-collapse:separate;border-radius:10px;overflow:hidden;'
+        f'border:1px solid {_BORDER}">'
+
+        f'<tr><td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
+        f'padding:24px 32px">'
+        f'<div style="{_LABEL}color:{_ON_INDIGO};padding-bottom:7px">'
+        f"G-FlowDesk &middot; Admin Portal</div>"
+        f'<div style="font-family:{_FONT};font-size:20px;font-weight:600;'
+        f'color:#FFFFFF;line-height:1.25;letter-spacing:-0.01em">'
+        f"{headline}</div>"
+        f"</td></tr>"
+
+        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
+        f"{inner}"
+        f"</td></tr>"
+
         f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};'
         f'padding:18px 32px 22px;border-top:1px solid {_BORDER}">'
         f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
         f'color:{_T_MUTED}">'
-        f'<span style="color:{_T_HEAD};font-weight:600">Get Started HK '
-        f"Limited</span> &middot; Company Secretary<br>"
-        f"The return is filed with the Companies Registry only after you "
-        f"confirm it."
+        f'<span style="color:{_T_HEAD};font-weight:600">G-FlowDesk</span> '
+        f"&middot; Get Started HK Limited<br>"
+        f"{footer_note}"
         f"</div></td></tr>"
 
         f"</table></td></tr></table>"
+    )
+
+
+def _password_specimen(password: str) -> str:
+    """THE SPECIMEN. The one place a credential mail spends any boldness.
+
+    A bordered, letter-spaced, monospaced block with its own label — never a
+    password dropped into a sentence. The reader's whole job is to carry these
+    characters to a login box, and a credential they have to hunt for in a
+    paragraph is one they will mistype.
+    """
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" style="border-collapse:separate;'
+        f'margin:24px 0 0"><tr>'
+        f'<td bgcolor="{_CARROT_TINT}" style="background:{_CARROT_TINT};'
+        f'border:1px solid {_CARROT};border-radius:8px;padding:18px 22px">'
+        f'<div style="{_LABEL}padding-bottom:8px">Temporary password</div>'
+        f'<div style="font-family:{_MONO};font-size:22px;font-weight:700;'
+        f'letter-spacing:0.06em;color:{_T_HEAD};word-break:break-all;'
+        f'line-height:1.35">{_html.escape(password)}</div>'
+        f"</td></tr></table>"
+    )
+
+
+def _signin_action(url: str) -> str:
+    """The button, and the URL in full underneath it.
+
+    A reader on a client that strips anchors, or one who does not press links
+    in email on principle, still has something they can type.
+    """
+    return (
+        f'<table role="presentation" cellpadding="0" cellspacing="0" '
+        f'border="0" style="margin:24px 0 0"><tr>'
+        f'<td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
+        f'border-radius:6px" align="center">'
+        f'<a href="{_html.escape(url, quote=True)}" '
+        f'style="display:inline-block;padding:13px 26px;font-family:{_FONT};'
+        f'font-size:15px;font-weight:600;color:#FFFFFF;text-decoration:none">'
+        f"Sign in to G-FlowDesk</a>"
+        f"</td></tr></table>"
+
+        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
+        f'color:{_T_MUTED};padding-top:10px;word-break:break-all">'
+        f"{_html.escape(url)}</div>"
+    )
+
+
+def welcome_email(display_name: str, role_name: str | None,
+                  password: str) -> tuple[str, str]:
+    """The message a newly created user receives: subject and HTML body.
+
+    THE PASSWORD IS THE POINT OF THIS EMAIL, so it is set as a specimen — a
+    bordered, letter-spaced, monospaced block with its own label — rather than
+    dropped into a sentence. Everything around it stays quiet. The reader's
+    whole job is to carry those characters to a login box, and a credential
+    they have to hunt for in a paragraph is one they will mistype.
+
+    It exists in exactly two places: this message, and Supabase Auth's hash. It
+    is never returned by the API and never written to a log or an audit row —
+    see `routers/users.create_user`.
+
+    Same constraints as the client-facing mail, and for the same reasons:
+    table-based with inline styles, because Outlook renders through Word and
+    has no flexbox, no grid and no reliable `<style>` block; and a real
+    fallback stack, because Outfit does not load in most mail clients, so the
+    fallback IS the typography.
+    """
+    name = (display_name or "").strip()
+    url = portal_url()
+
+    subject = "Your G-FlowDesk account is ready"
+
+    role_line = ""
+    if role_name:
+        role_line = (
+            f'<div style="{_LABEL}padding:22px 0 3px">Your role</div>'
+            f'<div style="font-family:{_FONT};font-size:15px;font-weight:600;'
+            f'color:{_T_HEAD}">{_html.escape(role_name)}</div>'
+            f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
+            f'color:{_T_MUTED};padding-top:3px">This decides which parts of the '
+            f"portal you can open. Ask an administrator if you need more.</div>"
+        )
+
+    body = _credential_shell(
+        headline="Your account is ready",
+        inner=(
+            f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+            f'color:{_T_BODY}">'
+            f'Hi {_html.escape(name) or "there"}, an administrator has created '
+            f"your G-FlowDesk account. Sign in with the password below.</div>"
+
+            f"{_password_specimen(password)}"
+
+            f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
+            f'color:{_T_MUTED};padding-top:10px">'
+            f"Use it for your first sign-in only. You will be asked to choose "
+            f"your own password straight away, and nothing else in the portal "
+            f"opens until you do.</div>"
+
+            f"{_signin_action(url)}"
+            f"{role_line}"
+        ),
+        footer_note=("If you were not expecting this, tell your administrator "
+                     "and do not sign in."),
+    )
+    return subject, body
+
+
+def password_reset_email(display_name: str, password: str) -> tuple[str, str]:
+    """The message a user receives when an administrator resets them.
+
+    SAME CONSTRAINTS AS THE WELCOME MAIL, and for the same reasons: the
+    password exists in exactly two places — this message and Supabase Auth's
+    hash of it — and it is never in an API response, a log line or an audit
+    row. See `routers/users.reset_user_password`.
+
+    WHAT THIS SAYS THAT THE WELCOME MAIL DOES NOT: that somebody *else* did
+    this. A person who did not ask for a reset and receives one has either a
+    confused colleague or a compromised portal, and the only way they can tell
+    the difference is by asking — so the footer tells them to ask, in place of
+    the welcome mail's "do not sign in", which is the wrong instruction here
+    (their old password is already gone; refusing to sign in just leaves them
+    locked out).
+    """
+    name = (display_name or "").strip()
+    url = portal_url()
+
+    subject = "Your G-FlowDesk password has been reset"
+
+    body = _credential_shell(
+        headline="Your password has been reset",
+        inner=(
+            f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+            f'color:{_T_BODY}">'
+            f'Hi {_html.escape(name) or "there"}, an administrator has reset '
+            f"the password on your G-FlowDesk account. Your previous password "
+            f"no longer works. Sign in with the one below.</div>"
+
+            f"{_password_specimen(password)}"
+
+            f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
+            f'color:{_T_MUTED};padding-top:10px">'
+            f"Use it for this sign-in only. You will be asked to choose your "
+            f"own password straight away, and nothing else in the portal opens "
+            f"until you do.</div>"
+
+            f"{_signin_action(url)}"
+        ),
+        footer_note=("If you did not ask for this, contact your administrator "
+                     "straight away &mdash; somebody else requested it."),
     )
     return subject, body
 

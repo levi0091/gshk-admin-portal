@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from etl.transform.checkpoint_c import (
     transform_contact, transform_charge, transform_task, transform_address_assignment,
     transform_form_filing, parse_event_string, transform_event_log_row,
-    transform_ref_status_row, transform_audit_form_filing,
+    transform_ref_status_row, transform_audit_form_filing, audit_context,
 )
 from etl.reconciliation import ReconciliationReport
 
@@ -608,10 +608,82 @@ def test_event_log_row_carries_generic_action_and_subject_name():
     out = transform_event_log_row(
         row, {"ACME": "e1"}, {},
         label_by_code={"ADC": "Change Master File Details"},
-        name_by_vp_key={"ACME": "Acme Limited"},
+        subject_by_vp_key={"ACME": "Acme Limited"},
     )
     assert out["action_label"] == "Change Master File Details"
     assert out["company_name"] == "Acme Limited"
     assert out["event_code"] == "ADC"
     # the per-record description is retained in metadata, not used as the action
     assert out["metadata"]["description"].startswith("Master File Details of")
+
+
+# ---------------------------------------------------------------------------
+# audit_context -- WHICH RECORD an imported row is about (migration 034)
+#
+# A Viewpoint KeyCode resolves to an entity OR a person. Resolving it against
+# `entities` alone is what left every person-scoped event printing a raw
+# RefCode nobody can read.
+# ---------------------------------------------------------------------------
+
+_COMPANY = {"kind": "company", "id": "e-uuid",
+            "name": "Obsydian Group Limited", "ref": "69123456"}
+_PERSON = {"kind": "person", "id": "p-uuid",
+           "name": "Ilze TSERKEZIS", "ref": "A123456(7)"}
+
+
+def test_audit_context_names_a_company_and_its_brn():
+    out = audit_context("ADC", "OBSYDIANGR", {"ADC": "Change Master File Details"},
+                        {"OBSYDIANGR": _COMPANY})
+    assert out["action_label"] == "Change Master File Details"
+    assert out["company_name"] == "Obsydian Group Limited"
+    assert out["subject_kind"] == "company"
+    assert out["subject_id"] == "e-uuid"
+    assert out["subject_ref"] == "69123456"
+    assert out["module"] == "body_corporate"
+
+
+def test_audit_context_names_a_person_and_their_identity_document():
+    out = audit_context("CPC", "TSERKEZIS", {}, {"TSERKEZIS": _PERSON})
+    assert out["company_name"] == "Ilze TSERKEZIS"
+    assert out["subject_kind"] == "person"
+    assert out["subject_id"] == "p-uuid"
+    assert out["subject_ref"] == "A123456(7)"
+    assert out["module"] == "natural_person"
+
+
+def test_audit_context_invents_no_module_for_an_unresolved_key():
+    """Viewpoint recorded no NAR1 workflow, no document store and no CR filing.
+    A NULL module renders as a dash, which is the truth."""
+    out = audit_context("ADC", "NOBODY", {}, {})
+    assert out["subject_kind"] is None
+    assert out["subject_id"] is None
+    assert out["module"] is None
+    assert out["company_name"] is None
+
+
+def test_audit_context_still_accepts_a_plain_name_map():
+    """A caller holding only RefCode -> name produces a valid, barer row rather
+    than a crash."""
+    out = audit_context("ADC", "OBSYDIANGR", {}, {"OBSYDIANGR": "Obsydian Group"})
+    assert out["company_name"] == "Obsydian Group"
+    assert out["subject_kind"] is None
+
+
+def test_event_log_row_carries_the_subject_through():
+    out = transform_event_log_row(
+        _event_log_row(), {"OBSYDIANGR": "e-uuid"}, {"JAC": "Jacqueline Tan"},
+        None, {"OBSYDIANGR": _COMPANY})
+    assert out["subject_kind"] == "company"
+    assert out["subject_ref"] == "69123456"
+    assert out["module"] == "body_corporate"
+
+
+def test_ref_status_row_carries_the_subject_through():
+    out = transform_ref_status_row(
+        {"RefCode": "TSERKEZIS", "SeqNr": 3, "Ucode": "JAC",
+         "DateChange": "2026-06-18T00:00:00", "OldStat": 0, "NewStat": 8,
+         "SType": "C", "CDescr": "Active"},
+        {}, {"JAC": "Jacqueline Tan"}, None, {"TSERKEZIS": _PERSON})
+    assert out["subject_kind"] == "person"
+    assert out["module"] == "natural_person"
+    assert out["company_name"] == "Ilze TSERKEZIS"

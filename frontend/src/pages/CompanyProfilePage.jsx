@@ -3,39 +3,97 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { liveCaseWarning } from '../lib/liveCase.js'
 import { formatDate } from '../lib/format.js'
-import { downloadDocument } from '../lib/download.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
+import ShareClassModal, { SHARE_CLASS_FIELDS } from '../components/ShareClassModal.jsx'
+import { useDocumentSections, groupBySection } from '../lib/documentSections.js'
+import {
+  DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
+} from '../components/DocumentSections.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
+import AddressBlock from '../components/AddressBlock.jsx'
+import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
+import { useFormContract, fieldWarning } from '../lib/formContract.js'
+import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
+import { ReadOnlyNote } from '../components/RequirePermission.jsx'
+import { companyProfileCaps } from '../lib/screenCapabilities.js'
 
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
   { key: 'company_name_zh', label: 'Chinese Name' },
   { key: 'br_number', label: 'BRN' },
   { key: 'cr_number', label: 'CR No.' },
-  { key: 'company_type', label: 'Company Type' },
-  { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'country' },
+  // CR takes P / N / G on `coyType` and nothing else. A legacy free-text value
+  // is still offered back by `optionsFor`, flagged — dropping it would blank
+  // the column on the next save.
+  { key: 'company_type', label: 'Company Type', lookup: 'cr_company_type' },
+  // Brian's B5. The description is NOT here on purpose: CR derives `natureDesc`
+  // from `nature` after web-form validation, so the operator picks a code and
+  // the description follows. A typed description could disagree with the code
+  // it is supposed to describe.
+  { key: 'business_nature_code', label: 'Business Nature Code',
+    lookup: 'cr_business_nature' },
+  // Brian's B6.
+  { key: 'mortgages_total', label: 'Mortgages and Charges' },
+  { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'cr_country' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
-  { key: 'case_notes', label: 'Case Notes' },
+  { key: 'case_notes', label: 'Case Notes', full: true },
 ]
 
-function Kv({ label, children }) {
+//: The company's telephone number. NOT in EDITABLE because it is not a column
+//: on `entities` — it is a `contacts` row, so it saves through its own
+//: endpoint, exactly as the registered address does.
+//:
+//: It had no editor at all until now: `company_phone` was accepted at creation,
+//: written to `contacts` and printed here, and then unreachable. CR's NAR1 maps
+//: `telNo` straight off it, so a number mistyped on the New Company form went
+//: onto a statutory filing with no way to correct it.
+const PHONE_FIELD = { key: 'company_phone', label: 'Company Phone', type: 'tel' }
+
+/** The preferred phone contact, or none. */
+function companyPhone(company) {
+  const rows = (company?.contacts || []).filter(c => c.contact_type === 'phone')
+  return (rows.find(c => c.is_preferred) || rows[0])?.contact_value || ''
+}
+
+//: What the Corporate Party Details tile edits — the fields that only mean
+//: anything when this company acts as somebody else's officer or member.
+//: Company Type is shown there too but is edited above, in Company Information;
+//: one field with two editors is one field that can be saved twice.
+const CORP_EDITABLE = [
+  { key: 'tcsp_licence_no', label: 'TCSP Licence No.' },
+  { key: 'tcsp_exemption_reason', label: 'TCSP Exemption Reason' },
+]
+
+function Kv({ label, children, warning = null }) {
   return (
     <div className="kv-row">
       <span className="kv-key">{label}</span>
-      <span className="kv-val">{children ?? <span className="td-muted">—</span>}</span>
+      <span className="kv-val">
+        {children ?? <span className="td-muted">—</span>}
+        <FieldWarning warning={warning} />
+      </span>
     </div>
   )
+}
+
+/** A money or share figure as CR prints it, or an em dash. */
+function figure(value) {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toLocaleString() : String(value)
 }
 
 function addressText(a) {
   if (!a) return null
   return [a.line1, a.line2, a.line3, a.city, a.country].filter(Boolean).join(', ') || null
 }
+
 
 /** A linked party is either a person or a corporate entity — never both. */
 function partyName(row) {
@@ -45,7 +103,38 @@ function partyName(row) {
     || '—'
 }
 
-function FlagToggle({ on, label, sub, onToggle, busy }) {
+/**
+ * `Is Client` / `Is Corporate Party` — a control AND a fact.
+ *
+ * THE ONLY THING ON THIS SCREEN THAT IS NOT SIMPLY HIDDEN when the role cannot
+ * write, and the exception is deliberate: unlike an Edit button, this element
+ * carries information. Which flags are on decides which tiles the profile shows
+ * at all, so a reader who cannot see them cannot tell a client company from a
+ * corporate party, and would read a missing Cases pane as a missing feature.
+ *
+ * So the SWITCH goes and the STATE stays: `canWrite` false renders the same
+ * label and the same On/Off, as static text with no `role="switch"` and nothing
+ * to click. Nothing here can be pressed to no effect, which is the rule; the
+ * fact survives, which is why the rule does not simply delete it.
+ */
+function FlagToggle({ on, label, sub, onToggle, busy, canWrite = true }) {
+  if (!canWrite) {
+    return (
+      <div className={`flag-toggle is-static${on ? '' : ' is-off'}`}
+           data-testid={`flag-${label}`}>
+        <span className={`flag-switch ${on ? 'on' : 'off'}`} aria-hidden="true">
+          <span className="flag-knob" />
+        </span>
+        <span className="flag-tog-txt">
+          <span className="flag-tog-lbl">{label}</span>
+          {/* The sub-line explains what TOGGLING does, which is not on offer.
+              What a reader needs instead is the value. */}
+          <span className="flag-tog-sub">{on ? 'Yes' : 'No'}</span>
+        </span>
+      </div>
+    )
+  }
+
   return (
     <button
       type="button"
@@ -65,24 +154,22 @@ function FlagToggle({ on, label, sub, onToggle, busy }) {
   )
 }
 
-function DocumentList({ documents }) {
-  if (!documents?.length) {
-    return <div className="empty-state" style={{ padding: '16px 0' }}>No documents uploaded yet.</div>
-  }
-  return documents.map(d => (
-    <div className="doc-item" key={d.id}>
-      <span className="doc-name">
-        {/* What the document IS, not just the file it happened to be uploaded as. */}
-        {d.document_types?.label || d.document_type_code}
-        {d.current_version > 1 && <span className="filing-tag">v{d.current_version}</span>}
-        <span className="td-muted" style={{ display: 'block', fontSize: 11, fontWeight: 400 }}>
-          {d.title && d.title !== d.file_name ? `${d.title} · ` : ''}{d.file_name}
-        </span>
-      </span>
-      <button className="doc-dl" onClick={() => downloadDocument(d.id)}>Download</button>
-    </div>
-  ))
-}
+// `DocumentList` was here: one flat list of every company document with a
+// Download and nothing else. It is now the shared `SectionDocuments` under one
+// card per category, with Remove beside Download — the same shape as the person
+// profile, because a company's documents are filed exactly the same way
+// (Levi 2026-09-04: "this is the same for the body corporation upload document
+// features").
+//
+// LEVI'S ITEM 13 ON 2026-09-04 ASKS FOR THE OPPOSITE, and it is not resolved
+// here: "no need to have multiple sections for different document types. just
+// split based on history and current 2 sections so it is clear." Collapsing
+// these cards would cost the per-section upload picker (which is what stops a
+// document being filed under the wrong type) and the Remove button, both of
+// which landed the same day — so the layout is left as it is and the question
+// is Levi's to settle. What item 13 also asked for and nobody had done, the
+// document TYPE made prominent and coloured, is delivered in
+// `components/DocumentSections.jsx`.
 
 export default function CompanyProfilePage() {
   const { companyId } = useParams()
@@ -93,17 +180,41 @@ export default function CompanyProfilePage() {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
+  const contract = useFormContract()
   const [busy, setBusy] = useState(false)
   //: The live-case warning, held until the operator decides. null = no
   //: conflict, or already acknowledged.
   const [conflict, setConflict] = useState(null)
-  const [showUpload, setShowUpload] = useState(false)
+  // The section whose upload dialog is open, or null. One piece of state
+  // rather than one flag per section.
+  const [uploadInto, setUploadInto] = useState(null)
+  // The document the Remove dialog is about, or null.
+  const [removing, setRemoving] = useState(null)
   const [newCase, setNewCase] = useState(false)
-  const { hasPermission, isSuperAdmin } = useAuth()
-  // nar1:read shows cases; nar1:write is what opens one.
-  const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
+  const { hasPermission } = useAuth()
+  // WHAT A READER MAY DO HERE. `companies:read` opens this page (the route
+  // guard saw to that); everything that WRITES is asked for by name in
+  // `lib/screenCapabilities.js`, which is where the module and level for each
+  // control live and what the permission matrix test enumerates. The API
+  // refuses each independently — this only stops the screen OFFERING an action
+  // it knows will be refused, and every control below is rendered
+  // conditionally, never disabled (Levi 2026-09-04).
+  const caps = companyProfileCaps(hasPermission)
+  const canWrite = caps.editCompany
+  const canUploadDoc = caps.uploadDocument
+  const canRemoveDoc = caps.removeDocument
+  const canDownloadDoc = caps.downloadDocument
+  const canOpenCase = caps.openCase
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
   const [linkModal, setLinkModal] = useState(null)
+  const {
+    sections, ready: sectionsReady, error: sectionsError,
+  } = useDocumentSections('company')
+  // The Corporate Party tile edits two fields nothing else on the profile
+  // touches, so it holds its own draft rather than joining `draft` — opening
+  // one editor must not put the other card into edit mode.
+  const [corpEditing, setCorpEditing] = useState(false)
+  const [corpDraft, setCorpDraft] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
@@ -127,16 +238,50 @@ export default function CompanyProfilePage() {
     }
   }
 
+  // The address is a SEPARATE row, not a column on the company, so it is
+  // drafted and saved separately — `registered_address_id` only ever repoints.
+  const [addrDraft, setAddrDraft] = useState(null)
+
   function startEdit() {
-    setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, company[f.key] ?? ''])))
+    setDraft({
+      ...Object.fromEntries(EDITABLE.map(f => [f.key, company[f.key] ?? ''])),
+      company_phone: companyPhone(company),
+    })
+    setAddrDraft({ ...EMPTY_ADDRESS, ...(company.registered_address || {}) })
     setEditing(true)
   }
 
-  async function unlinkParty(relation, linkId) {
-    if (!window.confirm('Remove this party from the company?')) return
+  async function confirmRemoveDocument() {
     setBusy(true)
     try {
-      await api.del(`/companies/${companyId}/${relation}/${linkId}`)
+      await api.del(`/documents/${removing.id}`)
+      setRemoving(null)
+      load()
+    } catch (err) {
+      setRemoving(null)
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // NAMES THE PARTY, AND SAYS WHAT IS LOST. "Remove this party from the
+  // company?" named nobody — with eight directors on screen there was no way
+  // to tell which row the dialog belonged to — and it did not say that the
+  // delete is permanent. Ceasing an appointment and deleting the record that
+  // it existed are different acts with the same button, so the difference has
+  // to be in the sentence.
+  async function unlinkParty(relation, row) {
+    const who = partyName(row)
+    if (!window.confirm(
+      `Remove ${who} from this company?\n\n`
+      + 'This deletes the record that they ever held the role — it is not the '
+      + 'same as ending it. To end an appointment or a shareholding, press '
+      + 'Edit and set Status to Former, which keeps the history and takes them '
+      + 'off the return.')) return
+    setBusy(true)
+    try {
+      await api.del(`/companies/${companyId}/${relation}/${row.id}`)
       load()
     } catch (err) {
       setError(err.message)
@@ -147,9 +292,19 @@ export default function CompanyProfilePage() {
 
   // Send only fields that actually changed — the backend writes one audit
   // entry per changed field, so sending untouched fields would be noise.
+  //
+  // AN EMPTIED FIELD IS A CHANGE. This used to drop `v === ''` as well, which
+  // meant deleting a value and pressing Save did nothing at all and looked
+  // exactly like a save that worked — the field came back on the next load. A
+  // blank is a legitimate answer (a company can stop having a Chinese name; a
+  // CR number typed into the wrong box has to be removable) and the API stores
+  // it as NULL. A field that was already empty still sends nothing, because
+  // `company[k] ?? ''` is then `''` too.
   function changedFields() {
     return Object.fromEntries(
-      Object.entries(draft).filter(([k, v]) => (company[k] ?? '') !== v && v !== '')
+      Object.entries(draft)
+        .filter(([k]) => k !== PHONE_FIELD.key)
+        .filter(([k, v]) => (company[k] ?? '') !== v)
     )
   }
 
@@ -162,7 +317,8 @@ export default function CompanyProfilePage() {
     // operator has to be told that the return already validated, sent to the
     // client or filed with CR will no longer match this record.
     const changed = changedFields()
-    if (!force && Object.keys(changed).length) {
+    const phoneChanged = (draft.company_phone ?? '') !== companyPhone(company)
+    if (!force && (Object.keys(changed).length || phoneChanged)) {
       const warning = liveCaseWarning(company)
       if (warning) { setConflict(warning); return }
     }
@@ -172,6 +328,16 @@ export default function CompanyProfilePage() {
       if (Object.keys(changed).length) {
         await api.patch(`/companies/${companyId}`, changed)
       }
+      // Separate requests because they write different tables, and they go
+      // after the field patch so a rejected address (a line over CR's 60) does
+      // not silently discard the field edits that already succeeded.
+      if (addrDraft && addressChanged(addrDraft, company.registered_address)) {
+        await api.put(`/companies/${companyId}/registered-address`, addressPayload(addrDraft))
+      }
+      if (phoneChanged) {
+        await api.put(`/companies/${companyId}/company-phone`,
+                      { company_phone: draft.company_phone || null })
+      }
       setEditing(false)
       load()
     } catch (err) {
@@ -180,6 +346,69 @@ export default function CompanyProfilePage() {
       setBusy(false)
     }
   }
+
+  function startCorpEdit() {
+    setCorpDraft(Object.fromEntries(
+      CORP_EDITABLE.map(f => [f.key, company[f.key] ?? ''])))
+    setCorpEditing(true)
+  }
+
+  async function saveCorpDetails() {
+    const changed = Object.fromEntries(
+      Object.entries(corpDraft).filter(([k, v]) => (company[k] ?? '') !== v))
+    if (!Object.keys(changed).length) { setCorpEditing(false); return }
+    setBusy(true)
+    try {
+      await api.patch(`/companies/${companyId}`, changed)
+      setCorpEditing(false)
+      load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Edit one class of shares — CR's section 11. */
+  async function saveShareClass(shareClassId, changed) {
+    if (!Object.keys(changed).length) return true
+    setBusy(true)
+    try {
+      await api.patch(`/companies/${companyId}/share-classes/${shareClassId}`, changed)
+      load()
+      return true
+    } catch (err) {
+      // The API refuses a currency CR does not take and a figure over its
+      // length. Surfacing the reason is the whole point of refusing here
+      // rather than at CR, after the fee.
+      setError(err.message)
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Give a company share capital it never had — 219 are in that state. */
+  async function createShareClass(values) {
+    setBusy(true)
+    try {
+      await api.post(`/companies/${companyId}/share-classes`, values)
+      load()
+      return true
+    } catch (err) {
+      setError(err.message)
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // No `setRecordLocation` here on purpose. The Statutory Records tile was
+  // removed on 2026-09-02 — it claimed to be NAR1 s16 (it is s15), listed
+  // thirteen registers (CR's schema carries two), and s15 is only asked when
+  // the records are NOT at the registered office, which for this whole book
+  // they are. The table, endpoints and ETL backfill are still there for the
+  // minority of companies whose records sit elsewhere.
 
   if (loading) return <div className="empty-state">Loading…</div>
   if (error) {
@@ -193,6 +422,30 @@ export default function CompanyProfilePage() {
 
   const isClient = !!company.is_client
   const isCorp = !!company.is_corporate_party
+
+  // Uploads filed under the section their type belongs to (migration 036).
+  // Removed ones are dropped here and kept in Document History — that is what a
+  // soft delete is for.
+  const liveDocs = (company.documents || []).filter(d => d.status !== 'deleted')
+  const bySection = groupBySection(liveDocs, sections)
+  const sectionLabels = Object.fromEntries(sections.map(s => [s.key, s.label]))
+
+  // What CR would refuse, read off the same contract the API enforces.
+  const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
+  const addressWarnings = Object.fromEntries(
+    ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
+      [k, warnFor('addresses', k, company.registered_address?.[k])]))
+  const infoWarnings = [
+    ...EDITABLE.map(f => warnFor('entities', f.key, company[f.key])),
+    ...Object.values(addressWarnings),
+  ].filter(Boolean)
+
+  // The §11.1 blocking set, computed server-side so the screen and the API
+  // agree about what "filable" means (OQ-2).
+  const filingProblems = company.filing_problems || []
+  const businessName = (company.business_names || [])
+    .map(b => [b.business_name, b.business_name_zh].filter(Boolean).join(' · '))
+    .filter(Boolean).join(', ')
 
   return (
     <>
@@ -216,16 +469,18 @@ export default function CompanyProfilePage() {
 
           <div className="flag-panel">
             <FlagToggle on={isClient} label="Is Client" busy={busy}
+                        canWrite={canWrite}
                         sub="Reveals client tiles + Cases pane"
                         onToggle={() => toggleFlag('is_client')} />
             <FlagToggle on={isCorp} label="Is Corporate Party" busy={busy}
+                        canWrite={canWrite}
                         sub="Acts as director / secretary / shareholder elsewhere"
                         onToggle={() => toggleFlag('is_corporate_party')} />
           </div>
         </div>
-        <div className="pg-actions">
-          <button className="btn btn-outline" onClick={() => setShowUpload(true)}>Upload Document</button>
-        </div>
+        {/* No page-level Upload button: it offered every document type at
+            once from a place that named no section. Each section carries its
+            own. */}
       </div>
 
       {newCase && (
@@ -236,15 +491,28 @@ export default function CompanyProfilePage() {
         />
       )}
 
-      {showUpload && (
+      {uploadInto && (
         <UploadDocumentModal
           ownerKind="entity"
           ownerId={companyId}
           ownerName={company.company_name}
-          existingTypes={(company.documents || []).map(d => d.document_type_code)}
-          onClose={() => setShowUpload(false)}
-          onUploaded={() => { setShowUpload(false); load() }}
+          category={uploadInto.key}
+          sectionLabel={uploadInto.label}
+          existingTypes={(bySection[uploadInto.key] || []).map(d => d.document_type_code)}
+          onClose={() => setUploadInto(null)}
+          onUploaded={() => { setUploadInto(null); load() }}
         />
+      )}
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove document"
+          busy={busy}
+          onCancel={() => setRemoving(null)}
+          onConfirm={confirmRemoveDocument}
+        >
+          <RemoveDocumentBody doc={removing} />
+        </ConfirmDialog>
       )}
 
       {linkModal && (
@@ -252,9 +520,22 @@ export default function CompanyProfilePage() {
           companyId={companyId}
           relation={linkModal.relation}
           link={linkModal.link}
+          // The Class of Shares dropdown is THIS company's classes. Passed down
+          // rather than fetched: the profile already holds them, and a second
+          // request would be a second answer that can disagree with the tile
+          // rendered right behind the modal.
+          shareClasses={company.share_classes}
           onClose={() => setLinkModal(null)}
           onSaved={() => { setLinkModal(null); load() }}
         />
+      )}
+
+      {/* SAID ONCE, AT THE TOP, AND NOWHERE ELSE. The controls below are not
+          rendered at all for this role, so this banner is the ONLY thing on the
+          screen that explains their absence — without it the page reads as a
+          product that cannot edit a company, rather than a role that cannot. */}
+      {!canWrite && (
+        <ReadOnlyNote module="companies" what="this company's full profile" />
       )}
 
       <div className={`detail-grid${isClient ? '' : ' client-off'}`}>
@@ -263,8 +544,13 @@ export default function CompanyProfilePage() {
           <div className="card mb-16">
             <div className="card-hdr">
               <div>
-                <div className="card-title">Company Information</div>
-                <div className="card-sub">Core company details, filings &amp; documents</div>
+                <div className="card-title">
+                  Company Information <WarningCount count={infoWarnings.length} />
+                </div>
+                {/* Not "filings & documents" any more — those moved to their
+                    own card below, so saying it here pointed at a section that
+                    is no longer part of this one. */}
+                <div className="card-sub">Core company details</div>
               </div>
               {editing ? (
                 <div className="hdr-actions">
@@ -273,7 +559,7 @@ export default function CompanyProfilePage() {
                     {busy ? 'Saving…' : 'Save'}
                   </button>
                 </div>
-              ) : (
+              ) : canWrite && (
                 <button className="btn-edit" onClick={startEdit}>Edit</button>
               )}
             </div>
@@ -289,30 +575,128 @@ export default function CompanyProfilePage() {
                     onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
                   />
                 ))}
+                <div className="f-group full">
+                  <div className="tile-sec-lbl">Registered Office</div>
+                  <AddressBlock
+                    value={addrDraft}
+                    lookups={lookups}
+                    warnings={Object.fromEntries(
+                      ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
+                        [k, warnFor('addresses', k, addrDraft?.[k])]))}
+                    onChange={(k, v) => setAddrDraft(a => ({ ...a, [k]: v }))}
+                  />
+                </div>
+                {/* Below the address because it saves the same way — its own
+                    table, its own request. */}
+                <FormField field={{ ...PHONE_FIELD, full: true }}
+                           value={draft[PHONE_FIELD.key]} lookups={lookups}
+                           onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
               </div>
             ) : (
               <div className="kv-list">
-                <Kv label="Company Name"><span className="font-semibold">{company.company_name}</span></Kv>
+                <Kv label="Company Name" warning={warnFor('entities', 'company_name', company.company_name)}>
+                  <span className="font-semibold">{company.company_name}</span>
+                </Kv>
                 <Kv label="Chinese Name">{company.company_name_zh}</Kv>
+                {/* Brian's B9. Already in `business_names` for 5,026 companies
+                    and never shown; CR asks for it as `brName`. */}
+                <Kv label="Business Name">{businessName || null}</Kv>
                 <Kv label="Entity ID">{company.vp_source_key}</Kv>
                 <Kv label="BRN">{company.br_number}</Kv>
                 <Kv label="CR No.">{company.cr_number}</Kv>
                 <Kv label="Status"><StatusBadge status={company.status} /></Kv>
-                <Kv label="Company Type">{company.company_type}</Kv>
+                <Kv label="Company Type"
+                    warning={warnFor('entities', 'company_type', company.company_type)}>
+                  {displayValue({ lookup: 'cr_company_type' }, company.company_type, lookups)}
+                </Kv>
+                {/* B5. Code and description together: the code is what CR
+                    validates, the description is what a human recognises. */}
+                <Kv label="Business Nature">
+                  {company.business_nature_code
+                    ? `${company.business_nature_code} — ${company.business_nature_desc || ''}`.trim()
+                    : null}
+                </Kv>
+                {/* B6. */}
+                <Kv label="Mortgages and Charges"
+                    warning={warnFor('entities', 'mortgages_total', company.mortgages_total)}>
+                  {company.mortgages_total}
+                </Kv>
                 <Kv label="Country of Incorporation">
-                  {displayValue({ lookup: 'country' }, company.incorporation_place, lookups)}
+                  {displayValue({ lookup: 'cr_country' }, company.incorporation_place, lookups)}
                 </Kv>
-                <Kv label="Registered Address">{addressText(company.registered_address)}</Kv>
-                <Kv label="Company Phone">
-                  {company.contacts?.find(c => c.contact_type === 'phone')?.contact_value}
-                </Kv>
+                {/* The five lines CR receives, not a joined string — an
+                    address that files correctly and one that does not look
+                    identical once you comma-join them. */}
+                <AddressBlock value={company.registered_address} readOnly
+                              warnings={addressWarnings} />
+                <Kv label="Company Phone">{companyPhone(company) || null}</Kv>
                 <Kv label="Create Date">{formatDate(company.created_at)}</Kv>
                 <Kv label="Incorporation Date">{formatDate(company.incorporation_date)}</Kv>
+                {/* CASE NOTES WERE EDITABLE AND DISPLAYED NOWHERE. Typing a
+                    note, saving it and reloading looked identical to never
+                    having typed one. */}
+                <Kv label="Case Notes">{company.case_notes}</Kv>
               </div>
             )}
 
-            <div className="tile-sec-lbl">Filings &amp; Company Documents</div>
-            <DocumentList documents={company.documents} />
+          </div>
+
+          {/* Documents, one card per section — the same shape as the person
+              profile. "Unavailable" is not "none": if the catalogue could not
+              be loaded, say so rather than rendering empty sections. */}
+          {!sectionsReady && (
+            <div className="card mb-16">
+              <div className="empty-state" style={{ padding: '16px 0' }}>Loading documents…</div>
+            </div>
+          )}
+          {sectionsReady && sectionsError && (
+            <div className="card mb-16">
+              <div className="card-hdr">
+                <div>
+                  <div className="card-title">Documents</div>
+                  <div className="card-sub">Sections could not be loaded</div>
+                </div>
+              </div>
+              <div className="reveal-note" style={{ color: '#B91C1C', background: '#FEE2E2' }}>
+                {sectionsError} — this company’s documents are not shown below
+                because the section list is unavailable, not because there are
+                none. Reload the page.
+              </div>
+            </div>
+          )}
+
+          {sections.map(section => (
+            <DocumentSection key={section.key} section={section}
+                             count={(bySection[section.key] || []).length}
+                             onAdd={() => setUploadInto(section)}
+                             canAdd={canUploadDoc}>
+              {(bySection[section.key] || []).length === 0 ? (
+                <div className="empty-state" style={{ padding: '16px 0' }}>
+                  Nothing uploaded yet.
+                </div>
+              ) : (
+                <SectionDocuments
+                  documents={bySection[section.key]}
+                  busy={busy}
+                  onRemove={doc => setRemoving(doc)}
+                  canDownload={canDownloadDoc}
+                  canRemove={canRemoveDoc}
+                />
+              )}
+            </DocumentSection>
+          ))}
+
+          <div className="card mb-16">
+            <div className="card-hdr">
+              <div>
+                <div className="card-title">Document History</div>
+                <div className="card-sub">
+                  Every upload, by section and type · newest version is current, older versions preserved
+                </div>
+              </div>
+            </div>
+            <DocumentHistory documents={company.documents} sectionLabels={sectionLabels}
+                             canDownload={canDownloadDoc} />
           </div>
 
           {/* Corporate Party Details — gated on is_corporate_party */}
@@ -326,13 +710,53 @@ export default function CompanyProfilePage() {
                     Held when this company acts as a director, secretary or shareholder of another
                   </div>
                 </div>
+                {/* WAS READ-ONLY. The TCSP licence is the one thing this tile is
+                    for, the Company Secretary tile on every OTHER company prints
+                    it, and there was no screen anywhere in the portal that could
+                    set it — so it showed an em dash for a licensed provider and
+                    stayed that way. */}
+                {corpEditing ? (
+                  <div className="hdr-actions">
+                    <button className="btn-edit" onClick={() => setCorpEditing(false)} disabled={busy}>
+                      Cancel
+                    </button>
+                    <button className="btn btn-primary btn-sm" onClick={saveCorpDetails} disabled={busy}>
+                      {busy ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                ) : canWrite && (
+                  <button className="btn-edit" onClick={startCorpEdit}>Edit</button>
+                )}
               </div>
-              <div className="kv-list">
-                <Kv label="Company Type">{company.company_type}</Kv>
-                <Kv label="TCSP Licence">{company.tcsp_licence_no}</Kv>
-                <Kv label="TCSP Exemption">{company.tcsp_exemption_reason}</Kv>
-              </div>
+              {corpEditing ? (
+                <div className="form-grid">
+                  {CORP_EDITABLE.map(f => (
+                    <FormField key={f.key} field={{ ...f, full: true }}
+                               value={corpDraft[f.key]} lookups={lookups}
+                               onChange={(k, v) => setCorpDraft(d => ({ ...d, [k]: v }))} />
+                  ))}
+                </div>
+              ) : (
+                <div className="kv-list">
+                  <Kv label="Company Type">
+                    {displayValue({ lookup: 'cr_company_type' }, company.company_type, lookups)}
+                  </Kv>
+                  <Kv label="TCSP Licence No.">{company.tcsp_licence_no}</Kv>
+                  <Kv label="TCSP Exemption Reason">{company.tcsp_exemption_reason}</Kv>
+                </div>
+              )}
             </div>
+          )}
+
+          {/* Share capital — CR's section 11, in its own right (B7). The
+              return states what the company's capital IS, whether or not
+              anyone currently holds it, so this is not the same list as the
+              share classes hanging off each shareholding. */}
+          {isClient && (
+            <ShareCapitalTile classes={company.share_classes}
+                              warnFor={warnFor} busy={busy}
+                              canWrite={canWrite}
+                              onSave={saveShareClass} onCreate={createShareClass} />
           )}
 
           {/* Client-only party tiles */}
@@ -340,56 +764,160 @@ export default function CompanyProfilePage() {
             <>
               <PartyTile title="Director(s)" sub="Appointed directors"
                          rows={company.officers} relation="officers" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'officers' })}
                          onEdit={row => setLinkModal({ relation: 'officers', link: row })}
-                         onRemove={id => unlinkParty('officers', id)}
+                         onRemove={row => unlinkParty('officers', row)}
                          render={o => (
                            <>
-                             <Kv label="Role">{o.role}</Kv>
+                             <Kv label="Role">{(o.role || '').replace(/_/g, ' ')}</Kv>
+                             {/* POSITION AND RESIGNATION REASON ARE SHOWN
+                                 (Levi 2026-09-04). Both were editable in the
+                                 modal and printed nowhere, so typing one and
+                                 saving it looked identical to not typing it.
+                                 Conditional because an empty Position on a
+                                 director who has none is a row of nothing. */}
+                             {o.position && <Kv label="Position">{o.position}</Kv>}
                              <Kv label="Appointed">{formatDate(o.appointed_date)}</Kv>
                              {o.resigned_date && <Kv label="Resigned">{formatDate(o.resigned_date)}</Kv>}
-                             <Kv label="Email">{o.persons?.email}</Kv>
+                             {o.resignation_reason && (
+                               <Kv label="Resignation Reason">{o.resignation_reason}</Kv>
+                             )}
+                             {/* B3's substantive half: every director's contact
+                                 details, which the tile did not show at all. */}
+                             <Kv label="Email Address">{o.persons?.email}</Kv>
+                             <Kv label="Residential Address">
+                               {addressText(o.persons?.residential_address)}
+                             </Kv>
+                             {/* D2 — a director may give company A and company
+                                 B different correspondence addresses, as the
+                                 law allows, so it hangs off the APPOINTMENT. */}
+                             <Kv label="Correspondence Address">
+                               {addressText(o.correspondence_address)}
+                             </Kv>
                            </>
                          )} />
 
+              {/* A TRANSFER IS TWO EDITS, NOT A DELETE (Levi's Q9: "what
+                  happens when a shareholder loses his/her share to someone
+                  else"). The register has to keep showing who held the shares
+                  before, and the audit trail has to show when that stopped —
+                  both of which a DELETE destroys. Setting the outgoing holder
+                  to Former is what drops them from the return: `nar1_mapper`'s
+                  `_schedule_1` skips a holding with `is_current` false. The
+                  note says so on the tile, because the two buttons on offer
+                  are Edit and Remove and Remove is the one that reads like
+                  "this person no longer holds shares". */}
               <PartyTile title="Shareholder(s)" sub="Members of the company"
                          rows={company.shareholders} relation="shareholders" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'shareholders' })}
                          onEdit={row => setLinkModal({ relation: 'shareholders', link: row })}
-                         onRemove={id => unlinkParty('shareholders', id)}
+                         onRemove={row => unlinkParty('shareholders', row)}
+                         /* Only for a reader who HAS those buttons. It is an
+                            instruction for using Edit and Remove, so on a
+                            read-only screen it describes controls that are not
+                            there — which is exactly the confusion hiding them
+                            was meant to end. */
+                         note={canWrite
+                           ? 'Transferring shares? Edit the outgoing holder and set '
+                             + 'Status to Former, then add the new holder — or raise an '
+                             + 'existing holder’s Shares Held. Remove deletes the record '
+                             + 'that they ever held the shares.'
+                           : null}
                          render={s => (
                            <>
-                             <Kv label="Shares Held">{s.shares_held}</Kv>
-                             <Kv label="Share Class">{s.share_classes?.class_name}</Kv>
-                             <Kv label="Amount Paid">{s.amount_paid}</Kv>
+                             {/* CR's shareCapitalList states the class and its
+                                 currency beside the holding, not just a count. */}
+                             <Kv label="Class of Shares">{s.share_classes?.class_name}</Kv>
+                             {/* "Total Number" is CR's heading for the CLASS
+                                 total in section 11 — the number of shares in
+                                 issue. Using it here for one member's holding
+                                 put the same words on two different figures on
+                                 the same screen. This is what the modal calls
+                                 it, and what it is. */}
+                             <Kv label="Shares Held">{figure(s.shares_held)}</Kv>
+                             <Kv label="Currency">{s.share_classes?.currency}</Kv>
+                             <Kv label="Amount Paid">{figure(s.amount_paid)}</Kv>
+                             {/* B4 — a shareholder needs an address, natural
+                                 person and body corporate alike. They are
+                                 different FACTS: a company has a registered
+                                 office, not a residence. */}
+                             <Kv label={s.corporate_entity_id
+                               ? 'Registered Office' : 'Residential Address'}>
+                               {addressText(s.corporate_entity?.registered_address
+                                 || s.persons?.residential_address)}
+                             </Kv>
                            </>
                          )} />
 
               <PartyTile title="Company Secretary" sub="Secretarial service provider"
                          rows={company.secretaries} relation="secretaries" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'secretaries' })}
                          onEdit={row => setLinkModal({ relation: 'secretaries', link: row })}
-                         onRemove={id => unlinkParty('secretaries', id)}
+                         onRemove={row => unlinkParty('secretaries', row)}
                          render={s => (
                            <>
-                             {/* TCSP licence comes from the linked corporate party. */}
-                             <Kv label="TCSP Licence No.">{s.corporate_entity?.tcsp_licence_no}</Kv>
-                             <Kv label="Position">{s.position}</Kv>
+                             {/* THE LICENCE MAY BE THE PERSON'S. This read only
+                                 `corporate_entity` and printed an em dash for a
+                                 secretary who is an individual — and the AMLO
+                                 licenses individuals as TCSPs exactly as it
+                                 licenses bodies corporate. `persons` now
+                                 carries the column (migration 038). */}
+                             <Kv label="TCSP Licence No.">
+                               {s.corporate_entity?.tcsp_licence_no || s.persons?.tcsp_licence_no}
+                             </Kv>
+                             {s.position && <Kv label="Position">{s.position}</Kv>}
                              <Kv label="Appointed">{formatDate(s.appointed_date)}</Kv>
                              {s.resigned_date && <Kv label="Resigned">{formatDate(s.resigned_date)}</Kv>}
+                             {/* Editable in the modal and printed nowhere —
+                                 the same gap as the director tile. */}
+                             {s.resignation_reason && (
+                               <Kv label="Resignation Reason">{s.resignation_reason}</Kv>
+                             )}
+                             <Kv label="Email Address">{s.persons?.email}</Kv>
+                             <Kv label={s.corporate_entity_id
+                               ? 'Registered Office' : 'Residential Address'}>
+                               {addressText(s.corporate_entity?.registered_address
+                                 || s.persons?.residential_address)}
+                             </Kv>
                            </>
                          )} />
 
               <PartyTile title="Beneficial Owner(s)" sub="Significant controllers"
                          rows={company.beneficial_owners} relation="beneficial-owners" busy={busy}
+                         canWrite={canWrite}
                          onAdd={() => setLinkModal({ relation: 'beneficial-owners' })}
                          onEdit={row => setLinkModal({ relation: 'beneficial-owners', link: row })}
-                         onRemove={id => unlinkParty('beneficial-owners', id)}
+                         onRemove={row => unlinkParty('beneficial-owners', row)}
                          render={b => (
                            <>
-                             <Kv label="Owner Type">{b.owner_type}</Kv>
-                             <Kv label="Interest %">{b.percent_interest}</Kv>
-                             <Kv label="Voting %">{b.percent_vote}</Kv>
+                             {/* The stored code rendered as its sentence. The
+                                 raw value was printed before, so the tile read
+                                 "significant_controller". */}
+                             <Kv label="Owner Type">
+                               {displayValue({ lookup: 'bo_owner_type' }, b.owner_type, lookups)}
+                             </Kv>
+                             {/* Companies Ordinance s.653D. REPLACES Interest %
+                                 and Voting % (Levi 2026-09-04): two numeric
+                                 columns could not express "has the right to
+                                 exercise significant influence or control",
+                                 which is the second of the two conditions and
+                                 the one that has nothing to do with a
+                                 percentage. The columns are kept in the
+                                 database; nothing filed reads them. */}
+                             <Kv label="Nature of Control over the Company">
+                               {displayValue({ lookup: 'bo_nature_of_control' },
+                                             b.nature_of_control, lookups)}
+                             </Kv>
+                             {b.date_from && <Kv label="From">{formatDate(b.date_from)}</Kv>}
+                             {b.date_to && <Kv label="To">{formatDate(b.date_to)}</Kv>}
+                             <Kv label={b.corporate_entity_id
+                               ? 'Registered Office' : 'Residential Address'}>
+                               {addressText(b.corporate_entity?.registered_address
+                                 || b.persons?.residential_address)}
+                             </Kv>
                            </>
                          )} />
             </>
@@ -407,14 +935,40 @@ export default function CompanyProfilePage() {
                 </div>
                 {/* The annual return is started from the company it is for.
                     Without this the only route was the dashboard, where you
-                    then had to search back to the company you were already on. */}
+                    then had to search back to the company you were already on.
+
+                    TWO DIFFERENT REASONS THIS BUTTON CAN BE OFF, and they are
+                    not treated the same. A missing PERMISSION hides it — there
+                    is nothing this reader can do about it here. A company that
+                    cannot FILE leaves it visible and disabled, because that is
+                    a data problem somebody on this screen can go and fix, and
+                    the list of what to fix prints directly underneath. */}
                 {canOpenCase && (
                   <button className="btn btn-outline btn-sm"
+                          disabled={filingProblems.length > 0}
                           onClick={() => setNewCase(true)}>
                     + New case
                   </button>
                 )}
               </div>
+              {/* WHY THE REFUSAL IS PRINTED HERE. 453 of 5,930 client
+                  companies cannot produce a valid return (OQ-2), and a
+                  disabled button with no explanation is the exact shape of
+                  "I clicked it and nothing happened". The reason belongs
+                  beside the control that is refusing, not in a page banner a
+                  screen and a half above it.
+
+                  Shown to every reader, not only to `nar1:write`: it names
+                  fields on THIS company that are missing, which is work for
+                  whoever maintains the profile. */}
+              {filingProblems.length > 0 && (
+                <div className="reveal-note" role="note">
+                  <b>This company cannot file an annual return yet.</b>
+                  <ul className="filing-problems">
+                    {filingProblems.map(p => <li key={p.field}>{p.message}</li>)}
+                  </ul>
+                </div>
+              )}
               <CasesPane cases={company.cases} onOpen={id => navigate(`/cases/${id}`)} />
             </div>
           </div>
@@ -446,12 +1000,108 @@ export default function CompanyProfilePage() {
 }
 
 /**
+ * Share capital, under CR's own headings (Brian's B7).
+ *
+ * WHY THE HEADINGS MATTER. "Total Number" is a COUNT of shares and "Total
+ * Amount" is money, and the schema could not tell them apart until migration
+ * 028: `total_issued` stood in for both. On 60 of Viewpoint's 5,740 rows they
+ * genuinely differ — 200 shares worth HK$20,000, 1,000 worth HK$5,000,000 —
+ * so a screen that showed one number under an ambiguous label was showing the
+ * wrong one and no one could tell.
+ */
+function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
+                            canWrite = true }) {
+  const rows = classes || []
+  // The row being edited, the string 'new' while adding, or null. The editor
+  // itself is a dialog now (components/ShareClassModal.jsx) — inline, its two
+  // buttons stacked vertically inside a column flex box, which is the one
+  // place in the app where Cancel sat on top of Save.
+  const [editing, setEditing] = useState(null)
+
+  const warnings = rows.flatMap(row =>
+    SHARE_CLASS_FIELDS.map(f => warnFor('share_classes', f.key, row[f.key]))
+      .filter(Boolean))
+
+  return (
+    <div className="card mb-16">
+      <div className="card-hdr">
+        <div>
+          <div className="card-title">
+            Share Capital <span className="count-pill">{rows.length}</span>
+            <WarningCount count={warnings.length} />
+          </div>
+          <div className="card-sub">
+            Section 11 of the annual return — one row per class of shares
+          </div>
+        </div>
+        {canWrite && (
+          <button className="btn btn-outline btn-sm" onClick={() => setEditing('new')}>
+            + Add a class
+          </button>
+        )}
+      </div>
+
+      {editing && (
+        <ShareClassModal
+          // The draft is seeded once, on mount. Without a key, going from one
+          // row's editor straight to another's would reuse the first row's
+          // draft — and silently save it over the second row.
+          key={editing === 'new' ? 'new' : editing.id}
+          row={editing === 'new' ? null : editing}
+          busy={busy}
+          onClose={() => setEditing(null)}
+          onSave={values => (editing === 'new' ? onCreate(values) : onSave(editing.id, values))}
+        />
+      )}
+
+      {rows.length === 0 ? (
+        // 219 client companies are in this state, and it stops them filing.
+        // Saying "None" would read as "nothing to do here".
+        <div className="empty-state" style={{ padding: '16px 0' }}>
+          No share capital recorded. The Companies Registry requires at least one
+          class of shares for a company having a share capital.
+        </div>
+      ) : rows.map(row => (
+        <div className="member-block" key={row.id || row.class_name}>
+          <div className="member-name">
+            {/* The class NAME heads its own block. It used to be omitted on the
+                grounds that "Class of Shares" is the first row of the list
+                below — but with several classes that made every block start
+                with an empty title bar carrying nothing but an Edit button. */}
+            {row.class_name || <span className="td-muted">Unnamed class</span>}
+            {row.currency && <span className="member-role-tag">{row.currency}</span>}
+            {canWrite && (
+              <span style={{ marginLeft: 'auto' }}>
+                <button className="btn-edit" onClick={() => setEditing(row)}>Edit</button>
+              </span>
+            )}
+          </div>
+          <div className="kv-list">
+            {SHARE_CLASS_FIELDS.map(f => (
+              <Kv key={f.key} label={f.label}
+                  warning={warnFor('share_classes', f.key, row[f.key])}>
+                {f.key === 'class_name' || f.key === 'currency'
+                  ? row[f.key] : figure(row[f.key])}
+              </Kv>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
  * A party tile. When `relation` is given the tile is editable: add a link, edit
  * its attributes (OQ-1) or remove it. company_secretaries has no linking
  * endpoint, so that tile stays read-only.
  */
-function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onAdd, onEdit, onRemove, busy }) {
+function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
+                     onAdd, onEdit, onRemove, busy, note, canWrite = true }) {
   const list = rows || []
+  // `relation` says the tile CAN be edited; `canWrite` says this reader may.
+  // Both are required for any of the three controls to render at all.
+  const editable = Boolean(relation) && canWrite
   return (
     <div className="card mb-16">
       <div className="card-hdr">
@@ -459,23 +1109,27 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation, onA
           <div className="card-title">{title} <span className="count-pill">{list.length}</span></div>
           <div className="card-sub">{sub}</div>
         </div>
-        {relation && (
+        {editable && (
           <button className="btn btn-outline btn-sm" onClick={onAdd}>+ Add</button>
         )}
       </div>
+      {note && <div className="reveal-note" role="note">{note}</div>}
       {list.length === 0 ? (
         <div className="empty-state" style={{ padding: '16px 0' }}>None linked.</div>
       ) : list.map(row => (
         <div className="member-block" key={row.id}>
           <div className="member-name">
             {nameOf(row)}
-            {row.corporate_entity_id && <span className="member-role-tag">Corporate</span>}
+            {/* Brian's B10 — NAR1 says Body Corporate, so the portal does. */}
+            {row.corporate_entity_id && <span className="member-role-tag">Body Corporate</span>}
             {row.is_current === false && <span className="member-role-tag">Former</span>}
-            {relation && (
+            {editable && (
               <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                 <button className="btn-edit" onClick={() => onEdit(row)}>Edit</button>
+                {/* `onRemove(row)`, not `row.id` — the caller needs the whole
+                    row to name the party in its confirmation. */}
                 <button className="btn-edit" disabled={busy}
-                        onClick={() => onRemove(row.id)}>Remove</button>
+                        onClick={() => onRemove(row)}>Remove</button>
               </span>
             )}
           </div>

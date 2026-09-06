@@ -92,15 +92,22 @@ const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'}`
 /**
  * The single signed number the column shows and the server sorts by.
  *
- * Negative: the anniversary has passed and the return is still inside the
- * 42-day window. Positive: days until the next one. Mirrors
- * `company_registry.days_to_anniversary` (migration 019) exactly — verified
- * against all 5,457 real DEV incorporation dates, zero disagreements.
+ * Whichever anniversary is NEARER, signed: negative when the last one is closer
+ * than the next, positive otherwise. Range about -182..182.
+ *
+ * The switch used to happen at day 42 rather than at the midpoint, which meant a
+ * company 43 days past its anniversary read +322 and no value below -42 could
+ * exist at all — so clearing the column filter's lower bound revealed nothing,
+ * and every company whose filing window had shut was hidden among the ones with
+ * most of a year in hand (Levi 2026-09-04). Migration 033 made the same change
+ * in `company_registry.days_to_anniversary`; the two MUST agree, or the number a
+ * row prints and the number the server sorted it by come from different rules.
  */
 export function signedDaysToAnniversary(incorporationDate, today = hongKongToday()) {
   const since = daysSinceAnniversary(incorporationDate, today)
   if (since === null) return null
-  return since <= FILING_WINDOW_DAYS ? -since : daysToAnniversary(incorporationDate, today)
+  const until = daysToAnniversary(incorporationDate, today)
+  return since <= until ? -since : until
 }
 
 /**
@@ -111,7 +118,16 @@ export function signedDaysToAnniversary(incorporationDate, today = hongKongToday
 export function labelForDays(days) {
   if (days == null) return { text: '—', due: false }
   if (days === 0) return { text: 'today', due: true }
-  if (days < 0) return { text: `${plural(-days, 'day')} ago`, due: true }
+  // `due` is the 42-day window, NOT merely "negative". Once the count could run
+  // past -42 (migration 033) that distinction started carrying weight: 2,262 of
+  // DEV's client companies sit between -43 and -182, and highlighting all of
+  // them would paint 38% of the register carrot for a fact that is not a
+  // deadline. Inside the window the return is deliverable today and the row
+  // wants acting on; outside it, the cell states a date relationship and lets
+  // the operator's filter do the asking.
+  if (days < 0) {
+    return { text: `${plural(-days, 'day')} ago`, due: days >= -FILING_WINDOW_DAYS }
+  }
   return { text: `in ${plural(days, 'day')}`, due: false }
 }
 
@@ -119,9 +135,9 @@ export function labelForDays(days) {
  * What the cell reads, and whether it should be highlighted.
  *
  * `due` marks a company inside the 42-day filing window — the anniversary has
- * passed and the return is still legally deliverable. Past that the window is
- * shut and the live fact is the *next* anniversary, so the cell counts down
- * again rather than accumulating a "1,000 days overdue" that no one can act on.
+ * passed and the return is still legally deliverable. Past that the cell keeps
+ * counting up, quietly, until the next anniversary is the nearer of the two and
+ * it starts counting down again.
  */
 export function anniversaryLabel(incorporationDate, today = hongKongToday()) {
   return labelForDays(signedDaysToAnniversary(incorporationDate, today))

@@ -528,6 +528,15 @@ class _RecordingQuery:
     def in_(self, c, v):
         return self._rec("in_", c)
 
+    def ilike(self, c, v):
+        return self._rec("ilike", c, v)
+
+    def neq(self, c, v):
+        return self._rec("neq", c, v)
+
+    def is_(self, c, v):
+        return self._rec("is_", c, v)
+
     @property
     def not_(self):
         outer = self
@@ -635,3 +644,62 @@ def test_comparison_without_a_day_count_is_rejected():
 def test_day_count_without_a_comparison_is_rejected():
     resp, _log, _ = _get("/companies?anniv_days=60")
     assert resp.status_code == 422
+
+
+# ---- per-column header filters ---------------------------------------------
+
+def test_a_column_filter_reaches_the_count_queries_too():
+    """Same rule the anniversary filter follows. The flag tabs and the pager
+    have to count the set the rows are drawn from, not a wider one."""
+    resp, log, _ = _get("/companies?filter=company_name:contains:acme")
+    assert resp.status_code == 200
+    applied = [e for e in log if e[0] == "ilike"]
+    assert len(applied) >= 8         # page query + the concurrent exact counts
+    assert all(e == ("ilike", "company_name", "%acme%") for e in applied)
+
+
+def test_two_filters_on_one_column_make_a_range():
+    """Upper and lower bound, which is how the registry opens: -42 keeps the
+    companies already past the anniversary and still inside the 42-day filing
+    window, 60 reaches the ones coming up."""
+    resp, log, _ = _get("/companies?filter=days_to_anniversary:gte:-42"
+                        "&filter=days_to_anniversary:lte:60")
+    assert resp.status_code == 200
+    assert ("gte", "days_to_anniversary", -42) in log
+    assert ("lte", "days_to_anniversary", 60) in log
+
+
+def test_an_enum_filter_becomes_an_in_list():
+    resp, log, _ = _get("/companies?filter=status:in:live,ceased")
+    assert resp.status_code == 200
+    assert ("in_", "status") in log
+
+
+def test_a_filter_on_an_unlisted_column_is_refused():
+    """422, not ignored: a dropped filter looks exactly like one that matched
+    every row, and on a 5,930-row paginated list nobody can tell."""
+    resp, _log, _ = _get("/companies?filter=case_notes:contains:secret")
+    assert resp.status_code == 422
+    assert "case_notes" in resp.json()["detail"]
+
+
+def test_an_out_of_domain_status_is_refused():
+    resp, _log, _ = _get("/companies?filter=status:in:dissolved")
+    assert resp.status_code == 422
+
+
+def test_every_real_entity_status_is_filterable():
+    """The tabs show six statuses; the column can hold eleven. Offering only the
+    six would make `live` and `ceased` — which is all 5,930 real rows —
+    unreachable from the header."""
+    for status in ("live", "ceased", "pre_incorporation", "client_approved"):
+        resp, _log, _ = _get(f"/companies?filter=status:in:{status}")
+        assert resp.status_code == 200, status
+
+
+def test_no_filter_applies_no_predicate():
+    # `in_` is excluded on purpose: the unfiltered listing already splits
+    # pending from terminal rows with one (`_PENDING`), and that is the default
+    # ordering, not a filter anybody asked for.
+    _resp, log, _ = _get("/companies")
+    assert not [e for e in log if e[0] in ("ilike", "neq", "is_")]

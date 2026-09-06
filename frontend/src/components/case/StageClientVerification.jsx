@@ -5,7 +5,8 @@ import { formatDateTime } from '../../lib/format.js'
 import { downloadFilingPdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
-import { describeError, verificationBlock } from './workflow.js'
+import { describeError, verificationBlock, isSubmitted } from './workflow.js'
+import { ActionWithheld } from '../RequirePermission.jsx'
 
 // Zoom bounds for the embedded preview. 60% still shows a full A4 page on a
 // laptop; past 200% the object viewport is taller than any screen and the
@@ -30,7 +31,15 @@ export function describeSendError(err) {
     case 403:
       return { message, hint: 'Your role does not allow sending client verification for this case.' }
     case 409:
-      return { message, hint: 'The case is not in a state that allows this. Nothing was sent.' }
+      // What state, and what to do about it — not the bare fact that the case
+      // is in the wrong one. "Not in a state that allows this" is a sentence
+      // an operator can do nothing with (Levi 2026-09-03).
+      return {
+        message,
+        hint: 'Nothing was sent. The return has to be validated by CR and not '
+          + 'yet filed before it can go to the client — check the CR form '
+          + 'status in the header.',
+      }
     case 422:
       return { message, hint: 'Fix the recipient list or re-validate the return, then try again.' }
     case 502:
@@ -63,11 +72,22 @@ export function describeSendError(err) {
  * human records the answer here. That is why "Client approved" is a button an
  * admin presses, and why it is audited as CLIENT_APPROVAL_RECEIVED.
  */
-export default function StageClientVerification({ caseRow, canWrite, onChanged, onError }) {
+export default function StageClientVerification({ caseRow, canWrite, onChanged, onError, onWarn }) {
   const { isTestEnv, profile } = useAuth()
-  const [reviewed, setReviewed] = useState(false)
+  // Seeded from the case, not defaulted to false. The tick gates the send, and
+  // the send is the evidence it was given: a mail cannot have gone out without
+  // it. Leaving it unticked on a case whose banner says "Sent 31 Aug 2026,
+  // 19:52" reads as a step that came undone — which is how Levi found it,
+  // after stepping forward to Signing and back.
+  //
+  // `Restart verification` clears verification_sent_at, so it correctly resets
+  // here too: a restarted case really does need reviewing again.
+  const [reviewed, setReviewed] = useState(Boolean(caseRow.verification_sent_at))
   const [busy, setBusy] = useState(null)
-  const [sendError, setSendError] = useState(null)
+  // NO LOCAL ERROR STATE. What the send refused goes to `onError` and what it
+  // REPORTED — a partial delivery, a message without a Confirm button — goes
+  // to `onWarn`. Both render at the top of the page and both scroll there, so
+  // this screen no longer keeps an error surface of its own (Levi 2026-09-03).
   const [pdfUrl, setPdfUrl] = useState(null)
   const [pdfError, setPdfError] = useState(null)
   const [recipients, setRecipients] = useState([])
@@ -83,6 +103,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // Why the backend would refuse this send, worked out before the operator
   // presses anything. See workflow.verificationBlock.
   const blocked = verificationBlock(caseRow)
+  // Filed by EITHER road: CR holds it, or it was filed off-portal on paper.
+  const filed = isSubmitted(caseRow)
   const pdfName =
     `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}.pdf`
 
@@ -137,20 +159,43 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   }, [filingId])
 
   async function send() {
-    onError(null); setSendError(null); setBusy('send')
+    onError(null); onWarn?.(null, null); setBusy('send')
     try {
       // Always explicit, never `{}`. The chips on screen are what the operator
       // agreed to send to; letting the server re-derive the list would mail a
       // director they had just removed, and the two answers can differ the
       // moment someone edits the company in another tab.
-      await api.post(`/cases/${caseRow.id}/verification/send`, { to })
+      const result = await api.post(
+        `/cases/${caseRow.id}/verification/send`, { to })
+      // ONE MESSAGE PER DIRECTOR now, so a send can partly succeed. The
+      // response names the addresses that failed; showing only a green tick
+      // would leave a director unasked with nothing on screen saying so.
+      //
+      // Raised to the page, which puts it in the same place as every other
+      // outcome and scrolls there — a partial send is the thing on this screen
+      // an operator is most likely to miss, because the stage advances and the
+      // status changes around it.
+      if (result?.failed_to?.length) {
+        const one = result.failed_to.length === 1
+        onWarn?.('The return did not reach everyone.',
+          `${result.failed_to.join(', ')} — send again to just `
+          + `${one ? 'that address' : 'those addresses'}. The others have it `
+          + 'and their links are live.')
+      } else if (result?.approval_links === false) {
+        onWarn?.('Sent without a Confirm button.',
+          'This deployment could not build the approval link, so the client '
+          + 'has to reply by email and you record the answer below. '
+          + 'PUBLIC_API_BASE_URL needs setting on the backend.')
+      }
       onChanged()
     } catch (e) {
-      // Reported HERE, next to the button, and NOT bubbled to `onError`. The
-      // page-level banner sits above a 460px PDF frame, so a failure raised
-      // there is off-screen at the moment the operator is looking at the
-      // button they just pressed.
-      setSendError(describeSendError(e))
+      // TO THE PAGE, like every other refusal. It used to be drawn here next
+      // to the button because the banner sits above a 690px PDF frame and was
+      // therefore off-screen — but the page now scrolls to the banner on every
+      // failure, so the reason for the exception is gone, and keeping it would
+      // leave this screen with an error surface no other stage has (Levi
+      // 2026-09-03).
+      onError(describeSendError(e))
     } finally {
       setBusy(null)
     }
@@ -198,8 +243,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               {saving ? 'Preparing…' : 'Download PDF'}
             </button>
             {/* A tab, not a modal: the operator is checking this against the
-                company record in another window, and 460px of embedded viewer
-                is not enough to read a nine-page statutory return. */}
+                company record in another window, and even 690px of embedded
+                viewer is not a whole nine-page statutory return. */}
             <button type="button" className="btn btn-outline btn-sm"
                     disabled={!pdfUrl}
                     onClick={() => window.open(pdfUrl, '_blank', 'noopener')}>
@@ -209,12 +254,14 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
         </div>
 
         {pdfError ? (
-          <div className="alert al-warn" role="alert">
-            <span className="al-icon">⚠</span>
-            <div className="al-body">
-              Could not render the preview: {pdfError.message}
-              {pdfError.hint && <div style={{ marginTop: 4 }}>{pdfError.hint}</div>}
-            </div>
+          // The preview pane saying it has nothing to show, in the place the
+          // preview would have been. Not an alert: nothing the operator did
+          // was refused, and the Download and Send controls above it still
+          // work.
+          <div className="card-note card-note-warn" role="status">
+            <b>The preview could not be rendered.</b>
+            <div style={{ marginTop: 4 }}>{pdfError.message}</div>
+            {pdfError.hint && <div style={{ marginTop: 4 }}>{pdfError.hint}</div>}
           </div>
         ) : pdfUrl ? (
           <>
@@ -236,7 +283,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
                 frame is what the embedded viewer actually reads as bigger. */}
             <object data={pdfUrl} type="application/pdf" aria-label="NAR1 preview"
                     className="pdf-frame"
-                    style={{ height: Math.round(460 * zoom / 100) }}>
+                    style={{ height: Math.round(690 * zoom / 100) }}>
               {/* Some browsers refuse to embed; a link is not a dead end. */}
               <a href={pdfUrl} target="_blank" rel="noreferrer">Open the NAR1 preview</a>
             </object>
@@ -272,7 +319,9 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             over GSHK's name is the mistake this exists to slow down. */}
         <CheckRow
           checked={reviewed}
-          disabled={!canWrite || busy !== null || Boolean(blocked)}
+          readOnly={!canWrite}
+          disabled={busy !== null || Boolean(blocked)
+                    || Boolean(caseRow.verification_sent_at)}
           onToggle={setReviewed}
           title="I have reviewed this return and it is correct"
           sub="Check the particulars above before it goes to the client."
@@ -282,7 +331,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           recipients={recipients}
           to={to || []}
           onChange={setTo}
-          disabled={!canWrite || busy !== null || to === null || Boolean(blocked)}
+          readOnly={!canWrite}
+          disabled={busy !== null || to === null || Boolean(blocked)}
           maxRecipients={maxRecipients}
         />
 
@@ -314,31 +364,27 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
 
-        {/* THE ERROR LIVES HERE, beside the button that caused it. It used to
-            be reported only through `onError`, which renders at the top of the
-            page — roughly a screen and a half above this button, past a 460px
-            PDF frame. A refused send therefore looked exactly like a dead
-            button, which is how it was reported on 2026-08-30. */}
-        {sendError && (
-          <div className="alert al-danger" role="alert" style={{ marginTop: 14 }}>
-            <span className="al-icon">⚠</span>
-            <div className="al-body">
-              <b>{sendError.message}</b>
-              {sendError.hint && (
-                <div style={{ marginTop: 4 }}>{sendError.hint}</div>
-              )}
-            </div>
-          </div>
+        {/* NEITHER THE REFUSAL NOR THE PARTIAL-SEND REPORT IS DRAWN HERE
+            any more. They were, because the page banner sits above a 690px PDF
+            frame and a refused send therefore looked like a dead button. The
+            page now scrolls to the banner on every failure, which removes the
+            reason — and leaving them would give this one stage an error
+            surface no other stage has. */}
+
+        {/* PRE-EMPTIVE, and therefore not an alert: this says why the Send
+            button is not on offer, before anyone presses anything. It reads as
+            a note under the controls rather than as a refusal, which is what
+            an alert box would have claimed. */}
+        {blocked && !filed && (
+          <div className="card-note card-note-warn" role="status"
+               style={{ marginTop: 14 }}>{blocked}</div>
         )}
 
-        {blocked && (
-          <div className="alert al-warn" role="status" style={{ marginTop: 14 }}>
-            <span className="al-icon">⚠</span>
-            <div className="al-body">{blocked}</div>
-          </div>
-        )}
-
-        {canWrite && (
+        {/* Nothing to send once the return is in the register, so nothing is
+            offered. A disabled button beside a warning explaining why you may
+            not press it is worse than no button: it invites the press. What
+            stays above is the record — who it went to, when, what they said. */}
+        {!filed && (canWrite ? (
           <div className="action-bar">
             <div className="ab-note">
               {blocked
@@ -362,7 +408,18 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               </button>
             </div>
           </div>
-        )}
+        ) : (
+          // The bar was simply absent before, which left a stage whose entire
+          // purpose — get this to the client — had vanished without a word.
+          <div className="action-bar">
+            <div className="ab-note">
+              This return has not been sent to the client yet.
+            </div>
+            <div className="ab-actions">
+              <ActionWithheld module="nar1" action="sending it to the client" />
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="card mb-16">
@@ -370,8 +427,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <div>
             <div className="card-title">Client's answer</div>
             <div className="card-sub">
-              Recorded by you from the client's reply — the portal does not read
-              inbound mail.
+              The client can confirm from the link in their email, or reply and
+              have you record it here — the portal does not read inbound mail.
             </div>
           </div>
         </div>
@@ -380,8 +437,17 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <div className={`alert ${caseRow.client_approved ? 'al-success' : 'al-danger'}`} role="status">
             <span className="al-icon">{caseRow.client_approved ? '✓' : '⚠'}</span>
             <div className="al-body">
-              <b>{caseRow.client_approved ? 'Client approved' : 'Client declined'}</b>{' '}
+              {/* HOW it was approved, never a bare "Client approved" (spec §5).
+                  A case the 14-day job approved on the client's silence must not
+                  read the same as one a named director agreed to — the evidence
+                  behind them is completely different, and the difference is
+                  exactly what somebody reviewing a filing needs to see. */}
+              <b>{caseRow.client_approved
+                ? (caseRow.client_approval?.summary || 'Client approved')
+                : 'Client declined'}</b>{' '}
               on {formatDateTime(caseRow.client_response_at)}.
+              {caseRow.client_approval?.system
+                && ' Nobody replied; the return is being filed as prepared.'}
               {!caseRow.client_approved
                 && ' Correct the return, restart verification and send it again.'}
             </div>
@@ -404,7 +470,13 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             </div>
           </div>
         ) : (
-          <div className="empty-state" style={{ padding: 16 }}>No answer recorded yet.</div>
+          <div className="action-bar">
+            <div className="ab-note">No answer recorded yet.</div>
+            <div className="ab-actions">
+              <ActionWithheld module="nar1"
+                              action="recording the client's reply" />
+            </div>
+          </div>
         )}
       </div>
     </>

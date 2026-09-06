@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import { landingsFor } from '../lib/navigation.js'
 
 
 const NavItem = ({ to, icon, children, title }) => (
@@ -83,9 +84,25 @@ const SignOutIcon = () => (
   </svg>
 )
 
+//: The icon each landing wears, keyed by its route. Kept HERE rather than in
+//: `lib/navigation.js` so that module stays free of JSX and can be imported by
+//: anything — the routes, the home screen, and a test.
+const ICONS = {
+  '/dashboard': <DashIcon />,
+  '/registry': <RegistryIcon />,
+  '/persons': <PersonsIcon />,
+  '/audit-log': <AuditIcon />,
+}
+
 export default function Sidebar({ isOpen, collapsed, onClose }) {
-  const { isSuperAdmin, hasPermission, signOut } = useAuth()
+  const { isSuperAdmin, hasPermission, profileError, signOut } = useAuth()
   const navigate = useNavigate()
+
+  // Drawn from the SAME list `/` redirects into (lib/navigation.js). They used
+  // to be written out separately here, which is how the menu and the landing
+  // came to disagree: this was gated correctly and `/` was not.
+  const mainItems = landingsFor(hasPermission, 'main')
+  const adminItems = landingsFor(hasPermission, 'admin')
 
   async function handleSignOut() {
     await signOut()
@@ -110,31 +127,52 @@ export default function Sidebar({ isOpen, collapsed, onClose }) {
         <div className="nav-section-lbl" style={sectionLbl}>
           Main
         </div>
-        {/* Two different modules on purpose. The dashboard is now the NAR1 CASE
+        {/* Two different modules on purpose. The dashboard is the NAR1 CASE
             list (GET /cases, `nar1:read`); the registry is companies
             (`companies:read`). A role may hold one without the other, and
             showing a nav item that answers 403 is worse than not showing it. */}
-        {hasPermission('nar1', 'read') && (
-          <NavItem to="/dashboard" icon={<DashIcon />}>Post-incorporation</NavItem>
-        )}
-        {hasPermission('companies', 'read') && (
-          <NavItem to="/registry" icon={<RegistryIcon />}>Company Registry</NavItem>
-        )}
-        {hasPermission('persons', 'read') && (
-          <NavItem to="/persons" icon={<PersonsIcon />}>Persons Registry</NavItem>
+        {mainItems.map(item => (
+          <NavItem key={item.to} to={item.to} icon={ICONS[item.to]} title={item.label}>
+            {item.label}
+          </NavItem>
+        ))}
+
+        {/* AN EMPTY MENU IS AMBIGUOUS AND MUST NOT BE SILENT. "Your role has
+            nothing" and "we could not find out what your role has" look
+            identical here, and the second one is what an operator actually hit:
+            one failed /auth/me stripped every item and the screen said nothing
+            about why. */}
+        {profileError && mainItems.length === 0 && (
+          <div style={{
+            padding: '8px 10px', fontSize: 11, lineHeight: 1.5,
+            color: '#B91C1C',
+          }}>
+            Menu unavailable — your permissions could not be loaded. Reload the
+            page.
+          </div>
         )}
 
-        {isSuperAdmin && (
+        {(isSuperAdmin || adminItems.length > 0) && (
           <>
             <div className="nav-divider" />
             <div className="nav-section-lbl" style={sectionLbl}>
               Admin
             </div>
-            <NavItem to="/users" icon={<UsersIcon />} title="User Management">User Management</NavItem>
-            <NavItem to="/roles" icon={<RolesIcon />} title="Roles">Roles</NavItem>
-            {hasPermission('audit_trail', 'read') && (
-              <NavItem to="/audit-log" icon={<AuditIcon />} title="Audit Log">Audit Log</NavItem>
+            {/* User Management and Roles stay super-admin-only. The Audit Log
+                does NOT: `all_access` holds `audit_trail:read` without being a
+                super admin, and nesting it inside this block hid the one screen
+                that role exists to read. */}
+            {isSuperAdmin && (
+              <>
+                <NavItem to="/users" icon={<UsersIcon />} title="User Management">User Management</NavItem>
+                <NavItem to="/roles" icon={<RolesIcon />} title="Roles">Roles</NavItem>
+              </>
             )}
+            {adminItems.map(item => (
+              <NavItem key={item.to} to={item.to} icon={ICONS[item.to]} title={item.label}>
+                {item.label}
+              </NavItem>
+            ))}
           </>
         )}
 

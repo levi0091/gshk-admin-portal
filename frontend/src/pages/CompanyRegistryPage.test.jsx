@@ -12,6 +12,10 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn() } }))
+// "+ Add Company" is gated on `companies:write`. Reassigned by the read-only
+// test at the bottom of this file.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { api } from '../lib/api.js'
 
 const PAYLOAD = {
@@ -21,7 +25,8 @@ const PAYLOAD = {
   flag_counts: { all: 5982, client: 5914, corporate_party: 279, non_client: 68 },
   companies: [
     {
-      id: 'e1', company_name: 'Harbour Tech Ltd.', br_number: '2100028',
+      id: 'e1', company_name: 'Harbour Tech Ltd.', company_name_zh: '海港科技有限公司',
+      br_number: '2100028',
       cr_number: '2100028', is_client: true, is_corporate_party: false, status: 'live',
       incorporation_date: '2023-08-12',   // 3 days past anniversary — inside the window
     },
@@ -31,7 +36,7 @@ const PAYLOAD = {
       incorporation_date: '2018-09-18',   // 34 days ahead
     },
     {
-      id: 'e3', company_name: 'Asia BC Ltd.', br_number: null,
+      id: 'e3', company_name: 'Asia BC Ltd.', company_name_zh: null, br_number: null,
       cr_number: null, is_client: false, is_corporate_party: true, status: 'live',
       incorporation_date: null,           // Viewpoint row with no incorporation date
     },
@@ -45,9 +50,41 @@ function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks()
   api.get.mockResolvedValue(PAYLOAD)
+  auth = {
+    hasPermission: () => true, isSuperAdmin: true, profileLoading: false,
+    profile: { id: 'u-1', display_name: 'Levi Z.', role_name: 'super_admin' },
+  }
 })
 
 describe('CompanyRegistryPage', () => {
+  it('shows the Chinese name as its own column', async () => {
+    // Brian's B2 — "where do we show the Chinese Name?". It was already on the
+    // profile; what was missing was any way to find a company by it in a list.
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+
+    expect(screen.getByRole('columnheader', { name: /Chinese Name/ })).toBeInTheDocument()
+    expect(screen.getByText('海港科技有限公司')).toBeInTheDocument()
+  })
+
+  it('leaves the Chinese name blank rather than repeating the English one', async () => {
+    // 'Asia BC Ltd.' has none, and 5,930 Viewpoint companies are in the same
+    // state. An em dash says "not recorded"; the English name would be a lie.
+    renderPage()
+    const row = (await screen.findByText('Asia BC Ltd.')).closest('tr')
+    const cell = row.querySelector('[data-label="Chinese Name"]')
+
+    expect(cell).toHaveTextContent('—')
+    expect(cell).not.toHaveTextContent('Asia BC')
+  })
+
+  it('names the page as CR does', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+
+    expect(screen.getByText('Body Corporate Registry')).toBeInTheDocument()
+  })
+
   it('shows a loading state before data arrives', () => {
     api.get.mockReturnValue(new Promise(() => {}))
     renderPage()
@@ -119,7 +156,21 @@ describe('CompanyRegistryPage', () => {
   it('renders an empty state when nothing matches', async () => {
     api.get.mockResolvedValue({ ...PAYLOAD, companies: [], total: 0 })
     renderPage()
-    expect(await screen.findByText('No companies match this view.')).toBeInTheDocument()
+    expect(await screen.findByText('No records found')).toBeInTheDocument()
+  })
+
+  it('offers a way out when the emptiness is the default filter’s doing', async () => {
+    // This screen filters itself on first paint (−42..60 days). "No records
+    // found" on its own would read as "there is no data" rather than "you are
+    // looking through a filter you did not set".
+    const user = userEvent.setup()
+    api.get.mockResolvedValue({ ...PAYLOAD, companies: [], total: 0 })
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Clear all filters' }))
+    await waitFor(() => {
+      const last = decodeURIComponent(api.get.mock.calls.at(-1)[0])
+      expect(last).not.toContain('days_to_anniversary')
+    })
   })
 
   it('renders an error state when the request fails', async () => {
@@ -187,6 +238,40 @@ describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
     expect(within(row).getByText('in 34 days')).toBeInTheDocument()
   })
 
+  it('shows a company whose filing window has shut, past the old −42 floor', async () => {
+    // Migration 033. Under 019 this company reported +322 and was indexed among
+    // the ones with a year in hand, so clearing the filter's lower bound found
+    // nothing — the number below −42 did not exist to be found.
+    api.get.mockResolvedValue({
+      ...PAYLOAD,
+      companies: [{ ...PAYLOAD.companies[0], days_to_anniversary: -120 }],
+    })
+    renderPage()
+    const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
+    expect(within(row).getByText('120 days ago')).toBeInTheDocument()
+  })
+
+  it('highlights the 42-day window, and only that', async () => {
+    // 2,262 of DEV's client companies sit between −43 and −182. Painting all of
+    // them carrot would be an alarm about 38% of the register, for a fact that
+    // is not a deadline: inside the window the return can still be filed today,
+    // outside it the cell is stating a date relationship.
+    api.get.mockResolvedValue({
+      ...PAYLOAD,
+      companies: [
+        { ...PAYLOAD.companies[0], id: 'in', company_name: 'Inside Window Ltd.',
+          days_to_anniversary: -42 },
+        { ...PAYLOAD.companies[0], id: 'out', company_name: 'Window Shut Ltd.',
+          days_to_anniversary: -43 },
+      ],
+    })
+    renderPage()
+    const inside = (await screen.findByText('Inside Window Ltd.')).closest('tr')
+    const outside = screen.getByText('Window Shut Ltd.').closest('tr')
+    expect(within(inside).getByText('42 days ago')).toHaveClass('td-anniv-due')
+    expect(within(outside).getByText('43 days ago')).not.toHaveClass('td-anniv-due')
+  })
+
   it('renders an em dash when the server says null', async () => {
     api.get.mockResolvedValue({
       ...PAYLOAD,
@@ -205,11 +290,68 @@ describe('CompanyRegistryPage — anniversary sort & filter (R3)', () => {
   })
   afterEach(() => vi.useRealTimers())
 
-  it('opens on the actionable set — 60 days or fewer', async () => {
+  it('opens on the actionable set — the filing window through the next 60 days', async () => {
+    // Two bounds, not one comparison. A passed anniversary counts NEGATIVE
+    // while the return is still inside the 42-day statutory window, so -42 is
+    // the far edge of "overdue but still filable" and 60 reaches what is
+    // coming up.
     renderPage()
     await waitFor(() => {
-      expect(api.get.mock.calls[0][0]).toContain('anniv_op=lte')
-      expect(api.get.mock.calls[0][0]).toContain('anniv_days=60')
+      const url = decodeURIComponent(api.get.mock.calls[0][0])
+      expect(url).toContain('filter=days_to_anniversary:gte:-42')
+      expect(url).toContain('filter=days_to_anniversary:lte:60')
+    })
+  })
+
+  it('names the default in a chip instead of a badge nobody can act on', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.getByRole('button', { name: 'Remove the Days to anniversary filter' }))
+      .toBeInTheDocument()
+    expect(screen.getByText('-42 to 60 days')).toBeInTheDocument()
+  })
+
+  it('takes a new upper and lower bound from the column header', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Days to anniversary/ }))
+    const lower = screen.getByLabelText('Days to anniversary lower bound')
+    const upper = screen.getByLabelText('Days to anniversary upper bound')
+    await user.clear(lower)
+    await user.type(lower, '0')
+    await user.clear(upper)
+    await user.type(upper, '30')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      const last = decodeURIComponent(api.get.mock.calls.at(-1)[0])
+      expect(last).toContain('filter=days_to_anniversary:gte:0')
+      expect(last).toContain('filter=days_to_anniversary:lte:30')
+    })
+  })
+
+  it('drops the default entirely, showing every company', async () => {
+    // "This is a starting view, not a lock." One click, from the chip.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: 'Remove the Days to anniversary filter' }))
+    await waitFor(() => {
+      expect(api.get.mock.calls.at(-1)[0]).not.toContain('days_to_anniversary')
+    })
+  })
+
+  it('keeps one bound when the other is cleared', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Days to anniversary/ }))
+    await user.clear(screen.getByLabelText('Days to anniversary lower bound'))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      const last = decodeURIComponent(api.get.mock.calls.at(-1)[0])
+      expect(last).toContain('filter=days_to_anniversary:lte:60')
+      expect(last).not.toContain('days_to_anniversary:gte')
     })
   })
 
@@ -217,7 +359,8 @@ describe('CompanyRegistryPage — anniversary sort & filter (R3)', () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('Harbour Tech Ltd.')
-    // SortableTh renders a clickable <th>, not a <button>.
+    // FilterableTh renders a clickable <th>, not a <button> — the funnel inside
+    // it is the button, and it stops the click before it becomes a sort.
     await user.click(screen.getByRole('columnheader', { name: /Days to anniversary/ }))
     await waitFor(() => {
       expect(api.get.mock.calls.some(c => c[0].includes('sort=days_to_anniversary'))).toBe(true)
@@ -236,41 +379,20 @@ describe('CompanyRegistryPage — anniversary sort & filter (R3)', () => {
     ).toHaveAttribute('aria-sort', 'ascending'))
   })
 
-  it('sends the chosen comparison and day count', async () => {
+  it('no longer keeps a filter bar of its own above the table', async () => {
+    // One control per column, in the column. The standalone bar was a second
+    // place to look for something the header can say.
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.queryByLabelText('Comparison')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Day count')).not.toBeInTheDocument()
+  })
+
+  it('explains that a passed anniversary counts negative, where the bounds are typed', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('Harbour Tech Ltd.')
-    await user.selectOptions(screen.getByLabelText('Comparison'), 'gte')
-    await waitFor(() => {
-      expect(api.get.mock.calls.some(c => c[0].includes('anniv_op=gte'))).toBe(true)
-    })
-  })
-
-  it('clearing the filter drops both parameters', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await screen.findByText('Harbour Tech Ltd.')
-    await user.click(screen.getByRole('button', { name: 'Clear' }))
-    await waitFor(() => {
-      const last = api.get.mock.calls[api.get.mock.calls.length - 1][0]
-      expect(last).not.toContain('anniv_op')
-      expect(last).not.toContain('anniv_days')
-    })
-  })
-
-  it('never sends one half of the pair', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await screen.findByText('Harbour Tech Ltd.')
-    await user.clear(screen.getByLabelText('Day count'))
-    await waitFor(() => {
-      const last = api.get.mock.calls[api.get.mock.calls.length - 1][0]
-      expect(last.includes('anniv_op')).toBe(last.includes('anniv_days'))
-    })
-  })
-
-  it('explains that a passed anniversary counts negative', async () => {
-    renderPage()
+    await user.click(screen.getByRole('button', { name: /^Filter Days to anniversary/ }))
     expect(screen.getByText(/negative/i)).toBeInTheDocument()
   })
 })
@@ -338,5 +460,132 @@ describe('CompanyRegistryPage — overlapping requests (UAT W-8)', () => {
     expect(signal.aborted).toBe(false)
     unmount()
     expect(signal.aborted).toBe(true)
+  })
+})
+
+describe('CompanyRegistryPage — column filters', () => {
+  const urls = () => api.get.mock.calls.map(c => decodeURIComponent(c[0]))
+
+  it('offers a filter on every column', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    for (const label of ['Company Name', 'Chinese Name', 'BRN', 'CR No.',
+                         'Type', 'Status', 'Days to anniversary']) {
+      expect(screen.getByRole('button', { name: new RegExp(`^Filter ${label}`) }))
+        .toBeInTheDocument()
+    }
+  })
+
+  it('filters a company name server-side, never the visible page', async () => {
+    // 5,930 rows served 50 at a time. Narrowing what arrived would look right
+    // and answer a different question.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Company Name/ }))
+    await user.type(screen.getByLabelText('Company Name value'), 'harbour')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=company_name:contains:harbour'))).toBe(true)
+    })
+  })
+
+  it('finds the companies with no Chinese name', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Chinese Name/ }))
+    await user.selectOptions(screen.getByLabelText('Condition'), 'empty')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=company_name_zh:empty:'))).toBe(true)
+    })
+  })
+
+  it('offers the statuses a COMPANY can be, not the whole enum', async () => {
+    // Levi 2026-09-04: "this is company status so some of these values dont
+    // make sense". `entity_status` is one column doing two jobs — three values
+    // describe a company, eight describe an incorporation in flight. On DEV:
+    // 5,985 live, 12 ceased, 1 pre-incorporation, none of the other eight.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Status/ }))
+
+    const boxes = screen.getAllByRole('checkbox').map(b => b.getAttribute('aria-label')
+      ?? b.closest('label')?.textContent?.trim())
+    expect(boxes).toEqual(['Live', 'Pre-Incorporation', 'Ceased'])
+    for (const gone of ['Pending AML', 'To Verify', 'Submitted to CR', 'CR Approved']) {
+      expect(screen.queryByRole('checkbox', { name: gone })).not.toBeInTheDocument()
+    }
+  })
+
+  it('still filters by the status it does offer', async () => {
+    // `live` and `ceased` are all 5,930 of the real rows. A filter that could
+    // not name them would be a filter over nothing.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Status/ }))
+    await user.click(screen.getByRole('checkbox', { name: 'Live' }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=status:in:live'))).toBe(true)
+    })
+  })
+
+  it('drives the SAME flag filter the tabs do, through the Type column', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    await user.click(screen.getByRole('button', { name: /^Filter Type/ }))
+    await user.click(screen.getByRole('radio', { name: 'Corporate Parties' }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('flag=corporate_party'))).toBe(true)
+    })
+    expect(screen.getByRole('tab', { name: /Corporate Parties/ }))
+      .toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('lights the funnel and the header of a column that is narrowing the table', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    // The default anniversary range is applied from first paint.
+    expect(screen.getByRole('button', { name: 'Filter Days to anniversary (filtered)' }))
+      .toHaveClass('is-on')
+    expect(screen.getByRole('columnheader', { name: /Days to anniversary/ }))
+      .toHaveClass('th-filtered')
+    expect(screen.getByRole('button', { name: 'Filter Company Name' }))
+      .not.toHaveClass('is-on')
+  })
+})
+
+describe('CompanyRegistryPage — a read-only role', () => {
+  it('still lists every company', async () => {
+    // `companies:read` is exactly what this list is for.
+    auth.hasPermission = (m, p) => `${m}:${p}` === 'companies:read'
+    renderPage()
+    expect(await screen.findByText('Harbour Tech Ltd.')).toBeInTheDocument()
+  })
+
+  it('renders no + Add Company at all, and says why', async () => {
+    auth.hasPermission = (m, p) => `${m}:${p}` === 'companies:read'
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+
+    expect(screen.queryByRole('button', { name: /Add Company/ }))
+      .not.toBeInTheDocument()
+    // The missing button has to be accounted for, or the screen reads as a
+    // product that cannot add a company.
+    const note = screen.getAllByRole('note')
+      .find(n => /Read-only/.test(n.textContent))
+    expect(note).toHaveTextContent('companies (write)')
+  })
+
+  it('leaves it enabled for a role that holds companies:write', async () => {
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.getByRole('button', { name: /Add Company/ })).toBeEnabled()
   })
 })

@@ -48,6 +48,8 @@ def _signed(**over):
         "stage": filings.STAGE_SIGNED,
         "signed_xml": '<cr:submission><cr:EForm id="eForm"/></cr:submission>',
         "validated_xml": f"<cr:submission>{_XML}</cr:submission>",
+        # What spec §6's drift gate compares against — see `_no_drift` below.
+        "request_xml": _XML,
         "form_filing_id": "ff1",
         "presenter_user_id": "u1", "presentor_account_id": "ACCT",
     }
@@ -88,6 +90,22 @@ def _client():
     client = MagicMock()
     client.post_form.return_value = RECEIPT
     return client
+
+
+@pytest.fixture(autouse=True)
+def _no_drift():
+    """Spec §6's drift gate now runs inside `submit`, and it reloads the company
+    from Supabase to rebuild the return.
+
+    These tests are about the OTHER gate conditions, so the REBUILD is stubbed —
+    it returns the stored document itself, meaning "the company record has not
+    moved". The real comparator still runs over that pair, so a comparator that
+    began reporting differences on identical input would fail here as well as in
+    test_drift.py, which is where the gate's own behaviour is covered.
+    """
+    with patch("services.tpsi.drift.current_xml_for",
+               side_effect=lambda filing: filing.get("request_xml") or ""):
+        yield
 
 
 # ---- the four gate conditions, one refusal test each ----------------------

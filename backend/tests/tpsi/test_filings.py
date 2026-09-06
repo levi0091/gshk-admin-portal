@@ -465,7 +465,136 @@ def test_supersede_refuses_a_filing_cr_already_holds_IN_THE_UPDATE():
     assert set(stages) == set(filings.TERMINAL_STAGES)
 
 
+def test_supersede_all_for_case_retires_every_live_attempt_not_just_the_newest():
+    """`supersede()` takes one filing id, and every caller feeds it
+    `current_filing()` — the NEWEST non-superseded row. That is right for a
+    restart, which opens a replacement. It is wrong for closing a case: nothing
+    stops a second draft existing alongside the live one (`blocking_filing`
+    exists because of exactly that), and retiring one of two reports success
+    having left the other live on a case that has ended."""
+    sb, chain = _supersede_chain()
+    chain.return_value.execute.return_value.data = [{"id": "f1"}, {"id": "f2"}]
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.supersede_all_for_case("c1") == 2
+
+    sb.table.return_value.update.assert_called_once_with(
+        {"stage": filings.STAGE_SUPERSEDED})
+    # Keyed on the CASE, not on one filing id.
+    sb.table.return_value.update.return_value.eq.assert_called_once_with(
+        "nar1_case_id", "c1")
+
+
+def test_supersede_all_for_case_cannot_un_file_a_filing_cr_holds():
+    """The stage filter lives inside the UPDATE, exactly as `supersede()`'s
+    does: a submit landing mid-close must not be retired here."""
+    sb, chain = _supersede_chain()
+    chain.return_value.execute.return_value.data = []
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.supersede_all_for_case("c1") == 0
+    column, stages = chain.call_args.args
+    assert column == "stage"
+    assert set(stages) == set(filings.TERMINAL_STAGES)
+
+
+# ---------------------------------------------------------------------------
+# case_of — ONE read, shared by both interlocks
+# ---------------------------------------------------------------------------
+
+def test_case_of_reads_the_closure_columns_the_interlock_needs():
+    """A `select` that forgot `closed_at` would leave `_refuse_if_case_finished`
+    reading a key that is never there — permanently False, and silently."""
+    sb = MagicMock()
+    select = sb.table.return_value.select
+    (select.return_value.eq.return_value.limit.return_value
+     .execute.return_value.data) = [{"id": "c1", "closed_at": "2026-09-05"}]
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.case_of({"nar1_case_id": "c1"})["closed_at"] == "2026-09-05"
+
+    columns = select.call_args.args[0]
+    for needed in ("closed_at", "manual_receipt", "manual_submitted_at", "case_no"):
+        assert needed in columns, needed
+
+
+def test_case_of_asks_nothing_of_a_filing_that_has_no_case():
+    """An NNC1 or a bare TPSI filing has no case to have finished, so there is
+    nothing to read — and no round trip to make on every signature."""
+    sb = MagicMock()
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.case_of({"id": "f1"}) == {}
+    sb.table.assert_not_called()
+
+
 def test_a_superseded_filing_is_already_excluded_from_the_current_one():
     """The stage was defined and filtered on from the start; only the WRITE was
     missing. This pins the other half so neither can be removed alone."""
     assert filings.STAGE_SUPERSEDED in filings.TERMINAL_STAGES
+
+
+# --- rebuild_draft ---------------------------------------------------------
+#
+# WHY THIS EXISTS. `validate()` re-sends `filing["request_xml"]` verbatim, and
+# the frontend re-validates the filing the case already has. So every correction
+# an operator makes between two validation attempts -- a fixed address, a
+# different signing capacity -- was invisible to CR: the same bytes went twice
+# and CR, correctly, gave the same answer twice.
+#
+# Observed 2026-08-31 on case NAR-2026-0065: `signatory_capacity` on the case
+# read 'Company Secretary' while the stored request_xml still carried
+# selectCapacityDesc 'Director' from the first prepare.
+
+
+def _rebuild_chain(stage=filings.STAGE_VALIDATION_FAILED):
+    sb = MagicMock()
+    table = sb.table.return_value
+    upd = table.update.return_value
+    eq = upd.eq.return_value
+    eq.in_.return_value.execute.return_value.data = (
+        [{"id": "f1", "stage": filings.STAGE_DRAFT}]
+        if stage in filings.REBUILDABLE_STAGES else []
+    )
+    return sb, table
+
+
+def test_rebuild_draft_replaces_the_xml_and_clears_the_recorded_refusal():
+    """A stale cr_error left behind would render as a fresh CR rejection of a
+    form CR has not been shown yet."""
+    sb, table = _rebuild_chain()
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.rebuild_draft("f1", "<new/>") == {"id": "f1", "stage": filings.STAGE_DRAFT}
+    payload = table.update.call_args.args[0]
+    assert payload["request_xml"] == "<new/>"
+    assert payload["stage"] == filings.STAGE_DRAFT
+    assert payload["cr_error"] is None
+    # The frozen snapshot and its signature belong to the XML being replaced.
+    assert payload["validated_xml"] is None
+    assert payload["validated_at"] is None
+
+
+def test_rebuild_draft_only_touches_stages_that_may_be_rebuilt_IN_THE_UPDATE():
+    """Conditional in the UPDATE, not read-then-write: a validate landing
+    between a read and a write would otherwise have its frozen snapshot
+    discarded by a rebuild that read the row while it was still a draft."""
+    sb, table = _rebuild_chain()
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        filings.rebuild_draft("f1", "<new/>")
+    column, stages = table.update.return_value.eq.return_value.in_.call_args.args
+    assert column == "stage"
+    assert set(stages) == set(filings.REBUILDABLE_STAGES)
+
+
+def test_rebuild_draft_reports_no_row_moved_when_the_filing_is_past_draft():
+    sb, _ = _rebuild_chain(stage=filings.STAGE_VALIDATED)
+    with patch("services.tpsi.filings.get_supabase", return_value=sb):
+        assert filings.rebuild_draft("f1", "<new/>") is None
+
+
+def test_a_validated_filing_is_not_rebuildable():
+    """The snapshot is frozen on purpose — `Restart verification` is the only
+    sanctioned way to discard it, and it supersedes the row rather than
+    rewriting it."""
+    assert filings.STAGE_VALIDATED not in filings.REBUILDABLE_STAGES
+    for stage in filings.TERMINAL_STAGES:
+        assert stage not in filings.REBUILDABLE_STAGES
+    assert set(filings.REBUILDABLE_STAGES) == {
+        filings.STAGE_DRAFT, filings.STAGE_VALIDATION_FAILED,
+    }

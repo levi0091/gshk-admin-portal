@@ -27,6 +27,39 @@ def _super():
     return patch("middleware.auth._resolve_user", return_value=SUPER)
 
 
+@pytest.fixture(autouse=True)
+def _approval_tokens():
+    """Spec §5 issues one approval token per recipient inside the send.
+
+    Stubbed for the WHOLE file, because the real one writes to Supabase: left
+    unpatched it reached the live DEV database from a unit test — which is the
+    exact "green locally, red in CI, and meanwhile mutating a real environment"
+    failure this repo has already been bitten by twice.
+
+    The stub returns a deterministic token per recipient so the link that lands
+    in the email body is assertable, and keeps the shape `issue` returns.
+    """
+    def issue(*, case_id, recipients, sent_at=None):
+        return [{**r, "token": f"tok-{i}", "expires_at": "2026-09-15T00:00:00+00:00"}
+                for i, r in enumerate(recipients)]
+
+    with patch("routers.cases.nar1_approvals.issue", side_effect=issue),          patch("routers.cases.nar1_approvals.supersede_outstanding",
+               return_value=0):
+        yield
+
+
+def _addresses_sent(send):
+    """Every address the transport was handed, across all its calls.
+
+    Spec §5 made this ONE MESSAGE PER RECIPIENT, so `call_args` (the last call)
+    now sees only the last director. A test reading it would report a three-
+    director send as a one-director send and pass while doing so.
+    """
+    return [address
+            for call in send.call_args_list
+            for address in call.kwargs["to"]]
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
@@ -260,7 +293,7 @@ def test_every_director_with_an_address_is_mailed_by_default(client):
          patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H, json={})
     assert response.status_code == 200
-    assert send.call_args.kwargs["to"] == ["chan@example.com", "lee@example.com"]
+    assert _addresses_sent(send) == ["chan@example.com", "lee@example.com"]
 
 
 def test_the_company_address_is_used_only_when_no_director_has_one(client):
@@ -271,7 +304,7 @@ def test_the_company_address_is_used_only_when_no_director_has_one(client):
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         client.post("/cases/c1/verification/send", headers=H, json={})
-    assert "client@example.com" not in send.call_args.kwargs["to"]
+    assert "client@example.com" not in _addresses_sent(send)
 
 
 def test_an_explicit_list_is_sent_verbatim(client):
@@ -283,7 +316,7 @@ def test_an_explicit_list_is_sent_verbatim(client):
             "/cases/c1/verification/send", headers=H,
             json={"to": ["a@example.com", "b@example.com", "c@example.com"]})
     assert response.status_code == 200
-    assert send.call_args.kwargs["to"] == [
+    assert _addresses_sent(send) == [
         "a@example.com", "b@example.com", "c@example.com"]
 
 
@@ -296,7 +329,7 @@ def test_an_explicit_list_is_not_topped_up_with_the_directors(client):
          patch("routers.cases.log_event", new=AsyncMock()):
         client.post("/cases/c1/verification/send", headers=H,
                     json={"to": ["chan@example.com"]})
-    assert send.call_args.kwargs["to"] == ["chan@example.com"]
+    assert _addresses_sent(send) == ["chan@example.com"]
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +365,34 @@ def _send_as_operator(client, json=None, user=None):
 def test_the_logged_in_user_is_copied_on_the_clients_email(client):
     send, response = _send_as_operator(client)
     assert response.status_code == 200
-    assert send.call_args.kwargs["cc"] == ["levi@zenexflow.com"]
+    # ON THE FIRST MESSAGE ONLY. Spec §5 made this one message per director, and
+    # the case worker asked to be copied on the REQUEST, not to receive an
+    # identical mail for every member of the board.
+    assert send.call_args_list[0].kwargs["cc"] == ["levi@zenexflow.com"]
+    assert [c.kwargs["cc"] for c in send.call_args_list[1:]] == [None]
+
+
+def test_the_reply_address_is_on_every_message_even_though_the_copy_is_not(client):
+    """`reply_to` is the load-bearing half. A director who got the second copy
+    must still be able to reply to a human — the message asks them to, and it
+    is sent from no-reply@getstarted.hk."""
+    send, _ = _send_as_operator(client)
+    assert {c.kwargs["reply_to"] for c in send.call_args_list} == {
+        "levi@zenexflow.com"}
+
+
+def test_each_director_gets_their_OWN_approval_link(client):
+    """The whole reason this became one message per recipient: a shared link in
+    a shared message would let any director approve in another's name, which is
+    a misattribution in a statutory record."""
+    send, _ = _send_as_operator(client)
+    links = [c.kwargs["html"] for c in send.call_args_list]
+    assert len(links) == 2
+    assert "nar1-approval/tok-0" in links[0]
+    assert "nar1-approval/tok-1" in links[1]
+    # And neither carries the other's.
+    assert "tok-1" not in links[0]
+    assert "tok-0" not in links[1]
 
 
 def test_the_clients_reply_is_aimed_at_the_person_who_sent_it(client):
@@ -416,7 +476,7 @@ def test_addresses_differing_only_in_case_are_one_recipient(client):
          patch("routers.cases.log_event", new=AsyncMock()):
         client.post("/cases/c1/verification/send", headers=H,
                     json={"to": ["Chan@Example.com", "chan@example.com"]})
-    assert send.call_args.kwargs["to"] == ["Chan@Example.com"]
+    assert _addresses_sent(send) == ["Chan@Example.com"]
 
 
 def test_too_many_recipients_is_refused(client):
@@ -564,7 +624,11 @@ def test_send_records_the_timestamp_and_audits(client):
     assert response.status_code == 200
     assert spy.call_args.args[1]["verification_sent_at"] is not None
     assert response.json()["sent_at"] == spy.call_args.args[1]["verification_sent_at"]
-    assert [e["action_type"] for e in logged] == ["EMAIL_SENT"]
+    # CLIENT_APPROVAL_LINK_SENT follows it, one per director whose link went
+    # out (spec §5). Filtered here rather than added to the expectation: this
+    # test is about which STATUS events a first send does or does not write.
+    assert [e["action_type"] for e in logged
+            if e["action_type"] != "CLIENT_APPROVAL_LINK_SENT"] == ["EMAIL_SENT"]
     assert logged[0]["new_value"] == "client@example.com"
     assert logged[0]["metadata"]["message_id"] == "m1"
 
@@ -630,6 +694,32 @@ def test_an_unrenderable_snapshot_is_422_not_500(client):
     send.assert_not_called()
 
 
+def test_an_uncoverable_character_is_422_not_500(client):
+    """M5 (final review): `AppearanceError` -- raised when a character has
+    no glyph in either embedded face (see `appearance.draw_value`) -- was not
+    in this handler's except tuple, so a real missing-glyph failure on
+    Railway would have surfaced as an opaque 500 instead of this route's own
+    'the validated snapshot could not be rendered' message. `fill.render`
+    already translates `AppearanceError` into `FormFillError` internally, so
+    this also stands as a belt-and-braces check on the route itself."""
+    from services.nar1_form.appearance import AppearanceError
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         patch("routers.cases.nar1_cases.current_filing", return_value=VALIDATED), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=[]), \
+         patch("routers.cases.nar1_cases.recipient_email",
+               return_value="client@example.com"), \
+         patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \
+         patch("routers.cases.nar1_form_fill.render",
+               side_effect=AppearanceError(
+                   "cannot draw '杨' (U+6768): no glyph in NAR1-CJK")), \
+         patch("routers.cases.email_service.send") as send:
+        response = client.post("/cases/c1/verification/send", headers=H, json={})
+    assert response.status_code == 422
+    assert "U+6768" in response.json()["detail"]
+    send.assert_not_called()
+
+
 def test_resending_supersedes_the_previous_client_answer(client):
     """A rejection answers the PREVIOUS request. Left in place it pins the badge
     at Client Rejected forever, while the client is looking at a fresh PDF."""
@@ -664,7 +754,11 @@ def test_a_first_send_does_not_log_a_superseded_response(client):
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", side_effect=fake_log):
         client.post("/cases/c1/verification/send", headers=H, json={})
-    assert [e["action_type"] for e in logged] == ["EMAIL_SENT"]
+    # CLIENT_APPROVAL_LINK_SENT follows it, one per director whose link went
+    # out (spec §5). Filtered here rather than added to the expectation: this
+    # test is about which STATUS events a first send does or does not write.
+    assert [e["action_type"] for e in logged
+            if e["action_type"] != "CLIENT_APPROVAL_LINK_SENT"] == ["EMAIL_SENT"]
 
 
 def test_send_404s_on_an_unknown_case(client):

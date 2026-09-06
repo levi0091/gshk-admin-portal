@@ -364,7 +364,7 @@ def test_manual_sign_refuses_a_case_whose_submission_is_already_recorded(client)
 def test_manual_submit_records_the_receipt_and_completes_the_case(client):
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.nar1_cases.claim_manual_submission",
                return_value={"id": "c1"}) as spy, \
          patch("routers.cases.nar1_cases.composite",
@@ -389,7 +389,7 @@ def test_manual_submit_writes_nothing_to_the_filing_ledger(client):
     never saw is not a CR fact."""
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.nar1_cases.claim_manual_submission",
                return_value={"id": "c1"}), \
          patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
@@ -407,7 +407,7 @@ def test_manual_submit_never_calls_cr(client):
     deposit account for a filing already made on paper."""
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.nar1_cases.claim_manual_submission",
                return_value={"id": "c1"}), \
          patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
@@ -424,7 +424,7 @@ def test_manual_submit_never_calls_cr(client):
 def test_manual_submit_rejects_an_incomplete_receipt_with_every_problem(client):
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.nar1_cases.claim_manual_submission") as spy:
         response = client.post("/cases/c1/manual-submit", headers=H,
                                json={"receipt": {"caseNo": "1"}})
@@ -474,7 +474,7 @@ def test_manual_submit_is_idempotent_on_a_completed_case(client):
     """A double-clicked "Verify receipt" must not write a second completion."""
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1",
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
                              "manual_receipt": full_receipt()}), \
          patch("routers.cases.nar1_cases.update_case") as spy:
         response = client.post("/cases/c1/manual-submit", headers=H,
@@ -491,7 +491,7 @@ def test_manual_submit_is_idempotent_on_a_completed_case(client):
 def test_manual_submit_refuses_while_the_e_sign_path_is_live_or_done(client, stage):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.nar1_cases.blocking_filing",
                return_value={"stage": stage}), \
          patch("routers.cases.nar1_cases.update_case") as spy:
@@ -518,7 +518,7 @@ def test_manual_submit_audits_the_receipt_and_the_completion(client):
 
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.nar1_cases.claim_manual_submission",
                return_value={"id": "c1"}), \
          patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
@@ -578,7 +578,7 @@ def test_a_manual_submit_really_drives_the_case_to_completed(client):
     Supabase double, so it would catch a manual receipt written to the wrong
     column or a badge that never reaches Completed.
     """
-    stored: dict = {"id": "c1", "manual_signed_document_id": "d1",
+    stored: dict = {"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
                     "manual_receipt": None, "client_approved": None}
 
     case_table = MagicMock()
@@ -628,7 +628,7 @@ def test_the_router_really_calls_the_validator_not_a_copy_of_it(client):
     come from nar1_cases.validate_receipt itself."""
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.nar1_cases.validate_receipt",
                return_value=["sentinel: injected by the test"]):
         response = client.post("/cases/c1/manual-submit", headers=H,
@@ -654,7 +654,7 @@ def test_an_audit_failure_does_not_undo_a_recorded_submission():
     try:
         with TestClient(app) as fresh, _super(), _no_filing(), \
              patch("routers.cases.nar1_cases.get_case",
-                   return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+                   return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
              patch("routers.cases.nar1_cases.claim_manual_submission",
                    return_value={"id": "c1"}), \
              patch("routers.cases.nar1_cases.composite",
@@ -776,6 +776,12 @@ def test_a_case_completed_off_portal_cannot_then_be_signed_at_cr(client):
             "/cases/c1/manual-sign", headers=H,
             files={"file": ("nar1.pdf", b"%PDF-1.4 scan", "application/pdf")},
         ).status_code == 201
+        # Spec §4: the submission cannot be declared complete on typed figures
+        # alone, so the CR receipt scan is now part of this path end to end.
+        assert client.post(
+            "/cases/c1/manual-receipt", headers=H,
+            files={"file": ("receipt.pdf", b"%PDF-1.4 receipt", "application/pdf")},
+        ).status_code == 201
         assert client.post("/cases/c1/manual-submit", headers=H,
                            json={"receipt": full_receipt()}).status_code == 200
         response = client.post("/tpsi/filings/f1/sign", headers=H, json={})
@@ -790,7 +796,7 @@ def test_a_case_completed_off_portal_cannot_then_be_submitted_to_cr(client):
     """The chargeable, irreversible one — and the worst case: the filing is
     already `signed`, so every condition _check_gate knows about passes."""
     case = {"id": "c1", "case_no": "NAR-2026-0007", "entity_id": "e1",
-            "manual_receipt": full_receipt(), "manual_signed_document_id": "d1",
+            "manual_receipt": full_receipt(), "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
             "manual_submitted_at": "2026-08-18T02:00:00+00:00"}
     filing = {"id": "f1", "nar1_case_id": "c1", "entity_id": "e1",
               "form_code": "Nar1", "stage": tpsi_filings.STAGE_SIGNED,
@@ -876,7 +882,7 @@ def test_a_first_upload_records_version_one_not_none(client):
 def test_the_composite_case_reports_which_version_is_the_evidence():
     """A reviewer resolving the signed form needs (document_id, version) —
     document_versions is keyed on exactly that pair."""
-    case = {"id": "c1", "manual_signed_document_id": "d1",
+    case = {"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
             "manual_signed_document_version": 2, "manual_receipt": None}
     with patch("services.nar1_cases.get_case", return_value=case), \
          patch("services.nar1_cases.current_filing", return_value=None):
@@ -916,7 +922,7 @@ def test_a_malformed_payment_line_reaches_the_caller_as_a_400(client):
     between it and the response turns the refusal back into a 500."""
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}):
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}):
         response = client.post(
             "/cases/c1/manual-submit", headers=H,
             json={"receipt": full_receipt(paymentRcptList=["RC1"])},
@@ -970,7 +976,7 @@ def test_the_smuggled_secret_never_reaches_the_audit_trail(client):
 
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1"}), \
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1"}), \
          patch("routers.cases.log_event", side_effect=fake_log):
         response = client.post(
             "/cases/c1/manual-submit", headers=H,
@@ -1098,7 +1104,7 @@ def test_a_second_concurrent_submission_409s_and_writes_no_second_audit_row(clie
 
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1",
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
                              "manual_receipt": None}), \
          patch("routers.cases.nar1_cases.claim_manual_submission",
                return_value=None), \
@@ -1117,7 +1123,7 @@ def test_the_submission_never_uses_the_unconditional_update(client):
     is the only thing that would say so."""
     with _super(), _no_filing(), \
          patch("routers.cases.nar1_cases.get_case",
-               return_value={"id": "c1", "manual_signed_document_id": "d1",
+               return_value={"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
                              "manual_receipt": None}), \
          patch("routers.cases.nar1_cases.claim_manual_submission",
                return_value={"id": "c1"}), \

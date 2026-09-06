@@ -270,12 +270,40 @@ def collapse_uniform_kv(value):
     return value
 
 
-def audit_context(event_code, key_code, label_by_code, name_by_vp_key):
-    """The context every audit row carries, whatever its source: the generic
-    action name (never the per-record description) and the subject's name."""
+#: Viewpoint subject kind -> the G-FlowDesk module it belongs to. Only two,
+#: and that is not an omission: Viewpoint has no NAR1 case workflow and no CR
+#: e-Filing transport, so an imported row is never labelled post_incorporation
+#: or cr_filing. Mirrors services/audit_subject._MODULE_FOR_KIND, which is the
+#: same rule the native side applies — the module follows the subject, which is
+#: why a document has none of its own. A NULL module renders as a dash, which
+#: is the truth about a system that did not record one.
+_MODULE_FOR_KIND = {"company": "body_corporate", "person": "natural_person"}
+
+
+def audit_context(event_code, key_code, label_by_code, subject_by_vp_key):
+    """The context every audit row carries, whatever its source.
+
+    The generic action name (never the per-record description), and WHICH RECORD
+    the event is about — its kind, its id, its name and the reference a human
+    quotes. `source_keycode` on its own is a Viewpoint RefCode, which is exactly
+    what the trail used to print when the subject did not resolve.
+
+    `subject_by_vp_key` accepts either the rich mapping built by
+    `run_checkpoint_c._subjects` or a plain RefCode -> name dict, so a caller
+    that only has names still produces a valid (if barer) row.
+    """
+    subject = (subject_by_vp_key or {}).get(key_code)
+    if isinstance(subject, str):
+        subject = {"name": subject}
+    subject = subject or {}
+    kind = subject.get("kind")
     return {
         "action_label": (label_by_code or {}).get(event_code),
-        "company_name": (name_by_vp_key or {}).get(key_code),
+        "company_name": subject.get("name"),
+        "subject_kind": kind,
+        "subject_id": subject.get("id"),
+        "subject_ref": subject.get("ref"),
+        "module": _MODULE_FOR_KIND.get(kind),
     }
 
 
@@ -284,7 +312,7 @@ def transform_event_log_row(
     entity_id_by_vp_key: dict[str, str],
     uname_by_ucode: dict[str, str],
     label_by_code: dict[str, str] | None = None,
-    name_by_vp_key: dict[str, str] | None = None,
+    subject_by_vp_key: dict | None = None,
     field_labels: dict[str, str] | None = None,
     address_labels: dict[str, str] | None = None,
 ) -> dict:
@@ -319,7 +347,7 @@ def transform_event_log_row(
     after_state = {c["field"]: c["new"] for c in changes if c["new"]} or None
 
     return {
-        **audit_context(event_code, key_code, label_by_code, name_by_vp_key),
+        **audit_context(event_code, key_code, label_by_code, subject_by_vp_key),
         "changed_fields": changes or None,
         "vp_source_key": vp_key,
         "created_at": date_event if date_event is not None else _MISSING_DATE_SENTINEL,
@@ -348,7 +376,7 @@ def transform_ref_status_row(
     entity_id_by_vp_key: dict[str, str],
     uname_by_ucode: dict[str, str],
     label_by_code: dict[str, str] | None = None,
-    name_by_vp_key: dict[str, str] | None = None,
+    subject_by_vp_key: dict | None = None,
 ) -> dict:
     """VP RefStatus row -> audit_log insert dict (singular). No drops.
     audit_log is insert-only (PBI-11): loaded via insert_rows_ignore_conflicts,
@@ -369,7 +397,7 @@ def transform_ref_status_row(
     changes = status_change(row.get("OldStat"), row.get("NewStat"))
 
     return {
-        **audit_context("STATUS", ref_code, label_by_code, name_by_vp_key),
+        **audit_context("STATUS", ref_code, label_by_code, subject_by_vp_key),
         "vp_source_key": vp_key,
         "event_code": "STATUS",
         "changed_fields": changes or None,

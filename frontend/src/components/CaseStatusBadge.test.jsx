@@ -10,7 +10,7 @@ import {
 // first — a code with no label renders as its raw snake_case at a user.
 const WORKFLOW_CODES = [
   'data_verification', 'client_verification', 'awaiting_client',
-  'client_rejected', 'signing', 'submission', 'completed',
+  'client_rejected', 'signing', 'submission', 'completed', 'closed',
 ]
 const FORM_CODES = [
   'draft', 'validated', 'validation_failed', 'signed', 'signing_failed',
@@ -18,11 +18,23 @@ const FORM_CODES = [
 ]
 
 describe('WorkflowBadge', () => {
-  it('labels every one of the seven workflow statuses', () => {
+  it('labels every one of the eight workflow statuses', () => {
     for (const code of WORKFLOW_CODES) {
       expect(WORKFLOW_LABEL[code], `no label for ${code}`).toBeTruthy()
       expect(WORKFLOW_CLASS[code], `no class for ${code}`).toBeTruthy()
     }
+    // And nothing extra: a map entry with no code behind it is a status the
+    // backend cannot send, which means the maps and
+    // `nar1_case_status.WORKFLOW_STATUSES` have drifted.
+    expect(Object.keys(WORKFLOW_LABEL).sort()).toEqual([...WORKFLOW_CODES].sort())
+    expect(Object.keys(WORKFLOW_CLASS).sort()).toEqual([...WORKFLOW_CODES].sort())
+  })
+
+  it('does not dress a closed case in the colour of a filed one', () => {
+    // Both are finished; only one was filed. Reading them as the same thing at
+    // a glance is the one mistake this badge must not invite (Levi 2026-09-05).
+    expect(WORKFLOW_CLASS.closed).not.toBe(WORKFLOW_CLASS.completed)
+    expect(WORKFLOW_LABEL.closed).toBe('Closed')
   })
 
   it('renders the label, not the raw code', () => {

@@ -1,8 +1,5 @@
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
-import { describeError } from './workflow.js'
 
 /** The receipt fields worth showing, in the order CR prints them. */
 const RECEIPT_ROWS = [
@@ -25,31 +22,37 @@ const RECEIPT_ROWS = [
  * same way here on purpose: what the register holds does not depend on which
  * route got it there.
  *
- * "Check CR status" asks CR what it now holds. It is a read — free, no charge —
- * so it is safe to press whenever, which is why the Confirmation stage does not
- * dead-end at the receipt.
+ * IT ENDS AT THE RECEIPT, ON PURPOSE (Levi 2026-09-02: "the receipt should
+ * have already been there and upon completion there should be no further
+ * updates").
+ *
+ * There used to be a "What CR holds now" card here with a Check CR status
+ * button. It was removed because it could not do the job its own copy claimed:
+ *
+ *   * NOTHING PERSISTED. The result lived in `useState` and was gone on the
+ *     next reload, so it answered a question and then forgot the answer.
+ *   * NOTHING EVER REACHES `registered`. No code path writes that stage — it
+ *     is in the vocabulary and unreachable — so the reply could never change
+ *     what this screen showed.
+ *   * THE CASE IS ALREADY DONE. `nar1_case_status._FINISHED` counts
+ *     `submitted` as finished, so the case reads Completed from the moment the
+ *     receipt exists. There was no state left to advance.
+ *
+ * And it was not free of consequence: it spent a CR AUTHENTICATION on every
+ * press, and repeated CR auth failures lock the account.
  */
-export default function StageConfirmation({ caseRow, canRead, onError, onGo }) {
-  const [rows, setRows] = useState(null)
-  const [busy, setBusy] = useState(false)
+// `canRead` and `onError` are gone with the CR status check — this screen
+// makes no request now, so it has nothing to be permitted for and nothing to
+// report. The parent still passes them; extra props are harmless and leaving
+// the call sites alone keeps this change to one file.
+export default function StageConfirmation({ caseRow, onGo }) {
   const navigate = useNavigate()
 
   const receipt = caseRow.receipt || null
-  const caseNo = receipt?.caseNo
+  // `registered` is still read, and still never true today: no code path writes
+  // that stage. Kept because it is CR's own vocabulary and a future docStatus
+  // poller would set it — but nothing on this screen waits for it any more.
   const registered = caseRow.form_status?.code === 'registered'
-
-  async function checkStatus() {
-    onError(null); setBusy(true)
-    try {
-      const result = await api.get(
-        `/tpsi/doc-status?case_no=${encodeURIComponent(caseNo)}`)
-      setRows(result?.rows || result || [])
-    } catch (e) {
-      onError(describeError(e))
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return (
     <>
@@ -74,8 +77,8 @@ export default function StageConfirmation({ caseRow, canRead, onError, onGo }) {
                     The case is now marked <b>Completed</b>.</>
                 : <>The return
                     {caseRow.company_name ? <> for <b>{caseRow.company_name}</b></> : null}
-                    {' '}has been delivered. Check the CR document status below to
-                    confirm the Registry has registered it.</>}
+                    {' '}has been delivered and the Companies Registry issued the
+                    receipt below. The case is now marked <b>Completed</b>.</>}
             </div>
           </div>
         </div>
@@ -141,60 +144,6 @@ export default function StageConfirmation({ caseRow, canRead, onError, onGo }) {
         {caseRow.manual_submitted_at && (
           <div className="f-hint" style={{ marginTop: 12 }}>
             Recorded {formatDateTime(caseRow.manual_submitted_at)}.
-          </div>
-        )}
-      </div>
-
-      <div className="card mb-16">
-        <div className="card-hdr">
-          <div>
-            <div className="card-title">What CR holds now</div>
-            <div className="card-sub">
-              Asks the Companies Registry for the current status of this filing.
-              A read — nothing is charged.
-            </div>
-          </div>
-        </div>
-
-        {rows === null ? (
-          <div className="empty-state" style={{ padding: 16 }}>
-            {caseNo ? 'Not checked yet.' : 'A case number is needed to check with CR.'}
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="empty-state" style={{ padding: 16 }}>
-            CR returned no rows for this case number.
-          </div>
-        ) : (
-          <div className="tbl-wrap">
-            <table>
-              <thead>
-                <tr><th>Document</th><th>Status</th><th>Submitted</th></tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i}>
-                    <td>{r.documentName || r.docShtFrm || '—'}</td>
-                    <td><span className="td-primary">{r.documentStatus || '—'}</span></td>
-                    <td><span className="td-muted">{r.submissionDate || '—'}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {canRead && caseNo && (
-          <div className="action-bar">
-            <div className="ab-note">
-              Queries CR by the receipt's case number. A read — free, and it
-              works outside the Mon–Fri 10:00–16:00 filing window.
-            </div>
-            <div className="ab-actions">
-              <span className="perm-tag">Requires <b>tpsi:read</b></span>
-              <button className="btn btn-outline" disabled={busy} onClick={checkStatus}>
-                {busy ? 'Asking CR…' : 'Check CR status'}
-              </button>
-            </div>
           </div>
         )}
       </div>

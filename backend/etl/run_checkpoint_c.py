@@ -36,17 +36,46 @@ def _audit_labels(sb_engine) -> dict[str, str]:
         return {r[0]: r[1] for r in rows}
 
 
-def _subject_names(sb_engine) -> dict[str, str]:
-    """Viewpoint RefCode -> the company or person the event is about."""
-    names: dict[str, str] = {}
+def _subjects(sb_engine) -> dict[str, dict]:
+    """Viewpoint RefCode -> WHICH RECORD the event is about.
+
+    A RefCode resolves to an entity OR a person, and resolving it against
+    `entities` alone is what left every person-scoped Viewpoint event printing a
+    raw key nobody can read. Each subject carries the four things the trail
+    shows: kind, id (so the cell links), name, and the reference a human quotes
+    — a BRN for a company, the primary identity document for a person.
+
+    Entities are loaded first and `setdefault` keeps them, matching the previous
+    behaviour for the handful of RefCodes both tables claim.
+    """
+    subjects: dict[str, dict] = {}
     with sb_engine.connect() as conn:
-        for sql in (
-            "SELECT vp_source_key, company_name FROM entities WHERE vp_source_key IS NOT NULL",
-            "SELECT vp_source_key, full_name FROM persons WHERE vp_source_key IS NOT NULL",
-        ):
-            for key, name in conn.execute(text(sql)):
-                names.setdefault(key, name)
-    return names
+        for key, ident, name, ref in conn.execute(text(
+            "SELECT vp_source_key, id, company_name, br_number FROM entities "
+            "WHERE vp_source_key IS NOT NULL"
+        )):
+            subjects.setdefault(key, {"kind": "company", "id": str(ident),
+                                      "name": name, "ref": ref})
+
+        # The primary identity document, ordered exactly like `person_registry`'s
+        # lateral join (migration 009), so the trail quotes the same document the
+        # Natural Person Registry screen shows.
+        id_numbers = {
+            str(person_id): number
+            for person_id, number in conn.execute(text(
+                "SELECT DISTINCT ON (person_id) person_id, id_number "
+                "FROM person_identity_documents "
+                "ORDER BY person_id, is_primary DESC, created_at ASC"
+            ))
+        }
+        for key, ident, name in conn.execute(text(
+            "SELECT vp_source_key, id, full_name FROM persons "
+            "WHERE vp_source_key IS NOT NULL"
+        )):
+            subjects.setdefault(key, {"kind": "person", "id": str(ident),
+                                      "name": name,
+                                      "ref": id_numbers.get(str(ident))})
+    return subjects
 
 
 def _field_labels(sb_engine) -> dict[str, str]:
@@ -103,7 +132,7 @@ def run(dry_run: bool) -> ReconciliationReport:
     # name from the event-type registry and the subject's name, so an imported
     # row reads exactly like a native G-FlowDesk one.
     label_by_code = _audit_labels(sb_engine)
-    name_by_vp_key = _subject_names(sb_engine)
+    subject_by_vp_key = _subjects(sb_engine)
     field_labels = _field_labels(sb_engine)
     address_labels = _address_labels(sb_engine)
 
@@ -164,14 +193,14 @@ def run(dry_run: bool) -> ReconciliationReport:
     vp_events = extract_event_log(vp_engine)
     audit_rows = [
         transform_event_log_row(r, entity_id_by_vp_key, uname_by_ucode,
-                                label_by_code, name_by_vp_key,
+                                label_by_code, subject_by_vp_key,
                                 field_labels, address_labels)
         for r in vp_events
     ]
     vp_ref_status = extract_ref_status(vp_engine)
     audit_rows += [
         transform_ref_status_row(r, entity_id_by_vp_key, uname_by_ucode,
-                                 label_by_code, name_by_vp_key)
+                                 label_by_code, subject_by_vp_key)
         for r in vp_ref_status
     ]
     inserted = load_audit_log(sb_engine, audit_rows, dry_run=dry_run)

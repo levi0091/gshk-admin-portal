@@ -23,6 +23,10 @@ const ACTION_LABELS = {
   TPSI_SUBMISSION_SUCCESS: 'TPSI submission succeeded',
   TPSI_SUBMISSION_FAILED: 'TPSI submission failed',
   CLIENT_APPROVAL_RECEIVED: 'Client approval received',
+  NAR1_MANUAL_SIGN_UPLOADED: 'Wet-signed NAR1 uploaded',
+  NAR1_MANUAL_RECEIPT_ENTERED: 'Off-portal CR receipt recorded',
+  NAR1_MANUAL_SUBMISSION_RECORDED: 'Off-portal filing recorded',
+  NAR1_CASE_CLOSED: 'Case closed',
   USER_LOGIN: 'User signed in',
   USER_DEACTIVATED: 'User deactivated',
 }

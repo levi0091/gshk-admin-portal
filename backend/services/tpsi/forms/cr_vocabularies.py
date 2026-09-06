@@ -35,6 +35,7 @@ WHY A COMMITTED TABLE AND NOT AN ISO LIBRARY
 
     GG -> GBR1, JE -> GBR2, IM -> GBR3. Never GBR.
 """
+import re
 
 #: (CR code, CR English description, ISO 3166-1 alpha-2). Verbatim from the
 #: "Country & Region" sheet; the Chinese description column is not used because
@@ -319,6 +320,61 @@ _ALIASES: dict[str, str] = {
 }
 
 
+#: Viewpoint's SUB-NATIONAL and renamed country codes -> the ISO alpha-2 of the
+#: country CR actually files them as.
+#:
+#: WHY THIS IS SEPARATE FROM `_ALIASES`. An alias makes `resolve_country`
+#: accept a spelling. These must NOT be accepted: `address_service.validate`
+#: and the Open case gate both refuse a country CR has no code for, and that
+#: refusal is the thing standing between an operator and a rejected filing they
+#: have already paid for. This table is for CORRECTING STORED DATA — a
+#: migration and the ETL rewrite the value on the way in, so the column ends up
+#: holding what the rest of the book holds and the dropdown can select it.
+#:
+#: THIS REVERSES "left for a human" (Levi 2026-09-03).
+#: `backfill_cr_form_fields.normalise_country_columns` used to leave these
+#: alone on the grounds that 'HK-CH' "is not a spelling of anything ... it
+#: needs a human to re-pick it, not a guess from here". That was right about
+#: guessing and wrong about what these are. None of them is a guess: every key
+#: is a Viewpoint code whose own label names a place that sits inside exactly
+#: one row of CR's Country & Region sheet, and the cost of waiting for a human
+#: was a NAR1 stuck at Data Verification with nothing on the profile looking
+#: wrong. Anything genuinely ambiguous is still left alone — it simply is not
+#: in this table.
+#:
+#: Each entry, and why it is the only answer CR allows:
+#:   HK-CH MO-CH TW-CH  Viewpoint's Chinese-labelled twins of HK / MO / TW.
+#:                      香港 IS Hong Kong; the codes are two spellings of one
+#:                      place and the English one is what 826 other addresses
+#:                      already hold.
+#:   GB-ENG SCT WLS NIR CR carries UNITED KINGDOM and no constituent country.
+#:   GB-EAW             "England & Wales" — a legal jurisdiction, not a place
+#:                      CR has a code for. Same parent.
+#:   GB-ALD GB-SAR      Alderney and Sark are in the Bailiwick of GUERNSEY,
+#:                      which CR carries as GBR1 — deliberately NOT GBR, which
+#:                      is a different CR code for a different jurisdiction.
+#:   MY-15              Labuan is a Malaysian federal territory.
+#:   ZR                 Zaire was renamed in 1997. Its successor is the
+#:                      DEMOCRATIC REPUBLIC OF THE CONGO (CD/COD) — NOT
+#:                      'CONGO' (CG/COG), which is the other country entirely.
+#:   US-*               CR carries UNITED STATES and no states.
+#:
+#: These are ISO alpha-2 targets, not CR codes, because alpha-2 is what
+#: `addresses.country`, `entities.incorporation_place` and
+#: `person_identity_documents.issuing_country` store and what the dropdowns are
+#: keyed by. `_build` checks every target resolves.
+VIEWPOINT_SUBDIVISIONS: dict[str, str] = {
+    "HK-CH": "HK", "MO-CH": "MO", "TW-CH": "TW",
+    "GB-ALD": "GG", "GB-SAR": "GG",
+    "GB-EAW": "GB", "GB-ENG": "GB", "GB-NIR": "GB",
+    "GB-SCT": "GB", "GB-WLS": "GB",
+    "MY-15": "MY",
+    "ZR": "CD",
+    "US-CA": "US", "US-CT": "US", "US-DE": "US", "US-FL": "US",
+    "US-NV": "US", "US-NY": "US", "US-UT": "US", "US-WY": "US",
+}
+
+
 def _normalise(value: str) -> str:
     """Case, spacing and punctuation folded away.
 
@@ -362,6 +418,21 @@ def _build() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
                 f"cr_vocabularies: alias {alias!r} points at {code!r}, which is "
                 "not a code CR's Country & Region sheet carries"
             )
+    # Same guard for the subdivision table, and for the same reason: a typo in
+    # a parent alpha-2 would rewrite stored addresses to a value CR refuses,
+    # which is worse than the unfilable code it replaced — the operator would
+    # have no reason to look at it again. Caught at import.
+    for source, alpha2 in VIEWPOINT_SUBDIVISIONS.items():
+        if alpha2 not in by_alpha2:
+            raise ValueError(
+                f"cr_vocabularies: {source!r} maps to alpha-2 {alpha2!r}, which "
+                "is not on CR's Country & Region sheet"
+            )
+        if source.upper() in by_alpha2 or source.upper() in codes:
+            raise ValueError(
+                f"cr_vocabularies: {source!r} is itself a code CR carries — it "
+                "must not be rewritten"
+            )
     return codes, by_alpha2, by_description
 
 
@@ -370,6 +441,83 @@ CR_COUNTRY_CODES, _BY_ALPHA2, _BY_DESCRIPTION = _build()
 #: alpha-2 -> CR code, the form G-FlowDesk actually stores. Public because that
 #: is the mapping the review asked to be able to assert over.
 ALPHA2_TO_CR_CODE: dict[str, str] = dict(_BY_ALPHA2)
+
+#: The inverse, for `to_alpha2`. Structural, from the same rows, so the two
+#: directions cannot disagree.
+_CR_CODE_TO_ALPHA2: dict[str, str] = {
+    cr_code: alpha2 for cr_code, _, alpha2 in _COUNTRY_ROWS
+}
+
+
+def to_alpha2(value: str | None) -> str | None:
+    """Anything CR can resolve -> the ISO alpha-2 G-FlowDesk stores.
+
+    "Hong Kong", "HKG" and "hk" all become "HK". None when CR has no code,
+    so a caller can tell "needs normalising" from "is not a country".
+
+    This exists because the profile dropdowns are keyed by alpha-2 (that is
+    what `addresses.country` holds), while 251 `incorporation_place` rows held
+    the literal "Hong Kong". Both resolve for filing; only one matches a
+    dropdown option, and the other rendered as "Hong Kong (not in list)".
+    """
+    cr_code = resolve_country(value)
+    return _CR_CODE_TO_ALPHA2.get(cr_code) if cr_code else None
+
+
+def canonical_country(value: str | None) -> str | None:
+    """The alpha-2 this country should be STORED as, or None to leave it alone.
+
+    Two jobs in one answer, because a caller fixing a column wants both:
+
+      "Hong Kong" -> "HK"    already filable, but not what a dropdown keyed by
+                             alpha-2 can select
+      "HK-CH"     -> "HK"    not filable at all, and the reason a NAR1 dies at
+                             Data Verification
+
+    None means LEAVE IT: either it is already the right alpha-2, or CR has no
+    code for it and this table has no justified parent — in which case a human
+    really does have to re-pick it, and `registry_reconciliation` lists it.
+    """
+    if not value:
+        return None
+    current = value.strip()
+    if not current:
+        return None
+    target = VIEWPOINT_SUBDIVISIONS.get(current.upper()) or to_alpha2(current)
+    return target if target and target != current else None
+
+
+def _readable(description: str) -> str:
+    """CR's UPPERCASE description, title-cased for a dropdown.
+
+    Cosmetic only -- the CODE is what is stored and what CR validates, so no
+    filing depends on this. `str.title()` alone is wrong: it capitalises the
+    letter after an apostrophe, turning "LAO PEOPLE'S DEMOCRATIC REPUBLIC"
+    into "Lao People'S Democratic Republic".
+    """
+    out, prev_is_alpha = [], False
+    for ch in description.lower():
+        out.append(ch.upper() if ch.isalpha() and not prev_is_alpha else ch)
+        prev_is_alpha = ch.isalpha() or ch == "'"
+    return "".join(out)
+
+
+#: The country dropdown, as the profile screens must render it: CR's own 250
+#: rows, keyed by the ISO alpha-2 that `addresses.country` actually stores,
+#: labelled in readable English, ordered the way someone scans a list.
+#:
+#: WHY THIS EXISTS. The address form fed on `lookup_values.country` -- 270
+#: Viewpoint rows, 20 of which CR has no code for, three labelled only in
+#: Chinese. Picking the Chinese Hong Kong stored 'HK-CH' and the return died
+#: at Data Verification. `lookup_values` is the wrong owner for a field CR
+#: validates; this is the right one.
+COUNTRY_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        ((alpha2, _readable(description))
+         for _, description, alpha2 in _COUNTRY_ROWS),
+        key=lambda option: option[1],
+    )
+)
 
 
 def resolve_country(value: str | None) -> str | None:
@@ -461,6 +609,226 @@ def resolve_district(value: str | None) -> str | None:
     return key if key in DISTRICT_CODES else None
 
 
+# ---------------------------------------------------------------------------
+# Display names — what a HUMAN reads, never what is filed
+#
+# CR takes a code and PRINTS a name. Its own Form NAR1 shows "Central" in
+# section 6 and "Sweden" in a director's Country/Region, while the XML that
+# produced it carries "CENTRAL" and "SWE". Rendering the code onto the printed
+# form is what made every generated return read in block capitals where GSHK's
+# own specimen reads in words.
+#
+# These are for RENDERING ONLY. Nothing here may ever reach `_address`,
+# `nar1_mapper`, or a lookup the operator picks from: the code is what CR
+# accepts, and a second name->code path is exactly the drift `resolve_district`
+# refuses to carry. The mapping is one-way on purpose.
+# ---------------------------------------------------------------------------
+
+#: District code -> the name CR prints for it. Spelled out rather than derived,
+#: because the code is the name with its separators removed and that is not
+#: reversible: "WANCHAI" is "Wan Chai", "MAONSHAN" is "Ma On Shan", and no
+#: rule recovers the word breaks. `test_cr_vocabularies` asserts that this
+#: covers DISTRICT_CODES exactly and that `_district_key` of every name
+#: reproduces its key, so a typo here cannot silently invent a district.
+DISTRICT_NAMES: dict[str, str] = {
+    "ABERDEEN": "Aberdeen",
+    "ADMIRALTY": "Admiralty",
+    "APLEICHAU": "Ap Lei Chau",
+    "BEACONHILL": "Beacon Hill",
+    "BRAEMARHILL": "Braemar Hill",
+    "CAUSEWAYBAY": "Causeway Bay",
+    "CENTRAL": "Central",
+    "CHAIWAN": "Chai Wan",
+    "CHEUNGCHAU": "Cheung Chau",
+    "CHEUNGMUKTAU": "Cheung Muk Tau",
+    "CHEUNGSHAWAN": "Cheung Sha Wan",
+    "CHUNGHOMKOK": "Chung Hom Kok",
+    "CLEARWATERBAY": "Clear Water Bay",
+    "DIAMONDHILL": "Diamond Hill",
+    "FANLING": "Fanling",
+    "FOTAN": "Fo Tan",
+    "HANGHAU": "Hang Hau",
+    "HAPPYVALLEY": "Happy Valley",
+    "HATSUEN": "Ha Tsuen",
+    "HOMANTIN": "Ho Man Tin",
+    "HUNGHOM": "Hung Hom",
+    "HUNGSHUIKIU": "Hung Shui Kiu",
+    "JARDINESLOOKOUT": "Jardine's Lookout",
+    "JORDANVALLEY": "Jordan Valley",
+    "KAITAK": "Kai Tak",
+    "KAMTIN": "Kam Tin",
+    "KEILINGHA": "Kei Ling Ha",
+    "KENNEDYTOWN": "Kennedy Town",
+    "KINGSPARK": "King's Park",
+    "KOWLOONBAY": "Kowloon Bay",
+    "KOWLOONCITY": "Kowloon City",
+    "KOWLOONTONG": "Kowloon Tong",
+    "KWAICHUNG": "Kwai Chung",
+    "KWUNTONG": "Kwun Tong",
+    "LAICHIKOK": "Lai Chi Kok",
+    "LAMMAISLAND": "Lamma Island",
+    "LAMTEI": "Lam Tei",
+    "LAMTIN": "Lam Tin",
+    "LANTAUISLAND": "Lantau Island",
+    "LAUFAUSHAN": "Lau Fau Shan",
+    "LOKFU": "Lok Fu",
+    "LOKMACHAU": "Lok Ma Chau",
+    "LUENWOHUI": "Luen Wo Hui",
+    "LUKKENG": "Luk Keng",
+    "MALIUSHUI": "Ma Liu Shui",
+    "MAONSHAN": "Ma On Shan",
+    "MATAUKOK": "Ma Tau Kok",
+    "MATAUWAI": "Ma Tau Wai",
+    "MAWAN": "Ma Wan",
+    "MAYAUTONG": "Ma Yau Tong",
+    "MEIFOO": "Mei Foo",
+    "MIDLEVELS": "Mid-Levels",
+    "MONGKOK": "Mong Kok",
+    "NGAUCHIWAN": "Ngau Chi Wan",
+    "NGAUTAUKOK": "Ngau Tau Kok",
+    "NORTHPOINT": "North Point",
+    "PATHEUNG": "Pat Heung",
+    "PEAK": "Peak",
+    "PENGCHAU": "Peng Chau",
+    "PINGSHEK": "Ping Shek",
+    "POKFULAM": "Pok Fu Lam",
+    "QUARRYBAY": "Quarry Bay",
+    "REPULSEBAY": "Repulse Bay",
+    "SAIKUNG": "Sai Kung",
+    "SAIWANHO": "Sai Wan Ho",
+    "SAIYINGPUN": "Sai Ying Pun",
+    "SANPOKONG": "San Po Kong",
+    "SANTIN": "San Tin",
+    "SAUMAUPING": "Sau Mau Ping",
+    "SHAMSHUIPO": "Sham Shui Po",
+    "SHAMTSENG": "Sham Tseng",
+    "SHATAUKOK": "Sha Tau Kok",
+    "SHATIN": "Sha Tin",
+    "SHAUKEIWAN": "Shau Kei Wan",
+    "SHEKKIPMEI": "Shek Kip Mei",
+    "SHEKKONG": "Shek Kong",
+    "SHEKO": "Shek O",
+    "SHEKTONGTSUI": "Shek Tong Tsui",
+    "SHEKWUHUI": "Shek Wu Hui",
+    "SHEUNGKWAICHUNG": "Sheung Kwai Chung",
+    "SHEUNGSHUI": "Sheung Shui",
+    "SHEUNGWAN": "Sheung Wan",
+    "SHOUSONHILL": "Shouson Hill",
+    "SHUENWAN": "Shuen Wan",
+    "SIUSAIWAN": "Siu Sai Wan",
+    "SOKONPO": "So Kon Po",
+    "SOKWUNWAT": "So Kwun Wat",
+    "STANLEY": "Stanley",
+    "STONECUTTERSISLAND": "Stonecutters Island",
+    "SUNNYBAY": "Sunny Bay",
+    "TAIHANG": "Tai Hang",
+    "TAIKOKTSUI": "Tai Kok Tsui",
+    "TAILAMCHUNG": "Tai Lam Chung",
+    "TAIMEITUK": "Tai Mei Tuk",
+    "TAIMONGTSAI": "Tai Mong Tsai",
+    "TAIPO": "Tai Po",
+    "TAIPOKAU": "Tai Po Kau",
+    "TAIPOMARKET": "Tai Po Market",
+    "TAITAM": "Tai Tam",
+    "TAIWAI": "Tai Wai",
+    "TAIWOPING": "Tai Wo Ping",
+    "TINGKAU": "Ting Kau",
+    "TINHAU": "Tin Hau",
+    "TINSHUIWAI": "Tin Shui Wai",
+    "TIUKENGLENG": "Tiu Keng Leng",
+    "TOKWAWAN": "To Kwa Wan",
+    "TSEUNGKWANO": "Tseung Kwan O",
+    "TSIMSHATSUI": "Tsim Sha Tsui",
+    "TSINGLUNGTAU": "Tsing Lung Tau",
+    "TSINGYI": "Tsing Yi",
+    "TSUENWAN": "Tsuen Wan",
+    "TSZWANSHAN": "Tsz Wan Shan",
+    "TUENMUN": "Tuen Mun",
+    "TUNGTAU": "Tung Tau",
+    "WANCHAI": "Wan Chai",
+    "WANGTAUHOM": "Wang Tau Hom",
+    "WESTKOWLOONCULTURALDISTRICT": "West Kowloon Cultural District",
+    "WONGCHUKHANG": "Wong Chuk Hang",
+    "WONGTAISIN": "Wong Tai Sin",
+    "WUKAISHA": "Wu Kai Sha",
+    "WUKAUTANG": "Wu Kau Tang",
+    "YAUMATEI": "Yau Ma Tei",
+    "YAUTONG": "Yau Tong",
+    "YAUYATTSUEN": "Yau Yat Tsuen",
+    "YUENLONG": "Yuen Long",
+}
+
+
+def display_district(value: str | None) -> str:
+    """A stored district -> the name CR prints, or the value unchanged.
+
+    Unchanged is the right fallback, not an error: outside Hong Kong this
+    column is free text (`"Stockholm 11859"`), and a renderer must never
+    discard a line of somebody's address because it is not on CR's list.
+    """
+    text = (value or "").strip()
+    return DISTRICT_NAMES.get(_district_key(text), text) if text else ""
+
+
+#: Words CR's country descriptions carry that do not take a capital in the
+#: middle of a name — "ANTIGUA AND BARBUDA" is printed "Antigua and Barbuda".
+_COUNTRY_LOWER_WORDS = frozenset({"and", "of", "the", "d", "da", "des", "du"})
+
+
+def _titlecase_word(word: str) -> str:
+    """One word of a country description, capitalised the way a name is.
+
+    Dotted initialisms stay as they are: CR writes "U.S. VIRGIN ISLANDS", and
+    `str.title()` would render that "U.S. Virgin Islands" only by accident and
+    "U.s." in general.
+
+    An apostrophe only starts a new capital when it follows a SINGLE letter --
+    the elision in "COTE D'IVOIRE" -- and not otherwise, because `str.title()`
+    turns CR's "LAO PEOPLE'S DEMOCRATIC REPUBLIC" into "People'S".
+    """
+    if re.fullmatch(r"(?:[A-Za-z]\.)+", word):
+        return word.upper()
+    out, capitalise, run = [], True, 0
+    for char in word:
+        if char.isalpha():
+            out.append(char.upper() if capitalise else char.lower())
+            capitalise = False
+            run += 1
+        elif char == "'":
+            out.append(char)
+            capitalise = run == 1
+            run = 0
+        else:
+            out.append(char)
+            capitalise = True
+            run = 0
+    return "".join(out)
+
+
+def display_country(value: str | None) -> str:
+    """A ctryRegion code -> the country name CR prints, or the value unchanged.
+
+    "SWE" becomes "Sweden" and "HKG" becomes "Hong Kong". A value CR has no
+    code for is returned as it stands: this runs on data already validated and
+    filed, so refusing here would blank a box on a return CR has accepted.
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    description = CR_COUNTRY_CODES.get(text.upper())
+    if description is None:
+        code = resolve_country(text)
+        description = CR_COUNTRY_CODES.get(code) if code else None
+    if description is None:
+        return text
+    words = [_titlecase_word(word) for word in description.split()]
+    return " ".join(
+        word if index == 0 or word.lower() not in _COUNTRY_LOWER_WORDS
+        else word.lower()
+        for index, word in enumerate(words)
+    )
+
+
 CAPACITY_INDIVIDUAL = frozenset({
     "Authorized Representative",
     "Director",
@@ -494,3 +862,235 @@ CAPACITY_BODY_CORPORATE = frozenset({
     "Authorized Person of the Director (Body Corporate)",
     "Authorized Person of the Company Secretary (Body Corporate)",
 })
+
+#: What a body-corporate signatory means in practice at GSHK (Levi 2026-08-31).
+#:
+#: Every real GSHK client has GSHK Ltd as its company secretary, and a GSHK
+#: director signs on that body corporate's behalf — so this one value fits the
+#: entire book. `scripts/nar1_regression.py` has assumed exactly this string
+#: since the regression was written; making it the default only stops the
+#: operator retyping the same answer on every case.
+#:
+#: It is a DEFAULT, not a constant: the picker still offers all 15 values and a
+#: stored choice always wins.
+DEFAULT_CAPACITY_BODY_CORPORATE = "Director of the Company Secretary (Body Corporate)"
+
+
+def default_capacity(*, is_corporate: bool) -> str | None:
+    """The capacity to assume when the operator has not chosen one.
+
+    Only for a body corporate. CR keeps two separate vocabularies, and an
+    individual signatory carrying a "(Body Corporate)" capacity is a
+    misstatement `_check_capacity` would rightly refuse — so an individual
+    gets no default and, as before, must be answered explicitly.
+    """
+    return DEFAULT_CAPACITY_BODY_CORPORATE if is_corporate else None
+
+
+# ---------------------------------------------------------------------------
+# Business Nature — sheet "Business Nature", 88 rows
+#
+# CR fills natureDesc in from the code itself after web-form validation, so the
+# description is never independently typed: the operator picks a code and the
+# description follows. Held here rather than in `lookup_values` for the reason
+# the district list is (see routers/lookups.py) — one owner per vocabulary, and
+# the owner is whatever decides whether a filing is accepted.
+#
+# Viewpoint holds NO business nature: BusNames.BusNature is empty on all 5,028
+# rows across all four of its business-name tables, and no %activit% / %sic% /
+# %industr% / %sector% column carries it either. So this vocabulary arrives
+# with no data behind it and every company's code is typed by hand.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# COMPANY TYPE (`coyType`)
+#
+# CR's worksheet documents only "P - Private, N - Public". `G` (limited by
+# guarantee) appears in CR's shipped NNC1G examples, and the standing rule is
+# that shipped XML outranks the worksheet — so all three are here.
+#
+# VIEWPOINT HAS NO MAPPING FOR THIS, and one was tested and rejected. A company
+# limited by guarantee has no share capital, so "no share capital => G" looks
+# sound; applied to the book it yields 5,711 P / 219 G, but those 219 have no
+# share classes AND no shareholdings — no ownership data at all — and only 5
+# carry a name suggesting a real guarantee company. The rule would have stamped
+# ~214 private companies as limited by guarantee on a statutory return.
+#
+# So `G` is never derived. It is only ever chosen by a human who knows.
+COMPANY_TYPE: tuple[tuple[str, str], ...] = (
+    ("P", "Private"),
+    ("N", "Public"),
+    ("G", "Limited by Guarantee"),
+)
+
+#: CR business nature code -> English description. Verbatim from the sheet.
+BUSINESS_NATURE: dict[str, str] = {
+    '001': 'Crop and animal production, hunting and related service activities',
+    '002': 'Forestry activities',
+    '003': 'Fishing and aquaculture',
+    '005': 'Mining of coal and lignite',
+    '006': 'Extraction of crude petroleum and natural gas',
+    '007': 'Mining of metal ores',
+    '008': 'Quarrying and other mining of non-metal ores',
+    '009': 'Mining support service activities',
+    '010': 'Manufacture of food products',
+    '011': 'Manufacture of beverages',
+    '012': 'Manufacture of tobacco products',
+    '013': 'Manufacture of textiles',
+    '014': 'Manufacture of wearing apparel',
+    '015': 'Manufacture of leather and related products',
+    '016': 'Manufacture of wood and of products of wood and cork, articles of straw and plaiting materials (except furniture and toys)',
+    '017': 'Manufacture of paper and paper products',
+    '018': 'Printing and reproduction of recorded media',
+    '019': 'Manufacture of coke and refined petroleum products',
+    '020': 'Manufacture of chemicals and chemical products',
+    '021': 'Manufacture of pharmaceuticals, medicinal chemical and botanical products',
+    '022': 'Manufacture of rubber and plastics products (except furniture, toys, sports goods and stationery)',
+    '023': 'Manufacture of other non-metallic mineral products',
+    '024': 'Manufacture of basic metals',
+    '025': 'Manufacture of fabricated metal products (except machinery and equipment)',
+    '026': 'Manufacture of computer, electronic and optical products',
+    '027': 'Manufacture of electrical equipment',
+    '028': 'Manufacture of machinery and equipment n.e.c.',
+    '029': 'Body assembly of motor vehicles',
+    '030': 'Manufacture of other transport equipment',
+    '031': 'Manufacture of furniture',
+    '032': 'Other manufacturing',
+    '033': 'Repair and installation of machinery and equipment',
+    '035': 'Electricity and gas supply',
+    '036': 'Water collection, treatment and supply',
+    '037': 'Sewerage',
+    '038': 'Waste collection, treatment and disposal activities; materials recovery',
+    '039': 'Remediation activities and other waste management services',
+    '041': 'Construction of buildings',
+    '042': 'Civil engineering',
+    '043': 'Specialised construction activities',
+    '045': 'Import and export trade',
+    '046': 'Wholesale',
+    '047': 'Retail trade',
+    '049': 'Land transport',
+    '050': 'Water transport',
+    '051': 'Air transport',
+    '052': 'Warehousing and support activities for transportation',
+    '053': 'Postal and courier activities',
+    '055': 'Short term accommodation activities',
+    '056': 'Food and beverage service activities',
+    '058': 'Publishing activities',
+    '059': 'Motion picture, video and television programme production, sound recording and music publishing activities',
+    '060': 'Programming and broadcasting activities',
+    '061': 'Telecommunications',
+    '062': 'Information technology service activities',
+    '063': 'Information service activities',
+    '064': 'Financial service activities, including investment and holding companies, and the activities of trusts, funds and similar financial entities',
+    '065': 'Insurance (including pension funding)',
+    '066': 'Activities auxiliary to financial service and insurance activities',
+    '068': 'Real estate activities',
+    '069': 'Legal and accounting activities',
+    '070': 'Activities of head offices; management and management consultancy activities, such as company secretary services',
+    '071': 'Architecture and engineering activities, technical testing and analysis',
+    '072': 'Scientific research and development',
+    '073': 'Veterinary activities',
+    '074': 'Advertising and market research',
+    '075': 'Other professional, scientific and technical activities',
+    '077': 'Rental and leasing activities',
+    '078': 'Employment activities',
+    '079': 'Travel agency, reservation service and related activities',
+    '080': 'Security and investigation activities',
+    '081': 'Services to buildings and landscape care activities',
+    '082': 'Office administrative, office support and other business support activities',
+    '084': 'Public administration',
+    '085': 'Education',
+    '086': 'Human health activities',
+    '087': 'Residential care activities',
+    '088': 'Social work activities without accommodation',
+    '090': 'Creative and performing arts activities',
+    '091': 'Libraries, archives, museums and other cultural activities',
+    '092': 'Activities of amusement parks and theme parks',
+    '093': 'Sports and other entertainment activities',
+    '094': 'Activities of membership organisations',
+    '095': 'Repair of motor vehicles, motorcycles, computers, personal and household goods',
+    '096': 'Other personal service activities',
+    '097': 'Activities of households as employers of domestic personnel',
+    '098': 'Goods- and services-producing activities of private households for own use',
+    '099': 'Activities of extraterritorial organisations and bodies',
+}
+
+
+# ---------------------------------------------------------------------------
+# Currency — sheet "Currency", 54 rows
+#
+# NOT ISO 4217, and that is the whole reason this table exists. CR uses its own
+# codes for four currencies:
+#
+#     RMB  Ren Min Bi          (ISO says CNY)
+#     NTD  New Taiwan Dollar   (ISO says TWD)
+#     WON  Korean Won          (ISO says KRW)
+#     NIS  New Israeli Shekel  (ISO says ILS)
+#
+# `lookup_values` separately carries 162 currency codes lifted from Viewpoint,
+# which are ISO. Offering those on the share capital form means a share class
+# denominated in renminbi is filed as CNY and refused. The share capital editor
+# must use THIS list; `lookup_values.currency` is for anything not bound for CR.
+#
+# CYP (Cyprus Pound) is retired in the real world -- Cyprus joined the euro in
+# 2008 -- but CR still lists it, so it stays. This table mirrors what CR
+# accepts, not what is current.
+# ---------------------------------------------------------------------------
+
+#: CR currency code -> English description. Verbatim from the sheet.
+CURRENCY: dict[str, str] = {
+    'AED': 'United Arab Emirates Dirham',
+    'AUD': 'Australian Dollars',
+    'BDT': 'Currency of Bangladesh',
+    'BHD': 'Bahraina Dinar',
+    'BMD': 'Bermudian Dollar',
+    'BND': 'Brunei Dollars',
+    'BRL': 'Brazilian Real',
+    'BSD': 'Bahamas Dollars',
+    'CAD': 'Canadian Dollars',
+    'CDF': 'Congolese Franc',
+    'CHF': 'Swiss Francs',
+    'CLP': 'Chilean Peso',
+    'CYP': 'Cyprus Pound',
+    'CZK': 'Czech Koruna',
+    'DKK': 'Danish Kroners',
+    'ETB': 'Ethiopian Birr',
+    'EUR': 'Euro',
+    'FJD': 'Fiji Dollar',
+    'GBP': 'Sterling',
+    'HKD': 'Hong Kong Dollar',
+    'HUF': 'Hungarian Forint',
+    'IDR': 'Indonesian Rupiah',
+    'INR': 'Indian Rupees',
+    'JPY': 'Japanese Yen',
+    'LKR': 'Sri Lankan Rupee',
+    'MNT': 'Mongolian Tugrik',
+    'MOP': 'Macau Pataka',
+    'MUR': 'Mauritian Rupee',
+    'MXN': 'Mexican Peso',
+    'MYR': 'Malaysian Ringgit',
+    'NIS': 'New Israeli Shekel',
+    'NOK': 'Norwegian Kroners',
+    'NPR': 'Nepalese Rupee',
+    'NTD': 'New Taiwan Dollar',
+    'NZD': 'New Zealand Dollars',
+    'PHP': 'Philippine Pesos',
+    'PKR': 'Pakistan Rupees',
+    'PLN': 'Polish Zloty',
+    'QAR': 'Qatari Rial',
+    'RMB': 'Ren Min Bi',
+    'RUB': 'Russian Ruble',
+    'SAR': 'Saudi Arabian Riyal',
+    'SEK': 'Swedish Kroners',
+    'SGD': 'Singapore Dollars',
+    'THB': 'Thai Bahts',
+    'TRY': 'New Turkish Lira',
+    'USD': 'United States Dollar',
+    'UYU': 'Peso Uruguayo',
+    'VND': 'Vietnam Dong',
+    'WON': 'Korean Won',
+    'XCD': 'East Caribbean Dollar',
+    'XOF': 'West African CFA',
+    'XPF': 'CFP Franc',
+    'ZAR': 'C. South African Rand',
+}

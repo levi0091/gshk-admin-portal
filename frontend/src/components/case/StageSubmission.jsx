@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api } from '../../lib/api.js'
 import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
@@ -26,6 +26,14 @@ const LINE_FIELDS = [
 ]
 
 const emptyLine = () => ({ rcptNo: '', revCode: '', docShtFrm: '', amtChrg: '' })
+
+/**
+ * The two figures the audit trail and fee reconciliation actually read
+ * (spec §4). The backend validates ALL of RECEIPT_FIELDS and answers with every
+ * problem at once; this shorter list is only what arms the button, so an
+ * operator halfway through transcribing is not told the button is broken.
+ */
+const RECEIPT_REQUIRED = ['caseNo', 'totalAmount']
 
 /**
  * Stage 4 — Submission. The chargeable, irreversible one.
@@ -56,18 +64,23 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const [preflight, setPreflight] = useState(undefined)
   const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState(null)
+  // The PRE-FLIGHT's own failure, and nothing else. It is not the outcome of
+  // anything the operator pressed — it happens on arrival, and it explains why
+  // this card has no numbers in it — so it stays inside the card as a note.
+  // Every failure that IS an outcome goes to `onError`, which draws it once at
+  // the top of the page and scrolls there.
+  const [preflightError, setPreflightError] = useState(null)
 
   const filingId = caseRow.filing_id
-  const faults = caseRow.form_status?.code === 'submission_failed'
-    ? caseRow.form_status.faults : null
 
   useEffect(() => {
     if (!filingId) return undefined
     let cancelled = false
     api.get(`/tpsi/filings/${filingId}/preview`)
       .then(p => { if (!cancelled) setPreflight(p) })
-      .catch(e => { if (!cancelled) { setPreflight(null); setFailure(describeError(e)) } })
+      .catch(e => {
+        if (!cancelled) { setPreflight(null); setPreflightError(describeError(e)) }
+      })
     return () => { cancelled = true }
   }, [filingId])
 
@@ -83,14 +96,23 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const blocked = preflight === undefined || preflight === null || !sufficient
 
   async function submit() {
-    onError(null); setFailure(null); setBusy(true)
+    onError(null); setBusy(true)
     try {
       await api.post(`/tpsi/filings/${filingId}/submit`, { confirm: true })
       onChanged()
     } catch (e) {
-      const described = describeError(e)
-      setFailure(described)
-      onError(described)
+      // ONE SURFACE. The drift refusal used to be drawn here, at the button,
+      // because the page banner could show a sentence but not a table and the
+      // banner was off-screen anyway. Both halves of that are fixed: the
+      // banner renders comparison cards, and every failure scrolls the page to
+      // it. Drawing it twice is what produced the detailed refusal at the top
+      // and the vague "not in a state that allows this" beside the button
+      // (Levi 2026-09-03).
+      onError(describeError(e))
+      // The tick was an acknowledgement of a specific charge against a
+      // specific document. Whatever was refused, that document is now in
+      // question — so the acknowledgement is spent and must be given again.
+      setAcknowledged(false)
     } finally {
       setBusy(false)
     }
@@ -114,18 +136,16 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
       {preflight === undefined ? (
         <div className="empty-state" style={{ padding: 16 }}>Checking the fee and balance…</div>
       ) : preflight === null ? (
-        <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-          <span className="al-icon">⚠</span>
-          <div className="al-body">
-            Could not reach CR for the fee and balance, so filing is blocked.
-            {failure?.hint && <div style={{ marginTop: 4 }}>{failure.hint}</div>}
-          </div>
+        // A card note, not an alert. This is the fee panel saying it has no
+        // figures to show; alerts on this screen mean "something you did was
+        // refused" and live at the top of the page.
+        <div className="card-note card-note-warn" role="status">
+          <b>The fee and balance are unavailable, so filing is blocked.</b>
+          {preflightError?.hint && <div style={{ marginTop: 4 }}>{preflightError.hint}</div>}
         </div>
       ) : (
-        <div className={`alert ${sufficient ? 'al-info' : 'al-danger'}`} role="status"
-             style={{ marginBottom: 14 }}>
-          <span className="al-icon">{sufficient ? 'ℹ' : '⚠'}</span>
-          <div className="al-body">
+        <div className={`card-note ${sufficient ? '' : 'card-note-warn'}`} role="status">
+          <div>
             {/* The COMPUTED fee for this company's return date, not the flat
                 on-time figure. A return 7 months past its anniversary is
                 HK$2,610; quoting HK$105 for it told the operator something
@@ -195,19 +215,23 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
         </div>
       )}
 
-      {failure?.hint && (
-        <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
-          <span className="al-icon">⚠</span><div className="al-body">{failure.hint}</div>
-        </div>
-      )}
-      <FaultPanel faults={faults} title="The Companies Registry refused the submission" />
+      {/* NOTHING ABOUT THE LAST FAILURE IS DRAWN HERE. Not CR's faults, not
+          the drift table, and not the hint — the hint is what put a yellow
+          "The case is not in a state that allows this yet" between the deposit
+          box and the Submit button, underneath a page banner that had already
+          said, in detail, exactly what was wrong (Levi 2026-09-03).
+
+          The page banner is the single surface and the page scrolls to it. The
+          receipt panel in the manual half below is a DIFFERENT thing: those
+          are our own field checks, and they belong beside the fields they are
+          about. */}
 
       {/* v11's `danger-gate`. The tick and the button used to sit in an
           ordinary action bar, which made the irreversible step look like every
           other step on the screen. Boxing it is the point: it is the one
           control here that spends money and cannot be undone. */}
       {canSubmit ? (
-        <div className="danger-gate" style={{ marginTop: faults?.length ? 16 : 0 }}>
+        <div className="danger-gate">
           <div className="dg-hd">Irreversible action — two-step confirmation</div>
           <div className="dg-warn">
             Submitting files the Annual Return with the Companies Registry and{' '}
@@ -264,6 +288,12 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   )
 }
 
+/* The drift table that used to live here is gone. Spec §6's refusal is now
+   rendered by `RefusalDetail` in the page banner, as one comparison card per
+   field that moved — see components/case/RefusalDetail.jsx. It was here
+   because the banner could not show a table and was off-screen anyway; the
+   banner now shows cards and the page scrolls to it. */
+
 /** HK dollars, grouped. A bare "12480" beside "3480.00" is unreadable. */
 function money(value) {
   const n = Number(value)
@@ -278,14 +308,37 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
   const [lines, setLines] = useState([emptyLine()])
   const [problems, setProblems] = useState([])
   const [busy, setBusy] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const fileInput = useRef(null)
 
   const recorded = Boolean(caseRow.manual_submitted_at)
+  const attached = Boolean(caseRow.manual_receipt_document_id)
+  // The two halves of the receipt (spec §4). They are independent: nothing
+  // parses figures out of the scan, and the scan is not derived from the
+  // figures, so neither substitutes for the other.
+  const typed = RECEIPT_REQUIRED.every(k => String(fields[k] || '').trim())
 
   function setField(key, value) {
     setFields(f => ({ ...f, [key]: value }))
   }
   function setLine(i, key, value) {
     setLines(ls => ls.map((l, j) => (j === i ? { ...l, [key]: value } : l)))
+  }
+
+  async function uploadReceipt(file) {
+    if (!file) return
+    onError(null); setProblems([]); setUploading(true)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      await api.upload(`/cases/${caseRow.id}/manual-receipt`, form)
+      onChanged()
+    } catch (e) {
+      onError(describeError(e))
+    } finally {
+      setUploading(false)
+      if (fileInput.current) fileInput.current.value = ''
+    }
   }
 
   async function record() {
@@ -325,6 +378,30 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
     )
   }
 
+  // NOTHING HAS BEEN RECORDED YET — the `recorded` branch above caught that
+  // case — so for a role that cannot record one, every field below would be an
+  // empty box it may not type in and an upload zone that refuses the file.
+  // Draw the card, say what is outstanding, and stop.
+  if (!canSubmit) {
+    return (
+      <div className="card mb-16">
+        <div className="card-hdr">
+          <div>
+            <div className="card-title">Record the Companies Registry receipt</div>
+            <div className="card-sub">
+              This return was filed outside the portal, and CR's receipt has not
+              been recorded against the case yet.
+            </div>
+          </div>
+        </div>
+        <div className="f-hint" style={{ marginTop: 12 }}>
+          Recording a filing requires the <b>tpsi:submit</b> permission — it
+          closes the case as filed, exactly as a real submission does.
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="card mb-16">
       <div className="card-hdr">
@@ -348,7 +425,7 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
           <div className="f-group" key={key}>
             <label className="f-label" htmlFor={`rc-${key}`}>{label}</label>
             <input id={`rc-${key}`} className="f-input" value={fields[key]}
-                   disabled={!canSubmit || busy}
+                   disabled={busy}
                    onChange={e => setField(key, e.target.value)} />
           </div>
         ))}
@@ -362,14 +439,58 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
             <div className="f-group" key={key}>
               <label className="f-label" htmlFor={`rl-${i}-${key}`}>{label}</label>
               <input id={`rl-${i}-${key}`} className="f-input" value={line[key]}
-                     disabled={!canSubmit || busy}
+                     disabled={busy}
                      onChange={e => setLine(i, key, e.target.value)} />
             </div>
           ))}
         </div>
       ))}
 
-      {canSubmit && (
+      <div className="tile-sec-lbl">CR receipt document</div>
+      <input ref={fileInput} type="file" className="visually-hidden"
+             accept="application/pdf,image/*" aria-label="CR filing receipt"
+             disabled={busy || uploading}
+             onChange={e => uploadReceipt(e.target.files?.[0])} />
+
+      {attached ? (
+        <div className="up-done">
+          <span className="up-tick" aria-hidden="true">✓</span>
+          <span className="up-txt">
+            {/* The case row carries no filename — the receipt is a versioned
+                `documents` row and the case keeps only the pointer, so the
+                version is what identifies WHICH scan is attached. */}
+            <b>CR receipt attached</b>
+            <span className="up-sub">
+              {caseRow.manual_receipt_document_version
+                ? `Version ${caseRow.manual_receipt_document_version} · `
+                : ''}
+              <code>NAR1_MANUAL_RECEIPT_ENTERED</code> written to the audit log
+            </span>
+          </span>
+          {/* `canSubmit` is guaranteed here — the branch above returns for a
+              role without it — so this is unconditional now. */}
+          <button type="button" className="btn btn-outline btn-sm"
+                  style={{ marginLeft: 'auto' }} disabled={busy || uploading}
+                  onClick={() => fileInput.current?.click()}>
+            Replace
+          </button>
+        </div>
+      ) : (
+        <button type="button" className="up-zone"
+                disabled={busy || uploading}
+                onClick={() => fileInput.current?.click()}>
+          <span className="up-arrow" aria-hidden="true">⬆</span>
+          <span className="up-txt">
+            <b>{uploading ? 'Uploading…' : 'Choose the receipt CR issued'}</b>
+            <span className="up-sub">
+              The PDF or scan from CR's own portal. The typed figures above are
+              what the audit trail reads; this is what proves CR issued them.
+            </span>
+          </span>
+        </button>
+      )}
+
+      {(
         <div className="action-bar">
           <div className="ab-note">
             <button type="button" className="btn btn-outline btn-sm"
@@ -378,16 +499,24 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
             </button>
           </div>
           <div className="ab-actions">
-            <button className="btn btn-action" disabled={busy} onClick={record}>
+            {/* AT THE BUTTON, not in a page banner. "I pressed Record and
+                nothing happened" was a correct refusal rendered a screen and a
+                half above the control that caused it (Levi 2026-08-31). */}
+            {!(attached && typed) && (
+              <span className="ab-note" data-testid="manual-submit-block">
+                {!attached && !typed
+                  ? 'Attach the CR receipt and complete the receipt fields first.'
+                  : !attached
+                    ? 'Attach the CR receipt before recording the filing.'
+                    : 'Complete the receipt fields before recording the filing.'}
+              </span>
+            )}
+            <button className="btn btn-action"
+                    disabled={busy || uploading || !attached || !typed}
+                    onClick={record}>
               {busy ? 'Recording…' : 'Record the filing'}
             </button>
           </div>
-        </div>
-      )}
-      {!canSubmit && (
-        <div className="f-hint" style={{ marginTop: 12 }}>
-          Recording a filing requires the <b>tpsi:submit</b> permission — it
-          closes the case as filed, exactly as a real submission does.
         </div>
       )}
     </div>

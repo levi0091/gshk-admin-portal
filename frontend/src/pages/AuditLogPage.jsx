@@ -2,7 +2,13 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAbortableGet from '../lib/useAbortableGet.js'
 import { formatDateTime } from '../lib/format.js'
-import SortableTh from '../components/SortableTh.jsx'
+import FilterableTh from '../components/FilterableTh.jsx'
+import FilterChips from '../components/FilterChips.jsx'
+import EmptyRow from '../components/EmptyRow.jsx'
+import { DATE, ENUM, TEXT, appendTo, setColumn } from '../lib/tableFilters.js'
+import {
+  MODULES, MODULE_LABELS, SUBJECT_KIND_LABELS, subjectHref, subjectOf,
+} from '../lib/auditVocabulary.js'
 
 const PAGE_SIZE = 100
 
@@ -30,6 +36,10 @@ const ACTION_LABELS = {
   TPSI_SUBMISSION_SUCCESS: 'TPSI submission succeeded',
   TPSI_SUBMISSION_FAILED: 'TPSI submission failed',
   CLIENT_APPROVAL_RECEIVED: 'Client approval received',
+  NAR1_MANUAL_SIGN_UPLOADED: 'Wet-signed NAR1 uploaded',
+  NAR1_MANUAL_RECEIPT_ENTERED: 'Off-portal CR receipt recorded',
+  NAR1_MANUAL_SUBMISSION_RECORDED: 'Off-portal filing recorded',
+  NAR1_CASE_CLOSED: 'Case closed',
   COMPANY_CREATED: 'Company created',
   COMPANY_FLAG_CHANGED: 'Company flags changed',
   PERSON_CREATED: 'Person created',
@@ -44,6 +54,33 @@ const SOURCES = [
   { key: null, label: 'All' },
   { key: 'g_flowdesk', label: 'G-FlowDesk' },
   { key: 'viewpoint_import', label: 'Viewpoint (imported)' },
+]
+
+// The columns, in the order an auditor reads a row: WHEN, in WHICH module, WHAT
+// happened, to WHICH record, what it became, and BY WHOM.
+//
+// Every one of them filters and sorts SERVER-SIDE. This table paginates 100
+// rows at a time out of 226k+, so a filter applied in the browser would narrow
+// the page that happened to arrive and answer a different question — see
+// lib/tableFilters.js and backend/services/table_filters.py.
+//
+// The Subject column filters on `company_name`, which is the subject's NAME
+// whichever kind it is (it has always held a person's name on person rows).
+// Narrowing to one KIND is what the Module filter is for; a second control over
+// the same distinction is how two headers start disagreeing.
+const COLUMNS = [
+  { col: 'created_at', label: 'Time (HKT)', sort: 'created_at',
+    filter: { kind: DATE } },
+  { col: 'module', label: 'Module', sort: 'module',
+    filter: { kind: ENUM, options: MODULES } },
+  { col: 'action_label', label: 'Action', sort: 'action_label',
+    filter: { kind: TEXT, placeholder: 'Action or event code' } },
+  { col: 'company_name', label: 'Case / Company / Person', sort: 'company_name',
+    filter: { kind: TEXT, placeholder: 'Company, person or case' } },
+  { col: 'new_value', label: 'What changed', sort: 'new_value',
+    filter: { kind: TEXT, placeholder: 'New value' } },
+  { col: 'user_display_name', label: 'User', sort: 'user_display_name',
+    filter: { kind: TEXT, placeholder: 'Who did it' } },
 ]
 
 const formatTs = formatDateTime
@@ -66,7 +103,43 @@ function actionOf(e) {
 }
 
 /**
- * What changed, as a list of {label, old, new}.
+ * Anything the audit trail hands us, as text React can actually render.
+ *
+ * THE WHOLE SCREEN WENT DOWN WITHOUT THIS. `before_state`/`after_state` are
+ * free-form JSONB written by ~50 call sites over two years, and one of them
+ * (`POST /companies/{id}/share-classes`) put a whole object in `new`. React
+ * refuses to render an object as a child — error #31 — and because it throws
+ * during render it takes the entire Audit Log with it, not just that row. One
+ * row on page 1 was enough.
+ *
+ * So this is a boundary, not a patch for one caller. The trail's job is to
+ * display whatever history contains, including rows written before anyone
+ * thought about how they would look, and no future payload may be able to
+ * blank the page. The backend now writes that particular row per-field like
+ * every other edit; this stays regardless.
+ *
+ * An object renders as `key: value; key: value` — the same shape the backend
+ * uses when it flattens a map into `new_value`, so the two read alike.
+ */
+function asText(value) {
+  if (value == null) return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    return value.map(asText).filter(v => v != null && v !== '').join(', ') || null
+  }
+  if (typeof value === 'object') {
+    const parts = Object.entries(value)
+      .map(([k, v]) => [k, asText(v)])
+      .filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`)
+    return parts.length ? parts.join('; ') : null
+  }
+  return String(value)
+}
+
+/**
+ * What changed, as a list of {label, old, new} — every value already text.
  *
  * Viewpoint-imported rows carry `changed_fields`, decoded out of the EventString
  * by the ETL (migration 014). Native rows record a single field edit in
@@ -74,6 +147,14 @@ function actionOf(e) {
  * render identically — which is the whole point of the shared audit model.
  */
 function changesOf(e) {
+  return rawChangesOf(e).map(c => ({
+    label: asText(c.label),
+    old: asText(c.old),
+    new: asText(c.new),
+  }))
+}
+
+function rawChangesOf(e) {
   if (e.changed_fields?.length) return e.changed_fields
 
   if (e.after_state?.field) {
@@ -86,8 +167,8 @@ function changesOf(e) {
   if (e.action_type === 'COMPANY_FLAG_CHANGED' && e.after_state) {
     return Object.keys(e.after_state).map(f => ({
       label: f.replace(/_/g, ' '),
-      old: String(e.before_state?.[f]),
-      new: String(e.after_state[f]),
+      old: e.before_state?.[f],
+      new: e.after_state[f],
     }))
   }
   if (e.old_value || e.new_value) {
@@ -113,6 +194,47 @@ function Change({ e }) {
   )
 }
 
+/**
+ * WHICH RECORD the row is about — a kind chip, the name, and a link.
+ *
+ * A row whose subject never resolved falls back to the raw Viewpoint key, drawn
+ * muted and unlinked so it reads as "we could not identify this" rather than as
+ * a name.
+ */
+function Subject({ e, onOpen }) {
+  const subject = subjectOf(e)
+  if (!subject) return <span className="td-muted">—</span>
+
+  const kind = SUBJECT_KIND_LABELS[e.subject_kind]
+  const href = subject.raw ? null : subjectHref(e)
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+      {kind && <span className="filing-tag">{kind}</span>}
+      {href ? (
+        <span
+          className="bc-link"
+          style={{ color: 'var(--indigo)', fontWeight: 600, fontSize: 12 }}
+          onClick={() => onOpen(href)}
+        >
+          {subject.name}
+        </span>
+      ) : (
+        <span
+          className={subject.raw ? 'td-muted' : 'td-primary'}
+          style={{ fontSize: 12 }}
+          title={subject.raw ? 'Viewpoint key — no matching record' : undefined}
+        >
+          {subject.name}
+        </span>
+      )}
+      {subject.ref && (
+        <span className="td-muted" style={{ fontSize: 11.5 }}>({subject.ref})</span>
+      )}
+    </span>
+  )
+}
+
 export default function AuditLogPage() {
   const navigate = useNavigate()
   const [source, setSource] = useState(null)
@@ -121,10 +243,24 @@ export default function AuditLogPage() {
   const [page, setPage] = useState(1)
   const [sort, setSort] = useState(null)
   const [dir, setDir] = useState('desc')
+  // No default filter. This screen is the record of what happened, and opening
+  // it on a narrowed set would mean the answer to "did anyone touch this" is
+  // conditioned on a choice nobody made.
+  const [filters, setFilters] = useState([])
 
   function onSort(col, nextDir) {
     setSort(col)
     setDir(nextDir)
+    setPage(1)
+  }
+
+  function onFilter(column, next) {
+    setFilters(f => setColumn(f, column.col, next))
+    setPage(1)
+  }
+
+  function removeColumns(cols) {
+    setFilters(f => f.filter(x => !cols.includes(x.col)))
     setPage(1)
   }
 
@@ -137,6 +273,7 @@ export default function AuditLogPage() {
   if (source) params.set('source', source)
   if (query) params.set('search', query)
   if (sort) { params.set('sort', sort); params.set('dir', dir) }
+  appendTo(params, filters)
 
   // Cancels the previous request on every toggle — UAT W-8. See the hook.
   const { data, loading, error } = useAbortableGet(`/audit/?${params}`)
@@ -162,8 +299,8 @@ export default function AuditLogPage() {
           <circle cx="6.5" cy="6.5" r="5" /><path d="M11 11l3 3" strokeLinecap="round" />
         </svg>
         <input className="search-input" type="text"
-               aria-label="Search company, action, event code or user"
-               placeholder="Search company, action, event code or user"
+               aria-label="Search company, person, reference, action or user"
+               placeholder="Search company, person, reference, action or user"
                value={search} onChange={e => setSearch(e.target.value)} />
       </div>
 
@@ -177,6 +314,13 @@ export default function AuditLogPage() {
         ))}
       </div>
 
+      <FilterChips
+        columns={COLUMNS}
+        filters={filters}
+        onRemove={removeColumns}
+        onClearAll={() => { setFilters([]); setPage(1) }}
+      />
+
       {error ? (
         <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
           Failed to load audit log: {error}
@@ -187,51 +331,42 @@ export default function AuditLogPage() {
             <table>
               <thead>
                 <tr>
-                  {[
-                    ['created_at', 'Time (HKT)'],
-                    ['action_label', 'Action'],
-                    ['company_name', 'Company / Case'],
-                    ['new_value', 'What changed'],
-                    ['user_display_name', 'User'],
-                  ].map(([col, label]) => (
-                    <SortableTh key={col} col={col} sort={sort} dir={dir} onSort={onSort}
-                                style={col === 'created_at' ? { width: 150 } : undefined}>
-                      {label}
-                    </SortableTh>
+                  {COLUMNS.map(column => (
+                    <FilterableTh key={column.col} column={column} sort={sort} dir={dir}
+                                  onSort={onSort} filters={filters} onFilter={onFilter} />
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={5} className="empty-state">Loading…</td></tr>
+                  <tr><td colSpan={COLUMNS.length} className="empty-state">Loading…</td></tr>
                 ) : entries.length === 0 ? (
-                  <tr><td colSpan={5} className="empty-state">No audit events match this view.</td></tr>
+                  <tr><td colSpan={COLUMNS.length} className="empty-state">
+                    <EmptyRow
+                      filtered={filters.length > 0}
+                      onClear={() => { setFilters([]); setPage(1) }}
+                    />
+                  </td></tr>
                 ) : entries.map(e => (
                   <tr key={e.id}>
                     <td data-label="Time">
                       <span className="td-muted" style={{ whiteSpace: 'nowrap' }}>{formatTs(e.created_at)}</span>
                     </td>
-                    <td data-label="Action">
-                      <span className="td-primary" style={{ fontSize: 12.5 }}>{actionOf(e)}</span>
-                      {e.event_code && <span className="filing-tag">{e.event_code}</span>}
-                    </td>
-                    <td data-label="Company / Case">
-                      {e.company_name ? (
-                        e.case_id ? (
-                          <span className="bc-link" style={{ color: 'var(--indigo)', fontWeight: 600, fontSize: 12 }}
-                                onClick={() => navigate(`/companies/${e.case_id}`)}>
-                            {e.company_name}
-                          </span>
-                        ) : (
-                          <span className="td-primary" style={{ fontSize: 12 }}>{e.company_name}</span>
-                        )
-                      ) : e.source_keycode ? (
-                        <span className="td-muted" title="Viewpoint key — no matching record">
-                          {e.source_keycode}
+                    <td data-label="Module">
+                      {e.module ? (
+                        <span className="td-primary" style={{ fontSize: 12 }}>
+                          {MODULE_LABELS[e.module] || e.module}
                         </span>
                       ) : (
                         <span className="td-muted">—</span>
                       )}
+                    </td>
+                    <td data-label="Action">
+                      <span className="td-primary" style={{ fontSize: 12.5 }}>{actionOf(e)}</span>
+                      {e.event_code && <span className="filing-tag">{e.event_code}</span>}
+                    </td>
+                    <td data-label="Case / Company / Person">
+                      <Subject e={e} onOpen={navigate} />
                     </td>
                     <td data-label="What changed" style={{ maxWidth: 340 }}>
                       <Change e={e} />

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   STAGE_LABELS, reachedStage, stageDone, signedOff, isValidated, isSubmitted,
-  describeError, verificationBlock,
+  describeError, verificationBlock, persistedFailure, isClosed,
 } from './workflow.js'
 
 // A case at the very start: nothing validated, nothing sent, nothing signed.
@@ -175,8 +175,9 @@ describe('describeError — four failures, four different actions', () => {
 
   it('NEVER offers to retry a CR fault', () => {
     // CR locks an account after repeated auth failures, and a chargeable submit
-    // must not be fired twice on a guess.
-    const d = describeError(err(502, 'form data has been tampered'))
+    // must not be fired twice on a guess. 422 since 2026-08-31 — "form data has
+    // been tampered" is CR REFUSING, which is not a gateway failure.
+    const d = describeError(err(422, 'form data has been tampered'))
     expect(d.retry).toBe(false)
     expect(d.hint).toMatch(/do not simply retry/i)
   })
@@ -196,14 +197,104 @@ describe('describeError — four failures, four different actions', () => {
 })
 
 // ---------------------------------------------------------------------------
+// The pre-submit gate's three 409s (Levi 2026-09-03).
+//
+// They used to share one hint — "The case is not in a state that allows this
+// yet" — printed under whatever the backend had said. Beneath a message that
+// already named the country code CR would not take, that is not a second piece
+// of information; it is the same refusal, said worse.
+// ---------------------------------------------------------------------------
+
+describe('describeError — the submit gate, three situations', () => {
+  const gate = (reason, extra = {}) => describeError(Object.assign(
+    new Error('the backend sentence nobody should read'),
+    { status: 409, reason, ...extra }))
+
+  it('leads a drift refusal with the situation, not the backend sentence', () => {
+    const d = gate('drift', { differences: [{ path: 'brNo', field: 'BR number' }] })
+    expect(d.message).toMatch(/company record changed after this return was approved/i)
+    expect(d.message).not.toMatch(/backend sentence/)
+    expect(d.differences).toHaveLength(1)
+  })
+
+  it('settles the money question before anything else', () => {
+    // The operator has just pressed a button labelled with a four-figure sum.
+    for (const reason of ['drift', 'record_unusable', 'check_failed']) {
+      expect(gate(reason).reassurance).toMatch(/nothing was charged/i)
+    }
+  })
+
+  it('sends an unfilable record to the PROFILE, then to restart', () => {
+    const d = gate('record_unusable', { problems: ['entity: no BR number'] })
+    expect(d.message).toMatch(/can no longer produce a NAR1/i)
+    expect(d.remedy).toMatch(/company profile/i)
+    expect(d.offerRestart).toBe(true)
+    expect(d.problems).toHaveLength(1)
+  })
+
+  it('does NOT offer a restart when the check itself could not run', () => {
+    // Restarting discards a CR-signed snapshot. It cannot reach a database
+    // that would not load, so offering it here sends someone to throw away a
+    // signature for nothing.
+    const d = gate('check_failed')
+    expect(d.offerRestart).toBe(false)
+    expect(d.remedy).toMatch(/will not help/i)
+  })
+
+  it('never carries the old generic state hint on a classified refusal', () => {
+    for (const reason of ['drift', 'record_unusable', 'check_failed']) {
+      expect(gate(reason).hint).toBeNull()
+    }
+  })
+
+  it('keeps the generic hint for an UNCLASSIFIED 409 with no detail', () => {
+    // "filing is 'draft' — it must be signed" still benefits from it.
+    const d = describeError(Object.assign(new Error('boom'), { status: 409 }))
+    expect(d.hint).toMatch(/not in a state that allows this/)
+  })
+
+  it('drops the generic hint when the refusal already lists its reasons', () => {
+    const d = describeError(Object.assign(new Error('boom'),
+      { status: 409, problems: ['entity: no BR number'] }))
+    expect(d.hint).toBeNull()
+    expect(d.problems).toHaveLength(1)
+  })
+
+  it('never retries any of them', () => {
+    for (const reason of ['drift', 'record_unusable', 'check_failed']) {
+      expect(gate(reason).retry).toBe(false)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // CR refusals. Three kinds, three remedies, three different places to go.
 // ---------------------------------------------------------------------------
 
 describe('describeError — CR refusals', () => {
+  // 422, not 502. A CR refusal is a business answer, and the backend stopped
+  // dressing it as a gateway failure on 2026-08-31 — a 5xx body is replaced by
+  // Cloudflare/Railway before `api.js` can parse it, so the operator saw
+  // "Bad Gateway" instead of CR's "Br No does not exist."
   const crError = (kind, problems = []) =>
     Object.assign(new Error('The Companies Registry rejected this return.'), {
-      status: 502, kind, problems,
+      status: 422, kind, problems,
     })
+
+  it('renders a CR refusal that arrives as 422', () => {
+    // The regression: before the status changed, a 422 fell through to the
+    // default branch and lost every CR-specific hint.
+    const d = describeError(crError('validation'))
+    expect(d.hint).toBeTruthy()
+    expect(d.message).toMatch(/Companies Registry/i)
+  })
+
+  it('still treats a real gateway failure as one', () => {
+    // 502 keeps its old meaning: CR could not be REACHED. It must not claim
+    // CR rejected anything.
+    const d = describeError(Object.assign(new Error('connection reset'), { status: 502 }))
+    expect(d.retry).toBe(false)
+  })
 
   it('never offers a retry on any CR refusal', () => {
     // CR locks accounts on repeated auth failures and a submit spends money.
@@ -234,7 +325,7 @@ describe('describeError — CR refusals', () => {
     expect(d.kind).toBe('account_locked')
   })
 
-  it('falls back to a safe hint for an unlabelled 502', () => {
+  it('falls back to a safe hint for an unlabelled CR refusal', () => {
     const d = describeError(crError(undefined))
     expect(d.hint).toMatch(/do not simply retry/i)
   })
@@ -259,7 +350,7 @@ describe('describeError — CR refusals', () => {
 //
 // This exists because of a real report (Levi 2026-08-30): "I clicked on the
 // send to client button. nothing happened." The backend HAD refused it, with a
-// 409 rendered at the top of a page whose Send button sits below a 460px PDF
+// 409 rendered at the top of a page whose Send button sits below a 690px PDF
 // frame. Deciding it here means the button explains itself instead.
 // ---------------------------------------------------------------------------
 
@@ -278,11 +369,16 @@ describe('verificationBlock', () => {
       .toMatch(/off-portal/)
   })
 
-  it('refuses a return CR is already holding', () => {
-    // Checked BEFORE "not validated yet" on purpose: a submitted filing
-    // satisfies isValidated too, and that message would be a lie about it.
+  it('says nothing about a return CR is already holding', () => {
+    // Levi 2026-08-31: on a filed case, Client Verification is history — a
+    // green tick, a sent mail, an answer. Cautioning that asking the client
+    // now would be pointless warns about something nobody is attempting.
+    //
+    // Crucially this does NOT re-enable the send: StageClientVerification
+    // withholds the whole send apparatus on `isSubmitted`, so there is no dead
+    // button and no 409 waiting behind one.
     expect(verificationBlock(validated({ form_status: { code: 'submitted' } })))
-      .toMatch(/already holds this return/)
+      .toBeNull()
   })
 
   it('refuses after a failed validation rather than mailing a stale snapshot', () => {
@@ -297,5 +393,104 @@ describe('verificationBlock', () => {
 
   it('says nothing about a case it was given nothing for', () => {
     expect(verificationBlock(null)).toBeNull()
+  })
+})
+
+
+describe('persistedFailure', () => {
+  // WHY THIS EXISTS. CR's refusal used to be drawn twice on one screen: once in
+  // the page banner (the live request that just failed) and once in the stage's
+  // own FaultPanel (the same faults, read back off the case). Two copies of one
+  // rejection reads as two different problems. The banner is now the only
+  // surface, so it has to be able to show a refusal recorded EARLIER too --
+  // otherwise a reload leaves a "Rejected at validation" badge with no reason.
+  const failed = (code, faults) => ({
+    form_status: { code, failed: true, faults },
+  })
+  const faults = [['efiling.eform.signatory.error', 'The signatory T1 is not authorized.']]
+
+  it('reports a validation refusal recorded on the case', () => {
+    const f = persistedFailure(failed('validation_failed', faults))
+    expect(f.message).toMatch(/rejected this return/i)
+    expect(f.problems).toEqual(faults)
+  })
+
+  it('names the step CR actually refused', () => {
+    expect(persistedFailure(failed('signing_failed', faults)).message)
+      .toMatch(/signature/i)
+    expect(persistedFailure(failed('submission_failed', faults)).message)
+      .toMatch(/submission/i)
+  })
+
+  it('tells the operator re-validating is free, and only for validation', () => {
+    expect(persistedFailure(failed('validation_failed', faults)).hint)
+      .toMatch(/nothing was charged/i)
+    expect(persistedFailure(failed('submission_failed', faults)).hint)
+      .not.toMatch(/nothing was charged/i)
+  })
+
+  it('says nothing when the case has not failed', () => {
+    expect(persistedFailure({ form_status: { code: 'validated', failed: false } }))
+      .toBeNull()
+    expect(persistedFailure(null)).toBeNull()
+  })
+
+  it('says nothing when a failure carries no reason to show', () => {
+    // A banner reading "The Companies Registry rejected this return." with an
+    // empty list underneath is worse than the badge alone.
+    expect(persistedFailure(failed('validation_failed', []))).toBeNull()
+  })
+})
+
+
+describe('a closed case', () => {
+  it('is read off `closed_at`, not off the badge', () => {
+    // The timestamp is the fact the backend stores and every one of its own
+    // guards reads. Matching on `workflow_status.code === "closed"` would be a
+    // second definition free to disagree with it — on a case whose badge came
+    // back as a bare string, say.
+    expect(isClosed({ closed_at: '2026-09-05T02:00:00Z' })).toBe(true)
+    expect(isClosed({ workflow_status: { code: 'closed' } })).toBe(false)
+    expect(isClosed({ closed_at: null })).toBe(false)
+    expect(isClosed({})).toBe(false)
+    expect(isClosed(null)).toBe(false)
+  })
+
+  it('has no reachable stage, however far the work had got', () => {
+    // `CaseWorkflowPage` renders the closed panel instead of the stepper, so
+    // nothing asks — but this must not answer "5" to whatever does, because
+    // every button behind stage 5 writes.
+    const done = withStage('submitted', {
+      verification_sent_at: '2026-08-01', client_approved: true,
+      manual_submitted_at: '2026-08-18',
+    })
+    expect(reachedStage(done)).toBe(5)
+    expect(reachedStage({ ...done, closed_at: '2026-09-05T02:00:00Z' })).toBe(0)
+  })
+
+  it('reports a case_closed 409 with the backend\'s own message and nothing added', () => {
+    // Every other 409 on this screen describes something that can be put right.
+    // This one cannot, and the backend's message already says what to do
+    // instead — a second sentence under it is the same refusal, said less well.
+    const described = describeError({
+      status: 409, reason: 'case_closed',
+      message: 'case NAR-2026-0041 was closed and cannot be changed',
+    })
+    expect(described.message).toBe(
+      'case NAR-2026-0041 was closed and cannot be changed')
+    expect(described.reason).toBe('case_closed')
+    expect(described.hint).toBeNull()
+    expect(described.offerRestart).toBe(false)
+    expect(described.retry).toBe(false)
+  })
+
+  it('does not mistake it for one of the three submit-gate refusals', () => {
+    // Those three all carry "Nothing was sent to the Companies Registry and
+    // nothing was charged", which is about a submit nobody attempted here.
+    const described = describeError({
+      status: 409, reason: 'case_closed', message: 'closed',
+    })
+    expect(described.reassurance).toBeUndefined()
+    expect(described.remedy).toBeUndefined()
   })
 })

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api.js'
+import AddressBlock from './AddressBlock.jsx'
+import FormField from './FormField.jsx'
+import { EMPTY_ADDRESS, addressPayload } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
 import useDiscardGuard from '../lib/useDiscardGuard.js'
 import DiscardConfirm from './DiscardConfirm.jsx'
@@ -11,11 +14,13 @@ const STATUSES = [
   { value: 'live', label: 'Live' },
 ]
 
-const COMPANY_TYPES = [
-  'Private company limited by shares',
-  'Private company limited by guarantee',
-  'Public company limited by shares',
-]
+// Company type comes from CR's own vocabulary (`cr_company_type`: P Private,
+// N Public, G Limited by Guarantee), served from /lookups.
+//
+// It used to be three hardcoded free-text descriptions lifted from Viewpoint.
+// CR refuses anything but its three codes on `coyType`, so a company created
+// here was born carrying a value its own annual return could not state — and
+// nothing said so until the filing.
 
 // UAT F-3: operators were keying bare local numbers with no country prefix.
 // A short curated list beats a 200-row lookup here — `company_phone` stays a
@@ -32,11 +37,44 @@ const DIAL_CODES = [
   { code: '+61', label: '+61  Australia' },
 ]
 
+// PARITY WITH THE PROFILE'S EDIT FORM (Levi 2026-09-04: "make sure all the
+// fields in edit is also available in add company function").
+//
+// Six fields the profile could edit had no box here — Chinese Name, CR No.,
+// Business Nature, Mortgages and Charges, Incorporation Date and Case Notes —
+// so creating a company from a client's own paperwork meant creating a
+// half-record, saving it, reopening it and typing the rest into a second form
+// with different labels. Three of the six (Chinese Name, CR No.,
+// Incorporation Date) are on the incorporation certificate the operator is
+// reading from at the moment they press New Company.
+//
+// Rendered through `FormField` with the SAME descriptors the profile uses, so
+// a lookup added to one appears in the other rather than being copied.
+const OPTIONAL_FIELDS = [
+  { key: 'company_name_zh', label: 'Chinese Name', full: true },
+  { key: 'cr_number', label: 'CR No.' },
+  { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
+  // The code is picked and CR derives the description from it — the backend
+  // writes `business_nature_desc` and never accepts one, exactly as PATCH does.
+  { key: 'business_nature_code', label: 'Business Nature',
+    lookup: 'cr_business_nature', full: true },
+  // Text, not a number: CR accepts "Nil", and almost every company here files
+  // exactly that. A 0 would read as "none registered" rather than "nothing to
+  // declare".
+  { key: 'mortgages_total', label: 'Mortgages and Charges', full: true },
+  { key: 'case_notes', label: 'Case Notes', full: true },
+]
+
 const EMPTY_FORM = {
   company_name: '', br_number: '', status: '', company_type: '',
-  incorporation_place: '', registered_address: '',
+  incorporation_place: '',
+  ...Object.fromEntries(OPTIONAL_FIELDS.map(f => [f.key, ''])),
   phone_code: DEFAULT_DIAL_CODE, phone_number: '',
 }
+
+// Hong Kong by default: this form creates HK companies, and the district
+// dropdown only appears once a country says so.
+const EMPTY_NEW_ADDRESS = { ...EMPTY_ADDRESS, country: 'HK' }
 
 /** Hong Kong as the seeded vocabulary spells it — by code, then by label. */
 function findHongKong(countries) {
@@ -47,6 +85,8 @@ function findHongKong(countries) {
 
 export default function AddCompanyModal({ onClose, onCreated }) {
   const [form, setForm] = useState(EMPTY_FORM)
+  // The address is its own row on the server, so it is its own state here.
+  const [address, setAddress] = useState(EMPTY_NEW_ADDRESS)
   const lookups = useLookups()
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
@@ -61,13 +101,13 @@ export default function AddCompanyModal({ onClose, onCreated }) {
   // initial value; if the vocabulary has no Hong Kong row, leave it blank
   // rather than posting a code the backend has never heard of.
   useEffect(() => {
-    const hk = findHongKong(lookups.country)
+    const hk = findHongKong(lookups.cr_country)
     if (!hk) return
     setForm(f => (f.incorporation_place ? f : { ...f, incorporation_place: hk.code }))
     if (!baseline.current.incorporation_place) {
       baseline.current = { ...baseline.current, incorporation_place: hk.code }
     }
-  }, [lookups.country])
+  }, [lookups.cr_country])
 
   const isDirty = Object.keys(form).some(k => form[k] !== baseline.current[k])
   const guard = useDiscardGuard(isDirty, onClose)
@@ -83,7 +123,11 @@ export default function AddCompanyModal({ onClose, onCreated }) {
       next.br_number = 'BRN must be 8 digits'
     }
     if (!form.incorporation_place) next.incorporation_place = 'Country of incorporation is required'
-    if (!form.registered_address.trim()) next.registered_address = 'Registered address is required'
+    // line1 + country, not the whole address: CR needs a country to file at
+    // all, and an address with no first line is not an address. The rest can
+    // be filled in on the profile.
+    if (!(address.line1 || '').trim()) next.address = 'A registered address is required'
+    else if (!(address.country || '').trim()) next.address = 'The address needs a country'
     // A dialling code on its own is not a phone number.
     if (!form.phone_number.trim()) next.company_phone = 'Company phone is required'
     setErrors(next)
@@ -101,6 +145,10 @@ export default function AddCompanyModal({ onClose, onCreated }) {
     )
     try {
       const created = await api.post('/companies', body)
+      // The address goes through its own endpoint so it meets the same
+      // validation as every later edit — a company created here must not be
+      // able to hold an address the NAR1 mapper would refuse.
+      await api.put(`/companies/${created.id}/registered-address`, addressPayload(address))
       onCreated(created)
     } catch (err) {
       setApiError(err.message)
@@ -154,7 +202,9 @@ export default function AddCompanyModal({ onClose, onCreated }) {
               <label className="f-label" htmlFor="company_type">Company Type <span className="f-req">*</span></label>
               <select id="company_type" className="f-select" value={form.company_type} onChange={set('company_type')}>
                 <option value="">Select…</option>
-                {COMPANY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                {(lookups.cr_company_type || []).map(t => (
+                  <option key={t.code} value={t.code}>{t.label}</option>
+                ))}
               </select>
               {errors.company_type && <span className="f-hint" style={{ color: '#C53030' }}>{errors.company_type}</span>}
             </div>
@@ -166,21 +216,31 @@ export default function AddCompanyModal({ onClose, onCreated }) {
               <select id="incorporation_place" className="f-select"
                       value={form.incorporation_place} onChange={set('incorporation_place')}>
                 <option value="">Select…</option>
-                {(lookups.country || []).map(c => (
+                {(lookups.cr_country || []).map(c => (
                   <option key={c.code} value={c.code}>{c.label}</option>
                 ))}
               </select>
               {errors.incorporation_place && <span className="f-hint" style={{ color: '#C53030' }}>{errors.incorporation_place}</span>}
             </div>
 
+            {OPTIONAL_FIELDS.map(f => (
+              <FormField key={f.key} field={f} value={form[f.key]} lookups={lookups}
+                         onChange={(k, v) => setForm(prev => ({ ...prev, [k]: v }))} />
+            ))}
+
             <div className="f-group full">
-              <label className="f-label" htmlFor="registered_address">
+              <div className="tile-sec-lbl">
                 Registered Address <span className="f-req">*</span>
-              </label>
-              <input id="registered_address" className="f-input" type="text"
-                     placeholder="Company registered address in HK"
-                     value={form.registered_address} onChange={set('registered_address')} />
-              {errors.registered_address && <span className="f-hint" style={{ color: '#C53030' }}>{errors.registered_address}</span>}
+              </div>
+              {/* Separate lines, not one box. The single free-text field this
+                  replaced wrote everything into line1, which is the same shape
+                  of mistake the ETL made in the other direction. */}
+              <AddressBlock
+                value={address}
+                lookups={lookups}
+                onChange={(k, v) => setAddress(a => ({ ...a, [k]: v }))}
+              />
+              {errors.address && <span className="f-hint" style={{ color: '#C53030' }}>{errors.address}</span>}
             </div>
 
             <div className="f-group full">

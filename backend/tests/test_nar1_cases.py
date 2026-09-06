@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from services import nar1_case_status, nar1_cases
+from services import nar1_case_status, nar1_cases, table_filters as tf
 from services.tpsi import filings as tpsi_filings
 
 
@@ -119,6 +119,50 @@ def test_update_case_stamps_updated_at_alongside_the_patch():
     assert payload["aml_cleared"] is True
     assert payload["updated_at"] is not None
     sb.table.return_value.update.return_value.eq.assert_called_with("id", "c1")
+
+
+# ---- close_case -----------------------------------------------------------
+
+
+def _close_chain():
+    """The PostgREST chain close_case() builds, with the guard recorded."""
+    sb = MagicMock()
+    chain = sb.table.return_value.update.return_value.eq.return_value.is_
+    return sb, chain
+
+
+def test_close_case_writes_when_who_and_why_together():
+    """All three, or the row cannot answer the questions anyone asks of a closed
+    case six months later."""
+    sb, chain = _close_chain()
+    chain.return_value.execute.return_value.data = [{"id": "c1"}]
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        assert nar1_cases.close_case(
+            "c1", user_id="u1", reason="client is dissolving the company"
+        ) == {"id": "c1"}
+
+    payload = sb.table.return_value.update.call_args[0][0]
+    assert payload["closed_by"] == "u1"
+    assert payload["closed_reason"] == "client is dissolving the company"
+    assert payload["closed_at"] is not None
+    assert payload["updated_at"] is not None
+
+
+def test_close_case_settles_the_race_INSIDE_the_update():
+    """Not read-then-write. Two concurrent requests both see an open case and
+    both write; last write wins on one row, so there is never a second closure —
+    but the trail would carry two NAR1_CASE_CLOSED entries for one decision,
+    naming two people and two reasons, and audit_log is insert-only so neither
+    could be taken back.
+
+    None is the refusal, and the caller answers 409 on it."""
+    sb, chain = _close_chain()
+    chain.return_value.execute.return_value.data = []
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        assert nar1_cases.close_case("c1", user_id="u2", reason="second") is None
+
+    # The guard is the UPDATE's own filter, where Postgres settles it.
+    assert chain.call_args.args == ("closed_at", None)
 
 
 # ---- current_filing ---------------------------------------------------
@@ -236,6 +280,7 @@ class _FakeQuery:
         self._rows = rows
         self._count = count
         log.update({"or": None, "eq": [], "cmp": [], "not_is": [],
+                    "ilike": [], "in": [], "neq": [], "is": [],
                     "order": None, "range": None, "limit": None})
 
     def or_(self, expr):
@@ -244,6 +289,22 @@ class _FakeQuery:
 
     def eq(self, col, val):
         self.log["eq"].append((col, val))
+        return self
+
+    def neq(self, col, val):
+        self.log["neq"].append((col, val))
+        return self
+
+    def ilike(self, col, val):
+        self.log["ilike"].append((col, val))
+        return self
+
+    def in_(self, col, vals):
+        self.log["in"].append((col, list(vals)))
+        return self
+
+    def is_(self, col, val):
+        self.log["is"].append((col, val))
         return self
 
     def __getattr__(self, name):
@@ -371,6 +432,87 @@ async def test_the_total_follows_the_selected_status():
     assert result["total"] == result["counts"]["signing"]
 
 
+async def test_several_statuses_narrow_the_page_query_together():
+    """The "Action Required" tile stands for five badges. Filtering to one of
+    them would show a table that disagrees with the number on the tile."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=4)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        result = await nar1_cases.list_dashboard(
+            workflow_statuses=["signing", "submission"])
+    assert ("workflow_status", ["signing", "submission"]) in sb.page_query["in"]
+    # The badges partition the set — a case wears exactly one — so the total is
+    # the sum of the picked counts, not a fresh query and not an over-count.
+    assert result["total"] == (result["counts"]["signing"]
+                               + result["counts"]["submission"])
+
+
+async def test_several_statuses_still_leave_the_badge_counts_alone():
+    sb = _FakeSupabase(rows=[_registry_row()], count=4)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(workflow_statuses=["signing", "submission"])
+    assert all(not q["in"] for q in sb.count_queries)
+
+
+async def test_column_filters_reach_the_count_queries_too():
+    """Same rule as the search and the anniversary: a filter applied only to the
+    page leaves the badge counts and the pager describing a wider set."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    filters = tf.parse(
+        ["company_name:contains:acme", "days_to_anniversary:lte:60"],
+        nar1_cases._FILTERABLE,
+    )
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(filters=filters)
+    assert all(("company_name", "%acme%") in q["ilike"] for q in sb.queries)
+    assert all(("lte", "days_to_anniversary", 60) in q["cmp"] for q in sb.queries)
+
+
+#: A real one. `created_by` is `uuid REFERENCES users(id)` (migration 021), and
+#: the shape is load-bearing in every test below.
+_ME = "1acce7d7-b733-4278-92bf-60ad5b910de1"
+
+
+async def test_created_by_filters_the_dashboard_to_one_user():
+    """The dashboard opens on your own cases. That has to be a real server-side
+    filter — narrowing the 50 rows that arrived would show you a page of
+    somebody else's work with your own cases missing from it."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    filters = tf.parse([f"created_by:eq:{_ME}"], nar1_cases._FILTERABLE)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(filters=filters)
+    assert all(("created_by", _ME) in q["eq"] for q in sb.queries)
+
+
+async def test_created_by_is_matched_with_eq_and_never_ilike():
+    """The bug this test exists for: `created_by` was declared as a TEXT column,
+    so `eq` resolved to `ilike` — and Postgres has no `uuid ~~* unknown`
+    operator. Every dashboard request carrying the default "my cases" filter
+    came back 500, which the browser reports as a bare "Failed to fetch". Levi
+    saw an error banner where his eight cases should have been."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    filters = tf.parse([f"created_by:eq:{_ME}"], nar1_cases._FILTERABLE)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(filters=filters)
+    for q in sb.queries:
+        assert not [c for c in q["ilike"] if c[0] in ("created_by", "entity_id")]
+
+
+async def test_a_uuid_column_refuses_a_value_that_is_not_a_uuid():
+    """422 at the edge, not 500 at the database. A malformed id is a mistake
+    someone can read and correct; `invalid input syntax for type uuid` arrives
+    with no CORS headers and reaches the screen as "Failed to fetch"."""
+    for bad in ("u-1", "", "not-a-uuid", _ME[:-1]):
+        with pytest.raises(tf.FilterError, match="must be a UUID"):
+            tf.parse([f"created_by:eq:{bad}"], nar1_cases._FILTERABLE)
+
+
+async def test_a_uuid_column_refuses_contains():
+    """Half a uuid identifies nothing, and the op would reach PostgREST as an
+    `ilike` — the exact 500 above."""
+    with pytest.raises(tf.FilterError, match="Cannot apply 'contains'"):
+        tf.parse([f"entity_id:contains:{_ME[:8]}"], nar1_cases._FILTERABLE)
+
+
 async def test_the_anniversary_filter_reaches_the_count_queries_too():
     """Filtering only the page query leaves the pager and the tab counts quoting
     totals for a set the user is not looking at."""
@@ -390,14 +532,33 @@ async def test_the_search_reaches_the_count_queries_too():
     assert "case_no.ilike" in sb.page_query["or"]
 
 
-async def test_the_default_sort_is_the_deadline_soonest_first():
-    """The deadline is why this screen exists. nullsfirst=False explicitly:
-    Postgres puts NULLs first on a DESC sort, which would open the list with
-    every company that has no incorporation date and therefore no answer."""
+async def test_the_default_sort_is_the_newest_case_first():
+    """Newest first (Levi 2026-08-31): the case you just opened is the one you
+    came to work on, and on a book this size it used to land pages deep in a
+    deadline-ordered list. nullsfirst=False explicitly -- Postgres puts NULLs
+    first on a DESC sort."""
     sb = _FakeSupabase(rows=[_registry_row()], count=1)
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         await nar1_cases.list_dashboard()
-    assert sb.page_query["order"] == ("days_to_anniversary", False, False)
+    assert sb.page_query["order"] == ("created_at", True, False)
+
+
+async def test_the_default_direction_does_not_leak_into_an_explicit_sort():
+    """A header click reads as it behaves. The DESC default belongs to
+    `created_at`-when-unasked, not to every column the user picks."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(sort="company_name", direction="asc")
+    assert sb.page_query["order"] == ("company_name", False, False)
+
+
+async def test_an_explicit_created_at_ascending_is_honoured():
+    """Otherwise "oldest first" would be unreachable from the UI, because the
+    default silently rewrote the only column that carries one."""
+    sb = _FakeSupabase(rows=[_registry_row()], count=1)
+    with patch("services.nar1_cases.get_supabase", return_value=sb):
+        await nar1_cases.list_dashboard(sort="created_at", direction="asc")
+    assert sb.page_query["order"] == ("created_at", False, False)
 
 
 async def test_paging_maps_to_a_postgrest_range():

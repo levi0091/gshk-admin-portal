@@ -12,6 +12,10 @@ vi.mock('react-router-dom', async () => {
 })
 
 vi.mock('../lib/api.js', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
+// "+ Add Person" is gated on `persons:write`. Reassigned by the read-only test
+// at the bottom of this file.
+let auth
+vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 import { api } from '../lib/api.js'
 
 const PAYLOAD = {
@@ -38,6 +42,10 @@ const renderPage = () => render(<MemoryRouter><PersonsRegistryPage /></MemoryRou
 beforeEach(() => {
   vi.clearAllMocks()
   api.get.mockResolvedValue(PAYLOAD)
+  auth = {
+    hasPermission: () => true, isSuperAdmin: true, profileLoading: false,
+    profile: { id: 'u-1', display_name: 'Levi Z.', role_name: 'super_admin' },
+  }
 })
 
 describe('PersonsRegistryPage', () => {
@@ -98,7 +106,11 @@ describe('PersonsRegistryPage', () => {
   it('renders empty and error states', async () => {
     api.get.mockResolvedValue({ ...PAYLOAD, persons: [], total: 0 })
     renderPage()
-    expect(await screen.findByText('No persons match this view.')).toBeInTheDocument()
+    expect(await screen.findByText('No records found')).toBeInTheDocument()
+    // Nothing to clear — this screen opens unfiltered, so offering the button
+    // would blame a filter for an empty database.
+    expect(screen.queryByRole('button', { name: 'Clear all filters' }))
+      .not.toBeInTheDocument()
 
     api.get.mockRejectedValue(new Error('boom'))
     renderPage()
@@ -162,5 +174,112 @@ describe('PersonsRegistryPage — overlapping requests (UAT W-8)', () => {
     expect(signal.aborted).toBe(false)
     unmount()
     expect(signal.aborted).toBe(true)
+  })
+})
+
+describe('PersonsRegistryPage — column filters', () => {
+  const urls = () => api.get.mock.calls.map(c => decodeURIComponent(c[0]))
+
+  it('offers a filter on every column', async () => {
+    renderPage()
+    await screen.findByText('John Smith')
+    for (const label of ['Name', 'Identity', 'Nationality', 'Roles', 'Last Updated']) {
+      expect(screen.getByRole('button', { name: new RegExp(`^Filter ${label}`) }))
+        .toBeInTheDocument()
+    }
+  })
+
+  it('filters a name server-side', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Name/ }))
+    await user.type(screen.getByLabelText('Name value'), 'chan')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=full_name:contains:chan'))).toBe(true)
+    })
+  })
+
+  it('picks several identity types at once', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Identity/ }))
+    await user.click(screen.getByRole('checkbox', { name: 'HKID' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Passport' }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=primary_id_type:in:hkid,passport'))).toBe(true)
+    })
+  })
+
+  it('finds the people with no nationality on record', async () => {
+    // Nationality has no Viewpoint lookup and is free text, so blanks are
+    // common — and finding them is the reason to filter the column at all.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Nationality/ }))
+    await user.selectOptions(screen.getByLabelText('Condition'), 'empty')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('filter=nationality:empty:'))).toBe(true)
+    })
+  })
+
+  it('drives the SAME role filter the tabs do, through the Roles column', async () => {
+    // Two ways in, one state. Two states over one role is how a tab and a
+    // header start disagreeing about what the table is showing.
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Roles/ }))
+    await user.click(screen.getByRole('radio', { name: 'Directors' }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      expect(urls().some(u => u.includes('role=director'))).toBe(true)
+    })
+    expect(screen.getByRole('tab', { name: /Directors/ }))
+      .toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('sends a Last Updated range as two bounds', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    await user.click(screen.getByRole('button', { name: /^Filter Last Updated/ }))
+    await user.type(screen.getByLabelText('From date'), '2026-06-01')
+    await user.type(screen.getByLabelText('To date'), '2026-06-30')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => {
+      const last = decodeURIComponent(api.get.mock.calls.at(-1)[0])
+      expect(last).toContain('filter=updated_at:gte:2026-06-01')
+      expect(last).toContain('filter=updated_at:lte:2026-06-30')
+    })
+  })
+})
+
+describe('PersonsRegistryPage — write access', () => {
+  it('lets the tester role add a person', async () => {
+    // The reported case holds persons (read) AND persons (write).
+    auth.hasPermission = (m, p) =>
+      ['companies:read', 'persons:read', 'persons:write'].includes(`${m}:${p}`)
+    renderPage()
+    await screen.findByText('John Smith')
+
+    expect(screen.getByRole('button', { name: /Add Person/ })).toBeEnabled()
+  })
+
+  it('renders no + Add Person for a persons:read-only role, and says why', async () => {
+    auth.hasPermission = (m, p) => `${m}:${p}` === 'persons:read'
+    renderPage()
+    await screen.findByText('John Smith')
+
+    expect(screen.queryByRole('button', { name: /Add Person/ }))
+      .not.toBeInTheDocument()
+    const note = screen.getAllByRole('note')
+      .find(n => /Read-only/.test(n.textContent))
+    expect(note).toHaveTextContent('persons (write)')
   })
 })

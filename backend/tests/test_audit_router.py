@@ -73,6 +73,12 @@ def _wire(sb, rows, total=1, entities=None):
     q.eq.return_value = q
     q.or_.return_value = q
     q.order.return_value = q
+    # Every method services/table_filters may call has to CHAIN, or a filter
+    # applied second lands on a different mock and the assertion for it looks
+    # like the filter was never applied.
+    for method in ("in_", "ilike", "gte", "lte", "lt", "is_", "neq", "not_"):
+        getattr(q, method).return_value = q
+    q.not_.is_.return_value = q
     q.limit.return_value.execute.return_value.count = total
     q.range.return_value.execute.return_value.data = rows
     q.in_.return_value.execute.return_value.data = entities or []
@@ -131,3 +137,122 @@ def test_global_audit_requires_audit_trail_read():
          patch("middleware.auth.get_supabase") as msb:
         msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
         assert client.get("/audit/", headers=auth_headers()).status_code == 403
+
+
+# ---- WHICH module, WHICH record (migration 034) ----------------------------
+
+SUBJECT_ROW = {
+    "id": "log-11", "created_at": "2026-09-04T09:00:00Z",
+    "action_type": "CASE_STATUS_CHANGED", "source": "g_flowdesk",
+    "event_code": "CASE_STATUS_CHANGED", "action_label": "Case Status Changed",
+    "module": "post_incorporation", "subject_kind": "case",
+    "subject_id": "c1", "subject_ref": "NAR1-2026-0042",
+    "company_name": "Kanenas Holding Limited",
+    "case_id": "e1", "user_display_name": "Levi Z.",
+    "old_value": None, "new_value": "Client Verification",
+}
+
+
+def test_global_audit_returns_module_and_subject():
+    """The row says which surface the change belongs to and which record it is
+    about \u2014 the two things a reader could not previously get."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        _wire(msb.return_value, [dict(SUBJECT_ROW)], total=1)
+        entry = client.get("/audit/", headers=auth_headers()).json()["entries"][0]
+        assert entry["module"] == "post_incorporation"
+        assert entry["subject_kind"] == "case"
+        assert entry["subject_ref"] == "NAR1-2026-0042"
+        assert entry["subject_id"] == "c1"
+
+
+def test_module_filter_reaches_postgrest():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        sb = msb.return_value
+        _wire(sb, [], total=0)
+        resp = client.get("/audit/?filter=module:in:natural_person",
+                          headers=auth_headers())
+        assert resp.status_code == 200
+        q = sb.table.return_value.select.return_value
+        assert ("module", ["natural_person"]) in [c.args for c in q.in_.call_args_list]
+
+
+def test_module_filter_refuses_a_value_no_row_can_hold():
+    """A closed enum. An option the column cannot contain would look like a
+    filter that simply matched nothing."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        _wire(msb.return_value, [], total=0)
+        resp = client.get("/audit/?filter=module:in:accounting",
+                          headers=auth_headers())
+        assert resp.status_code == 422
+        assert "module" in resp.json()["detail"]
+
+
+def test_unknown_filter_column_is_a_422_not_a_silent_drop():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        _wire(msb.return_value, [], total=0)
+        resp = client.get("/audit/?filter=secret:contains:x", headers=auth_headers())
+        assert resp.status_code == 422
+
+
+def test_subject_name_filter_narrows_on_the_denormalized_name():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        sb = msb.return_value
+        _wire(sb, [], total=0)
+        assert client.get("/audit/?filter=company_name:contains:kanenas",
+                          headers=auth_headers()).status_code == 200
+        q = sb.table.return_value.select.return_value
+        assert ("company_name", "%kanenas%") in [c.args for c in q.ilike.call_args_list]
+
+
+def test_a_date_range_filter_is_accepted_on_created_at():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        sb = msb.return_value
+        _wire(sb, [], total=0)
+        resp = client.get(
+            "/audit/?filter=created_at:gte:2026-09-01&filter=created_at:lte:2026-09-04",
+            headers=auth_headers())
+        assert resp.status_code == 200
+        q = sb.table.return_value.select.return_value
+        # `lte` on a timestamptz means "to the end of that day", or picking the
+        # same date twice returns nothing at all.
+        assert q.gte.called and q.lt.called
+
+
+def test_module_and_subject_kind_are_sortable():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        _wire(msb.return_value, [], total=0)
+        for column in ("module", "subject_kind", "subject_ref"):
+            assert client.get(f"/audit/?sort={column}",
+                              headers=auth_headers()).status_code == 200
+
+
+def test_search_also_matches_the_subject_reference():
+    """Typing a BRN or a case number into the search box has to find the row."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        sb = msb.return_value
+        _wire(sb, [], total=0)
+        client.get("/audit/?search=69123456", headers=auth_headers())
+        q = sb.table.return_value.select.return_value
+        assert any("subject_ref.ilike.%69123456%" in c.args[0]
+                   for c in q.or_.call_args_list)
+
+
+def test_filters_narrow_the_count_query_too():
+    """Filtering only the page query leaves the pager quoting a total for a set
+    nobody is looking at."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.audit.get_supabase") as msb:
+        sb = msb.return_value
+        _wire(sb, [], total=0)
+        client.get("/audit/?filter=module:in:cr_filing", headers=auth_headers())
+        q = sb.table.return_value.select.return_value
+        # Once for the count query, once for the page query.
+        assert len([c for c in q.in_.call_args_list if c.args[0] == "module"]) == 2

@@ -132,16 +132,25 @@ def test_the_card_offers_the_body_corporate_vocabulary_for_a_corporate_signer():
     )
     assert summary["signatory"]["is_corporate"] is True
     assert set(summary["signatory_capacity_options"]) == set(CAPACITY_BODY_CORPORATE)
-    assert summary["signatory_capacity"] is None
+    # Was None until Levi 2026-08-31 asked for a default. All 15 values are
+    # still offered — the default pre-selects one, it does not narrow the list.
+    assert summary["signatory_capacity"] == CORPORATE_CAPACITY
 
 
 def test_choosing_a_capacity_clears_the_cards_verdict():
-    """The card runs the mapper for its verdict. Without the stored choice fed
-    in, every GSHK company reports the capacity problem forever — including the
-    ones where the operator already answered it."""
+    """The card runs the mapper for its verdict, so the stored choice has to be
+    fed in — otherwise a company whose operator already answered would report
+    the capacity problem forever.
+
+    The "before" half of this test used to assert the refusal on an unanswered
+    case. Since 2026-08-31 a corporate signatory is answered by default, so the
+    refusal is now demonstrated the only way it still occurs: by asking for a
+    capacity that is not CR's."""
     graph = _graph_with_corporate_secretary()
     assert any("Capacity (Body Corporate)" in p
-               for p in nar1_return_data.summarise(graph, year=2026)["problems"])
+               for p in nar1_return_data.summarise(
+                   graph, year=2026, signatory_capacity="Chief Signing Officer",
+               )["problems"])
     after = nar1_return_data.summarise(
         graph, year=2026, signatory_capacity=CORPORATE_CAPACITY
     )
@@ -251,3 +260,55 @@ def test_a_role_without_nar1_write_cannot_choose_the_capacity(role):
                                 json={"signatory_capacity": CORPORATE_CAPACITY},
                                 headers={"Authorization": "Bearer tok"})
     assert response.status_code == 403
+
+
+# ---- the default (Levi 2026-08-31) ------------------------------------------
+#
+# Every real GSHK client has GSHK Ltd as its body-corporate company secretary,
+# and in practice a GSHK director signs on its behalf. Making the operator pick
+# that same value on every case was ceremony, not safety, so it is now the
+# default — the same string `scripts/nar1_regression.py` has assumed all along.
+#
+# The default is deliberately NOT applied to an individual signatory: CR keeps
+# two separate vocabularies, and a body-corporate value on an individual is a
+# misstatement the mapper would rightly refuse.
+
+def test_a_corporate_signatory_with_no_stored_choice_defaults_to_the_gshk_case():
+    from services.tpsi.forms.cr_vocabularies import default_capacity
+    assert default_capacity(is_corporate=True) == (
+        "Director of the Company Secretary (Body Corporate)"
+    )
+
+
+def test_the_default_is_a_capacity_cr_actually_accepts():
+    """A default outside CR's vocabulary would fail every filing by default."""
+    from services.tpsi.forms.cr_vocabularies import default_capacity
+    assert default_capacity(is_corporate=True) in CAPACITY_BODY_CORPORATE
+
+
+def test_an_individual_signatory_gets_no_body_corporate_default():
+    from services.tpsi.forms.cr_vocabularies import default_capacity
+    assert default_capacity(is_corporate=False) is None
+
+
+def test_the_return_data_reports_the_default_so_the_picker_shows_it():
+    data = nar1_return_data.summarise(
+        _graph_with_corporate_secretary(), year=2026, signatory_capacity=None)
+    assert data["signatory_capacity"] == CORPORATE_CAPACITY
+
+
+def test_the_default_also_clears_the_refusal_so_the_screen_and_the_filing_agree():
+    """A picker showing a capacity while the verdict still says the company
+    cannot be filed is the worst of both — the operator sees an answer and a
+    refusal to the same question."""
+    data = nar1_return_data.summarise(
+        _graph_with_corporate_secretary(), year=2026, signatory_capacity=None)
+    assert not any("Capacity (Body Corporate)" in p for p in data["problems"])
+
+
+def test_a_stored_choice_still_beats_the_default():
+    """The default must never overwrite a deliberate answer."""
+    chosen = "Company Secretary of the Company Secretary (Body Corporate)"
+    data = nar1_return_data.summarise(
+        _graph_with_corporate_secretary(), year=2026, signatory_capacity=chosen)
+    assert data["signatory_capacity"] == chosen

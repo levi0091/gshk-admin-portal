@@ -37,15 +37,71 @@ def test_transform_address_maps_core_fields():
     }
 
 
-def test_transform_address_collapses_overflow_lines_into_line3():
-    vp_row = {
-        "AddrNr": 1, "Address": "L1", "Address2": "L2", "Address3": "L3",
-        "Address4": "L4", "Address5": "L5", "City": None, "State": None,
+def _address_row(**overrides):
+    """A Viewpoint Addresses row with every column present and empty."""
+    row = {
+        "AddrNr": 1, "Address": None, "Address2": None, "Address3": None,
+        "Address4": None, "Address5": None, "City": None, "State": None,
         "Country": None, "PostalCode": None, "AddressLoc1": None,
         "AddressLoc2": None, "CityLoc": None,
     }
-    result = transform_address(vp_row)
-    assert result["line3"] == "L3, L4, L5"
+    row.update(overrides)
+    return row
+
+
+def test_transform_address_compacts_leading_empty_source_lines():
+    """The 861-row shape: Viewpoint's Address/Address2 are empty and the
+    content starts at Address3. Collapsing 3+4+5 into line3 put all of it in
+    one 60-char slot and left line1 and line2 empty, which is what made most
+    of the book unfilable. The lines must move up instead."""
+    result = transform_address(_address_row(
+        Address3="Cakilli Sokak Oypas Ev Yani Hane 3",
+        Address4="Gonyeli Yenikent",
+        Address5="Nicosia",
+    ))
+    assert result["line1"] == "Cakilli Sokak Oypas Ev Yani Hane 3"
+    assert result["line2"] == "Gonyeli Yenikent"
+    assert result["line3"] == "Nicosia"
+
+
+def test_transform_address_keeps_three_source_lines_one_to_one():
+    """Three lines fit three slots, so nothing is merged."""
+    result = transform_address(_address_row(
+        Address="Flat A", Address2="Tower 3", Address3="18 Kings Road",
+    ))
+    assert [result["line1"], result["line2"], result["line3"]] == [
+        "Flat A", "Tower 3", "18 Kings Road",
+    ]
+
+
+def test_transform_address_merges_the_smallest_adjacent_pair_when_over_three():
+    """Four source lines must become three. The pair with the smallest
+    combined length is merged, because minimising the longest resulting line
+    is what keeps the address inside CR's 60-char cap."""
+    result = transform_address(_address_row(
+        Address="Flat A", Address2="Tower 3",
+        Address3="18 Kings Road", Address4="North Point",
+    ))
+    assert [result["line1"], result["line2"], result["line3"]] == [
+        "Flat A, Tower 3", "18 Kings Road", "North Point",
+    ]
+
+
+def test_transform_address_never_truncates_a_long_source_line():
+    """A single Viewpoint line already over 60 is written whole. Trimming a
+    statutory address to fit is worse than loading one a later validation
+    names — 25 rows in the real book are this shape."""
+    long_line = "M. Floor House-15, 16, Sultan Bin Khalifa Al Habtoor Bldg, 127-44C ST DM.65"
+    assert len(long_line) > 60
+    result = transform_address(_address_row(Address=long_line, Address2="Dubai"))
+    assert result["line1"] == long_line
+
+
+def test_transform_address_unused_lines_are_none():
+    result = transform_address(_address_row(Address="Sole line"))
+    assert result["line1"] == "Sole line"
+    assert result["line2"] is None
+    assert result["line3"] is None
 
 
 def test_transform_address_non_hk_country_is_not_hk_address():
@@ -99,7 +155,13 @@ def test_transform_person_falls_back_to_search_name_when_name_blank():
     assert result["full_name"] == "FALLBACK NAME"
 
 
-def test_transform_person_merges_aliases_into_former_name():
+def test_transform_person_keeps_alias_separate_from_former_name():
+    """REPLACES test_transform_person_merges_aliases_into_former_name, whose
+    behaviour was `FormerName or Aliases` -- one column for two different
+    facts. CR asks for them separately (indvPrevEngName vs indvAlsEngName) and
+    they mean different things: a previous name is one you no longer use, an
+    alias is one you also use. Merging them files a person's current alias as
+    a name they have abandoned."""
     vp_row = {
         "RefCode": "X2", "Name": "Jane Doe", "ChnsName": None,
         "GivenNames": "Jane", "FormerName": None, "FormerGivenNames": None,
@@ -107,8 +169,31 @@ def test_transform_person_merges_aliases_into_former_name():
         "NationalityCode": None, "Occupation": None, "PlaceBirth": None,
         "MaritalStatus": None, "DateDeath": None, "Aliases": "Jane Smith",
     }
+
     result = transform_person(vp_row)
-    assert result["former_name"] == "Jane Smith"
+
+    assert result["alias_en"] == "Jane Smith"
+    assert result["former_name"] is None
+
+
+def test_transform_person_carries_both_names_in_chinese_too():
+    """CR wants Previous Names and Alias in Chinese as well as English."""
+    vp_row = {
+        "RefCode": "X3", "Name": "Jane Doe", "ChnsName": None,
+        "GivenNames": "Jane", "FormerName": "Jane Roe",
+        "FormerGivenNames": None, "Email": None, "BirthDate": None,
+        "Gender": None, "Nationality": None, "NationalityCode": None,
+        "Occupation": None, "PlaceBirth": None, "MaritalStatus": None,
+        "DateDeath": None, "Aliases": "JD",
+        "ChnsFormerName": "前名", "ChnsAliases": "別名",
+    }
+
+    result = transform_person(vp_row)
+
+    assert result["former_name"] == "Jane Roe"
+    assert result["former_name_zh"] == "前名"
+    assert result["alias_en"] == "JD"
+    assert result["alias_zh"] == "別名"
 
 
 def _entity_row(**overrides):
@@ -219,7 +304,11 @@ def test_transform_compliance_identity_documents_returns_passport_and_hkid():
     hkid = next(r for r in result if r["id_type"] == "hkid")
     assert passport["person_id"] == "11111111-1111-1111-1111-111111111111"
     assert passport["id_number"] == "K1234567"
-    assert passport["issuing_country"] == "Hong Kong"
+    # "HK", not "Hong Kong": the transform now stores the canonical alpha-2 the
+    # profile dropdowns are keyed by, instead of leaving a backfill to come back
+    # for it (2026-09-03). Both FILE with CR; only one can be selected on the
+    # profile, and the other rendered as "Hong Kong (not in list)".
+    assert passport["issuing_country"] == "HK"
     assert passport["issue_date"] == "2018-01-01"
     assert passport["expiry_date"] == "2028-01-01"
     assert passport["vp_source_key"] == "LEUNGP:compliance-passport"
@@ -488,3 +577,50 @@ def test_person_created_at_comes_from_viewpoint():
            "DateEntered": datetime(2020, 1, 2)}
     out = transform_person(row)
     assert out["created_at"] == datetime(2020, 1, 2)
+
+
+# --------------------------------------------------------------------------- #
+#  Country normalisation at import (2026-09-03)
+#
+#  A reimport rewrites `addresses.country` from source, so fixing these rows in
+#  a migration and not here means fixing them again after every reimport --
+#  `reimport_addresses` is a routine operation, not a one-off.
+# --------------------------------------------------------------------------- #
+
+def test_transform_address_rewrites_the_chinese_hong_kong():
+    """Viewpoint's 'HK-CH' is 香港. CR has no such code, and an address loaded
+    with it kills the NAR1 at Data Verification weeks later."""
+    result = transform_address(_address_row(Country="HK-CH"))
+    assert result["country"] == "HK"
+    # And it is still recognised as a Hong Kong address, which is what drives
+    # the district validation.
+    assert result["is_hk_address"] is True
+
+
+def test_transform_address_rewrites_the_other_subdivisions():
+    for source, expected in (("GB-ENG", "GB"), ("US-DE", "US"),
+                             ("TW-CH", "TW"), ("ZR", "CD")):
+        assert transform_address(_address_row(Country=source))["country"] == expected
+
+
+def test_transform_address_leaves_a_country_cr_already_takes_alone():
+    assert transform_address(_address_row(Country="VN"))["country"] == "VN"
+
+
+def test_transform_address_passes_an_unknown_country_through_untouched():
+    """Never invented. An unmapped value loads as Viewpoint has it, for the
+    reconciliation report to name and a human to re-pick."""
+    assert transform_address(_address_row(Country="ZZ"))["country"] == "ZZ"
+    assert transform_address(_address_row(Country=None))["country"] is None
+
+
+def test_identity_documents_normalise_their_issuing_country_too():
+    """`indvPptIssCtry` is a CR-validated field on the NAR1, exactly like an
+    address country — a passport issued in 'GB-SCT' is as unfilable."""
+    report = ReconciliationReport()
+    doc = transform_identity_document(
+        {"RefCode": "R1", "SeqNr": 1, "IdType": "P", "IdCode": "P123",
+         "Country": "GB-SCT", "FromDate": None, "ToDate": None},
+        {"R1": "person-1"}, report,
+    )
+    assert doc["issuing_country"] == "GB"
