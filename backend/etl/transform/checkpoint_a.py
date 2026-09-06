@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from etl.reference_data import decode_id_type, decode_officer_role, AMBIGUOUS_OFFICER_CODES
 from etl.reconciliation import ReconciliationReport
 from services.tpsi.forms.cr_vocabularies import canonical_country
@@ -78,10 +80,47 @@ def transform_address(row: dict) -> dict:
     }
 
 
+# The import instant, fixed once per process so every row that needs it shares
+# one timestamp instead of drifting across the run. Naive UTC on purpose: the
+# other created_at values come straight from SQL Server as naive datetimes, and
+# a batch mixing naive and aware values makes psycopg2 interpret rows
+# inconsistently on the way into a timestamptz column (same trap as
+# checkpoint_c's _MISSING_DATE_SENTINEL).
+_IMPORTED_AT = datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _without_unknown_created_at(record: dict) -> dict:
+    """Substitute the import instant when Viewpoint has no DateEntered for a ref.
+
+    entities.created_at and persons.created_at are NOT NULL DEFAULT now(), and
+    handing psycopg2 an explicit None defeats that default and aborts the whole
+    batched insert -- a single ref without a DateEntered (GEMMAL, 1 of 12,827 on
+    2026-09-06) took down the entire PROD load at Checkpoint A.
+
+    The key has to stay PRESENT: upsert_rows sends each chunk as one multi-row
+    INSERT, and SQLAlchemy compiles the column list from the first row, so a row
+    that merely omits created_at raises CompileError ("a Python-side value or SQL
+    expression is required"). So the fallback is supplied here rather than left
+    to the column default -- same value the default would have produced, just
+    computed Python-side where the batch can stay homogeneous.
+
+    Deliberately NOT the 1970 sentinel checkpoint_c uses for audit_log. That one
+    describes a historical EVENT and is paired with metadata["vp_date_missing"]
+    so it stays queryable; a live 2024 company dated 1970 would just render as a
+    wrong creation date with nothing alongside it to say why.
+
+    upsert_rows keeps created_at out of the ON CONFLICT SET, so a re-run never
+    moves a date that was set correctly the first time.
+    """
+    if record.get("created_at") is None:
+        record["created_at"] = _IMPORTED_AT
+    return record
+
+
 def transform_person(row: dict) -> dict:
     """Joined RefMaster (RefType='I') + Compliance row -> persons insert dict."""
     full_name = (row.get("Name") or row.get("SearchName") or "UNKNOWN").strip()
-    return {
+    return _without_unknown_created_at({
         "vp_source_key": row["RefCode"],
         "full_name": full_name,
         "given_names": row.get("GivenNames"),
@@ -112,7 +151,7 @@ def transform_person(row: dict) -> dict:
         # derived from the imported EventLog once Checkpoint C has loaded it.)
         "created_at": row.get("DateEntered"),
         "residential_address_id": None,  # backfilled in Checkpoint C from RefAddress
-    }
+    })
 
 
 def transform_entity(row: dict, bus_name: dict | None) -> dict:
@@ -121,7 +160,7 @@ def transform_entity(row: dict, bus_name: dict | None) -> dict:
     ceased = status_code == "C" or bool(bus_name and bus_name.get("DateCessation"))
     company_name = row.get("CompName") or row.get("Name") or "UNKNOWN"
     notes = ", ".join(n for n in (row.get("Note"), row.get("AccountNote")) if n)
-    return {
+    return _without_unknown_created_at({
         "vp_source_key": row["EntCode"],
         "company_name": company_name,
         "company_name_zh": (bus_name or {}).get("ChineseBusName"),
@@ -151,7 +190,7 @@ def transform_entity(row: dict, bus_name: dict | None) -> dict:
         "date_name_changed": row.get("DateNameChanged"),
         "case_notes": notes or None,
         "assigned_to": None,  # no VP admin-code -> new-user mapping (confirmed)
-    }
+    })
 
 
 def transform_identity_document(

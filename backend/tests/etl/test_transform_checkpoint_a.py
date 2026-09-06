@@ -579,6 +579,65 @@ def test_person_created_at_comes_from_viewpoint():
     assert out["created_at"] == datetime(2020, 1, 2)
 
 
+def test_entity_without_date_entered_falls_back_instead_of_nulling_created_at():
+    """entities.created_at is NOT NULL. An explicit None aborts the whole batched
+    insert -- one such ref (GEMMAL, 1 of 12,827) took down the entire PROD load
+    at Checkpoint A. The company must still load, carrying the import instant."""
+    from etl.transform.checkpoint_a import transform_entity
+    from datetime import datetime
+
+    row = {
+        "EntCode": "GEMMAL", "CompName": "Gemmalink Limited", "Name": "Gemmalink Limited",
+        "DateEntered": None, "IncorpNr": "76762080", "IncorpDate": None,
+        "IncorpPlace": None, "Status": "L",
+    }
+    out = transform_entity(row, None)
+    assert isinstance(out["created_at"], datetime)
+    assert out["created_at"].year > 2000, "not the 1970 audit_log sentinel"
+    assert out["company_name"] == "Gemmalink Limited"
+
+
+def test_person_without_date_entered_falls_back_instead_of_nulling_created_at():
+    from etl.transform.checkpoint_a import transform_person
+    from datetime import datetime
+
+    out = transform_person({"RefCode": "SMITHJ", "Name": "SMITH, John", "DateEntered": None})
+    assert isinstance(out["created_at"], datetime)
+    assert out["full_name"] == "SMITH, John"
+
+
+def test_created_at_key_is_always_present_so_batched_inserts_compile():
+    """upsert_rows sends a chunk as ONE multi-row INSERT and SQLAlchemy compiles
+    the column list from the first row. A row that merely OMITS created_at raises
+    CompileError and takes the batch with it, so the key must never be dropped --
+    every row in a mixed batch has to carry it."""
+    from etl.transform.checkpoint_a import transform_entity
+    from datetime import datetime
+
+    dated = transform_entity(
+        {"EntCode": "ACME", "CompName": "Acme Limited", "Name": "Acme Limited",
+         "DateEntered": datetime(2019, 7, 8), "IncorpNr": "1", "IncorpDate": None,
+         "IncorpPlace": None, "Status": "L"}, None)
+    undated = transform_entity(
+        {"EntCode": "GEMMAL", "CompName": "Gemmalink Limited", "Name": "Gemmalink Limited",
+         "DateEntered": None, "IncorpNr": "2", "IncorpDate": None,
+         "IncorpPlace": None, "Status": "L"}, None)
+    assert dated.keys() == undated.keys()
+
+
+def test_undated_created_at_is_naive_like_the_sql_server_values():
+    """A batch mixing naive and tz-aware datetimes makes psycopg2 interpret rows
+    inconsistently on the way into timestamptz. Viewpoint's own DateEntered
+    values are naive, so the fallback must be too."""
+    from etl.transform.checkpoint_a import transform_entity
+
+    out = transform_entity(
+        {"EntCode": "GEMMAL", "CompName": "Gemmalink Limited", "Name": "Gemmalink Limited",
+         "DateEntered": None, "IncorpNr": "2", "IncorpDate": None,
+         "IncorpPlace": None, "Status": "L"}, None)
+    assert out["created_at"].tzinfo is None
+
+
 # --------------------------------------------------------------------------- #
 #  Country normalisation at import (2026-09-03)
 #
