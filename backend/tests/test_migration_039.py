@@ -224,17 +224,22 @@ def test_the_registry_is_still_invisible_to_anon_and_authenticated(conn):
     every new relation in `public`. A recreate that forgot to restate the REVOKE
     would publish every case row through PostgREST.
 
-    Skipped on the vanilla Postgres the CI `migrations` job runs against, where
-    neither role exists — the migration guards the same way.
+    Checked per role, never as a set. The guard used to skip only when NEITHER
+    role existed and then query BOTH — so an environment holding exactly one of
+    them (CI, which bootstrapped `authenticated` alone) sailed past the skip and
+    died on `role "anon" does not exist`. That failure blocked every PROD deploy
+    for a day, because Railway is set to wait for CI. `service_role` below always
+    had it right; this now matches it. The migration guards the same way.
     """
     with conn.cursor() as cur:
         cur.execute("SELECT rolname FROM pg_roles "
                     "WHERE rolname IN ('anon','authenticated','service_role')")
         roles = {r[0] for r in cur.fetchall()}
-        if not {"anon", "authenticated"} & roles:
+        present = [r for r in ("anon", "authenticated") if r in roles]
+        if not present:
             pytest.skip("Supabase roles absent (vanilla Postgres)")
 
-        for role in ("anon", "authenticated"):
+        for role in present:
             cur.execute(
                 "SELECT has_table_privilege(%s, 'public.nar1_case_registry', "
                 "'SELECT')", (role,),
