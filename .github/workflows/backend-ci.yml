@@ -59,7 +59,18 @@ jobs:
       - name: Bootstrap Supabase prerequisites
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated; END IF; END \$\$;"
+          # All THREE Supabase roles, not just `authenticated`. Creating one of a
+          # set is worse than creating none: a privilege test that guards with
+          # "do any of these roles exist?" then stops skipping and queries a role
+          # that still does not, which is how migration 039's REVOKE test died
+          # with `role "anon" does not exist` and blocked every PROD deploy
+          # (Railway waits for CI). With all three present those REVOKE/GRANT
+          # assertions actually run, so a migration that published a case view to
+          # `anon` would now fail here instead of reaching production.
+          for role in anon authenticated service_role; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+              -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='$role') THEN CREATE ROLE $role; END IF; END \$\$;"
+          done
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS auth;"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY);"
 
