@@ -3,6 +3,7 @@ import { api } from '../../lib/api.js'
 import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
 import FilingSummaryCard from './FilingSummaryCard.jsx'
+import { formatMoney as money } from '../../lib/format.js'
 import { describeError } from './workflow.js'
 
 /** CR's own receipt vocabulary — mirrors nar1_cases.RECEIPT_REQUIRED. */
@@ -93,7 +94,15 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
     preflight?.on_time_fee != null &&
     Number(preflight.fee) > Number(preflight.on_time_fee)
   )
-  const blocked = preflight === undefined || preflight === null || !sufficient
+  // THE RETURN IS NOT DUE YET (Levi 2026-09-07). An annual return reports on
+  // the year ending at the company's return date, so it cannot be delivered
+  // before that date arrives. `filings.submit` refuses this independently and
+  // is the authority — the flag is read straight off the pre-flight rather
+  // than recomputed here, so the screen and the gate cannot disagree about
+  // which anniversary they mean.
+  const tooEarly = preflight?.too_early === true
+  const blocked = preflight === undefined || preflight === null
+    || !sufficient || tooEarly
 
   async function submit() {
     onError(null); setBusy(true)
@@ -143,6 +152,31 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
           <b>The fee and balance are unavailable, so filing is blocked.</b>
           {preflightError?.hint && <div style={{ marginTop: 4 }}>{preflightError.hint}</div>}
         </div>
+      ) : tooEarly ? (
+        // ITS OWN NOTE, ABOVE THE FEE, and the fee panel is not drawn at all.
+        // Being early is not a money problem and quoting a fee beside it would
+        // invite a top-up that changes nothing — CR will not take this return
+        // today at any price. A card note rather than an alert, for the reason
+        // every other note on this screen is one: nothing the operator pressed
+        // was refused, this is the panel stating why it has no filing to offer.
+        <div className="card-note card-note-warn" role="status"
+             data-testid="submission-too-early">
+          <b>This return is not due yet, so it cannot be filed.</b>
+          <div style={{ marginTop: 4 }}>
+            The company's return date is{' '}
+            <b>{preflight.return_date}</b>
+            {preflight.days_until_return_date != null && (
+              <> — {preflight.days_until_return_date} day
+                {preflight.days_until_return_date === 1 ? '' : 's'} from today</>
+            )}
+            . An annual return reports on the year ending on that date and
+            cannot be delivered before it.
+          </div>
+          <div style={{ marginTop: 4 }}>
+            If that date looks wrong, check the return year on this filing and
+            the incorporation date on the company record.
+          </div>
+        </div>
       ) : (
         <div className={`card-note ${sufficient ? '' : 'card-note-warn'}`} role="status">
           <div>
@@ -188,7 +222,10 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
       {/* The arithmetic, not just the two numbers. "Balance HK$12,480, fee
           HK$2,610" leaves the operator to subtract; v11's deposit box does it,
           because what they actually need to know is what is left afterwards. */}
-      {preflight && (
+      {/* Not drawn when the return is early: the arithmetic would be real and
+          irrelevant, and "Balance after ≈ HK$8,000" beside a return CR will
+          not accept today reads as an invitation to top up and press on. */}
+      {preflight && !tooEarly && (
         <div className="deposit-box">
           <div>
             <div className="deposit-l">
@@ -273,7 +310,11 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
 
           {blocked && (
             <div className="ab-note" style={{ marginTop: 10 }}>
-              Filing is blocked until CR confirms the balance covers the fee.
+              {tooEarly
+                // The balance is not the reason and saying it is would send
+                // the operator to top up an account that is already fine.
+                ? 'Filing is blocked until this company\'s return date.'
+                : 'Filing is blocked until CR confirms the balance covers the fee.'}
             </div>
           )}
         </div>
@@ -293,14 +334,6 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
    field that moved — see components/case/RefusalDetail.jsx. It was here
    because the banner could not show a table and was off-screen anyway; the
    banner now shows cards and the page scrolls to it. */
-
-/** HK dollars, grouped. A bare "12480" beside "3480.00" is unreadable. */
-function money(value) {
-  const n = Number(value)
-  return Number.isFinite(n)
-    ? n.toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : String(value ?? '—')
-}
 
 function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
   const [fields, setFields] = useState(

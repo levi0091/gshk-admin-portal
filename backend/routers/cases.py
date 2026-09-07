@@ -8,7 +8,7 @@ import asyncio
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
                      UploadFile)
@@ -989,7 +989,7 @@ MAX_RECIPIENTS = 20
 
 
 class VerificationSendIn(BaseModel):
-    """Who this send goes to.
+    """Who this send goes to, and by when they must answer.
 
     A list, because a board of three directors is three recipients on ONE
     message. A bare string is still accepted: it is what the route shipped with,
@@ -999,8 +999,61 @@ class VerificationSendIn(BaseModel):
     send time, not by the client. An empty LIST is not the same thing and is
     refused: it says the operator cleared every chip, and mailing the directors
     anyway would send a statutory return to people they had just removed.
+
+    `respond_by` IS REQUIRED, and is declared optional here only so that leaving
+    it out is answered by _deadline_from() below with a sentence somebody can
+    read. Pydantic's own refusal for a missing required field is a 422 that
+    echoes the submitted body back, which on this route means echoing a list of
+    directors' email addresses into an error the browser logs.
     """
     to: list[str] | str | None = None
+    respond_by: str | None = None
+
+
+#: The end of the chosen day, Hong Kong. A deadline is a DATE, and a client told
+#: "by 20 September" has until that day is over -- not until midnight UTC, which
+#: is 08:00 on the 20th to them and would expire the link during the morning of
+#: the day they were given.
+_HK = timezone(timedelta(hours=8))
+
+
+def _deadline_from(respond_by: str | None) -> datetime:
+    """The operator's chosen deadline, as the instant it actually expires.
+
+    MANDATORY (Levi 2026-09-07). This used to be `sent + 14 days`, computed
+    inside the token issuer, and nobody chose it. The fortnight was not a
+    business rule -- some clients are chased inside a week, and a return
+    prepared months before its filing window should not have its link die long
+    before anyone intends to file. So the case worker picks the date, the screen
+    will not send without one, and this is where a caller that skipped it is
+    told so in words.
+
+    Refused when it is not in the future: a deadline already past would issue a
+    link that is dead on arrival and hand `jobs.auto_approve_nar1` a case it
+    would approve on the client's "silence" the same night -- recording consent
+    from somebody who never had time to answer.
+    """
+    if not (respond_by or "").strip():
+        raise HTTPException(
+            422, "a response deadline is required: pick the date the client "
+                 "must reply by before sending this return")
+    try:
+        day = date.fromisoformat(str(respond_by).strip()[:10])
+    except ValueError:
+        raise HTTPException(
+            422, f"not a date: {respond_by!r} — the response deadline must be "
+                 "a calendar date, as YYYY-MM-DD")
+
+    today = datetime.now(_HK).date()
+    if day < today:
+        raise HTTPException(
+            422, f"the response deadline {day.isoformat()} is in the past. The "
+                 "client would receive a link that has already expired, and "
+                 "the return would be approved on their silence tonight.")
+
+    # 23:59:59 on the chosen day, in Hong Kong, stored as the UTC instant.
+    return datetime.combine(day, time(23, 59, 59), tzinfo=_HK).astimezone(
+        timezone.utc)
 
 
 @router.get("/{case_id}/verification/recipients")
@@ -1086,6 +1139,18 @@ async def send_verification(
     if refusal:
         raise HTTPException(409, refusal)
 
+    # Before anything is rendered or mailed. A missing deadline is a refusal
+    # the operator fixes in two seconds, and finding that out after a 15-page
+    # AcroForm has been filled is a wasted CPU-second and a slower answer.
+    deadline_at = _deadline_from(body.respond_by)
+
+    #: Addresses that will NOT be mailed, each with the reason. Seeded here
+    #: rather than at the send loop because a malformed address fails before any
+    #: send is attempted, and it has to land in the SAME report as a Resend
+    #: rejection — the operator's question is "who did not get it", and the
+    #: answer must not depend on which of two ways an address failed.
+    failures: list[dict] = []
+
     if body.to is not None:
         given = [body.to] if isinstance(body.to, str) else list(body.to)
         # Refused, not quietly turned back into "the directors" — see
@@ -1103,16 +1168,37 @@ async def send_verification(
         seen = set()
         for address in given:
             address = (address or "").strip()
-            # These direct a document carrying directors' residential addresses
-            # and identity numbers. Free text is not an address.
+            # ONE BAD ADDRESS NO LONGER REFUSES THE WHOLE SEND (Levi
+            # 2026-09-07). This used to raise 422, so a three-director board
+            # with one typo'd address left all three unmailed and the operator
+            # with a refusal naming the typo but nothing else — and, since this
+            # is one message per director, there was never any reason the other
+            # two could not have gone. The bad address is reported by name in
+            # `failed` alongside anything Resend rejects, and the send proceeds.
+            #
+            # The check itself stays exactly as strict. These direct a document
+            # carrying directors' residential addresses and identity numbers;
+            # free text is not an address and is never handed to Resend.
             if not _ADDRESS.match(address):
-                raise HTTPException(422, f"not an email address: {address!r}")
+                failures.append({
+                    "email": address or "(blank)",
+                    "reason": "not a valid email address",
+                })
+                continue
             # Case-insensitively deduped: two chips differing only in case are
             # one mailbox, and Resend would deliver the return to it twice.
             if address.lower() in seen:
                 continue
             seen.add(address.lower())
             recipients.append(address)
+        # Every address given was malformed, so there is nobody to send to and
+        # nothing partial to report. Named, so the operator can see which chip
+        # to fix rather than re-reading all twenty.
+        if not recipients:
+            bad = ", ".join(f["email"] for f in failures)
+            raise HTTPException(
+                422, f"nothing was sent: no valid email address was given "
+                     f"({bad})")
     else:
         # Every current director with an address — the people whose particulars
         # this return declares. The company contact is the fallback for a
@@ -1187,7 +1273,11 @@ async def send_verification(
     link_base = _approval_link_base(request)
     if link_base:
         try:
-            targets = nar1_approvals.issue(case_id=case_id, recipients=targets)
+            # The operator's deadline, not a fortnight from now. One value for
+            # the date the email prints, the moment the link dies and the
+            # moment the auto-approval job acts — see nar1_approvals.issue.
+            targets = nar1_approvals.issue(
+                case_id=case_id, recipients=targets, expires_at=deadline_at)
         except Exception as exc:  # noqa: BLE001
             # A token store that will not write must not stop the return going
             # out. Without links the message is exactly the one that shipped
@@ -1199,7 +1289,7 @@ async def send_verification(
 
     operator = (user.get("email") or "").strip() or None
 
-    sends, failures = [], []
+    sends = []
     for index, target in enumerate(targets):
         approval_url = (
             f"{link_base}/public/nar1-approval/{target['token']}"
@@ -1208,7 +1298,10 @@ async def send_verification(
         subject, html = email_service.verification_email(
             case, entity, attachment_name=attachment_name,
             approval_url=approval_url,
-            deadline=target.get("expires_at"),
+            # The chosen deadline, whether or not a token was issued: the
+            # letter's "if we do not hear from you by ..." sentence is the one
+            # thing that must survive a deployment that cannot build links.
+            deadline=target.get("expires_at") or deadline_at,
             # The GIVEN name where the record has one. The letter greets the
             # reader by name, and this book is mostly Hong Kong directors
             # recorded surname-first — splitting a full name on whitespace
@@ -1316,6 +1409,16 @@ async def send_verification(
                   # Named, not counted. An operator who sees "2 of 3 sent" and
                   # not WHICH one failed cannot resend to the right person.
                   "failed_to": [f["email"] for f in failures],
+                  # And WHY each one failed. "not a valid email address" is
+                  # fixed on the chip; a Resend rejection is fixed by pressing
+                  # Send again — the trail should not make a reader guess
+                  # which of those happened.
+                  "failed": failures,
+                  # The deadline the client was actually given. It is the same
+                  # instant the links expire on and the same one
+                  # `jobs.auto_approve_nar1` reads, so a trail that recorded a
+                  # different date could not be used to check either.
+                  "respond_by": deadline_at.isoformat(),
                   # Both, for the same reason `to` and `intended_to` are both
                   # here: on a test deployment the copy is dropped rather than
                   # delivered, and a trail that recorded only the intention
@@ -1380,6 +1483,16 @@ async def send_verification(
             # Named so the operator can resend to exactly the people who were
             # missed, rather than re-mailing a board that mostly already has it.
             "failed_to": [f["email"] for f in failures],
+            # The same list WITH REASONS. The screen tells the operator which
+            # addresses arrived and which did not, and "not a valid email
+            # address" is a different instruction from "the mail provider
+            # refused it" — one is fixed by editing a chip, the other by
+            # pressing Send again.
+            "failed": failures,
+            # What the client was actually told, echoed back so the screen can
+            # state the deadline it just committed GSHK to rather than the one
+            # it thinks it asked for.
+            "respond_by": deadline_at.isoformat(),
             # False when PUBLIC_API_BASE_URL is unset and the request's own
             # base URL is unusable. The screen says so, because the difference
             # decides whether the client can confirm with a button or must

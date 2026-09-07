@@ -37,12 +37,15 @@ export function companyProfileCaps(can) {
     toggleFlags: can('companies', 'write'),
     editShareClasses: can('companies', 'write'),
     editParties: can('companies', 'write'),
-    // POST /companies/{id}/documents
-    uploadDocument: can('documents', 'write'),
-    // GET /documents/{id}/download
-    downloadDocument: can('documents', 'read'),
-    // DELETE /documents/{id} — a THIRD level on the documents module.
-    removeDocument: can('documents', 'delete'),
+    // POST /companies/{id}/documents, GET /documents/{id}/download,
+    // DELETE /documents/{id} — ALL ON `companies` (Levi 2026-09-07). There is
+    // no documents module any more: the papers filed against a company are
+    // part of that record, so the right to change the record is the right to
+    // add and remove them. Delete included — neither owner module has a delete
+    // level, and removing a document IS changing what the record holds.
+    uploadDocument: can('companies', 'write'),
+    downloadDocument: can('companies', 'read'),
+    removeDocument: can('companies', 'write'),
     // POST /cases. Deliberately not `companies:write`: editing a profile does
     // not entitle you to drive a statutory filing.
     openCase: can('nar1', 'write'),
@@ -52,19 +55,24 @@ export function companyProfileCaps(can) {
 /**
  * Person profile (`GET /persons/{id}`, opened by `persons:read`).
  *
- * THE IDENTITY DOCUMENTS ARE `persons`, NOT `documents`. A passport record is
- * part of the person — `POST /persons/{id}/identity-documents` is gated on
- * `persons:write` — even though it can carry a scan. Only the SCAN is a
- * document, so only downloading it asks the documents module.
+ * EVERY LINE IS `persons` NOW (Levi 2026-09-07). The identity documents always
+ * were — a passport record is part of the person, and
+ * `POST /persons/{id}/identity-documents` is gated on `persons:write` — while
+ * the ordinary documents beside them asked a separate `documents` module. So a
+ * role could add a director's passport record and be refused the proof of
+ * address filed underneath it, which is not a distinction anybody wanted to
+ * make. The module is gone; a person's papers follow the person.
  */
 export function personProfileCaps(can) {
   return {
     editPerson: can('persons', 'write'),
     editIdentityDocuments: can('persons', 'write'),
     addIdentityDocument: can('persons', 'write'),
-    uploadDocument: can('documents', 'write'),
-    downloadDocument: can('documents', 'read'),
-    removeDocument: can('documents', 'delete'),
+    uploadDocument: can('persons', 'write'),
+    downloadDocument: can('persons', 'read'),
+    // Removing a document IS changing what the record holds — and `persons`
+    // has no delete level to map the old `documents:delete` onto.
+    removeDocument: can('persons', 'write'),
   }
 }
 

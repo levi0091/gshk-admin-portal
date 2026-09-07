@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { formatDate } from '../lib/format.js'
+import { formatDate, formatNumber } from '../lib/format.js'
 import { labelForDays } from '../lib/anniversary.js'
 import useAbortableGet from '../lib/useAbortableGet.js'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -300,7 +300,7 @@ export default function DashboardPage() {
                 className={`stat-card accent-left is-filter${actionOn ? ' is-on' : ''}`}
                 onClick={() => toggleTile(ACTION_STATUSES, actionOn)}>
           <div className="stat-lbl">Action Required</div>
-          <div className="stat-val stat-accent">{actionCount}</div>
+          <div className="stat-val stat-accent">{formatNumber(actionCount)}</div>
           <div className="stat-sub">Data Verification · Client response · Signing · Submission</div>
           <span className="stat-on-note">
             {actionOn ? 'Filtering — click to clear' : 'Click to filter'}
@@ -310,7 +310,7 @@ export default function DashboardPage() {
                 className={`stat-card accent-indigo is-filter${pendingOn ? ' is-on' : ''}`}
                 onClick={() => toggleTile(PENDING_STATUSES, pendingOn)}>
           <div className="stat-lbl">Pending</div>
-          <div className="stat-val" style={{ color: 'var(--indigo)' }}>{pendingCount}</div>
+          <div className="stat-val" style={{ color: 'var(--indigo)' }}>{formatNumber(pendingCount)}</div>
           <div className="stat-sub">Awaiting client response</div>
           <span className="stat-on-note">
             {pendingOn ? 'Filtering — click to clear' : 'Click to filter'}

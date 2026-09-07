@@ -116,13 +116,132 @@ def test_delete_soft_deletes_and_audits():
         assert audit.await_args.kwargs["action_type"] == "DOCUMENT_DELETED"
 
 
-def test_delete_requires_delete_permission():
-    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
-         patch("middleware.auth.get_supabase") as msb:
-        # role has documents read+write but NOT delete
-        msb.return_value.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-            {"permission": "read"}, {"permission": "write"}]
+# --------------------------------------------------------------------------- #
+#  A document is GATED BY ITS OWNER'S MODULE (Levi 2026-09-07, migration 040).
+#
+#  There is no `documents` permission module. The right to read a record is the
+#  right to read the papers filed against it, and the right to change the record
+#  is the right to add and remove them — see services/document_permissions.py.
+#
+#  `documents:delete` has no successor level: neither `companies` nor `persons`
+#  has one, so removing a document is a WRITE on the owning record.
+# --------------------------------------------------------------------------- #
+
+
+def _as(grants, owner=None):
+    """Sign in as a plain role holding `grants` ({module: [levels]}), over a
+    document owned by `owner`.
+
+    THE PERMISSION MOCK IS MODULE-AWARE, and that is the whole point of this
+    block. A mock that answered the same rows for every module would make
+    "documents are gated by their owner" untestable: the role would hold
+    `read` on persons and companies alike, and a route that asked for the wrong
+    module would pass. So the second `.eq("module", ...)` decides what comes
+    back, and the real `_permissions_for` still does the asking.
+
+    TWO SEPARATE DATABASE READERS, patched separately and on purpose: the owner
+    lookup is `services.document_permissions.get_supabase` and the permission
+    lookup is `middleware.auth.get_supabase`. One module-wide patch would make
+    every predicate built on it true.
+    """
+    perms = MagicMock()
+
+    def by_module(_column, module):
+        step = MagicMock()
+        step.execute.return_value.data = [
+            {"permission": p} for p in grants.get(module, ())]
+        return step
+
+    perms.table.return_value.select.return_value.eq.return_value.eq.side_effect = (
+        by_module)
+
+    docs = MagicMock()
+    (docs.table.return_value.select.return_value.eq.return_value.limit.return_value
+     .execute.return_value.data) = [owner] if owner else []
+
+    return (patch("middleware.auth._resolve_user", return_value=REGULAR),
+            patch("middleware.auth.get_supabase", return_value=perms),
+            patch("services.document_permissions.get_supabase", return_value=docs))
+
+
+class _Stack:
+    def __init__(self, *cms):
+        self.cms = cms
+
+    def __enter__(self):
+        for cm in self.cms:
+            cm.__enter__()
+
+    def __exit__(self, *exc):
+        for cm in reversed(self.cms):
+            cm.__exit__(*exc)
+
+
+COMPANY_DOC = {"entity_id": "e1", "person_id": None, "nar1_case_id": None}
+PERSON_DOC = {"entity_id": None, "person_id": "p1", "nar1_case_id": None}
+
+
+def test_deleting_a_company_document_needs_companies_write():
+    """`companies:read` opens the company and its papers. It does not remove
+    them — that is a change to what the record holds."""
+    with _Stack(*_as({"companies": ["read"]}, COMPANY_DOC)):
+        # The permission cache is keyed by (role_id, module); a role_id reused
+        # across tests would answer from a previous test's grants.
+        from middleware.auth import _perm_cache
+        _perm_cache.clear()
         assert client.delete("/documents/doc-1", headers=H).status_code == 403
+
+
+def test_companies_write_can_remove_a_company_document():
+    """The other half, and the bug this replaced: a role granted Companies
+    (edit) could not touch the papers on a company it was trusted to edit."""
+    with _Stack(*_as({"companies": ["read", "write"]}, COMPANY_DOC)), \
+         patch("services.document_service.get_supabase") as msb, \
+         patch("services.document_service.log_event", new=AsyncMock()):
+        from middleware.auth import _perm_cache
+        _perm_cache.clear()
+        sb = msb.return_value
+        (sb.table.return_value.select.return_value.eq.return_value.single
+         .return_value.execute.return_value.data) = {
+            "id": "doc-1", "entity_id": "e1", "status": "active"}
+        (sb.table.return_value.update.return_value.eq.return_value
+         .execute.return_value.data) = [{"id": "doc-1", "status": "deleted"}]
+        assert client.delete("/documents/doc-1", headers=H).status_code == 200
+
+
+def test_a_persons_paper_is_refused_to_a_role_holding_only_companies():
+    """The module is read off the DOCUMENT, not off the caller's best grant. A
+    role that may read companies has no business downloading a director's
+    identity scan."""
+    with _Stack(*_as({"companies": ["read"]}, PERSON_DOC)):
+        from middleware.auth import _perm_cache
+        _perm_cache.clear()
+        # The role's one grant is on `companies`; the document is a person's,
+        # so `persons:read` is what is asked for and the role does not hold it.
+        assert client.get("/documents/doc-1/download",
+                          headers=H).status_code == 403
+
+
+def test_a_document_owned_by_nothing_is_refused_rather_than_waved_through():
+    """FAILS CLOSED. These routes sign URLs for identity scans; a row that
+    cannot be attributed to a record has no permissions that could allow it."""
+    with _Stack(*_as({"companies": ["read", "write"], "persons": ["read", "write"]},
+                     {"entity_id": None, "person_id": None,
+                      "nar1_case_id": None})):
+        from middleware.auth import _perm_cache
+        _perm_cache.clear()
+        assert client.get("/documents/doc-1/download",
+                          headers=H).status_code == 403
+
+
+def test_an_unknown_document_is_404_not_403():
+    """403 here would confirm to an unauthorised caller that the id exists —
+    and it is what the route would have answered anyway on reading it."""
+    with _Stack(*_as({"companies": ["read", "write"]}, None)):
+        from middleware.auth import _perm_cache
+        _perm_cache.clear()
+        assert client.get("/documents/doc-1/download",
+                          headers=H).status_code == 404
 
 
 def test_list_document_types():

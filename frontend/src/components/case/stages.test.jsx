@@ -8,6 +8,7 @@ import StageClientVerification from './StageClientVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
+import { hongKongTodayISO } from '../../lib/anniversary.js'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
 const blob = vi.fn(); const upload = vi.fn()
@@ -273,15 +274,26 @@ describe('Client Verification', () => {
     <StageClientVerification caseRow={at(over)} canWrite onWarn={onWarn}
                              onChanged={onChanged} onError={onError} />)
 
+  //: The deadline every send now carries (Levi 2026-09-07). Far enough out that
+  //: it stays in the future for the life of this suite — the field's own `min`
+  //: is today, and a date in the past is refused by the API.
+  const RESPOND_BY = '2027-12-31'
+
+  /** Fill the mandatory deadline. Its own helper because it gates every send. */
+  const setDeadline = (user, value = RESPOND_BY) =>
+    user.type(screen.getByLabelText(/Client must reply by/), value)
+
   // ── spec §5: one message per director, so a send can partly succeed ─────
 
   async function pressSend() {
     // Same gate the other send tests go through: the chips have to be on
-    // screen and the review ticked before the button is live.
+    // screen, the review ticked and a deadline chosen before the button is
+    // live.
     const user = userEvent.setup()
     renderIt()
     await screen.findByText('chan@example.com')
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
     return user
   }
@@ -297,8 +309,51 @@ describe('Client Verification', () => {
     await waitFor(() => expect(onWarn).toHaveBeenCalledWith(
       'The return did not reach everyone.',
       expect.stringMatching(/b@x\.com/)))
-    expect(onWarn).toHaveBeenLastCalledWith(
-      expect.any(String), expect.stringMatching(/The others have it/))
+  })
+
+  it('names who DID get it as well as who did not', async () => {
+    // Levi 2026-09-07. Naming only the failures left the operator unable to
+    // tell whether the rest of the board had been told — so the safe move was
+    // to send to everybody again, and a director who had already confirmed got
+    // a second request for the same return.
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['a@x.com', 'b@x.com'],
+      failed_to: ['nope'],
+      failed: [{ email: 'nope', reason: 'not a valid email address' }],
+      approval_links: true,
+    })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    const [, detail] = onWarn.mock.calls.at(-1)
+    expect(detail).toMatch(/Sent to a@x\.com, b@x\.com/)
+    expect(detail).toMatch(/those links are live/)
+    // The REASON, because the two failures need different actions: a bad
+    // address is fixed on the chip, a provider rejection by pressing again.
+    expect(detail).toMatch(/NOT sent to nope \(not a valid email address\)/)
+  })
+
+  it('warns that sending again reissues everyone else\'s link', async () => {
+    // Every send supersedes the whole case's outstanding tokens, so a second
+    // send does not quietly top up the one that was missed. An operator told
+    // only "send again" would find that out from a client.
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['a@x.com'],
+      failed: [{ email: 'nope', reason: 'not a valid email address' }],
+      failed_to: ['nope'], approval_links: true,
+    })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    expect(onWarn.mock.calls.at(-1)[1]).toMatch(/reissues every link/)
+  })
+
+  it('still reports a failure the backend sent without a reason', async () => {
+    // Older responses carry `failed_to` and no `failed`. Rendering nothing for
+    // them would silently lose the one fact this warning exists to carry.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'],
+                             failed_to: ['b@x.com'], approval_links: true })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    expect(onWarn.mock.calls.at(-1)[1]).toMatch(/NOT sent to b@x\.com\./)
   })
 
   it('says nothing about a partial send when everyone got it', async () => {
@@ -363,12 +418,13 @@ describe('Client Verification', () => {
   it('gives the preview enough height to read a statutory return', async () => {
     renderIt()
     const frame = await screen.findByLabelText('NAR1 preview')
-    // 690px at 100% zoom. The return is nine A4 pages and the operator is
-    // checking particulars against the company record, not glancing at it.
-    expect(frame).toHaveStyle({ height: '690px' })
+    // 1035px at 100% zoom — 690 raised by half (Levi 2026-09-07). The return
+    // is nine A4 pages and the operator is checking particulars against the
+    // company record, not glancing at it.
+    expect(frame).toHaveStyle({ height: '1035px' })
   })
 
-  it('opens the return full screen — even 690px cannot show a nine-page form', async () => {
+  it('opens the return full screen — even 1035px cannot show a nine-page form', async () => {
     const open = vi.fn()
     vi.stubGlobal('open', open)
     const user = userEvent.setup()
@@ -432,13 +488,58 @@ describe('Client Verification', () => {
     const send = screen.getByRole('button', { name: /Send to client/ })
     expect(send).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     expect(screen.getByRole('button', { name: /Send to client/ })).toBeEnabled()
+  })
+
+  // ── the client's response deadline (Levi 2026-09-07) ────────────────────
+
+  it('will NOT send until a response deadline is chosen', async () => {
+    // It used to default to `sent + 14 days`, chosen by nobody — and that date
+    // decides when `jobs.auto_approve_nar1` files the return on the client's
+    // silence, which is not a decision to make by default.
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
+    // And it SAYS which field is missing, rather than leaving a dead button. A
+    // date box scrolled past is exactly what nobody notices is empty.
+    expect(screen.getByText(/Choose the date the client must reply by/))
+      .toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('starts the deadline EMPTY — a default would be the old behaviour back', async () => {
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByLabelText(/Client must reply by/)).toHaveValue('')
+  })
+
+  it('will not offer a deadline in the past', async () => {
+    renderIt()
+    await screen.findByText('chan@example.com')
+    // Today in HONG KONG, built from the parts — `toISOString()` on a local
+    // midnight renders the previous day for anyone east of UTC, which is every
+    // actual user of this portal.
+    expect(screen.getByLabelText(/Client must reply by/))
+      .toHaveAttribute('min', hongKongTodayISO())
+  })
+
+  it('sends the chosen deadline, not a fortnight from today', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await reviewAndSend(user)
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/cases/c1/verification/send',
+      expect.objectContaining({ respond_by: RESPOND_BY })))
   })
 
   const reviewAndSend = async user => {
     // The chips must be on screen first — the send button is gated on them.
     await screen.findByText('chan@example.com')
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
   }
 
@@ -559,7 +660,7 @@ describe('Client Verification', () => {
     await reviewAndSend(user)
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/cases/c1/verification/send',
-      { to: ['chan@example.com', 'lee@example.com'] }))
+      { to: ['chan@example.com', 'lee@example.com'], respond_by: RESPOND_BY }))
   })
 
   it('sends the list on screen, so a removed director is not mailed', async () => {
@@ -568,9 +669,11 @@ describe('Client Verification', () => {
     await screen.findByText('chan@example.com')
     await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
     await waitFor(() => expect(post).toHaveBeenCalledWith(
-      '/cases/c1/verification/send', { to: ['lee@example.com'] }))
+      '/cases/c1/verification/send',
+      { to: ['lee@example.com'], respond_by: RESPOND_BY }))
   })
 
   it('adds an extra recipient who is not on the board', async () => {
@@ -582,7 +685,8 @@ describe('Client Verification', () => {
     await reviewAndSend(user)
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/cases/c1/verification/send',
-      { to: ['chan@example.com', 'lee@example.com', 'levi@zenexflow.com'] }))
+      { to: ['chan@example.com', 'lee@example.com', 'levi@zenexflow.com'],
+        respond_by: RESPOND_BY }))
   })
 
   it('refuses to add something that is not an address', async () => {
@@ -997,6 +1101,54 @@ describe('Submission — e-Sign', () => {
     expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
     expect(post).not.toHaveBeenCalled()
+  })
+
+  it('BLOCKS filing when the return date has not arrived yet', async () => {
+    // Levi 2026-09-07. An annual return reports on the year ending at the
+    // company's return date, so CR will not take it before that date at any
+    // price. `filings.submit` refuses independently; this is the screen not
+    // offering an irreversible-looking button whose one outcome is a 409.
+    const user = userEvent.setup()
+    withPreflight({
+      too_early: true, return_date: '2027-03-14', days_until_return_date: 188,
+    })
+    renderIt()
+    await screen.findByText(/not due yet, so it cannot be filed/)
+    expect(screen.getByText(/2027-03-14/)).toBeInTheDocument()
+    expect(screen.getByText(/188 days from today/)).toBeInTheDocument()
+
+    expect(screen.getByRole('button',
+      { name: /I understand this submits NAR1 to CR/ })).toBeDisabled()
+    const submit = screen.getByRole('button',
+      { name: /Submit NAR1 to Companies Registry/ })
+    expect(submit).toBeDisabled()
+    await user.click(submit)
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('does not blame the balance for a return that is merely early', async () => {
+    // Topping up changes nothing here, and the deposit arithmetic beside a
+    // refusal reads as an invitation to do exactly that.
+    withPreflight({
+      too_early: true, return_date: '2027-03-14', days_until_return_date: 188,
+    })
+    renderIt()
+    await screen.findByText(/not due yet, so it cannot be filed/)
+    expect(document.querySelector('.deposit-box')).not.toBeInTheDocument()
+    expect(screen.queryByText(/balance covers the fee/)).not.toBeInTheDocument()
+    expect(screen.getByText(/blocked until this company's return date/))
+      .toBeInTheDocument()
+  })
+
+  it('offers filing when the pre-flight says the return is due', async () => {
+    // The other half of the gate: `too_early: false` must not be read as
+    // "unknown" and quietly block every filing.
+    withPreflight({ too_early: false, return_date: '2026-08-01' })
+    renderIt()
+    await screen.findByText(/Fee HK\$ 105/)
+    expect(screen.queryByTestId('submission-too-early')).not.toBeInTheDocument()
+    expect(screen.getByRole('button',
+      { name: /I understand this submits NAR1 to CR/ })).not.toBeDisabled()
   })
 
   it('BLOCKS filing when the pre-flight itself failed', async () => {

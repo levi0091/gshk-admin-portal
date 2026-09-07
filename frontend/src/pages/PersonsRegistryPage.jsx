@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAbortableGet from '../lib/useAbortableGet.js'
-import { formatDate } from '../lib/format.js'
+import { formatDate, formatNumber } from '../lib/format.js'
 import RoleTags, { initials } from '../components/RoleTags.jsx'
 import AddPersonModal from '../components/AddPersonModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
@@ -172,7 +172,9 @@ export default function PersonsRegistryPage() {
             onClick={() => setRole(tab.key)}
           >
             {tab.label}
-            <span className="filter-count">{counts[tab.count] ?? 0}</span>
+            <span className="filter-count">
+              {formatNumber(counts[tab.count] ?? 0)}
+            </span>
           </button>
         ))}
       </div>

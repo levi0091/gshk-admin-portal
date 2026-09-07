@@ -12,6 +12,7 @@ import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
 import { labelForDays, signedDaysToAnniversary } from '../lib/anniversary.js'
+import { formatNumber } from '../lib/format.js'
 import {
   ENUM, RANGE, TEXT, appendTo, filtersFor, setColumn,
 } from '../lib/tableFilters.js'
@@ -206,7 +207,9 @@ export default function CompanyRegistryPage() {
             onClick={() => setFlag(tab.key)}
           >
             {tab.label}
-            <span className="filter-count">{flagCounts[tab.count] ?? 0}</span>
+            <span className="filter-count">
+              {formatNumber(flagCounts[tab.count] ?? 0)}
+            </span>
           </button>
         ))}
       </div>

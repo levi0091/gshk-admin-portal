@@ -55,6 +55,24 @@ const CASE = {
   },
 }
 
+/** The CR-validated snapshot the Submission stage summarises. Hoisted out of
+ *  the default mock so a case that overrides `get` can still serve it. */
+const SUMMARY = {
+  form_code: 'Nar1', stage: 'signed', has_schedule_1: true,
+  company_name: 'Skyline Capital Management Limited', br_number: '76543210',
+  year: '2026', registered_office: 'Unit 2201, 22/F, Tower One, Admiralty Centre, HK',
+  directors: ['CHAN, TAI MAN', 'WONG, MEI LING'],
+  secretaries: ['Get Started HK Limited'],
+  // Seven digits, so the grouping added on 2026-09-07 is visible in the shot.
+  share_classes: [{ name: 'Ordinary', currency: 'HKD', total_issued: '1000000' }],
+  member_count: 2, members: ['CHAN, TAI MAN', 'WONG, MEI LING'],
+  signatory: {
+    name: 'Get Started HK Limited', date: '30/08/2026',
+    capacity: 'Authorized Representative of the Company Secretary (Body Corporate)',
+  },
+  signed_at: '2026-08-30T07:36:00Z',
+}
+
 beforeEach(() => {
   get.mockImplementation(url => {
     const u = String(url)
@@ -87,22 +105,7 @@ beforeEach(() => {
         max_recipients: 20,
       })
     }
-    if (u.includes('/summary')) {
-      return Promise.resolve({
-        form_code: 'Nar1', stage: 'signed', has_schedule_1: true,
-        company_name: 'Skyline Capital Management Limited', br_number: '76543210',
-        year: '2026', registered_office: 'Unit 2201, 22/F, Tower One, Admiralty Centre, HK',
-        directors: ['CHAN, TAI MAN', 'WONG, MEI LING'],
-        secretaries: ['Get Started HK Limited'],
-        share_classes: [{ name: 'Ordinary', currency: 'HKD', total_issued: '100' }],
-        member_count: 2, members: ['CHAN, TAI MAN', 'WONG, MEI LING'],
-        signatory: {
-          name: 'Get Started HK Limited', date: '30/08/2026',
-          capacity: 'Authorized Representative of the Company Secretary (Body Corporate)',
-        },
-        signed_at: '2026-08-30T07:36:00Z',
-      })
-    }
+    if (u.includes('/summary')) return Promise.resolve(SUMMARY)
     if (u.includes('/tpsi/credentials')) {
       return Promise.resolve({
         eservice_user_id: 'GSHKPN02', has_eservice_password: true,
@@ -169,6 +172,27 @@ describe.runIf(SHOOT)('visual harness', () => {
       <StageSubmission caseRow={{ ...CASE, form_status: { code: 'signed', label: 'Signed' } }}
                        canSubmit onChanged={noop} onError={noop} onGo={noop} />,
       () => waitFor(() => screen.getByText(/Irreversible action/)))
+  })
+
+  it('4b · Submission — the return is not due yet', async () => {
+    // Levi 2026-09-07. The fee panel and the deposit box are both withheld
+    // here: being early is not a money problem, and the arithmetic beside a
+    // refusal reads as an invitation to top up and press on.
+    get.mockImplementation(url => String(url).includes('/summary')
+      ? Promise.resolve(SUMMARY)
+      : Promise.resolve({
+          fee: '3480.00', max_fee: '3480.00', fee_is_certain: false,
+          on_time_fee: '105.00', balance: '12480', sufficient: true,
+          too_early: true, return_date: '2027-03-14',
+          days_until_return_date: 188,
+          fee_detail: { band: 'up to HK$3480.00', return_date: null,
+                        certain: false,
+                        reason: 'the return date (2027-03-14) is in the future' },
+        }))
+    await dump('4b-submission-too-early',
+      <StageSubmission caseRow={{ ...CASE, form_status: { code: 'signed', label: 'Signed' } }}
+                       canSubmit onChanged={noop} onError={noop} onGo={noop} />,
+      () => waitFor(() => screen.getByText(/not due yet/)))
   })
 
   it('5 · Confirmation', async () => {

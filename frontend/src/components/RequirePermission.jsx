@@ -118,7 +118,15 @@ export function ReadOnlyNote({ module, permission = 'write', permissions, what,
           renders adrift — "persons (write) , which your role…". A dash is
           meant to sit in space, so the same gap reads as deliberate. */}
       {' — your role does not have '}{needed.length > 1 ? 'them' : 'it'}
-      , so those actions are not shown. The API refuses them independently.
+      {/* WHAT TO DO, not how the backend is built (Levi 2026-09-07). This read
+          "so those actions are not shown. The API refuses them independently."
+          — a sentence about our own enforcement layers, addressed to an
+          operator who has no idea what an API is and no way to act on the
+          fact that one exists. The reader needs one thing: who can give them
+          the access. */}
+      , so those actions are not shown. Ask a Super Admin to add{' '}
+      {needed.length > 1 ? 'them' : 'it'} to your role if you need to make
+      changes here.
     </div>
   )
 }

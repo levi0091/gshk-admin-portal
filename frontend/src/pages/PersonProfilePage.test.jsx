@@ -756,7 +756,7 @@ describe('PersonProfilePage — the identity card and the history', () => {
  * /persons/{id}/identity-documents` is gated accordingly. A file filed under
  * Proof of Address is the `documents` module, which this role does not hold.
  */
-describe('PersonProfilePage — the tester role (persons read+write, no documents)', () => {
+describe('PersonProfilePage — the tester role (persons read+write)', () => {
   const holding = (...perms) => (module, permission) =>
     perms.includes(`${module}:${permission}`)
 
@@ -804,15 +804,17 @@ describe('PersonProfilePage — the tester role (persons read+write, no document
     }
   })
 
-  it('still refuses the documents module, which is a separate grant', async () => {
+  // REVERSED (Levi 2026-09-07, migration 040). This asserted that the same
+  // role could add a director's PASSPORT RECORD and yet not file the proof of
+  // address underneath it, because documents were a separate grant. Nobody
+  // wanted that distinction: a person's papers now follow the person.
+  it('can file a person\'s other documents too, not just identity records', async () => {
     renderPage()
     await screen.findByText(/Identity Documents/)
     const proof = sectionCard('Proof of Address')
 
-    // No upload button at all — but the section still renders, because "there
-    // is nothing filed under Proof of Address" is itself worth knowing.
-    expect(within(proof).queryByRole('button', { name: /Upload Document/ }))
-      .not.toBeInTheDocument()
+    expect(within(proof).getByRole('button', { name: /Upload Document/ }))
+      .toBeEnabled()
     expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
   })
 })
@@ -870,12 +872,25 @@ describe('PersonProfilePage — a persons:read-only role', () => {
       .toBeGreaterThan(0)
   })
 
-  it('renders no Download scan without documents:read', async () => {
+  it('DOWNLOADS a filed document on persons:read, but cannot change it', async () => {
+    // Reversed with the module (migration 040): reading the person is reading
+    // what is filed against them. The write half is still withheld, which is
+    // the line that was ever worth drawing.
+    //
+    // It replaces a `Download scan` assertion that could not fail: no identity
+    // document in this file's fixture carries a `scan_document_id`, so that
+    // button was absent for every role and the test proved nothing about
+    // permissions. Document History is where this fixture actually has a
+    // document.
     renderPage()
-    await screen.findByText(/Identity Documents/)
-    const card = sectionCard('Identity Documents')
+    const history = await screen.findByText('Document History')
+    const card = history.closest('.card')
 
-    expect(within(card).queryByRole('button', { name: /Download scan/ }))
+    expect(within(card).getAllByRole('button', { name: /^Download$/ }).length)
+      .toBeGreaterThan(0)
+    expect(within(card).queryByRole('button', { name: /Upload Document/ }))
+      .not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /^Remove$/ }))
       .not.toBeInTheDocument()
   })
 })

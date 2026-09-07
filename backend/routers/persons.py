@@ -875,10 +875,19 @@ async def update_residential_address(
     }
 
 
+# --------------------------------------------------------------------------- #
+#  Person-scoped documents
+#
+#  GATED ON `persons`, NOT ON A `documents` MODULE (Levi 2026-09-07) — see the
+#  same note over the company routes. The identity documents below were always
+#  `persons:write`; this makes the ordinary documents agree with them, which is
+#  what an operator already assumed was true.
+# --------------------------------------------------------------------------- #
+
 @router.get("/{person_id}/documents")
 async def list_person_documents(
     person_id: str,
-    user=Depends(require_permission("documents", "read")),
+    user=Depends(require_permission("persons", "read")),
 ):
     return document_service.list_documents(owner_kind="person", owner_id=person_id)
 
@@ -889,7 +898,7 @@ async def upload_person_document(
     file: UploadFile = File(...),
     document_type_code: str = Form(...),
     title: Optional[str] = Form(None),
-    user=Depends(require_permission("documents", "write")),
+    user=Depends(require_permission("persons", "write")),
 ):
     content = await file.read()
     return await document_service.upload_document(

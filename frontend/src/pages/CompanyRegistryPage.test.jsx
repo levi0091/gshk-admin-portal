@@ -115,7 +115,10 @@ describe('CompanyRegistryPage', () => {
   it('shows flag counts on the filter tabs', async () => {
     renderPage()
     await screen.findByText('Harbour Tech Ltd.')
-    expect(screen.getByRole('tab', { name: /All/ })).toHaveTextContent('5982')
+    // Grouped (Levi 2026-09-07). "5982" was a four-digit number printed as a
+    // word; the register is nearly six thousand companies and the count is
+    // read at a glance.
+    expect(screen.getByRole('tab', { name: /All/ })).toHaveTextContent('5,982')
     expect(screen.getByRole('tab', { name: /Corporate Parties/ })).toHaveTextContent('279')
     expect(screen.getByRole('tab', { name: /Non-client/ })).toHaveTextContent('68')
   })

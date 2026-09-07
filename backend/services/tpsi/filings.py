@@ -6,7 +6,7 @@ is what makes the submit gate real — a client cannot assert "already validated
 and skip straight to the chargeable call.
 """
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from db.supabase import get_supabase
@@ -400,6 +400,30 @@ class DriftDetected(SubmitGateError):
         )
 
 
+class BeforeReturnDate(SubmitGateError):
+    """The return date has not arrived yet, so there is no return to file.
+
+    A SubmitGateError so `submit_filing` refuses, audits TPSI_SUBMISSION_FAILED
+    and 409s it exactly like every other guard on the chargeable call. It
+    carries the two dates because the remedy is arithmetic the operator has to
+    be able to check: either they are simply early, or the return YEAR on the
+    filing is wrong, and only the pair of dates distinguishes those.
+    """
+
+    def __init__(self, return_date, today):
+        self.return_date = return_date
+        self.today = today
+        days = (return_date - today).days
+        super().__init__(
+            f"this company's return date is {return_date.isoformat()}, which is "
+            f"{days} day{'' if days == 1 else 's'} away — an annual return "
+            f"cannot be delivered before the anniversary it reports on. Nothing "
+            f"was sent to CR and nothing was charged. If this looks wrong, check "
+            f"the return year on the filing and the incorporation date on the "
+            f"company record."
+        )
+
+
 class RecordCheckFailed(SubmitGateError):
     """The drift comparison could not be made, so nothing was filed.
 
@@ -727,21 +751,42 @@ def preview(client, filing_id: str, deposit_account: str) -> dict:
     Audited separately from the confirm, per CLAUDE.md — the preview and the
     decision to spend are two distinct events in the trail.
     """
-    from services.tpsi import reads
+    from services.tpsi import fees, reads
     from services.tpsi.fees import MAX_FEE, ON_TIME_FEE
 
     filing = get_filing(filing_id)
-    # The COMPUTED fee for THIS company's return date, not the flat on-time
-    # figure. A return seven months late costs HK$2,610; quoting HK$105 both
-    # misinformed the operator and let the balance gate pass a filing the
-    # account could not cover.
-    quote = fee_quote_for(filing)
+    # ONE read of the company record, two answers off it (see `assess`).
+    #
+    # The fee is the COMPUTED one for THIS company's return date, not the flat
+    # on-time figure: a return seven months late costs HK$2,610, and quoting
+    # HK$105 both misinformed the operator and let the balance gate pass a
+    # filing the account could not cover.
+    #
+    # The return date is the gate reported rather than raised (Levi
+    # 2026-09-07). `submit` refuses it independently and is the authority;
+    # saying it here is what lets the screen withhold the Submit button and
+    # print the reason, instead of arming an irreversible-looking control whose
+    # only outcome is a 409. Same shape as `sufficient` below, and for the same
+    # reason.
+    quote, return_date = assess(filing)
     balance = reads.check_balance(client, deposit_account)
+
+    today = fees._hk_today()
+    too_early = bool(return_date and today < return_date)
+
     return {
         "filing_id": filing_id,
         "form_code": filing["form_code"],
         "stage": filing["stage"],
         "fee": str(quote.amount),
+        # ISO, or None when it could not be worked out. None is NOT "not early"
+        # — it is "unknown", which is why `too_early` is its own boolean rather
+        # than something the screen re-derives by comparing dates itself.
+        "return_date": return_date.isoformat() if return_date else None,
+        "too_early": too_early,
+        "days_until_return_date": (
+            (return_date - today).days if too_early else None
+        ),
         # The whole quote, so the screen can show the band and the return date
         # it was measured from. An operator can check those against the company
         # record; they cannot check a bare number.
@@ -753,6 +798,140 @@ def preview(client, filing_id: str, deposit_account: str) -> dict:
         "sufficient": balance >= quote.amount,
         "ready": filing["stage"] == STAGE_SIGNED and bool(filing.get("signed_xml")),
     }
+
+
+def _nar1_fee_inputs(filing: dict) -> tuple[dict, int | None, bool]:
+    """(entity, return year, has share capital) for a NAR1 filing.
+
+    Extracted so the fee quote and the return-date gate read the SAME two
+    values out of the same places. They answer different questions off one pair
+    of facts, and deriving them twice is how the fee ends up measured from one
+    return date while the gate checks another.
+
+    Raises nothing the callers do not expect: a company record that will not
+    read raises, and each caller decides what that means for it.
+    """
+    from services.tpsi.forms import nar1_summary
+
+    entity = _entity_for_fee(filing.get("entity_id"))
+
+    year = None
+    has_share_capital = False
+    xml = filing.get("validated_xml") or filing.get("request_xml")
+    if xml:
+        try:
+            summary = nar1_summary.summarise(xml)
+            year = summary.get("year")
+            has_share_capital = bool(summary.get("share_classes"))
+        except Exception:  # noqa: BLE001
+            pass
+
+    return entity or {}, year, has_share_capital
+
+
+def return_date_from(entity: dict, year) -> date | None:
+    """The CR return date for already-resolved inputs. NO I/O.
+
+    The return date is the anniversary of incorporation IN THE RETURN'S OWN
+    YEAR (`yearAnnualReturn`) — not the incorporation date and not this year's
+    anniversary. `fees.return_date_for` is the one implementation of that
+    clamp, including the 29 February fallback, and is reused here rather than
+    re-derived: a gate that computed the date differently from the fee would
+    refuse a filing on one anniversary and price it from another.
+
+    Returns None rather than guessing. It sits in front of a chargeable call,
+    so its callers have to be able to tell "this is early" from "we do not know
+    when this is due" — those are different answers and only one is a refusal.
+    """
+    from services.tpsi import fees
+
+    if not year:
+        return None
+    incorporated = (entity or {}).get("incorporation_date")
+    if not incorporated:
+        return None
+    try:
+        incorporated = fees._coerce_date(incorporated, "incorporation date")
+    except fees.FeeError:
+        return None
+    return fees.return_date_for(incorporated, int(year))
+
+
+def assess(filing: dict):
+    """(fee quote, return date) for one filing, from ONE read of the company.
+
+    THE TWO ANSWERS COME OFF THE SAME FACTS and are produced together on
+    purpose. They used to be two public entry points that each did their own
+    `_entity_for_fee` — two Supabase round trips on every preview and every
+    submit, and (the reason that actually matters) two readings of a record
+    that could in principle differ, so the gate could refuse against one
+    anniversary while the fee was measured from another.
+
+    NEVER RAISES. It is on the path to a chargeable call: an unreadable company
+    record degrades the fee to the HK$3,480 ceiling and leaves the return date
+    unknown, which is not the same as "not early" — see the gate below.
+    """
+    from services.tpsi import fees
+
+    if filing.get("form_code") != "Nar1":
+        from services.tpsi.config import fee_for
+        flat = fee_for(filing["form_code"])
+        # Only an annual return HAS a return date; nothing else may be dragged
+        # through this arithmetic.
+        return fees.FeeQuote(flat, "fixed fee", None, None, True), None
+
+    try:
+        entity, year, has_share_capital = _nar1_fee_inputs(filing)
+    except Exception:  # noqa: BLE001
+        return fees.uncertain("the company record could not be read"), None
+
+    quote = fees.annual_return_fee(
+        incorporation_date=(entity or {}).get("incorporation_date"),
+        year=year,
+        private_with_share_capital=fees.is_private_with_share_capital(
+            entity, has_share_capital=has_share_capital),
+    )
+    return quote, return_date_from(entity, year)
+
+
+def return_date_of(filing: dict):
+    """This filing's CR return date, or None. Convenience over `assess`."""
+    return assess(filing)[1]
+
+
+def _refuse_if_before_return_date(filing: dict, return_date=None) -> None:
+    """An annual return cannot be filed before the year it reports on has closed.
+
+    Levi 2026-09-07. CR's own fee table measures every band from the return
+    date, and `fees.annual_return_fee` already treated a future return date as
+    uninterpretable — but "uninterpretable" only downgraded the quote to the
+    HK$3,480 ceiling, and the submit went ahead anyway. So a case opened a year
+    early could be validated, signed and filed, and the first thing to notice
+    would have been CR, after the charge.
+
+    It runs before ANY CR traffic, including the free balance read, exactly
+    where the drift and manual-completion interlocks run.
+
+    IT FAILS OPEN WHEN THE DATE IS UNKNOWN, deliberately, and this is the one
+    place in this file that does. A missing incorporation date or an
+    unreadable return year is not evidence that a return is early; refusing on
+    it would block a filing that is due today over a blank field, and the fee
+    quote already degrades to the ceiling for exactly these filings so nothing
+    is being spent optimistically. CR remains the backstop for the case nobody
+    here can compute.
+
+    `return_date` is passed in by callers that have already run `assess`, so
+    the company record is read once per submit rather than once per question.
+    """
+    from services.tpsi import fees
+
+    if return_date is None:
+        return_date = return_date_of(filing)
+    if return_date is None:
+        return
+    today = fees._hk_today()
+    if today < return_date:
+        raise BeforeReturnDate(return_date, today)
 
 
 def fee_quote_for(filing: dict):
@@ -767,37 +946,12 @@ def fee_quote_for(filing: dict):
     Never raises: it is called on the path to a chargeable submit, and a
     lookup failure must degrade to the ceiling rather than block a filing that
     is otherwise ready.
+
+    Convenience over `assess`, kept because "what does this cost" is a question
+    plenty of callers ask on its own. A caller that ALSO needs the return date
+    should call `assess` and read both, rather than paying for two reads.
     """
-    from services.tpsi import fees
-    from services.tpsi.forms import nar1_summary
-
-    if filing.get("form_code") != "Nar1":
-        from services.tpsi.config import fee_for
-        flat = fee_for(filing["form_code"])
-        return fees.FeeQuote(flat, "fixed fee", None, None, True)
-
-    try:
-        entity = _entity_for_fee(filing.get("entity_id"))
-    except Exception:  # noqa: BLE001
-        return fees.uncertain("the company record could not be read")
-
-    year = None
-    has_share_capital = False
-    xml = filing.get("validated_xml") or filing.get("request_xml")
-    if xml:
-        try:
-            summary = nar1_summary.summarise(xml)
-            year = summary.get("year")
-            has_share_capital = bool(summary.get("share_classes"))
-        except Exception:  # noqa: BLE001
-            pass
-
-    return fees.annual_return_fee(
-        incorporation_date=(entity or {}).get("incorporation_date"),
-        year=year,
-        private_with_share_capital=fees.is_private_with_share_capital(
-            entity, has_share_capital=has_share_capital),
-    )
+    return assess(filing)[0]
 
 
 def _entity_for_fee(entity_id: str | None) -> dict:
@@ -845,11 +999,18 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
     # chargeable, irreversible one, and a case already filed on paper must never
     # get as far as a request that could spend.
     _refuse_if_case_finished(filing, "submitting it to CR")
+    # ONE read of the company record for both the gate and the price — see
+    # `assess`. No CR traffic yet: this is a Supabase read and some arithmetic.
+    quote, return_date = assess(filing)
+    # Levi 2026-09-07. Before any CR traffic too, and before the drift check —
+    # a return that is not due yet is not a return whose particulars are worth
+    # diffing, and "the data moved" would be a confusing answer to "you are
+    # eleven months early".
+    _refuse_if_before_return_date(filing, return_date)
     # Spec §6. Also before any CR traffic, including the free balance read: the
     # client approved the document as it stood, and a return whose particulars
     # have moved since is not the one they approved.
     _refuse_if_drifted(filing)
-    quote = fee_quote_for(filing)
     balance = reads.check_balance(client, deposit_account)  # LIVE, never cached
     _check_gate(filing, confirm, balance, quote)
 

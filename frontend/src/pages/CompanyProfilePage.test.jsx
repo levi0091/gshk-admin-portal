@@ -961,9 +961,16 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(screen.queryByRole('button', { name: /New case/ })).not.toBeInTheDocument()
   })
 
-  it('renders no upload button — a THIRD module, asked separately', async () => {
-    // `documents:write`. A role can hold `companies:write` and still not be
-    // allowed to file documents, and vice versa.
+  // The three tests here used to assert a SEPARATE `documents` module — no
+  // upload without `documents:write`, no download without `documents:read`, no
+  // remove without `documents:delete`, all independent of `companies`. That
+  // module is gone (Levi 2026-09-07, migration 040): a company's papers follow
+  // the company. What survives is the read/write line, which is the one that
+  // was ever worth drawing.
+
+  it('renders no upload button for a company it cannot edit', async () => {
+    // `companies:write` now. Reading opens the record and the papers on it;
+    // adding to them is a change to the record.
     renderPage()
     await screen.findByText('Document History')
     const card = sectionCard('Certificates')
@@ -974,38 +981,33 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(card).toBeInTheDocument()
   })
 
-  it('renders no Download or Remove beside a filed document', async () => {
-    // Three separate grants: `documents:read` downloads, `documents:delete`
-    // removes. This role holds neither.
+  it('DOWNLOADS on companies:read, but offers no Remove', async () => {
+    // The split that matters. This role can read the company, so it can read
+    // the papers filed against it — and removing one is a write it does not
+    // hold.
     renderPage()
     await screen.findByText('Document History')
     const card = sectionCard('Certificates')
 
-    expect(within(card).queryByRole('button', { name: 'Download' }))
-      .not.toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Download' })).toBeEnabled()
     expect(within(card).queryByRole('button', { name: 'Remove' }))
       .not.toBeInTheDocument()
-    // ...and the document is still named.
     expect(within(card).getByText('Certificate of Incorporation')).toBeInTheDocument()
   })
 
-  it('lets a role that holds documents:write upload, on a company it cannot edit', async () => {
-    // The permissions really are independent — this is the proof that the
-    // screen asks each of them rather than gating everything on one.
-    auth.hasPermission = holding('companies:read', 'documents:read',
-                                 'documents:write')
+  it('gives a company EDITOR the upload and remove it was refused before', async () => {
+    // The complaint this reversed: a role granted Companies (edit) could not
+    // upload the certificate of incorporation for a company it was trusted to
+    // edit the CR number of, and had to be given a second grant nobody knew to
+    // ask for.
+    auth.hasPermission = holding('companies:read', 'companies:write')
     renderPage()
     await screen.findByText('Document History')
     const card = sectionCard('Certificates')
 
     expect(within(card).getByRole('button', { name: /Upload Document/ }))
       .toBeEnabled()
-    // Download comes with documents:read; Remove needs documents:delete, which
-    // this role does not hold.
     expect(within(card).getByRole('button', { name: 'Download' })).toBeEnabled()
-    expect(within(card).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
-    // ...and still no company Edit.
-    expect(within(screen.getByText('Company Information').closest('.card'))
-      .queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Remove' })).toBeEnabled()
   })
 })

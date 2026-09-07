@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { liveCaseWarning } from '../lib/liveCase.js'
-import { formatDate } from '../lib/format.js'
+import { formatDate, formatNumber } from '../lib/format.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -85,9 +85,10 @@ function Kv({ label, children, warning = null }) {
 
 /** A money or share figure as CR prints it, or an em dash. */
 function figure(value) {
-  if (value == null || value === '') return null
-  const n = Number(value)
-  return Number.isFinite(n) ? n.toLocaleString() : String(value)
+  // `formatNumber` pins the locale, which a bare `toLocaleString()` did not:
+  // the same share capital read 1,234,567 on one desk and 1.234.567 on the
+  // next. See lib/format.js.
+  return formatNumber(value)
 }
 
 function addressText(a) {

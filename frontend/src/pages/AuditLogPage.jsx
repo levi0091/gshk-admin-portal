@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAbortableGet from '../lib/useAbortableGet.js'
-import { formatDateTime } from '../lib/format.js'
+import { formatDateTime, formatNumber } from '../lib/format.js'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
@@ -288,7 +288,7 @@ export default function AuditLogPage() {
         <div>
           <div className="pg-title">Audit Log</div>
           <div className="pg-sub">
-            All system activity — read-only · {total.toLocaleString()} entries
+            All system activity — read-only · {formatNumber(total)} entries
           </div>
         </div>
       </div>
@@ -385,7 +385,7 @@ export default function AuditLogPage() {
           {!loading && total > 0 && (
             <div className="pager">
               <span>
-                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total.toLocaleString()}
+                {formatNumber((page - 1) * PAGE_SIZE + 1)}–{formatNumber(Math.min(page * PAGE_SIZE, total))} of {formatNumber(total)}
               </span>
               <div className="pager-btns">
                 <button className="btn btn-outline btn-sm" disabled={page <= 1}

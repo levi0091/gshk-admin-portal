@@ -2,21 +2,40 @@
 
 Upload / list live under the owner routes (companies.py / persons.py). These
 two are keyed by document id directly.
+
+THERE IS NO `documents` PERMISSION MODULE (Levi 2026-09-07). Every route here
+is gated by the module of the record the document is filed against — see
+services/document_permissions.py for why, and migration 040 for the cleanup.
+The id-keyed routes below have to resolve that owner before they can decide,
+which is what `require_document_permission` does; the two LOOKUP routes take
+the owner type as a parameter and so can be answered without a read.
 """
 from fastapi import APIRouter, Depends, HTTPException
 
-from middleware.auth import require_permission
+from middleware.auth import require_any_permission
 from db.supabase import get_supabase
 from services import document_service, document_sections
+from services.document_permissions import require_document_permission
 
 router = APIRouter()
+
+
+#: The two lookup routes below describe the SHAPE of the document vocabulary —
+#: which types exist and which sections a profile draws — and not one company's
+#: or one person's papers. `owner_type` narrows the answer but is a filter, not
+#: an authorisation: a role holding either module needs the list, and gating on
+#: one would lock out a role that only holds the other. Same reasoning as the
+#: reference vocabularies in routers/lookups.py.
+_ANY_PROFILE_READER = require_any_permission(("companies", "read"),
+                                             ("persons", "read"),
+                                             ("nar1", "read"))
 
 
 @router.get("/types")
 async def list_document_types(
     owner_type: str | None = None,
     category: str | None = None,
-    user=Depends(require_permission("documents", "read")),
+    user=Depends(_ANY_PROFILE_READER),
 ):
     """Seeded `document_types` lookup — drives the upload type picker.
 
@@ -46,7 +65,7 @@ async def list_document_types(
 @router.get("/sections")
 async def list_document_sections(
     owner_type: str = "person",
-    user=Depends(require_permission("documents", "read")),
+    user=Depends(_ANY_PROFILE_READER),
 ):
     """The sections a profile renders, and what each type inside them carries.
 
@@ -101,7 +120,7 @@ async def list_document_sections(
 @router.get("/{document_id}/download")
 async def download_document(
     document_id: str,
-    user=Depends(require_permission("documents", "read")),
+    user=Depends(require_document_permission("read")),
 ):
     """Returns a short-lived signed URL for the current version (private bucket)."""
     return document_service.create_signed_url(document_id)
@@ -111,7 +130,7 @@ async def download_document(
 async def download_document_version(
     document_id: str,
     version_number: int,
-    user=Depends(require_permission("documents", "read")),
+    user=Depends(require_document_permission("read")),
 ):
     """The same, for a SUPERSEDED version.
 
@@ -126,7 +145,7 @@ async def download_document_version(
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: str,
-    user=Depends(require_permission("documents", "delete")),
+    user=Depends(require_document_permission("delete")),
 ):
     """Soft-delete (status='deleted'); the object is retained (OQ-2)."""
     return await document_service.soft_delete_document(document_id=document_id, user=user)

@@ -33,9 +33,13 @@ from db.supabase import get_supabase
 
 _TABLE = "nar1_client_approvals"
 
-#: The window the client has, and the deadline the email prints. Re-sending
-#: verification issues fresh tokens and restarts this clock, so the date in the
-#: newest email is always the one the auto-approval job reads.
+#: The fallback window, used only when a caller names no deadline of its own.
+#:
+#: THE SEND ROUTE NO LONGER USES IT (Levi 2026-09-07): the case worker picks the
+#: deadline on the Client Verification screen and it is mandatory there, because
+#: a fixed fortnight is not a business rule — some clients are chased inside a
+#: week and some returns are prepared months ahead of the filing window. This
+#: constant survives for callers with no operator to ask.
 APPROVAL_WINDOW_DAYS = 14
 
 #: 32 bytes -> 43 URL-safe characters. Long enough that guessing is not a
@@ -64,7 +68,8 @@ def hash_token(token: str) -> str:
 
 
 def issue(*, case_id: str, recipients: list[dict],
-          sent_at: datetime | None = None) -> list[dict]:
+          sent_at: datetime | None = None,
+          expires_at: datetime | None = None) -> list[dict]:
     """One fresh token per recipient. Returns the PLAINTEXT tokens.
 
     The plaintext is returned to the caller once, to put in that person's email,
@@ -75,9 +80,17 @@ def issue(*, case_id: str, recipients: list[dict],
     verification means the previous message's document is no longer the one
     being asked about, and a director holding the older mail must not be able to
     approve it.
+
+    `expires_at` IS THE DEADLINE THE OPERATOR CHOSE, and it is one value doing
+    three jobs on purpose (Levi 2026-09-07): the date the email prints, the
+    moment the link stops working, and the moment `jobs.auto_approve_nar1` reads
+    the client's silence as consent. Passing it here rather than letting each of
+    the three compute its own is what makes it impossible for the message to
+    promise a date the job does not honour. Absent, the legacy fortnight
+    applies — see APPROVAL_WINDOW_DAYS.
     """
     sent = sent_at or _now()
-    expires = sent + timedelta(days=APPROVAL_WINDOW_DAYS)
+    expires = expires_at or (sent + timedelta(days=APPROVAL_WINDOW_DAYS))
 
     supersede_outstanding(case_id)
 

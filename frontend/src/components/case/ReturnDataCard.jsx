@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
-import { formatDate } from '../../lib/format.js'
+import { formatDate, formatNumber } from '../../lib/format.js'
 import { describeError } from './workflow.js'
 
 /**
@@ -97,8 +97,10 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
   }
   if (!data) return null
 
+  // Grouped — see the same line in FilingSummaryCard. This is the figure the
+  // operator checks against the company profile, which groups it too.
   const shares = (data.share_classes || [])
-    .map(sc => `${sc.total_issued ?? '?'} ${sc.name || 'shares'}`)
+    .map(sc => `${formatNumber(sc.total_issued) ?? '?'} ${sc.name || 'shares'}`)
     .join(' · ')
 
   return (
@@ -131,7 +133,7 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
         </Row>
         <Row label="Members (Sch. 1)">
           {data.member_count
-            ? `${data.member_count} member${data.member_count === 1 ? '' : 's'}${shares ? ` · ${shares}` : ''}`
+            ? `${formatNumber(data.member_count)} member${data.member_count === 1 ? '' : 's'}${shares ? ` · ${shares}` : ''}`
             : null}
         </Row>
         <Row label="Share classes">

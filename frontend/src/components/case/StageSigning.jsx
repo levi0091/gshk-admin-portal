@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
-import { formatDateTime } from '../../lib/format.js'
+import { formatDateTime, formatMoney as money } from '../../lib/format.js'
 import { describeError, signedOff } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
 
@@ -290,13 +290,6 @@ function MethodChoice({ method, disabled, readOnly = false, onPick }) {
  * it is appended to the balance sentence rather than replacing it.
  */
 const PWD_WARN_DAYS = 30
-
-function money(value) {
-  const n = Number(value)
-  return Number.isFinite(n)
-    ? n.toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : String(value)
-}
 
 export function daysUntil(iso) {
   if (!iso) return null

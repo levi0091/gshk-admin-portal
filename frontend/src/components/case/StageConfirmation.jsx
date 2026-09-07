@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { formatDateTime } from '../../lib/format.js'
+import { formatDateTime, formatMoney } from '../../lib/format.js'
 
 /** The receipt fields worth showing, in the order CR prints them. */
 const RECEIPT_ROWS = [
@@ -13,6 +13,18 @@ const RECEIPT_ROWS = [
   ['pymtMtd', 'Payment method'],
   ['totalAmount', 'Total amount'],
 ]
+
+/**
+ * The receipt's MONEY fields, and only those.
+ *
+ * CR sends `totalAmount` as "2610.0", which is a figure and reads better
+ * grouped — but everything else on this receipt is an IDENTIFIER. `pymtNo` is
+ * "5010475972" and `brNo` is "00011651"; grouping either would put commas in a
+ * number somebody has to quote back to CR, and dropping `brNo`'s leading zeros
+ * would change it outright. So the list is explicit rather than "anything that
+ * parses as a number".
+ */
+const MONEY_FIELDS = new Set(['totalAmount'])
 
 /**
  * Stage 5 — Confirmation.
@@ -103,7 +115,11 @@ export default function StageConfirmation({ caseRow, onGo }) {
                 receipt[key] ? (
                   <div className="kv-row" key={key}>
                     <span className="kv-key">{label}</span>
-                    <span className="kv-val">{String(receipt[key])}</span>
+                    <span className="kv-val">
+                      {MONEY_FIELDS.has(key)
+                        ? formatMoney(receipt[key])
+                        : String(receipt[key])}
+                    </span>
                   </div>
                 ) : null
               ))}
@@ -126,7 +142,7 @@ export default function StageConfirmation({ caseRow, onGo }) {
                           <td><span className="td-id">{l.rcptNo}</span></td>
                           <td><span className="td-muted">{l.revCode}</span></td>
                           <td><span className="td-muted">{l.docShtFrm}</span></td>
-                          <td>{l.amtChrg}</td>
+                          <td>{formatMoney(l.amtChrg)}</td>
                         </tr>
                       ))}
                     </tbody>

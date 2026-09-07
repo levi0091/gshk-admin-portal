@@ -51,6 +51,21 @@ export function hongKongToday(now = new Date()) {
   return new Date(Number(p.year), Number(p.month) - 1, Number(p.day))
 }
 
+/**
+ * Today in Hong Kong as "YYYY-MM-DD" — what an `<input type="date">` wants.
+ *
+ * BUILT FROM THE PARTS, never `toISOString()`. `hongKongToday()` returns a Date
+ * at LOCAL midnight, so on a machine in Hong Kong `toISOString()` renders it as
+ * 16:00 the previous day and the min= on a date box would be a day early — a
+ * bug that is invisible to anyone testing from a UTC machine and wrong for
+ * every actual user of this portal.
+ */
+export function hongKongTodayISO(now = new Date()) {
+  const d = hongKongToday(now)
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 /** Midnight, so a partial day never rounds a boundary the wrong way. */
 function midnight(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate())
