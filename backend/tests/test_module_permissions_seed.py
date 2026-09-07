@@ -15,10 +15,13 @@ pytestmark = pytest.mark.skipif(
     reason="requires Postgres with migrations applied (set RUN_DB_TESTS=1 + DATABASE_URL)",
 )
 
+#: `documents` IS NOT HERE ANY MORE (migration 040, Levi 2026-09-07). The module
+#: was dropped: a document is filed against a company, a person or a case and
+#: takes that record's grant, so `documents:read/write/delete` were deleted from
+#: every role — super_admin included, which is the one this asserts.
 EXPECTED_SUPER_ADMIN = {
     ("companies", "read"), ("companies", "write"),
     ("persons", "read"), ("persons", "write"),
-    ("documents", "read"), ("documents", "write"), ("documents", "delete"),
 }
 
 
@@ -42,7 +45,15 @@ requires_super_admin = pytest.mark.skipif(
 
 
 def test_check_allows_delete():
-    """documents:delete requires the permission CHECK to accept 'delete'."""
+    """The permission CHECK still accepts 'delete', though nothing grants it.
+
+    `documents:delete` was the only user and the module is gone (migration 040),
+    so this now guards the SCHEMA rather than a live grant — deliberately. The
+    column is a plain CHECK with no migration behind its value list, and
+    narrowing it would make migration 040 irreversible in a way its own
+    downgrade does not claim to be. The read/write half is what every remaining
+    module actually needs.
+    """
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
@@ -51,6 +62,20 @@ def test_check_allows_delete():
         defs = " ".join(r[0] for r in cur.fetchall())
     assert "'delete'" in defs
     assert "'read'" in defs and "'write'" in defs
+
+
+def test_no_role_holds_the_retired_documents_module():
+    """Migration 040's own assertion, on the database it was applied to.
+
+    Not scoped to super_admin: the module was dropped for EVERY role, and the
+    combination that mattered most was a role holding `documents:delete` with no
+    `companies` grant at all — able to remove a company's papers without being
+    able to open the company.
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM role_permissions WHERE module = 'documents'")
+        assert cur.fetchone()[0] == 0
 
 
 @requires_super_admin
@@ -147,7 +172,15 @@ def test_audit_entity_id_is_indexed():
 
 @requires_super_admin
 def test_seed_is_idempotent():
-    """Re-inserting the seed must not create duplicates (ON CONFLICT DO NOTHING)."""
+    """Re-inserting the seed must not create duplicates (ON CONFLICT DO NOTHING).
+
+    IT RE-INSERTS THE LIVE SEED, NOT THE ONE MIGRATION 008 SHIPPED WITH. This
+    used to include the three `documents` rows, and it COMMITS — so after
+    migration 040 retired that module, running this against DEV would have put
+    the retired grants back and quietly undone the migration. The point of the
+    test is `ON CONFLICT DO NOTHING`, which the four remaining pairs exercise
+    just as well.
+    """
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -156,8 +189,7 @@ def test_seed_is_idempotent():
             FROM public.roles r
             CROSS JOIN (VALUES
                 ('companies', 'read'), ('companies', 'write'),
-                ('persons', 'read'), ('persons', 'write'),
-                ('documents', 'read'), ('documents', 'write'), ('documents', 'delete')
+                ('persons', 'read'), ('persons', 'write')
             ) AS m(module, permission)
             WHERE r.name = 'super_admin'
             ON CONFLICT (role_id, module, permission) DO NOTHING
