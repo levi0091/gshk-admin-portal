@@ -199,18 +199,18 @@ describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
     expect(within(row).getByText('in 34 days')).toBeInTheDocument()
   })
 
-  it('highlights a company inside the 42-day filing window', async () => {
+  it('reads "3d overdue" in red once the anniversary has passed', async () => {
     renderPage()
     const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
-    const cell = within(row).getByText('3 days ago')
+    const cell = within(row).getByText('3d overdue')
     expect(cell).toBeInTheDocument()
-    expect(cell).toHaveClass('td-anniv-due')
+    expect(cell).toHaveClass('td-anniv-overdue')
   })
 
   it('does not highlight a company whose anniversary is still ahead', async () => {
     renderPage()
     const row = (await screen.findByText('Get Started HK Limited')).closest('tr')
-    expect(within(row).getByText('in 34 days')).not.toHaveClass('td-anniv-due')
+    expect(within(row).getByText('in 34 days')).not.toHaveClass('td-anniv-overdue')
   })
 
   it('shows an em dash for a company with no incorporation date', async () => {
@@ -229,7 +229,7 @@ describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
     })
     renderPage()
     const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
-    expect(within(row).getByText('3 days ago')).toBeInTheDocument()
+    expect(within(row).getByText('3d overdue')).toBeInTheDocument()
   })
 
   it('falls back to computing locally when the server omits it', async () => {
@@ -248,14 +248,15 @@ describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
     })
     renderPage()
     const row = (await screen.findByText('Harbour Tech Ltd.')).closest('tr')
-    expect(within(row).getByText('120 days ago')).toBeInTheDocument()
+    expect(within(row).getByText('120d overdue')).toBeInTheDocument()
   })
 
-  it('highlights the 42-day window, and only that', async () => {
-    // 2,262 of DEV's client companies sit between −43 and −182. Painting all of
-    // them carrot would be an alarm about 38% of the register, for a fact that
-    // is not a deadline: inside the window the return can still be filed today,
-    // outside it the cell is stating a date relationship.
+  it('marks a passed anniversary on BOTH sides of the 42-day window', async () => {
+    // This used to assert the opposite — carrot inside the window, muted
+    // outside it, so that the 2,262 DEV companies between −43 and −182 were
+    // not all painted. Reversed with the wording (Levi 2026-09-07): the cell
+    // now says "overdue", and "43d overdue" in muted grey next to "42d
+    // overdue" in red reads as the later filing mattering less.
     api.get.mockResolvedValue({
       ...PAYLOAD,
       companies: [
@@ -268,8 +269,8 @@ describe('CompanyRegistryPage — days to anniversary (UAT F-6)', () => {
     renderPage()
     const inside = (await screen.findByText('Inside Window Ltd.')).closest('tr')
     const outside = screen.getByText('Window Shut Ltd.').closest('tr')
-    expect(within(inside).getByText('42 days ago')).toHaveClass('td-anniv-due')
-    expect(within(outside).getByText('43 days ago')).not.toHaveClass('td-anniv-due')
+    expect(within(inside).getByText('42d overdue')).toHaveClass('td-anniv-overdue')
+    expect(within(outside).getByText('43d overdue')).toHaveClass('td-anniv-overdue')
   })
 
   it('renders an em dash when the server says null', async () => {

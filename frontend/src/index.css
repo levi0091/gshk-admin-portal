@@ -98,6 +98,18 @@ a { text-decoration: none; color: inherit; }
 .f-input:focus, .f-select:focus {
   border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(36,44,102,.08);
 }
+/* A required box a Save press found empty. Set only after that press, never
+   while the form is still being filled in, and cleared the moment the box has
+   a value — so this can only ever mean "you tried, and this is what stopped
+   it". Red, matching the banner that names the same fields; `.addr-block`
+   keeps its own carrot rule below, because an over-long address line is a
+   warning that does not block a save and this is a refusal that does. */
+.f-input[aria-invalid="true"], .f-select[aria-invalid="true"] {
+  border-color: #C53030; background: #FFFBFB;
+}
+.f-input[aria-invalid="true"]:focus, .f-select[aria-invalid="true"]:focus {
+  border-color: #C53030; box-shadow: 0 0 0 3px rgba(197,48,48,.10);
+}
 /* The same field, allowed to be more than one line. `.f-input` pins height to
    36px, which flattens a <textarea> to a single squashed row; this restores the
    vertical padding that height was standing in for and lets `rows` decide. */
@@ -493,8 +505,13 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .td-id { font-size: 12px; font-weight: 700; color: var(--indigo); font-variant: tabular-nums; }
 .td-primary { font-weight: 600; color: var(--t-head); }
 .td-muted { font-size: 11px; color: var(--t-muted); }
-/* anniversary passed, still inside the 42-day NAR1 filing window */
-.td-anniv-due { font-size: 11px; font-weight: 700; color: var(--carrot); }
+/* The anniversary has passed — the cell reads "37d overdue" (Levi 2026-09-07).
+   RED, not the carrot this was: carrot is this system's "act on me", and every
+   other carrot mark on a row is something the operator may choose to act on.
+   A statutory deadline that has gone by is not a suggestion, and the word
+   beside it now says so. `.td-muted` still carries the countdown, which is the
+   ordinary case and has no business competing with this. */
+.td-anniv-overdue { font-size: 11px; font-weight: 700; color: #B91C1C; }
 
 /* `.anniv-bar` lived here — a standalone Days-to-anniversary control pinned
    above the registry table. It is gone (Levi 2026-09-03): the range is the
@@ -592,6 +609,28 @@ tbody tr.clickable { cursor: pointer; }
 .doc-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .doc-item:last-child { border-bottom: none; }
 .doc-name { font-size: 13px; color: var(--t-body); font-weight: 500; }
+
+/* More than one button in a card header (the Beneficial Owner tile's Copy from
+   beside its + Add). `.card-hdr` is a two-item flex row, so a bare second
+   button becomes a third item and the title stops being pushed to the left. */
+.tile-actions { display: flex; align-items: center; gap: 8px; }
+
+/* A pickable party in the Copy Beneficial Owners dialog. `.doc-item` spreads
+   its children with space-between, which is right for a two-part row and wrong
+   for this four-part one — the checkbox would drift away from the name it
+   ticks. Packed from the left, with the right-hand note pushed out by its own
+   margin. */
+.copy-party { justify-content: flex-start; gap: 10px; }
+.copy-party input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--indigo); flex: none; }
+.copy-party:has(input:disabled) { opacity: .55; }
+/* The name is the only part allowed to wrap. Everything to its right is short
+   and fixed, and a tag that broke across two lines ("BODY / CORPORATE") took
+   the row to three. */
+.copy-party .member-role-tag { white-space: nowrap; flex: none; }
+.copy-party-note {
+  margin-left: auto; flex: none; white-space: nowrap;
+  font-size: 11px; color: var(--t-muted); font-variant-numeric: tabular-nums;
+}
 .doc-dl { display: inline-flex; align-items: center; gap: 5px; color: var(--indigo); font-size: 11px; font-weight: 600; cursor: pointer; background: none; border: none; font-family: var(--font); }
 .doc-dl:hover { color: var(--carrot); }
 
@@ -1114,10 +1153,10 @@ tbody tr.clickable { cursor: pointer; }
 .filter-tab.ft-danger.active { background: #C53030; color: #fff; }
 
 /* The overdue-anniversary treatment v11 calls `.anniv-due` already exists here
-   as `.td-anniv-due` (line ~350), byte-identical, and the company listing
-   already uses it. The case dashboard reuses that one class rather than adding
-   a second name for the same rule — Levi 2026-08-16 wants the column reading
-   the same on both screens, which is easier to guarantee with one definition. */
+   as `.td-anniv-overdue` (line ~490), and the company listing already uses it.
+   The case dashboard reuses that one class rather than adding a second name for
+   the same rule — Levi 2026-08-16 wants the column reading the same on both
+   screens, which is easier to guarantee with one definition. */
 
 /* Pre-/Post-incorporation phase toggle. */
 .seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -1358,7 +1397,18 @@ tbody tr.clickable { cursor: pointer; }
 /* Carrot, not red: an over-long line is a thing to fix before saving, not an
    error that has already happened. */
 .addr-count[data-over="true"] { color: var(--carrot); background: var(--carrot-10); border-color: var(--carrot); }
-.addr-block .f-input[aria-invalid="true"] { border-color: var(--carrot); }
+/* EVERY property the generic rule sets, not just the border. `[aria-invalid]`
+   near .f-input:focus paints a REFUSAL — red border, pink ground, red focus
+   ring — and an over-long address line is a warning that still saves. Override
+   half of it and you get a carrot border on a pink box, or a red glow when the
+   field is focused. The `:focus` selector is more specific than the generic
+   one, so this holds wherever either rule ends up in the file. */
+.addr-block .f-input[aria-invalid="true"] {
+  border-color: var(--carrot); background: var(--white);
+}
+.addr-block .f-input[aria-invalid="true"]:focus {
+  border-color: var(--carrot); box-shadow: 0 0 0 3px rgba(243,108,50,.10);
+}
 .addr-over { color: var(--carrot); }
 .addr-block .ab-note { padding: 8px 10px; background: var(--carrot-10); border-radius: 6px; color: var(--t-body); }
 
@@ -1372,11 +1422,18 @@ tbody tr.clickable { cursor: pointer; }
   font-size: 11px; font-weight: 500; line-height: 1.35;
   color: var(--carrot);
 }
+/* THE EXCEPTION TO THE PARAGRAPH ABOVE, and the only one (Levi 2026-09-07).
+   The per-field notes stay carrot because each is one incomplete value; this
+   pill is the card's whole answer to "is there anything wrong in here?", read
+   at a glance from the top of a long profile, and in carrot it was read as
+   decoration. Red, bordered and heavier than the title it sits beside — a
+   header that has nothing wrong renders no pill at all, so there is no risk of
+   this becoming the page's normal state. */
 .warn-pill {
   display: inline-flex; align-items: center; height: 20px;
-  margin-left: 8px; padding: 0 8px; border-radius: 10px;
-  background: var(--carrot-10); color: var(--carrot);
-  font-size: 11px; font-weight: 700; letter-spacing: .01em;
+  margin-left: 8px; padding: 0 9px; border-radius: 10px;
+  background: #FEE2E2; color: #B91C1C; border: 1px solid #FCA5A5;
+  font-size: 11px; font-weight: 800; letter-spacing: .01em;
   vertical-align: middle;
 }
 /* The reason the Open case button is refusing, next to the button. */
@@ -1390,7 +1447,7 @@ tbody tr.clickable { cursor: pointer; }
    visible filter boxes would bury the table they filter.
 
    No new hues. Carrot is already this system's "act on me" (.filter-tab
-   .ft-action, .td-anniv-due), and a filter is the thing explaining why the row
+   .ft-action, .fld-warn), and a filter is the thing explaining why the row
    count is what it is — so an applied filter is carrot, and everything dormant
    stays at the hairline weight .th-sort already established. */
 

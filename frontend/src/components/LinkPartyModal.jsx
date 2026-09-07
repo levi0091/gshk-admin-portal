@@ -16,6 +16,11 @@ import { useLookups, optionsFor } from '../lib/lookups.js'
  *   { lookup: 'name' }        a <select> filled from /lookups
  *   { source: 'shareClasses' } a <select> of THIS company's classes of shares
  *   { type: 'boolean' }       a two-value <select> that sends a real boolean
+ *
+ * and may carry `{ required: true }` (a `*`, and refused empty on save) and
+ * `{ default: 'x' }` (pre-filled when ADDING, never when editing — an edit
+ * shows what is stored, and a default that overwrote a deliberately blank
+ * stored value would be a silent edit nobody asked for).
  */
 
 //: Whether a link is live or historical. Rendered as a dropdown rather than a
@@ -59,13 +64,32 @@ export const RELATION_META = {
   secretaries: {
     title: 'Company Secretary',
     fields: [
-      { key: 'position', label: 'Position' },
-      { key: 'appointed_date', label: 'Appointed', type: 'date' },
+      // POSITION IS PRE-FILLED AND REQUIRED (Levi 2026-09-07). This tile writes
+      // `entity_officers` with role fixed to company_secretary server-side, so
+      // "Company Secretary" is the position on all but a handful of rows and
+      // typing it every time was pure friction. Required because the tile
+      // PRINTS Position — an unfilled one renders an em dash on the profile,
+      // and the operator who left it blank could not tell that from a field
+      // the screen simply does not show.
+      { key: 'position', label: 'Position', required: true,
+        default: 'Company Secretary' },
+      // Required: CR asks when the secretary was appointed, and a secretary
+      // with no appointment date is a row that cannot answer the one question
+      // the register exists to answer. NOT defaulted — today's date is a guess,
+      // and a wrong date here is worse than an empty one, because it looks
+      // filled in.
+      { key: 'appointed_date', label: 'Appointed', type: 'date', required: true },
       { key: 'resigned_date', label: 'Resigned', type: 'date' },
       { key: 'resignation_reason', label: 'Resignation Reason' },
       CURRENT_FIELD,
     ],
   },
+  // EVERY FIELD ON THIS FORM IS REQUIRED (Levi 2026-09-07), which is not true
+  // of any other relation here and is not an oversight. A shareholding is the
+  // one link on this screen that CR reads back: `nar1_mapper._schedule_1` puts
+  // the class, the count and the amount paid on the return, so a holding
+  // missing any of them is a case that opens fine and fails at Data
+  // Verification weeks later. The other tiles hold facts CR never asks for.
   shareholders: {
     title: 'Shareholder',
     fields: [
@@ -78,9 +102,12 @@ export const RELATION_META = {
         source: 'shareClasses',
         empty: 'This company has no share capital recorded yet — add a class '
              + 'under Share Capital first.' },
-      { key: 'shares_held', label: 'Shares Held', type: 'number' },
-      { key: 'amount_paid', label: 'Amount Paid', type: 'number' },
-      CURRENT_FIELD,
+      { key: 'shares_held', label: 'Shares Held', type: 'number', required: true },
+      { key: 'amount_paid', label: 'Amount Paid', type: 'number', required: true },
+      // Required AND defaulted, unlike Appointed above: there is no third
+      // answer to guess wrong between, and a member is being added because
+      // they hold the shares now. Former is a state you select deliberately.
+      { ...CURRENT_FIELD, required: true, default: 'true' },
     ],
   },
   'beneficial-owners': {
@@ -109,6 +136,46 @@ function toFormValue(v) {
   return v ?? ''
 }
 
+/**
+ * What the form starts with.
+ *
+ * Editing shows the row and nothing else — see the note on `default` above.
+ * Adding starts from the descriptors' defaults, so the operator confirms them
+ * rather than retypes them.
+ */
+function initialAttrs(fields, link) {
+  if (link) return Object.fromEntries(fields.map(f => [f.key, toFormValue(link[f.key])]))
+  return Object.fromEntries(fields.map(f => [f.key, f.default ?? '']))
+}
+
+/**
+ * A required field is empty. `0` is NOT empty — it is a real answer to Shares
+ * Held and to Amount Paid, and `!attrs[key]` used to reject it, which would
+ * have made a nil-paid holding unrecordable the day this became required.
+ */
+function isBlank(v) {
+  return v == null || String(v).trim() === ''
+}
+
+/**
+ * The required fields this save has to refuse over.
+ *
+ * CREATION IS STRICTER THAN EDITING, the same rule `company_type` and the HKID
+ * check digit already follow in this repo. A new link has no legacy to protect,
+ * so every required field must be answered. An EXISTING one may keep a blank it
+ * arrived with: `shares_held` and `amount_paid` became required on 2026-09-07
+ * and the Viewpoint ETL left plenty of holdings without them, so enforcing this
+ * on edit would mean an operator correcting a misspelled class could not save
+ * until they had invented a paid-up amount. What is still refused is CLEARING
+ * one — a value that was there and is now blank is this edit's doing.
+ */
+function requiredBlanks(fields, attrs, opened, isEdit) {
+  return fields.filter(f => {
+    if (!f.required || !isBlank(attrs[f.key])) return false
+    return !isEdit || !isBlank(opened[f.key])
+  })
+}
+
 export default function LinkPartyModal({ companyId, relation, link, shareClasses,
                                          onClose, onSaved }) {
   const meta = RELATION_META[relation]
@@ -119,11 +186,16 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
   const [search, setSearch] = useState('')
   const [results, setResults] = useState([])
   const [selected, setSelected] = useState(null)
-  const [attrs, setAttrs] = useState(
-    isEdit ? Object.fromEntries(meta.fields.map(f => [f.key, toFormValue(link[f.key])])) : {}
-  )
+  const [attrs, setAttrs] = useState(() => initialAttrs(meta.fields, link))
+  // What the row held when the dialog opened, so a required field that was
+  // ALREADY empty can be left empty — see `requiredBlanks`.
+  const [opened] = useState(() => initialAttrs(meta.fields, link))
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  // Which required fields came back empty on the last Save press. Empty until
+  // the operator presses it: marking a form invalid before it has been filled
+  // in is shouting at somebody for not having finished typing.
+  const [missing, setMissing] = useState([])
 
   // Party search — only when linking. On edit the party is immutable
   // (unlink + relink to re-point), so we don't offer a picker.
@@ -161,9 +233,21 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
 
   async function handleSave() {
     setError('')
-    if (!isEdit && !selected) return setError('Select a party to link')
-    const missing = meta.fields.find(f => f.required && !attrs[f.key])
-    if (missing) return setError(`${missing.label} is required`)
+    if (!isEdit && !selected) {
+      setMissing([])
+      return setError('Select a party to link')
+    }
+    // EVERY missing field at once, not the first one. Four of the five boxes on
+    // the shareholder form are now required; naming them one per press is four
+    // round trips through a save that was never going to succeed, and the
+    // operator cannot see how much is left to do.
+    const blanks = requiredBlanks(meta.fields, attrs, opened, isEdit)
+    setMissing(blanks.map(f => f.key))
+    if (blanks.length) {
+      return setError(blanks.length === 1
+        ? `${blanks[0].label} is required.`
+        : `These are required: ${blanks.map(f => f.label).join(', ')}.`)
+    }
 
     const body = {}
     for (const f of meta.fields) {
@@ -256,6 +340,16 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
             {meta.fields.map(f => {
               const options = optionsOf(f)
               const noOptions = options && options.length === 0 && f.empty
+              // The banner names the fields; this marks them, so on a form
+              // where four are required the operator does not have to hold the
+              // list in their head while scrolling back down to the boxes.
+              const invalid = missing.includes(f.key)
+              // Clearing on change, not on the next Save, so a box stops being
+              // flagged the moment it stops being empty.
+              const set = v => {
+                setAttrs(a => ({ ...a, [f.key]: v }))
+                if (invalid && !isBlank(v)) setMissing(m => m.filter(k => k !== f.key))
+              }
               return (
                 <div className={`f-group${f.full ? ' full' : ''}`} key={f.key}>
                   <label className="f-label" htmlFor={f.key}>
@@ -264,7 +358,8 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
                   {options ? (
                     <select id={f.key} className="f-select" value={attrs[f.key] ?? ''}
                             disabled={options.length === 0}
-                            onChange={e => setAttrs(a => ({ ...a, [f.key]: e.target.value }))}>
+                            aria-invalid={invalid || undefined}
+                            onChange={e => set(e.target.value)}>
                       <option value="">Select…</option>
                       {options.map(o => (
                         <option key={o.value} value={o.value}>{o.label}</option>
@@ -273,7 +368,8 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
                   ) : (
                     <input id={f.key} className="f-input" type={f.type || 'text'}
                            value={attrs[f.key] ?? ''}
-                           onChange={e => setAttrs(a => ({ ...a, [f.key]: e.target.value }))} />
+                           aria-invalid={invalid || undefined}
+                           onChange={e => set(e.target.value)} />
                   )}
                   {/* An empty dropdown with no explanation is the same dead end
                       the free-text box was — it just fails earlier. */}

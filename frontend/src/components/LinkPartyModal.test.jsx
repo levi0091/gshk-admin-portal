@@ -156,6 +156,10 @@ describe('LinkPartyModal', () => {
     await user.type(screen.getByLabelText('Search parties'), 'john')
     await user.click(await screen.findByText('John Smith'))
     await user.selectOptions(picker, 'sc1')
+    // Every box on this form is required now, so the happy path has to fill
+    // them. Status is not typed: it arrives pre-set to Current.
+    await user.type(screen.getByLabelText(/Shares Held/), '100')
+    await user.type(screen.getByLabelText(/Amount Paid/), '100')
     await user.click(screen.getByRole('button', { name: 'Link Party' }))
 
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(
@@ -183,7 +187,8 @@ describe('LinkPartyModal', () => {
       shareClasses: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD' }],
     })
 
-    await user.selectOptions(await screen.findByLabelText('Status'), 'false')
+    // Regex, not the exact string: Status carries a required `*` on this form.
+    await user.selectOptions(await screen.findByLabelText(/Status/), 'false')
     await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
@@ -191,7 +196,10 @@ describe('LinkPartyModal', () => {
       expect.objectContaining({ is_current: false })))
   })
 
-  it('refuses to link a shareholder with no class of shares chosen', async () => {
+  it('names EVERY required box a shareholder is missing, not just the first', async () => {
+    // Levi 2026-09-07: every field on this form is mandatory. Reporting them
+    // one press at a time is four round trips through a save that was never
+    // going to succeed, and never shows how much is left to do.
     const user = userEvent.setup()
     renderModal({
       relation: 'shareholders',
@@ -201,8 +209,142 @@ describe('LinkPartyModal', () => {
     await user.click(await screen.findByText('John Smith'))
     await user.click(screen.getByRole('button', { name: 'Link Party' }))
 
-    expect(await screen.findByText('Class of Shares is required')).toBeInTheDocument()
+    expect(await screen.findByText(
+      'These are required: Class of Shares, Shares Held, Amount Paid.'))
+      .toBeInTheDocument()
+    // Named in the banner AND marked on the boxes, so the operator does not
+    // have to hold the list in their head while scrolling back to them.
+    expect(screen.getByLabelText(/Class of Shares/)).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText(/Shares Held/)).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText(/Amount Paid/)).toHaveAttribute('aria-invalid', 'true')
+    // Status is required too, and is NOT listed — it opens pre-set to Current.
+    expect(screen.getByLabelText(/Status/)).not.toHaveAttribute('aria-invalid')
     expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('names one missing box in the singular', async () => {
+    const user = userEvent.setup()
+    renderModal({
+      relation: 'shareholders',
+      shareClasses: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD' }],
+    })
+    await user.type(screen.getByLabelText('Search parties'), 'john')
+    await user.click(await screen.findByText('John Smith'))
+    await user.selectOptions(await screen.findByLabelText(/Class of Shares/), 'sc1')
+    await user.type(screen.getByLabelText(/Shares Held/), '100')
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+
+    expect(await screen.findByText('Amount Paid is required.')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('stops flagging a box the moment it has a value', async () => {
+    const user = userEvent.setup()
+    renderModal({
+      relation: 'shareholders',
+      shareClasses: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD' }],
+    })
+    await user.type(screen.getByLabelText('Search parties'), 'john')
+    await user.click(await screen.findByText('John Smith'))
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+
+    const held = await screen.findByLabelText(/Shares Held/)
+    expect(held).toHaveAttribute('aria-invalid', 'true')
+    await user.type(held, '100')
+    expect(held).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('accepts a nil-paid holding — 0 is an answer, not an empty box', async () => {
+    // `!attrs[key]` would have rejected this, which would have made a holding
+    // paid up to nothing unrecordable the day Amount Paid became required.
+    const user = userEvent.setup()
+    renderModal({
+      relation: 'shareholders',
+      shareClasses: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD' }],
+    })
+    await user.type(screen.getByLabelText('Search parties'), 'john')
+    await user.click(await screen.findByText('John Smith'))
+    await user.selectOptions(await screen.findByLabelText(/Class of Shares/), 'sc1')
+    await user.type(screen.getByLabelText(/Shares Held/), '100')
+    await user.type(screen.getByLabelText(/Amount Paid/), '0')
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/companies/e1/shareholders',
+      expect.objectContaining({ amount_paid: '0', is_current: true })))
+  })
+
+  it('lets an ETL row keep a blank it arrived with, but not be cleared', async () => {
+    // Creation is stricter than editing, the rule `company_type` and the HKID
+    // check digit already follow. Viewpoint left plenty of holdings with no
+    // amount paid; enforcing that on edit would mean correcting a misspelled
+    // class required inventing a paid-up figure first.
+    const user = userEvent.setup()
+    renderModal({
+      relation: 'shareholders',
+      link: { id: 'sh1', share_class_id: 'sc1', shares_held: 100,
+              amount_paid: null, is_current: true,
+              persons: { full_name: 'John Smith' } },
+      shareClasses: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD' }],
+    })
+
+    await user.clear(await screen.findByLabelText(/Shares Held/))
+    await user.type(screen.getByLabelText(/Shares Held/), '250')
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/companies/e1/shareholders/sh1',
+      expect.objectContaining({ shares_held: '250' })))
+
+    // Clearing one that WAS filled is this edit's doing, and is refused.
+    api.patch.mockClear()
+    await user.clear(screen.getByLabelText(/Shares Held/))
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+    expect(await screen.findByText('Shares Held is required.')).toBeInTheDocument()
+    expect(api.patch).not.toHaveBeenCalled()
+  })
+
+  it('opens the Company Secretary form with the Position already filled', async () => {
+    // Levi 2026-09-07. This tile writes entity_officers with role fixed to
+    // company_secretary server-side, so the position is "Company Secretary" on
+    // all but a handful of rows and typing it every time was pure friction.
+    const user = userEvent.setup()
+    renderModal({ relation: 'secretaries' })
+
+    expect(await screen.findByLabelText(/Position/)).toHaveValue('Company Secretary')
+    await user.type(screen.getByLabelText('Search parties'), 'john')
+    await user.click(await screen.findByText('John Smith'))
+    await user.type(screen.getByLabelText(/Appointed/), '2025-01-09')
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/companies/e1/secretaries',
+      expect.objectContaining({ position: 'Company Secretary',
+                                appointed_date: '2025-01-09' })))
+  })
+
+  it('will not add a secretary with no appointment date', async () => {
+    // NOT defaulted to today, unlike Position: a wrong date here is worse than
+    // an empty one, because it looks filled in.
+    const user = userEvent.setup()
+    renderModal({ relation: 'secretaries' })
+    await user.type(screen.getByLabelText('Search parties'), 'john')
+    await user.click(await screen.findByText('John Smith'))
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+
+    expect(await screen.findByText('Appointed is required.')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('does not pre-fill Position when EDITING a secretary that has none', async () => {
+    // A default that overwrote a stored blank would be a silent edit nobody
+    // asked for — the operator opened the row to change something else.
+    renderModal({
+      relation: 'secretaries',
+      link: { id: 'sec1', position: null, appointed_date: '2020-01-01',
+              corporate_entity: { company_name: 'Get Started HK Limited' } },
+    })
+    expect(await screen.findByLabelText(/Position/)).toHaveValue('')
   })
 
   it('surfaces a server error (e.g. the exactly-one-party 422)', async () => {

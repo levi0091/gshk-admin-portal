@@ -166,7 +166,7 @@ export default function CaseWorkflowPage() {
   if (!caseRow) return null
 
   const c = caseRow
-  const { text: annivText, due } = labelForDays(c.days_to_anniversary)
+  const { text: annivText, overdue } = labelForDays(c.days_to_anniversary)
   const current = step ?? 1
   // `reachedStage` answers 0 for a closed case — no stage is reachable — and
   // `step` follows it, so `STAGE_LABELS[current - 1]` is `STAGE_LABELS[-1]`:
@@ -243,7 +243,7 @@ export default function CaseWorkflowPage() {
             {c.br_number ? ` · BRN ${c.br_number}` : ''}
             {annivText ? ' · ' : ''}
             {annivText && (
-              <span className={due ? 'td-anniv-due' : ''}>{annivText}</span>
+              <span className={overdue ? 'td-anniv-overdue' : ''}>{annivText}</span>
             )}
           </div>
         </div>

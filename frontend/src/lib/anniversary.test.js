@@ -80,34 +80,37 @@ describe('daysSinceAnniversary', () => {
 describe('anniversaryLabel', () => {
   it('counts down to an anniversary that is still ahead', () => {
     expect(anniversaryLabel('2018-09-18', on('2026-08-15')))
-      .toEqual({ text: 'in 34 days', due: false })
+      .toEqual({ text: 'in 34 days', overdue: false })
   })
 
-  it('says today on the anniversary itself', () => {
+  it('says today on the anniversary itself, and marks it', () => {
+    // Not "0d overdue": nothing is late on the day itself. It is still marked,
+    // because this is the day the filing window opens.
     expect(anniversaryLabel('2011-08-15', on('2026-08-15')))
-      .toEqual({ text: 'today', due: true })
+      .toEqual({ text: 'today', overdue: true })
   })
 
-  it('counts up while inside the 42-day filing window', () => {
+  it('reads "3d overdue" once the anniversary has passed', () => {
+    // The wording Levi asked for on 2026-09-07, replacing "3 days ago". The
+    // compact form is what makes it fit a table column beside the red.
     expect(anniversaryLabel('2023-08-12', on('2026-08-15')))
-      .toEqual({ text: '3 days ago', due: true })
+      .toEqual({ text: '3d overdue', overdue: true })
   })
 
-  it('flags the last day of the 42-day filing window as still due', () => {
+  it('still marks the last day of the 42-day filing window', () => {
     expect(anniversaryLabel('2023-07-04', on('2026-08-15')))
-      .toEqual({ text: '42 days ago', due: true })
+      .toEqual({ text: '42d overdue', overdue: true })
   })
 
-  it('keeps counting up once the 42-day window has closed, but stops flagging', () => {
-    // 43 days past. Until migration 033 this jumped to "in 322 days", which is
-    // why no value below -42 existed and clearing the registry's lower bound
-    // revealed nothing (Levi 2026-09-04). It now states the elapsed fact — and
-    // `due` goes false, because past the window the row is no longer a filing
-    // that can be made today, and highlighting 2,262 companies carrot would be
-    // an alarm about nothing.
+  it('KEEPS marking a row once the 42-day window has closed', () => {
+    // 43 days past. `overdue` used to go false here, so that the registry's
+    // 2,262 companies between -43 and -182 were not all painted at once. The
+    // wording is what retired that: a row reading "43d overdue" in muted grey,
+    // beside one reading "42d overdue" in red, says the later filing needs
+    // less attention than the earlier one (Levi 2026-09-07).
     const label = anniversaryLabel('2023-07-03', on('2026-08-15'))
-    expect(label.text).toBe('43 days ago')
-    expect(label.due).toBe(false)
+    expect(label.text).toBe('43d overdue')
+    expect(label.overdue).toBe(true)
   })
 
   it('counts down again only once the NEXT anniversary is the nearer one', () => {
@@ -116,22 +119,25 @@ describe('anniversaryLabel', () => {
     // anniversary" would name something that never counts to anything.
     const label = anniversaryLabel('2023-02-13', on('2026-08-15'))
     expect(label.text).toBe('in 182 days')
-    expect(label.due).toBe(false)
+    expect(label.overdue).toBe(false)
   })
 
   it('reaches its most negative near the middle of the year', () => {
     // The floor, such as it is: about half a year, not 42 days.
     const label = anniversaryLabel('2023-02-16', on('2026-08-15'))
-    expect(label.text).toBe('180 days ago')
-    expect(label.due).toBe(false)
+    expect(label.text).toBe('180d overdue')
+    expect(label.overdue).toBe(true)
   })
 
   it('renders an em dash when there is no incorporation date', () => {
-    expect(anniversaryLabel(null, on('2026-08-15'))).toEqual({ text: '—', due: false })
+    expect(anniversaryLabel(null, on('2026-08-15')))
+      .toEqual({ text: '—', overdue: false })
   })
 
-  it('says day, not days, at exactly one', () => {
+  it('says day, not days, only where it still counts in days', () => {
+    // The countdown keeps the long form; the overdue side is the compact one,
+    // and "1d overdue" has no plural to get wrong.
     expect(anniversaryLabel('2018-08-16', on('2026-08-15')).text).toBe('in 1 day')
-    expect(anniversaryLabel('2018-08-14', on('2026-08-15')).text).toBe('1 day ago')
+    expect(anniversaryLabel('2018-08-14', on('2026-08-15')).text).toBe('1d overdue')
   })
 })

@@ -264,8 +264,8 @@ export default function CompanyRegistryPage() {
                         const days = 'days_to_anniversary' in c
                           ? c.days_to_anniversary
                           : signedDaysToAnniversary(c.incorporation_date)
-                        const { text, due } = labelForDays(days)
-                        return <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>
+                        const { text, overdue } = labelForDays(days)
+                        return <span className={overdue ? 'td-anniv-overdue' : 'td-muted'}>{text}</span>
                       })()}
                     </td>
                   </tr>

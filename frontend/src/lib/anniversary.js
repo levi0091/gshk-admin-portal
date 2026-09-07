@@ -20,7 +20,15 @@
 
 import { HK_TZ } from './format.js'
 
-/** The statutory NAR1 filing window, in days after the anniversary. */
+/**
+ * The statutory NAR1 filing window, in days after the anniversary.
+ *
+ * Kept although nothing reads it as a value any more: `labelForDays` stopped
+ * drawing a line at 42 on 2026-09-07 (see the note there), and the dashboard
+ * banner spells the number out in its own prose. It stays because it is the
+ * statutory fact, and because it is the threshold to reinstate if the register
+ * turns out to be too loud.
+ */
 export const FILING_WINDOW_DAYS = 42
 
 const MS_PER_DAY = 86400000
@@ -114,30 +122,33 @@ export function signedDaysToAnniversary(incorporationDate, today = hongKongToday
  * Render a signed day count. Taking the number as input — rather than the date —
  * is what lets the row display the value the SERVER computed, so the text and
  * the sort order cannot disagree.
+ *
+ * `overdue` is TRUE FOR EVERY PASSED ANNIVERSARY, not only the ones inside the
+ * 42-day window (Levi 2026-09-07). It used to be the window, on the reasoning
+ * that 2,262 of DEV's client companies sit between -43 and -182 and painting
+ * them all would colour 38% of the register for a fact that is not a deadline.
+ * What retired that argument is the wording: the cell now says "overdue", and a
+ * row reading "50d overdue" in muted grey beside one reading "37d overdue" in
+ * red says the more overdue company needs less attention. If the register turns
+ * out to be too loud, narrow it HERE — `days >= -FILING_WINDOW_DAYS` — and both
+ * listings follow, because neither one decides this for itself.
  */
 export function labelForDays(days) {
-  if (days == null) return { text: '—', due: false }
-  if (days === 0) return { text: 'today', due: true }
-  // `due` is the 42-day window, NOT merely "negative". Once the count could run
-  // past -42 (migration 033) that distinction started carrying weight: 2,262 of
-  // DEV's client companies sit between -43 and -182, and highlighting all of
-  // them would paint 38% of the register carrot for a fact that is not a
-  // deadline. Inside the window the return is deliverable today and the row
-  // wants acting on; outside it, the cell states a date relationship and lets
-  // the operator's filter do the asking.
-  if (days < 0) {
-    return { text: `${plural(-days, 'day')} ago`, due: days >= -FILING_WINDOW_DAYS }
-  }
-  return { text: `in ${plural(days, 'day')}`, due: false }
+  if (days == null) return { text: '—', overdue: false }
+  // Day 0 is the anniversary itself: nothing is late yet, so it is not called
+  // overdue — but it is the day the filing window opens, so it is still marked.
+  if (days === 0) return { text: 'today', overdue: true }
+  if (days < 0) return { text: `${-days}d overdue`, overdue: true }
+  return { text: `in ${plural(days, 'day')}`, overdue: false }
 }
 
 /**
  * What the cell reads, and whether it should be highlighted.
  *
- * `due` marks a company inside the 42-day filing window — the anniversary has
- * passed and the return is still legally deliverable. Past that the cell keeps
- * counting up, quietly, until the next anniversary is the nearer of the two and
- * it starts counting down again.
+ * `overdue` marks a company whose anniversary has passed. Inside the first 42
+ * days the return is still legally deliverable and the late fee has not
+ * started; the cell does not draw that line, and the dashboard banner is where
+ * the window is explained. See the note on `labelForDays`.
  */
 export function anniversaryLabel(incorporationDate, today = hongKongToday()) {
   return labelForDays(signedDaysToAnniversary(incorporationDate, today))

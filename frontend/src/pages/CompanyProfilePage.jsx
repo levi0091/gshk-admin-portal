@@ -7,6 +7,7 @@ import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
+import CopyPartiesModal from '../components/CopyPartiesModal.jsx'
 import ShareClassModal, { SHARE_CLASS_FIELDS } from '../components/ShareClassModal.jsx'
 import { useDocumentSections, groupBySection } from '../lib/documentSections.js'
 import {
@@ -207,6 +208,7 @@ export default function CompanyProfilePage() {
   const canOpenCase = caps.openCase
   // { relation, link? } — link present means "edit attributes" (OQ-1), absent means "add".
   const [linkModal, setLinkModal] = useState(null)
+  const [copyParties, setCopyParties] = useState(false)
   const {
     sections, ready: sectionsReady, error: sectionsError,
   } = useDocumentSections('company')
@@ -527,6 +529,22 @@ export default function CompanyProfilePage() {
           shareClasses={company.share_classes}
           onClose={() => setLinkModal(null)}
           onSaved={() => { setLinkModal(null); load() }}
+        />
+      )}
+
+      {copyParties && (
+        <CopyPartiesModal
+          companyId={companyId}
+          officers={company.officers}
+          shareholders={company.shareholders}
+          shareClasses={company.share_classes}
+          // The beneficial owners already on the register, so the tool can
+          // refuse to add one of them twice.
+          existing={company.beneficial_owners}
+          onClose={() => setCopyParties(false)}
+          // A partial copy keeps the dialog open — the message names what
+          // failed, and closing over it would be the same as not saying so.
+          onSaved={({ close }) => { if (close) setCopyParties(false); load() }}
         />
       )}
 
@@ -888,6 +906,12 @@ export default function CompanyProfilePage() {
               <PartyTile title="Beneficial Owner(s)" sub="Significant controllers"
                          rows={company.beneficial_owners} relation="beneficial-owners" busy={busy}
                          canWrite={canWrite}
+                         /* A significant controller is nearly always one of the
+                            members, occasionally a director — both listed on
+                            this same screen. `+ Add` made you search the whole
+                            Natural Person Registry for them by name, one at a
+                            time (Levi 2026-09-07). */
+                         onCopy={() => setCopyParties(true)}
                          onAdd={() => setLinkModal({ relation: 'beneficial-owners' })}
                          onEdit={row => setLinkModal({ relation: 'beneficial-owners', link: row })}
                          onRemove={row => unlinkParty('beneficial-owners', row)}
@@ -1097,7 +1121,8 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
  * endpoint, so that tile stays read-only.
  */
 function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
-                     onAdd, onEdit, onRemove, busy, note, canWrite = true }) {
+                     onAdd, onEdit, onRemove, busy, note, canWrite = true,
+                     onCopy, copyLabel = 'Copy from' }) {
   const list = rows || []
   // `relation` says the tile CAN be edited; `canWrite` says this reader may.
   // Both are required for any of the three controls to render at all.
@@ -1110,7 +1135,17 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
           <div className="card-sub">{sub}</div>
         </div>
         {editable && (
-          <button className="btn btn-outline btn-sm" onClick={onAdd}>+ Add</button>
+          <div className="tile-actions">
+            {/* Second only on the tile that has one, and BEFORE + Add because
+                it is the path most of these rows will take — a significant
+                controller is nearly always somebody already on this page. */}
+            {onCopy && (
+              <button className="btn btn-outline btn-sm" onClick={onCopy}>
+                {copyLabel}
+              </button>
+            )}
+            <button className="btn btn-outline btn-sm" onClick={onAdd}>+ Add</button>
+          </div>
         )}
       </div>
       {note && <div className="reveal-note" role="note">{note}</div>}

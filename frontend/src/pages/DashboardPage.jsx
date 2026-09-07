@@ -378,7 +378,7 @@ export default function DashboardPage() {
                     />
                   </td></tr>
                 ) : rows.map(c => {
-                  const { text, due } = labelForDays(c.days_to_anniversary)
+                  const { text, overdue } = labelForDays(c.days_to_anniversary)
                   return (
                     <tr key={c.id} className="clickable"
                         onClick={() => navigate(`/cases/${c.id}`)}>
@@ -399,7 +399,7 @@ export default function DashboardPage() {
                         <WorkflowBadge status={c.workflow_status} />
                       </td>
                       <td data-label="Days to anniversary" aria-label="Days to anniversary">
-                        <span className={due ? 'td-anniv-due' : 'td-muted'}>{text}</span>
+                        <span className={overdue ? 'td-anniv-overdue' : 'td-muted'}>{text}</span>
                       </td>
                       <td data-label="Last Updated"><span className="td-muted">{formatDate(c.updated_at)}</span></td>
                       <td data-label="Create Date"><span className="td-muted">{formatDate(c.created_at)}</span></td>

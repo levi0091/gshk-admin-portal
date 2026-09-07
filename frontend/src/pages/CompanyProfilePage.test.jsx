@@ -558,8 +558,60 @@ describe('CompanyProfilePage — the CR form fields', () => {
     expect(within(tile).getAllByText('HKD').length).toBeGreaterThan(0)
   })
 
+  it('offers Copy from on the Beneficial Owner tile, and nowhere else', async () => {
+    // A significant controller is nearly always one of the members, listed on
+    // this same screen. `+ Add` made you search the whole Natural Person
+    // Registry for them by name, one at a time (Levi 2026-09-07). The other
+    // tiles have no such source to copy from, so they do not get the button.
+    renderPage()
+    const bo = (await screen.findByText('Beneficial Owner(s)')).closest('.card')
+    expect(within(bo).getByRole('button', { name: 'Copy from' })).toBeInTheDocument()
+
+    for (const title of ['Director(s)', 'Shareholder(s)', 'Company Secretary']) {
+      const tile = screen.getByText(title).closest('.card')
+      expect(within(tile).queryByRole('button', { name: 'Copy from' }))
+        .not.toBeInTheDocument()
+      // …and the tile that HAS it still has its + Add.
+      expect(within(tile).getByRole('button', { name: '+ Add' })).toBeInTheDocument()
+    }
+  })
+
+  it('opens the copy dialog on the shareholders of THIS company', async () => {
+    const user = userEvent.setup()
+    mockGet({
+      ...CLIENT,
+      shareholders: [{ id: 'sh1', person_id: 'p1', shares_held: 5000,
+                       is_current: true, share_class_id: 'sc1',
+                       persons: { full_name: 'John Smith' } }],
+    })
+    renderPage()
+    const bo = (await screen.findByText('Beneficial Owner(s)')).closest('.card')
+    await user.click(within(bo).getByRole('button', { name: 'Copy from' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Copy beneficial owners' })
+    // 5,000 of the 10,000 issued Ordinary shares — over 25%, so pre-ticked.
+    expect(within(dialog).getByText('50.00%')).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /John Smith/ })).toBeChecked()
+  })
+
+  it('says "1 Missing Information" on a card header, not "1 to fix"', async () => {
+    // Levi 2026-09-07. The old wording sat in the same carrot as the field
+    // notes it was summarising, so the one mark meant to survive a glance
+    // read as decoration. `.warn-pill` is red and heavier now (index.css).
+    mockGet({
+      ...CLIENT,
+      share_classes: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD',
+                        total_issued: 100, issued_amount: null, total_paid: 100 }],
+    })
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+    const pill = within(tile).getByText('1 Missing Information')
+    expect(pill).toHaveClass('warn-pill')
+    expect(within(tile).queryByText('1 to fix')).not.toBeInTheDocument()
+  })
+
   it('can edit a share class — the card shipped with no way to fix it', async () => {
-    // THE DEFECT. The card showed "1 to fix" beside a blank Total Amount and
+    // THE DEFECT. The card showed a count beside a blank Total Amount and
     // offered no control that could fix it. A badge you cannot act on is
     // worse than no badge.
     const user = userEvent.setup()
@@ -880,6 +932,13 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(within(tile).queryByRole('button', { name: /^Remove$/ })).not.toBeInTheDocument()
     // The party itself is still listed — that is the reading half.
     expect(within(tile).getByText('John Smith')).toBeInTheDocument()
+  })
+
+  it('renders no Copy from either — it writes, so it is not rendered', async () => {
+    renderPage()
+    const tile = (await screen.findByText('Beneficial Owner(s)')).closest('.card')
+    expect(within(tile).queryByRole('button', { name: 'Copy from' }))
+      .not.toBeInTheDocument()
   })
 
   it('renders no Add or Edit on share capital, but still lists the classes', async () => {
