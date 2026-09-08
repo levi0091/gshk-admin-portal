@@ -484,16 +484,17 @@ describe('Client Verification', () => {
     expect(blob.mock.calls[1][0]).toBe('/tpsi/filings/f1/pdf')
   })
 
-  it('gives the preview enough height to read a statutory return', async () => {
+  it('leaves room below the preview for the controls that act on it', async () => {
     renderIt()
     const frame = await screen.findByLabelText('NAR1 preview')
-    // 1035px at 100% zoom — 690 raised by half (Levi 2026-09-07). The return
-    // is nine A4 pages and the operator is checking particulars against the
-    // company record, not glancing at it.
-    expect(frame).toHaveStyle({ height: '1035px' })
+    // 725px at 100% zoom — 1035 cut by 30% (Levi 2026-09-09). Still a full A4
+    // page, but no longer the whole screen: at 1035 the recipients and the
+    // Send button below the frame were off the bottom on a laptop, reachable
+    // only by scrolling past an embedded viewer that eats the wheel.
+    expect(frame).toHaveStyle({ height: '725px' })
   })
 
-  it('opens the return full screen — even 1035px cannot show a nine-page form', async () => {
+  it('opens the return full screen — no embedded height shows a nine-page form', async () => {
     const open = vi.fn()
     vi.stubGlobal('open', open)
     const user = userEvent.setup()
@@ -695,7 +696,7 @@ describe('Client Verification', () => {
 
   it('reports a refused send to the PAGE, and draws none of its own', async () => {
     // It used to be drawn at the button, because the page banner sits above a
-    // 690px PDF frame — about a screen and a half up — and a refused send
+    // PDF frame — a screenful up — and a refused send
     // therefore looked like a dead button. The page now scrolls to the banner
     // on every failure, so the reason is gone; keeping it would leave this one
     // stage with an error surface no other stage has (Levi 2026-09-03).

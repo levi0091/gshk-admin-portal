@@ -33,14 +33,21 @@ export const CLIENT_CC = 'renewal@getstarted.hk'
 /**
  * The frame's height at 100%, in CSS pixels.
  *
- * Raised from 690 by half (Levi 2026-09-07). 690px showed rather less than one
- * A4 page of a NINE-page statutory return, so checking the particulars meant
- * scrolling a scroller inside a page that also scrolls — and the operator doing
- * that check is the last human between a wrong director's address and a filing
- * made in the client's name. `Open full screen` above is still the right tool
- * for a proper read; this is about the glance being worth taking.
+ * 1035 was 30% too tall (Levi 2026-09-09) — a partial reversal of the raise
+ * made two days earlier. That raise bought a bigger glance at the return and
+ * paid for it with the rest of the screen: at 1035px the recipients and the
+ * Send button sat below the fold on a laptop, and reaching them meant
+ * scrolling PAST an <object> that swallows the wheel, so the preview held the
+ * page hostage.
+ *
+ * The reasoning behind the raise still stands — the operator checking these
+ * particulars is the last human between a wrong director's address and a
+ * filing made in the client's name — but no embedded height that leaves room
+ * for the controls holds a NINE-page return, so the frame was never going to
+ * be where that check is done. `Open full screen` above is, and 725 still
+ * clears a full A4 page at 100%.
  */
-const FRAME_HEIGHT = 1035
+const FRAME_HEIGHT = 725
 
 /**
  * What a failed SEND means — which is not what a failed CR call means.
@@ -295,7 +302,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       }
     } catch (e) {
       // TO THE PAGE, like every other refusal. It used to be drawn here next
-      // to the button because the banner sits above a 690px PDF frame and was
+      // to the button because the banner sits above the PDF frame and was
       // therefore off-screen — but the page now scrolls to the banner on every
       // failure, so the reason for the exception is gone, and keeping it would
       // leave this screen with an error surface no other stage has (Levi
@@ -358,8 +365,9 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               {saving ? 'Preparing…' : 'Download PDF'}
             </button>
             {/* A tab, not a modal: the operator is checking this against the
-                company record in another window, and even 690px of embedded
-                viewer is not a whole nine-page statutory return. */}
+                company record in another window, and no embedded viewer that
+                leaves room for the controls below it is a whole nine-page
+                statutory return. */}
             <button type="button" className="btn btn-outline btn-sm"
                     disabled={!pdfUrl}
                     onClick={() => window.open(pdfUrl, '_blank', 'noopener')}>
@@ -531,7 +539,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
         )}
 
         {/* NEITHER THE REFUSAL NOR THE PARTIAL-SEND REPORT IS DRAWN HERE
-            any more. They were, because the page banner sits above a 690px PDF
+            any more. They were, because the page banner sits above the PDF
             frame and a refused send therefore looked like a dead button. The
             page now scrolls to the banner on every failure, which removes the
             reason — and leaving them would give this one stage an error
