@@ -332,6 +332,32 @@ describe('Client Verification', () => {
     expect(detail).toMatch(/NOT sent to nope \(not a valid email address\)/)
   })
 
+  it('reports an address whose DOMAIN does not exist, and names who did get it', async () => {
+    // THE FAULT LEVI REPORTED ON 2026-09-08: "I sent an email to an address
+    // that clearly does not exist... but I am still not getting an error on the
+    // client verification page to say that the email to this address failed to
+    // send." Resend answers 200 for anything well-formed and bounces it out of
+    // band, so the backend now refuses the address up front on a DNS check and
+    // reports it in the same `failed` list as a typo'd chip. This asserts the
+    // screen carries that through — including, in the same sentence, the
+    // successes, "so that there is no doubt that there were other successful
+    // emails".
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['chan@example.com', 'lee@example.com'],
+      failed_to: ['ghost@nosuchdomain.invalid'],
+      failed: [{ email: 'ghost@nosuchdomain.invalid',
+                 reason: 'The domain name nosuchdomain.invalid does not exist.' }],
+      approval_links: true,
+    })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    const [, detail] = onWarn.mock.calls.at(-1)
+    expect(detail).toMatch(/Sent to chan@example\.com, lee@example\.com/)
+    expect(detail).toMatch(/those links are live/)
+    expect(detail).toMatch(/NOT sent to ghost@nosuchdomain\.invalid/)
+    expect(detail).toMatch(/does not exist/)
+  })
+
   it('warns that sending again reissues everyone else\'s link', async () => {
     // Every send supersedes the whole case's outstanding tokens, so a second
     // send does not quietly top up the one that was missed. An operator told
@@ -566,19 +592,41 @@ describe('Client Verification', () => {
     expect(chips.compareDocumentPosition(send) & 4).toBeTruthy()
   })
 
-  it('names the address the copy goes to, rather than promising "you"', async () => {
+  it('names the SHARED renewals mailbox as the copy, not the signed-in user', async () => {
+    // Levi 2026-09-08. The note used to name whoever was looking at the screen,
+    // because that is who was copied. Both halves changed: the copy is now a
+    // fixed GSHK mailbox, and the note has to say so — an operator who reads
+    // "a copy goes to you" and gets none would be right to distrust the page.
     auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
     renderIt()
     await screen.findByText('chan@example.com')
-    expect(screen.getByText('levi@zenexflow.com')).toBeInTheDocument()
+    expect(screen.getByText('renewal@getstarted.hk')).toBeInTheDocument()
+    // The reply still comes back to the case worker — deliberately unchanged,
+    // and the reason both facts are still spelled out separately.
     expect(screen.getByText(/reply comes back to you/)).toBeInTheDocument()
   })
 
-  it('still explains the copy when the profile has no address to name', async () => {
+  it('names the same copy regardless of who is signed in', async () => {
+    // The note no longer depends on the profile at all. It used to fall back to
+    // a vaguer "a copy goes to you" when the identity carried no address; there
+    // is nothing left to fall back FROM.
     auth = { isTestEnv: false, profile: {} }
     renderIt()
     await screen.findByText('chan@example.com')
-    expect(screen.getByText(/A copy goes to you/)).toBeInTheDocument()
+    expect(screen.getByText('renewal@getstarted.hk')).toBeInTheDocument()
+    expect(screen.queryByText(/A copy goes to you/)).not.toBeInTheDocument()
+  })
+
+  it('never puts the signed-in user forward as the copy', async () => {
+    // The reported fault, asserted directly rather than inferred: the operator's
+    // own address must not appear as the CC anywhere on this screen.
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    const note = document.querySelector('.cc-note')
+    expect(note).toBeTruthy()
+    expect(note.textContent).toContain('renewal@getstarted.hk')
+    expect(note.textContent).not.toContain('levi@zenexflow.com')
   })
 
   // ── The failure Levi hit: a refused send that looked like a dead button ──

@@ -1112,6 +1112,43 @@ def _approval_link_base(request: Request) -> str | None:
     return base.rstrip("/")
 
 
+async def _undeliverable(addresses: list[str]) -> dict[str, str]:
+    """Which of `addresses` sit on a domain that cannot receive mail, and why.
+
+    Resend accepts anything syntactically valid and bounces it later, so a send
+    to a made-up domain reported total success and the operator learned nothing
+    -- the fault this closes. See email_service.undeliverable_reason for what
+    the check can and cannot know; in short it catches a domain that does not
+    exist, not a dead mailbox at a real one, and any uncertain answer lets the
+    address through.
+
+    ONE LOOKUP PER DOMAIN, not per address. A board of five directors at the
+    same company asks one question, and asking it five times would put four
+    needless DNS round-trips in front of an operator waiting on the send. They
+    run concurrently, and each on a worker thread, because this is blocking
+    socket I/O inside an `async def` -- resolving them in series here would
+    stall every other request this worker is serving.
+    """
+    by_domain: dict[str, list[str]] = {}
+    for address in addresses:
+        by_domain.setdefault(
+            address.rsplit("@", 1)[-1].lower(), []).append(address)
+    if not by_domain:
+        return {}
+
+    reasons = await asyncio.gather(*[
+        asyncio.to_thread(email_service.undeliverable_reason, group[0])
+        for group in by_domain.values()
+    ])
+
+    out: dict[str, str] = {}
+    for group, reason in zip(by_domain.values(), reasons):
+        if reason:
+            for address in group:
+                out[address] = reason
+    return out
+
+
 @router.post("/{case_id}/verification/send")
 async def send_verification(
     case_id: str, body: VerificationSendIn, request: Request,
@@ -1214,6 +1251,35 @@ async def send_verification(
                 409, "no email address is on record for this company or its "
                      "directors; supply one explicitly to send the verification")
 
+    # --- and can those domains actually receive mail? --------------------- #
+    #
+    # AFTER the branches, so it covers BOTH. The syntax gate above only ever
+    # ran on addresses an operator typed, which left the commoner case
+    # unchecked entirely: a director address that came out of Viewpoint years
+    # ago, on a domain that has since lapsed, went to Resend unexamined and
+    # reported success. "Who did not get it" must not depend on which branch
+    # supplied the address.
+    #
+    # Into the SAME `failures` list as a malformed chip and a Resend
+    # rejection, for the reason given where that list is seeded: the
+    # operator's question is "who did not get it", and the answer must not
+    # depend on which of three ways an address failed.
+    undeliverable = await _undeliverable(recipients)
+    if undeliverable:
+        failures.extend({"email": address, "reason": reason}
+                        for address, reason in undeliverable.items())
+        recipients = [a for a in recipients if a not in undeliverable]
+
+    # Everyone is unreachable, so there is no partial send to report and
+    # nothing to write on the case. Named WITH REASONS -- this refusal is the
+    # only thing the operator will see, and "nothing was sent" without the
+    # domain that caused it is not actionable.
+    if not recipients:
+        named = "; ".join(f"{f['email']} ({f['reason']})" for f in failures)
+        raise HTTPException(
+            422, f"nothing was sent: no address on this case can receive mail "
+                 f"({named})")
+
     entity = nar1_cases.entity_for(case["entity_id"])
 
     try:
@@ -1290,7 +1356,7 @@ async def send_verification(
     operator = (user.get("email") or "").strip() or None
 
     sends = []
-    for index, target in enumerate(targets):
+    for target in targets:
         approval_url = (
             f"{link_base}/public/nar1-approval/{target['token']}"
             if link_base and target.get("token") else None
@@ -1316,17 +1382,37 @@ async def send_verification(
             # httpx.post with a 15-second timeout, so a hung Resend would stall
             # the whole worker rather than this one request.
             #
-            # The COPY goes on the first message only. The case worker asked to
-            # be copied on the request (Levi 2026-08-30), not on each director's
-            # copy of it -- three directors must not mean three identical mails
-            # in their inbox. `reply_to` is on EVERY message, because it is the
-            # load-bearing half: the mail is sent from no-reply@getstarted.hk
-            # and asks the client to reply, so without it the one action the
-            # message requests reaches nobody.
+            # THE COPY IS THE SHARED RENEWALS MAILBOX, NOT THE CASE WORKER
+            # (Levi 2026-09-08). This reverses "the case worker is CC'd" of
+            # 2026-08-30: whoever pressed Send used to land on the CC line of a
+            # letter about a client's statutory return, which showed the client
+            # an individual's personal address and left GSHK's record of what it
+            # told that client inside one person's mailbox. See
+            # email_service.CLIENT_CC.
+            #
+            # ON EVERY MESSAGE, where the case worker's copy was on the first
+            # only. That rule existed so three directors would not mean three
+            # identical mails in one person's inbox -- but these messages are
+            # NOT identical (each carries its own approval link and its own
+            # greeting), and a shared mailbox holding the first of three would
+            # misrepresent the send as complete, which is the failure this
+            # file's audit comment warns about a few lines down. renewal@ is a
+            # record, so it gets the whole record.
+            #
+            # `reply_to` is still the case worker, deliberately: it is the
+            # load-bearing half -- the mail is sent from no-reply@getstarted.hk
+            # and asks the client to reply, so it must reach a human who knows
+            # the case. The client's answer going to a person while the copy
+            # goes to the team is the intended split.
+            #
+            # Outside production `_apply_test_cc_lock` DROPS this, as it
+            # dropped the case worker: renewal@getstarted.hk is a real GSHK
+            # mailbox and is NOT one of the four TEST_RECIPIENTS, so a test
+            # deployment must not reach it.
             sent = await asyncio.to_thread(
                 email_service.send,
                 to=[target["email"]],
-                cc=[operator] if (operator and index == 0) else None,
+                cc=[email_service.CLIENT_CC],
                 reply_to=operator,
                 subject=subject, html=html,
                 attachments=[(attachment_name, pdf)],

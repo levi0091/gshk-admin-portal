@@ -618,3 +618,129 @@ def test_an_unset_transport_sends_for_real(monkeypatch):
     assert result.get("transport", "resend") == "resend"
 
 
+# ---------------------------------------------------------------------------
+# undeliverable_reason — can this domain receive mail at all? (Levi 2026-09-08)
+#
+# Resend answers 200 for any syntactically valid address and bounces it out of
+# band, so a send to a made-up domain reported success and the operator learned
+# nothing. This is the half of "is it deliverable" that does not need a bounce.
+#
+# NOTHING HERE TOUCHES THE NETWORK. Each test drives the one library call the
+# probe makes; the real resolver is never used, so the suite neither slows down
+# nor depends on where it is run.
+# ---------------------------------------------------------------------------
+
+#: THE REAL FUNCTION, captured at import time.
+#:
+#: conftest's autouse `_no_dns_in_tests` replaces
+#: `email_service.undeliverable_reason` with a stub for every test in the
+#: suite, so that no unit test resolves a domain name. That is right
+#: everywhere except here — these are the tests OF that function, and calling
+#: it through the module attribute would assert on the stub and pass no matter
+#: what the real implementation did. Module import runs before any fixture, so
+#: this binding is the genuine article.
+_probe = email_service.undeliverable_reason
+
+
+def _validator(exc):
+    """Patch email_validator.validate_email to raise `exc` (or pass if None)."""
+    if exc is None:
+        return patch("email_validator.validate_email", return_value=MagicMock())
+    return patch("email_validator.validate_email", side_effect=exc)
+
+
+def test_a_domain_that_does_not_exist_is_reported_with_its_reason():
+    """The wording is the library's own and NAMES THE DOMAIN, which is the part
+    the operator has to fix — so it is passed through rather than replaced with
+    a generic phrase."""
+    from email_validator import EmailUndeliverableError
+    with _validator(EmailUndeliverableError(
+            "The domain name nosuch.invalid does not exist.")):
+        reason = _probe("a@nosuch.invalid")
+    assert reason == "The domain name nosuch.invalid does not exist."
+
+
+def test_a_domain_that_does_not_accept_email_is_reported():
+    """A Null MX (RFC 7505), or no MX and no A/AAAA fallback. The domain is
+    real; mail to it is not."""
+    from email_validator import EmailUndeliverableError
+    with _validator(EmailUndeliverableError(
+            "The domain name parked.example does not accept email.")):
+        assert _probe("a@parked.example")
+
+
+def test_a_deliverable_address_returns_None():
+    with _validator(None):
+        assert _probe("levi@zenexflow.com") is None
+
+
+def test_a_TIMEOUT_lets_the_address_through():
+    """SILENCE IS PERMISSION. A wrongly withheld verification email stalls a
+    statutory filing on a director who was never written to; a bounce merely
+    wastes a send. The library already returns rather than raises on a timeout,
+    and this pins that we depend on it."""
+    import dns.exception
+    with _validator(dns.exception.Timeout()):
+        assert _probe("a@slow.example") is None
+
+
+def test_AN_UNEXPECTED_ERROR_lets_the_address_through():
+    """No network at all, a resolver misconfiguration, a library upgrade that
+    raises something new. None of those are evidence against the address."""
+    with _validator(RuntimeError("resolver exploded")):
+        assert _probe("a@example.org") is None
+
+
+def test_a_SYNTAX_complaint_is_not_reported_here():
+    """The caller applies its own syntax gate and phrases its own refusal.
+    Re-reporting the same address in different words would put two entries in
+    the failure list for one mistake."""
+    from email_validator import EmailSyntaxError
+    with _validator(EmailSyntaxError("bad syntax")):
+        assert _probe("not-an-address") is None
+
+
+def test_the_probe_asks_for_deliverability_and_bounds_the_wait():
+    """It runs in front of an operator watching a spinner, so an unbounded DNS
+    wait would be theirs to sit through."""
+    with patch("email_validator.validate_email",
+               return_value=MagicMock()) as validate:
+        _probe("a@example.org")
+    kwargs = validate.call_args.kwargs
+    assert kwargs["check_deliverability"] is True
+    assert kwargs["timeout"] == email_service.DNS_TIMEOUT_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# CLIENT_CC — the fixed copy on every client-facing message
+# ---------------------------------------------------------------------------
+
+def test_the_client_copy_is_the_shared_renewals_mailbox():
+    """Levi 2026-09-08. Not the person who pressed Send: the client must not
+    see an individual's address on a letter about their statutory return, and
+    GSHK's record of it must not live in one person's mailbox."""
+    assert email_service.CLIENT_CC == "renewal@getstarted.hk"
+
+
+def test_client_cc_matches_the_screen():
+    """THE SCREEN PROMISES THIS ADDRESS BY NAME, before the send exists, so it
+    cannot read the value back off a response — it repeats the constant. This
+    reads the actual JSX and fails if the two ever drift, which is the only
+    thing stopping the note from telling an operator a copy went somewhere it
+    did not."""
+    from pathlib import Path
+    jsx = (Path(__file__).resolve().parents[2] / "frontend" / "src"
+           / "components" / "case" / "StageClientVerification.jsx")
+    assert jsx.exists(), f"the screen moved: {jsx}"
+    assert (f"export const CLIENT_CC = '{email_service.CLIENT_CC}'"
+            in jsx.read_text(encoding="utf-8"))
+
+
+def test_the_client_copy_is_NOT_one_of_the_test_recipients():
+    """It is a real GSHK mailbox, so the non-production lock must DROP it
+    rather than treat it as already-covered. If it were ever added to
+    TEST_RECIPIENTS, a test deployment could mail the renewals team about a
+    case that does not exist."""
+    assert email_service.CLIENT_CC not in email_service.TEST_RECIPIENTS
+
+

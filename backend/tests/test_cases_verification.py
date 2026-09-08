@@ -17,6 +17,11 @@ from fastapi.testclient import TestClient
 from main import app
 from services import email_service
 
+#: The fixed copy on every client-facing message. Read from the module rather
+#: than retyped, so a test cannot keep passing against an address the code no
+#: longer uses.
+CLIENT_CC = email_service.CLIENT_CC
+
 SUPER = {"id": "u1", "display_name": "Levi", "role_name": "super_admin",
          "role_id": "role-sa"}
 REGULAR = {"id": "u2", "display_name": "Staff", "role_name": "staff",
@@ -349,10 +354,18 @@ def test_an_explicit_list_is_not_topped_up_with_the_directors(client):
 
 
 # ---------------------------------------------------------------------------
-# The case worker is copied, and the client's reply is aimed at them
+# The SHARED RENEWALS MAILBOX is copied, and the client's reply is aimed at
+# the case worker
 #
-# Levi 2026-08-30: "whoever is logged in should be in the cc as well.. so that
-# the person who is working on the case can get an email."
+# Levi 2026-09-08: "right now the person that triggers sending the email in
+# gflowdesk is also in cc to the email that is sent to client. this is the
+# wrong behavior... for all emails to client we should cc a fixed email
+# address: renewal@getstarted.hk".
+#
+# This REVERSES Levi 2026-08-30 ("whoever is logged in should be in the cc as
+# well.. so that the person who is working on the case can get an email"). The
+# reply path is unchanged and still reaches that person — what moved is the
+# COPY, from an individual's mailbox to the team's.
 # ---------------------------------------------------------------------------
 
 #: The same super admin, but resolved with the address they signed in with.
@@ -369,8 +382,8 @@ def _send_as_operator(client, json=None, user=None):
     with patch("middleware.auth._resolve_user", return_value=user or SUPER_MAILED), \
          _Stack(*_sendable(directors=BOARD)), \
          patch("routers.cases.email_service.send",
-               return_value={"id": "m1", "cc": ["levi@zenexflow.com"],
-                             "intended_cc": ["levi@zenexflow.com"]}) as send, \
+               return_value={"id": "m1", "cc": [CLIENT_CC],
+                             "intended_cc": [CLIENT_CC]}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H,
@@ -378,20 +391,38 @@ def _send_as_operator(client, json=None, user=None):
     return send, response
 
 
-def test_the_logged_in_user_is_copied_on_the_clients_email(client):
+def test_the_shared_renewals_mailbox_is_copied_not_the_logged_in_user(client):
+    """The whole point of Levi's 2026-09-08 change. The client must not see an
+    individual staff member's address on a letter about their statutory
+    return, and GSHK's record of what it told that client must not live in one
+    person's mailbox."""
     send, response = _send_as_operator(client)
     assert response.status_code == 200
-    # ON THE FIRST MESSAGE ONLY. Spec §5 made this one message per director, and
-    # the case worker asked to be copied on the REQUEST, not to receive an
-    # identical mail for every member of the board.
-    assert send.call_args_list[0].kwargs["cc"] == ["levi@zenexflow.com"]
-    assert [c.kwargs["cc"] for c in send.call_args_list[1:]] == [None]
+    copies = [c.kwargs["cc"] for c in send.call_args_list]
+    assert copies == [[CLIENT_CC], [CLIENT_CC]]
+    # The operator signed in as levi@zenexflow.com. That address must appear on
+    # no CC line anywhere — asserted explicitly rather than inferred from the
+    # equality above, because THIS is the behaviour that was reported wrong.
+    assert not any("levi@zenexflow.com" in (c or []) for c in copies)
 
 
-def test_the_reply_address_is_on_every_message_even_though_the_copy_is_not(client):
-    """`reply_to` is the load-bearing half. A director who got the second copy
-    must still be able to reply to a human — the message asks them to, and it
-    is sent from no-reply@getstarted.hk."""
+def test_the_copy_is_on_EVERY_message_not_just_the_first(client):
+    """The case worker's copy went on the first message only, so three
+    directors did not mean three identical mails in one inbox. That reasoning
+    does not carry over: these messages are not identical (each carries its own
+    approval link), and a shared mailbox holding the first of three would
+    misrepresent a partial send as a complete one."""
+    send, _ = _send_as_operator(client)
+    assert len(send.call_args_list) == 2
+    assert all(c.kwargs["cc"] == [CLIENT_CC] for c in send.call_args_list)
+
+
+def test_the_reply_address_is_the_case_worker_on_every_message(client):
+    """`reply_to` is the load-bearing half and is DELIBERATELY UNCHANGED by the
+    CC move. The message asks the client to reply and is sent from
+    no-reply@getstarted.hk, so the reply must reach a human who knows the case
+    — the copy going to the team while the answer goes to a person is the
+    intended split."""
     send, _ = _send_as_operator(client)
     assert {c.kwargs["reply_to"] for c in send.call_args_list} == {
         "levi@zenexflow.com"}
@@ -424,25 +455,30 @@ def test_a_send_still_works_for_an_identity_carrying_no_address(client):
     before the key existed."""
     send, response = _send_as_operator(client, user=SUPER)
     assert response.status_code == 200
-    assert send.call_args.kwargs["cc"] is None
+    # The COPY no longer depends on the identity at all, which is the point:
+    # an identity with no address used to mean the message went out with
+    # nobody copied. The renewals mailbox is copied either way.
+    assert send.call_args.kwargs["cc"] == [CLIENT_CC]
+    # Only the reply address is still the operator's, and it is legitimately
+    # absent here — there is no address to aim the reply at.
     assert send.call_args.kwargs["reply_to"] is None
 
 
 def test_the_copy_is_recorded_in_the_audit_row(client):
     """Both `cc` and `intended_cc`: on a test deployment the copy is DROPPED,
-    and a trail recording only the intention would claim the case worker was
-    copied when nothing reached them."""
+    and a trail recording only the intention would claim the renewals mailbox
+    was copied when nothing reached it."""
     with _super_mailed(), _Stack(*_sendable(directors=BOARD)), \
          patch("routers.cases.email_service.send",
                return_value={"id": "m1", "cc": [],
-                             "intended_cc": ["levi@zenexflow.com"],
+                             "intended_cc": [CLIENT_CC],
                              "redirected": True}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()) as log:
         client.post("/cases/c1/verification/send", headers=H, json=SEND)
     meta = log.await_args_list[0].kwargs["metadata"]
     assert meta["cc"] == []
-    assert meta["intended_cc"] == ["levi@zenexflow.com"]
+    assert meta["intended_cc"] == [CLIENT_CC]
 
 
 def test_the_attachment_name_is_the_one_the_email_announces(client):
@@ -552,6 +588,210 @@ def test_the_failed_addresses_and_their_reasons_are_audited(client):
     assert meta["failed_to"] == ["nope"]
     assert meta["failed"] == [
         {"email": "nope", "reason": "not a valid email address"}]
+
+
+# ---------------------------------------------------------------------------
+# An address whose DOMAIN cannot receive mail (Levi 2026-09-08)
+#
+# "I sent an email to an address that clearly does not exist... but I am still
+# not getting an error on the client verification page to say that the email to
+# this address failed to send."
+#
+# Resend answers 200 for anything syntactically valid and bounces it out of
+# band, minutes later, so `EmailError` never fired and the screen reported
+# total success. What IS knowable before sending is whether the domain accepts
+# mail at all, and that is what these cover.
+# ---------------------------------------------------------------------------
+
+def _dns_rejects(*domains, reason=None):
+    """Patch the DNS probe so addresses at `domains` come back undeliverable.
+
+    Keyed by DOMAIN, because that is the question the probe actually asks —
+    one lookup per domain, never one per address. The autouse `_no_dns_in_tests`
+    fixture patches the same name to return None; this overrides it for the
+    tests that want a specific answer, and neither touches the network.
+    """
+    def probe(address):
+        domain = address.rsplit("@", 1)[-1].lower()
+        if domain in domains:
+            return reason or f"The domain name {domain} does not exist."
+        return None
+    return patch("services.email_service.undeliverable_reason",
+                 side_effect=probe)
+
+
+def test_an_address_whose_domain_does_not_exist_is_reported_as_failed(client):
+    """THE REPORTED FAULT. This used to return a clean 200 naming nothing: the
+    address was well-formed, so the syntax gate passed it, and Resend accepted
+    it, so there was no EmailError to catch."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["good@example.com",
+                                 "ghost@nosuchdomain.invalid"]})
+
+    assert response.status_code == 200
+    body = response.json()
+    # It was never handed to the transport — there is no point paying for a
+    # send that can only bounce.
+    assert _addresses_sent(send) == ["good@example.com"]
+    assert body["failed_to"] == ["ghost@nosuchdomain.invalid"]
+    assert body["failed"] == [{
+        "email": "ghost@nosuchdomain.invalid",
+        "reason": "The domain name nosuchdomain.invalid does not exist."}]
+
+
+def test_the_report_also_names_who_DID_receive_it(client):
+    """Levi asked for this in the same breath as the failure: "The message
+    should also indicate what other emails were successful, so that there is no
+    doubt that there were other successful emails." A report naming only the
+    failure makes re-sending to the whole board look like the safe move, which
+    puts a second request in front of a director who already has one."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["chan@example.com", "lee@example.com",
+                                 "ghost@nosuchdomain.invalid"]})
+
+    body = response.json()
+    assert body["to"] == ["chan@example.com", "lee@example.com"]
+    assert body["failed_to"] == ["ghost@nosuchdomain.invalid"]
+    # And the case IS marked sent, because two directors really were told.
+    assert body["sent_at"]
+
+
+def test_a_DIRECTOR_address_on_a_dead_domain_is_checked_too(client):
+    """The gap this closed. The syntax gate only ever ran on addresses an
+    OPERATOR typed, so a director address that came out of Viewpoint years ago
+    on a since-lapsed domain went to Resend completely unexamined. "Who did not
+    get it" must not depend on which branch supplied the address."""
+    board = [{"person_id": "p1", "name": "CHAN", "given_names": "Tai Man",
+              "email": "chan@deadco.invalid"},
+             {"person_id": "p2", "name": "LEE", "given_names": "Siu Ming",
+              "email": "lee@example.com"}]
+    with _super(), _Stack(*_sendable(directors=board)), \
+         _dns_rejects("deadco.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        # NO "to" in the body — the default-recipients branch.
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json=SEND)
+
+    assert response.status_code == 200
+    assert _addresses_sent(send) == ["lee@example.com"]
+    assert response.json()["failed_to"] == ["chan@deadco.invalid"]
+
+
+def test_a_board_whose_every_domain_is_dead_is_refused_with_the_reasons(client):
+    """No partial success to report, so it stays a refusal — and it names the
+    addresses AND why, because this refusal is the only thing the operator
+    sees and "nothing was sent" alone is not actionable."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid", "alsogone.invalid"), \
+         patch("routers.cases.email_service.send") as send, \
+         patch("routers.cases.nar1_cases.update_case") as update:
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["a@nosuchdomain.invalid",
+                                 "b@alsogone.invalid"]})
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "a@nosuchdomain.invalid" in detail
+    assert "b@alsogone.invalid" in detail
+    assert "does not exist" in detail
+    send.assert_not_called()
+    # Nothing is marked sent: a case that says it went out while waiting on a
+    # reply to nothing sits in Awaiting Client forever.
+    update.assert_not_called()
+
+
+def test_a_malformed_chip_and_a_dead_domain_land_in_ONE_report(client):
+    """Two different ways to be unreachable, one question: "who did not get
+    it". The operator must not have to read two lists."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["good@example.com", "nope",
+                                 "ghost@nosuchdomain.invalid"]})
+
+    body = response.json()
+    assert sorted(body["failed_to"]) == ["ghost@nosuchdomain.invalid", "nope"]
+    reasons = {f["email"]: f["reason"] for f in body["failed"]}
+    assert reasons["nope"] == "not a valid email address"
+    assert "does not exist" in reasons["ghost@nosuchdomain.invalid"]
+
+
+def test_the_dead_domain_and_its_reason_are_audited(client):
+    """The trail answers "who was told" and must not imply a bounce-to-be was
+    a delivery."""
+    logged = AsyncMock()
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=logged):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={**SEND, "to": ["good@example.com",
+                                         "ghost@nosuchdomain.invalid"]})
+
+    meta = [c for c in logged.await_args_list
+            if c.kwargs.get("action_type") == "EMAIL_SENT"][0].kwargs["metadata"]
+    assert meta["failed_to"] == ["ghost@nosuchdomain.invalid"]
+    assert "does not exist" in meta["failed"][0]["reason"]
+    # And the delivered address is still the one recorded as told.
+    assert meta["intended_to"] == ["good@example.com"]
+
+
+def test_one_dns_lookup_per_DOMAIN_not_per_address(client):
+    """A board of five directors at the same company asks one question. Asking
+    it five times puts four needless round-trips in front of an operator who is
+    watching a spinner."""
+    probe = MagicMock(return_value=None)
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("services.email_service.undeliverable_reason", new=probe), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={**SEND, "to": ["a@example.com", "b@example.com",
+                                         "c@example.com", "d@other.test"]})
+
+    domains = sorted(c.args[0].rsplit("@", 1)[-1] for c in probe.call_args_list)
+    assert domains == ["example.com", "other.test"]
+
+
+def test_an_uncertain_dns_answer_lets_the_message_through(client):
+    """SILENCE IS PERMISSION. A timeout, a resolver that will not answer, no
+    network at all — every one of those returns None from the probe and the
+    send proceeds. A wrongly withheld verification email stalls a statutory
+    filing on a director who was never written to, which is far worse than a
+    bounce."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("services.email_service.undeliverable_reason", return_value=None), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["unknown@whoknows.invalid"]})
+
+    assert response.status_code == 200
+    assert _addresses_sent(send) == ["unknown@whoknows.invalid"]
+    assert response.json()["failed"] == []
 
 
 # ---------------------------------------------------------------------------

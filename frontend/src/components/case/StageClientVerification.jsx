@@ -17,6 +17,19 @@ const ZOOM_MAX = 200
 const ZOOM_STEP = 20
 
 /**
+ * The address copied on every client verification email (Levi 2026-09-08).
+ *
+ * MUST MATCH `email_service.CLIENT_CC` — the backend decides who is actually
+ * copied; this only tells the operator who that is. The screen states it as a
+ * promise about a message that has not been sent yet, so it cannot read the
+ * value back off a response, which is why the constant is repeated here at all.
+ * `test_client_cc_matches_the_screen` in the backend suite reads THIS FILE and
+ * fails if the two ever drift, so a change on either side has to be made on
+ * both.
+ */
+export const CLIENT_CC = 'renewal@getstarted.hk'
+
+/**
  * The frame's height at 100%, in CSS pixels.
  *
  * Raised from 690 by half (Levi 2026-09-07). 690px showed rather less than one
@@ -131,7 +144,10 @@ export function describePartialSend(result) {
  * admin presses, and why it is audited as CLIENT_APPROVAL_RECEIVED.
  */
 export default function StageClientVerification({ caseRow, canWrite, onChanged, onError, onWarn }) {
-  const { isTestEnv, profile } = useAuth()
+  // `profile` was read here only to name the signed-in user as the CC. The
+  // copy is now the fixed renewals mailbox, so the screen no longer depends on
+  // who is looking at it.
+  const { isTestEnv } = useAuth()
   // Seeded from the case, not defaulted to false. The tick gates the send, and
   // the send is the evidence it was given: a mail cannot have gone out without
   // it. Leaving it unticked on a case whose banner says "Sent 31 Aug 2026,
@@ -436,18 +452,21 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </span>
         </div>
 
-        {/* Named, not implied. "A copy goes to you" is unverifiable; the
+        {/* Named, not implied. "A copy goes to the team" is unverifiable; the
             address is the whole assurance. Both facts are stated because they
             are different promises — one is a copy, the other is where the
-            client's answer lands. */}
+            client's answer lands.
+
+            THE COPY IS NO LONGER THE PERSON PRESSING SEND (Levi 2026-09-08).
+            It is the shared renewals mailbox, so this no longer reads the
+            signed-in user's address — see email_service.CLIENT_CC. The reply
+            still comes back to the case worker, and the two being different
+            addresses is precisely why both are still spelled out. */}
         <div className="cc-note">
           <span className="cc-icon" aria-hidden="true">↩</span>
           <div>
-            {profile?.email
-              ? <>A copy goes to <b>{profile.email}</b>, and the client's reply
-                  comes back to you rather than to the no-reply address.</>
-              : <>A copy goes to you, and the client's reply comes back to you
-                  rather than to the no-reply address.</>}
+            A copy goes to <b>{CLIENT_CC}</b>, and the client's reply comes
+            back to you rather than to the no-reply address.
           </div>
         </div>
 
@@ -456,11 +475,17 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             being tested. The backend substitutes a fixed internal list before
             anything leaves the process (email_service.TEST_RECIPIENTS), which
             no environment variable can override. */}
+        {/* The reason the copy is dropped CHANGED with the CC (2026-09-08).
+            It used to be "you are already on that list", which was true of the
+            case worker and is not true of renewal@getstarted.hk — that is a
+            real GSHK mailbox and deliberately NOT one of the test recipients,
+            so a test deployment must not reach it either. */}
         {isTestEnv && (
           <div className="f-hint" style={{ marginTop: 10, lineHeight: 1.5 }}>
             This is a test environment, so nothing is delivered to the client —
             the message goes to the fixed internal test recipients instead, and
-            the copy to you is dropped because you are already on that list.
+            the copy to {CLIENT_CC} is dropped, because that is a real GSHK
+            mailbox and nothing sent from here may reach it.
           </div>
         )}
 

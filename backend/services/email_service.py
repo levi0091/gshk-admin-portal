@@ -73,6 +73,25 @@ TIMEOUT_SECONDS = 15.0
 #: GSHK controls getstarted.hk — which is what makes Resend viable here.
 DEFAULT_FROM = "no-reply@getstarted.hk"
 
+#: The copy on every client-facing message (Levi 2026-09-08).
+#:
+#: THIS REPLACES COPYING THE CASE WORKER. Until now `POST /cases/{id}/
+#: verification/send` put `user["email"]` -- whichever staff member happened to
+#: press Send -- on the CC line of a letter about a client's statutory return.
+#: Two things were wrong with that. The client saw an individual's personal
+#: work address on a formal filing notice, and the record of what GSHK told
+#: that client lived in one person's mailbox, so it left with them when they
+#: were on leave or off the account.
+#:
+#: A shared, GSHK-controlled mailbox fixes both: the copy is the team's record
+#: rather than an individual's, and it is on the same domain the message is
+#: sent from, so it reads as the company writing rather than a person.
+#:
+#: A module constant, exactly like TEST_RECIPIENTS above and for the same
+#: reason: which address hears about a client's return is not a per-deployment
+#: setting somebody can point somewhere else by editing a Railway variable.
+CLIENT_CC = "renewal@getstarted.hk"
+
 
 class EmailError(RuntimeError):
     """Resend refused the message, or the transport failed.
@@ -97,6 +116,73 @@ class EmailError(RuntimeError):
 #
 # Do not reintroduce it. If mail must be suppressed in some future environment,
 # suppress it somewhere that cannot report a delivery that did not happen.
+
+
+#: How long to wait for the DNS answer behind undeliverable_reason(). Short on
+#: purpose: this runs before a send the operator is watching, and a slow
+#: resolver must cost them a moment, not the send. A timeout is NOT a failure
+#: -- see the function.
+DNS_TIMEOUT_SECONDS = 5.0
+
+
+def undeliverable_reason(address: str) -> str | None:
+    """Why `address` cannot receive mail, or None if it might.
+
+    WHY THIS EXISTS. Resend answers 200 for any syntactically valid address:
+    it accepts the message, then discovers the mailbox is unreachable and
+    bounces it minutes later, out of band. So a send to a domain that does not
+    exist reported complete success on the Client Verification screen, and the
+    operator learned nothing -- which is exactly what Levi hit on 2026-09-07
+    with an address that plainly did not exist. `EmailError` could not have
+    caught it; there was no error to catch.
+
+    What is checkable BEFORE sending is whether the domain can receive mail at
+    all: an MX record, or the A/AAAA fallback RFC 5321 §5 allows. That is a
+    real answer to "is this address deliverable", and it is the half of the
+    question that does not need a bounce.
+
+    WHAT THIS CANNOT DO, and the caller must not imply otherwise: a real domain
+    with a dead mailbox -- nosuchuser@gmail.com -- is indistinguishable from a
+    live one until it bounces. Only a bounce webhook can close that gap. This
+    catches the typo'd and made-up domains, which is what operators actually
+    produce.
+
+    SILENCE IS PERMISSION. Every uncertain answer -- a timeout, a resolver that
+    will not respond, no network, an unexpected library error -- returns None
+    and the send proceeds. A wrongly withheld verification email is far worse
+    than a bounce: it stalls a statutory filing on a director who was never
+    written to. Only a definitive "this domain does not exist" or "does not
+    accept email" refuses, and even then the message still goes to everyone
+    else on the board.
+    """
+    try:
+        from email_validator import (
+            EmailNotValidError, EmailUndeliverableError, validate_email,
+        )
+    except Exception:  # noqa: BLE001 -- see SILENCE IS PERMISSION above.
+        return None
+
+    try:
+        validate_email(
+            address,
+            check_deliverability=True,
+            timeout=DNS_TIMEOUT_SECONDS,
+        )
+    except EmailUndeliverableError as exc:
+        # The library's own wording: "The domain name X does not exist." /
+        # "... does not accept email." It names the domain, which is the part
+        # the operator has to fix, so it is passed through rather than
+        # replaced with a generic phrase.
+        return str(exc) or "the domain does not accept email"
+    except EmailNotValidError:
+        # A syntax complaint, not a deliverability one. The caller has already
+        # applied its own syntax gate and phrased its own refusal; re-reporting
+        # the same address in different words here would put two entries in the
+        # failure list for one mistake.
+        return None
+    except Exception:  # noqa: BLE001 -- see SILENCE IS PERMISSION above.
+        return None
+    return None
 
 
 class EmailConfig:
