@@ -603,7 +603,17 @@ describe('Client Verification', () => {
     expect(screen.getByText('renewal@getstarted.hk')).toBeInTheDocument()
     // The reply still comes back to the case worker — deliberately unchanged,
     // and the reason both facts are still spelled out separately.
-    expect(screen.getByText(/reply comes back to you/)).toBeInTheDocument()
+    expect(screen.getByText(/still reaches you rather than/)).toBeInTheDocument()
+  })
+
+  // The letter stopped ASKING for a reply (Levi 2026-09-08): it says replies
+  // are not monitored and names the renewals mailbox. An operator who still
+  // believes it asks for one will wait for a reply nobody was told to send.
+  it('says the letter gives the client that same mailbox for changes', async () => {
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/replies are not monitored/)).toBeInTheDocument()
   })
 
   it('names the same copy regardless of who is signed in', async () => {
@@ -627,6 +637,15 @@ describe('Client Verification', () => {
     expect(note).toBeTruthy()
     expect(note.textContent).toContain('renewal@getstarted.hk')
     expect(note.textContent).not.toContain('levi@zenexflow.com')
+  })
+
+  // The letter stopped asking for a reply (Levi 2026-09-08). An operator who
+  // still believes it does will sit waiting for one that was never requested.
+  it('says the letter points changes at the renewal mailbox', async () => {
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/renewal@getstarted\.hk/)).toBeInTheDocument()
   })
 
   // ── The failure Levi hit: a refused send that looked like a dead button ──

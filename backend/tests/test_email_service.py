@@ -291,27 +291,28 @@ def test_the_message_carries_no_link_WHEN_NONE_IS_GIVEN():
     _, html = email_service.verification_email(CASE, ENTITY)
     assert "<a " not in html
     assert "http://" not in html and "https://" not in html
-    assert "Reply to this email" in html
+    assert "please reply to this email to confirm" in html
 
 
 def test_the_message_says_what_the_reader_has_to_do():
     _, html = email_service.verification_email(CASE, ENTITY)
-    assert "I enclose herewith the NAR1 for your review" in html
-    assert "Reply to this email" in html
+    assert "Your draft NAR1 is now available for review" in html
+    assert "please reply to this email to confirm" in html
 
 
-# --- the Confirmation NAR1 Notice wording (spec section 2) ------------------
+# --- the "Auto email - NAR1 Review" wording (Levi 2026-09-08) ---------------
 #
-# The letter GSHK already sends by hand, transcribed from
-# docs/Confirmation NAR1 Notice.pdf. A client who has had one before gets the
-# same message from the portal — an automated mail that reads differently from
-# the one they know is an automated mail they treat as suspicious.
+# The approved automated letter, transcribed from
+# docs/Auto email - NAR1 Review_v2.pdf. It REPLACES the hand-sent
+# "Confirmation NAR1 Notice" this message used to carry, and the assertions
+# below are what "verbatim" means for it: a wording change here is a change to
+# what a client is told about a statutory filing and a HK$1,000 charge, so it
+# has to be made deliberately rather than absorbed by a loose test.
 
 def _letter(**over):
     kwargs = {"attachment_name": "Explod Limited NAR1 2026.pdf",
               "approval_url": "https://api.example.com/public/nar1-approval/t0",
-              "deadline": "2026-08-28T00:00:00+00:00",
-              "recipient_name": "Dominique", "sender_name": "Karry"}
+              "deadline": "2026-08-28T00:00:00+00:00"}
     kwargs.update(over)
     return email_service.verification_email(
         {"case_no": "NAR-2026-0041", "ar_period_year": 2026},
@@ -321,87 +322,122 @@ def _letter(**over):
 
 def test_the_subject_is_the_samples_own_subject_line():
     subject, _ = _letter()
-    assert subject == "Compliance Reminder: Registration Due - Explod Limited"
+    assert subject == ("[Action Required] NAR1 Review & Confirmation - "
+                       "Explod Limited")
 
 
-def test_the_reader_is_greeted_by_name():
+def test_a_company_with_no_name_still_gets_a_usable_subject():
+    """Degenerate, but the bracketed prefix is what makes this findable in a
+    director's inbox and it must not decay into a trailing dash."""
+    subject, _ = email_service.verification_email({}, {})
+    assert subject == "[Action Required] NAR1 Review & Confirmation"
+
+
+def test_the_letter_addresses_the_client_generically():
+    """"Dear Client", NOT the director's own name (Levi 2026-09-08). This is
+    sent unattended, one message per director, and greeting each of them by
+    name would imply a human chose to write to them."""
     _, html = _letter()
-    assert "Hi Dominique," in html
-
-
-def test_a_reader_with_no_name_on_record_is_still_greeted():
-    """Plenty of ETL'd directors carry no usable name. "Hi ," is worse than a
-    generic greeting."""
-    _, html = _letter(recipient_name=None)
-    assert "Hi there," in html
+    assert "Dear Client," in html
 
 
 def test_the_opening_line_is_verbatim():
     _, html = _letter()
-    assert ("I enclose herewith the NAR1 for your review. Please carefully "
-            "check and confirm the following:") in html
+    assert "Your draft NAR1 is now available for review." in html
+    assert ("Please review the attached draft carefully, with particular "
+            "attention to the following:") in html
 
 
-def test_the_heading_says_no_signature_is_required():
+def test_the_letter_says_no_signature_is_required():
     """It is the first thing a director asks, and the sample answers it in the
-    heading rather than three paragraphs down."""
+    same breath as the ask rather than three paragraphs down."""
     _, html = _letter()
-    assert "1. NAR1 Form - Signature not required" in html
+    assert ("If the information is correct, please click "
+            "<strong>Confirm</strong> below. No signature is required.") in html
 
 
 @pytest.mark.parametrize("where,what", [
-    ("Page 2", "Share capital"),
-    ("Page 5", "Director&#x27;s details"),
-    ("Schedule 1", "Shareholder&#x27;s details"),
+    ("Page 2", "Share Capital"),
+    ("Page 5", "Director&#x27;s Details"),
+    ("Schedule 1", "Shareholder&#x27;s Details"),
+    ("Continuation Sheet C", "Additional Director&#x27;s Details"),
 ])
-def test_the_three_page_references_are_the_samples(where, what):
+def test_the_page_references_are_the_samples(where, what):
     """HARDCODED, and correct because CR's form is STATIC (spec section 1b): CR
     keeps a section's page whether or not it has content, so Page 5 is Page 5 on
     every NAR1 ever filed. If the renderer ever went back to dropping empty
-    pages, these three lines would quietly misdirect every client."""
+    pages, these lines would quietly misdirect every client."""
     _, html = _letter()
     assert where in html
     assert what in html
 
 
-def test_the_directors_duty_paragraph_is_verbatim():
+def test_continuation_sheet_C_says_when_it_applies():
+    """It is the ONE conditional entry: the sheet exists only where the board
+    runs past the space Page 5 gives it. A client without one must not be sent
+    hunting through their PDF for a page that was never printed."""
     _, html = _letter()
-    assert "the director has the duty to" in html
-    assert "ALL" in html
-    assert "information on NAR1 is correct before registration" in html
+    assert "if applicable, where there is more than one director" in html
 
 
 def test_the_deadline_is_stated_and_says_what_happens_after_it():
     _, html = _letter()
     assert "28 August 2026" in html
-    assert "we will assume you confirm the document and proceed with filing" in html
+    assert ("the draft will be deemed confirmed and we will proceed with the "
+            "NAR1 filing") in html
 
 
 def test_no_deadline_still_says_what_silence_means():
-    """A blank where a legal deadline should be is worse than no date at all."""
+    """A blank where a legal deadline should be is worse than no date at all —
+    but what silence MEANS does not depend on the date, so that half stays."""
     _, html = _letter(deadline=None)
-    assert "we will assume you confirm the document and proceed with filing" in html
+    assert ("the draft will be deemed confirmed and we will proceed with the "
+            "NAR1 filing") in html
     assert "hear from you by" not in html
 
 
-def test_the_amendment_charge_is_stated():
+def test_the_service_fee_is_stated_and_says_WHEN_it_applies():
+    """"After filing", not "later". They are different events, and the second
+    reads as a charge for changing your mind before anything has been sent."""
     _, html = _letter()
-    assert "Any amendments later will incur a HK$1000 service cost" in html
+    assert ("Any changes requested after filing will be subject to a "
+            "HK$1,000 service fee.") in html
 
 
-def test_the_case_worker_signs_it():
-    """The sample is signed by a named account manager. An automated mail signed
-    by nobody is the one a client ignores."""
+def test_changes_are_sent_to_the_renewal_mailbox_and_NOT_by_replying():
+    """The message is sent from no-reply@ and says replies are not monitored,
+    so the one mailbox it names has to be a mailbox somebody reads. A letter
+    that said "reply to us" here would be an instruction to do nothing."""
     _, html = _letter()
-    assert "Best regards" in html
-    assert "Karry" in html
-    assert "Account Manager" in html
+    assert ("If changes are required, please <strong>do not click "
+            "confirm</strong> and email renewal@getstarted.hk before the "
+            "deadline.") in html
 
 
-def test_an_unsigned_send_falls_back_to_the_company_rather_than_a_blank():
-    _, html = _letter(sender_name=None)
+def test_the_letter_says_it_is_automated_and_that_replies_are_not_read():
+    _, html = _letter()
+    assert ("This is an automatically generated email. Replies to this email "
+            "are not monitored.") in html
+
+
+def test_the_automated_notice_is_WITHHELD_when_there_is_no_button():
+    """The no-link fallback asks the reader to REPLY. Telling them in the next
+    paragraph that replies are not read would leave them with nothing they can
+    do at all."""
+    _, html = _letter(approval_url=None)
+    assert "Replies to this email are not monitored" not in html
+    assert "please reply to this email to confirm" in html
+
+
+def test_the_company_signs_it_and_no_person_does():
+    """"Kind regards, Get Started HK Limited" (Levi 2026-09-08). The letter goes
+    out unattended; a case worker's name on it would claim a human wrote it,
+    and there is no longer a `sender_name` argument to put one there."""
+    _, html = _letter()
+    assert "Kind regards," in html
     assert "Get Started HK Limited" in html
-    assert "Account Manager" in html
+    assert "Account Manager" not in html
+    assert "Best regards" not in html
 
 
 def test_the_footer_is_GSHKs_own_block_verbatim():
@@ -418,24 +454,26 @@ def test_the_confirm_button_is_a_table_cell_not_a_styled_anchor():
     """Outlook renders mail through Word, which drops padding on inline anchors
     and leaves a bare blue link where the call to action should be."""
     _, html = _letter()
-    assert "Confirm these particulars are correct" in html
+    assert ">Confirm NAR1</a>" in html
     assert 'bgcolor="#F36C32"' in html
     assert "nar1-approval/t0" in html
+
+
+def test_the_button_is_the_LAST_thing_in_the_letter():
+    """The sample places it under the sign-off. A confirm button ABOVE the
+    paragraph explaining the HK$1,000 charge invites a press before the charge
+    has been read."""
+    _, html = _letter()
+    assert html.index("Kind regards,") < html.index(">Confirm NAR1</a>")
+    assert html.index("service fee") < html.index(">Confirm NAR1</a>")
 
 
 def test_the_message_asks_for_ONE_answer_not_two():
     """"Reply to confirm" beside a Confirm button asks for the same thing twice,
     and a reader who does both produces two answers for one return."""
     _, html = _letter()
-    assert "Reply to this email to confirm it is correct" not in html
-    assert "press <strong>Confirm</strong> below" in html
-
-
-def test_the_reply_path_survives_alongside_the_button():
-    """Spec section 5 adds a "yes" path; it does not remove the human one. A
-    client who disagrees still replies, and staff still record it."""
-    _, html = _letter()
-    assert "reply to this email" in html.lower()
+    assert "please reply to this email to confirm" not in html
+    assert ("please click <strong>Confirm</strong> below") in html
 
 
 def test_an_approval_url_carrying_markup_is_escaped():

@@ -109,7 +109,24 @@ def test_the_page_shows_the_return_and_asks_for_one_press(client):
     assert response.status_code == 200
     assert "ACME LIMITED" in response.text
     assert "00000001" in response.text
-    assert "Confirm this Annual Return is correct" in response.text
+    assert ">Confirm &amp; File</button>" in response.text
+
+
+def test_the_warning_is_on_the_page_BEFORE_anything_can_be_pressed(client):
+    """The approved mock draws this as a modal over the page (Levi 2026-09-08).
+    A modal needs script and this route runs none, so it is rendered inline —
+    which says the same words at the same moment, which is the whole job of a
+    warning. Asserted verbatim: it is what a client is shown immediately before
+    a chargeable, irreversible statutory filing."""
+    with _Stack(*_world(approval=row())):
+        text = client.get(PATH).text
+    assert "Warning" in text
+    assert ("By clicking <strong>Confirm &amp; File</strong>, you confirm "
+            "that you have reviewed the draft and that the information is "
+            "correct. The NAR1 will then be arranged for submission without "
+            "further confirmation.") in text
+    # Before the control it warns about, not after it.
+    assert text.index("further confirmation") < text.index("<button")
 
 
 def test_a_GET_writes_nothing_at_all(client):
@@ -246,14 +263,16 @@ def test_losing_the_race_inside_the_update_still_reports_the_truth(client):
 def test_the_page_offers_no_way_to_reject(client):
     """A rejection has to carry WHAT is wrong, and a free-text box on an
     unauthenticated public route is the one thing this design avoids. The client
-    is told to reply to the email instead."""
+    is sent to the renewal mailbox instead — NOT told to reply to the email,
+    which now says in as many words that replies are not monitored."""
     with _Stack(*_world(approval=row())):
         response = client.get(PATH)
     lowered = response.text.lower()
     assert "reject" not in lowered
     assert "<textarea" not in lowered
     assert "<input" not in lowered
-    assert "reply to the email" in lowered
+    assert "renewal@getstarted.hk" in lowered
+    assert "reply to the email" not in lowered
 
 
 # --------------------------------------------------------------------------- #
@@ -369,7 +388,7 @@ def test_every_miss_answers_with_the_same_status(client):
 def test_the_route_is_rate_limited(client):
     with _Stack(*_world(approval=row())):
         for _ in range(public_approval._RATE_LIMIT):
-            assert "Confirm this Annual Return" in client.get(PATH).text
+            assert "Confirm &amp; File" in client.get(PATH).text
         _unavailable(client.get(PATH))
 
 
@@ -440,7 +459,7 @@ def test_an_unreadable_company_does_not_break_the_page(client):
     with _Stack(*patches):
         response = client.get(PATH)
     assert response.status_code == 200
-    assert "Confirm this Annual Return is correct" in response.text
+    assert ">Confirm &amp; File</button>" in response.text
 
 
 @pytest.mark.parametrize("method", ["get", "post"])

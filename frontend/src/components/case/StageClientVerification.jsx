@@ -459,14 +459,22 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
             THE COPY IS NO LONGER THE PERSON PRESSING SEND (Levi 2026-09-08).
             It is the shared renewals mailbox, so this no longer reads the
-            signed-in user's address — see email_service.CLIENT_CC. The reply
-            still comes back to the case worker, and the two being different
-            addresses is precisely why both are still spelled out. */}
+            signed-in user's address — see email_service.CLIENT_CC.
+
+            AND THE LETTER NOW SENDS THE CLIENT THERE TOO (Levi 2026-09-08): it
+            says in as many words that replies are not monitored, and names this
+            mailbox for changes. reply-to is still you, so a client who replies
+            regardless is not shouting into a no-reply address — but an operator
+            who believes the letter ASKS for a reply will sit waiting for one
+            that was never requested, which is why both facts are spelled out
+            and which is now the more useful of the two. */}
         <div className="cc-note">
           <span className="cc-icon" aria-hidden="true">↩</span>
           <div>
-            A copy goes to <b>{CLIENT_CC}</b>, and the client's reply comes
-            back to you rather than to the no-reply address.
+            A copy goes to <b>{CLIENT_CC}</b> — the same mailbox the letter
+            gives the client for changes, since it tells them replies are not
+            monitored. A client who replies anyway still reaches you rather
+            than the no-reply address.
           </div>
         </div>
 

@@ -1368,13 +1368,13 @@ async def send_verification(
             # letter's "if we do not hear from you by ..." sentence is the one
             # thing that must survive a deployment that cannot build links.
             deadline=target.get("expires_at") or deadline_at,
-            # The GIVEN name where the record has one. The letter greets the
-            # reader by name, and this book is mostly Hong Kong directors
-            # recorded surname-first — splitting a full name on whitespace
-            # would greet CHAN TAI MAN as "Hi CHAN", which is their surname.
-            recipient_name=target.get("given_names") or target.get("name"),
-            # The case worker signs it, as they do when they send it by hand.
-            sender_name=user.get("display_name"),
+            # NO recipient_name AND NO sender_name (Levi 2026-09-08). The
+            # letter now opens "Dear Client" and is signed "Get Started HK
+            # Limited", per docs/Auto email - NAR1 Review_v2.pdf — it is sent
+            # unattended, so neither a director's given name nor the case
+            # worker's belongs on it. The names still travel: `given_names`
+            # names the person on the approval token and in the audit trail,
+            # and `user` is still the reply-to below.
         )
 
         try:
@@ -1399,11 +1399,14 @@ async def send_verification(
             # file's audit comment warns about a few lines down. renewal@ is a
             # record, so it gets the whole record.
             #
-            # `reply_to` is still the case worker, deliberately: it is the
-            # load-bearing half -- the mail is sent from no-reply@getstarted.hk
-            # and asks the client to reply, so it must reach a human who knows
-            # the case. The client's answer going to a person while the copy
-            # goes to the team is the intended split.
+            # `reply_to` is still the case worker, deliberately -- but it is
+            # now the SAFETY NET rather than the asked-for path. Since
+            # 2026-09-08 the letter states that replies are not monitored and
+            # names renewal@getstarted.hk for changes; it is still sent from
+            # no-reply@getstarted.hk, so a client who replies regardless must
+            # reach a human who knows the case rather than a black hole. A
+            # stray answer going to a person while the copy goes to the team is
+            # the intended split.
             #
             # Outside production `_apply_test_cc_lock` DROPS this, as it
             # dropped the case worker: renewal@getstarted.hk is a real GSHK
