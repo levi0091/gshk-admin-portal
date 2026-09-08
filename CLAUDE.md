@@ -69,7 +69,25 @@ The G-FlowDesk Admin Portal — a ZenexFlow-built internal tool for GSHK's data 
 >
 > **SILENCE IS PERMISSION.** A timeout, a resolver that will not answer, no network, an unexpected library error — every uncertain result lets the address through. A wrongly withheld verification stalls a statutory filing on a director who was never written to, which is far worse than a bounce. Only a definitive *"does not exist"* / *"does not accept email"* refuses, and even then the rest of the board is still mailed.
 >
-> **What it cannot do:** a real domain with a dead mailbox (`nosuchuser@gmail.com`) is indistinguishable from a live one until it bounces. Closing that needs Resend **bounce webhooks**, which do not exist yet — do not claim the screen catches every bad address.
+> **What the pre-send check cannot do** is a real domain with a dead mailbox (`nosuchuser@gmail.com`), which is indistinguishable from a live one until delivery is attempted. That is closed by the delivery check below — **not** by a bounce webhook, which was considered and rejected.
+
+> **Delivery is POLLED, not pushed — there is no webhook, and that is deliberate** (Levi, 2026-09-08). `email_service.delivery_status()` asks `GET https://api.resend.com/emails/{id}` for the message's `last_event`. That is the same fact an `email.bounced` webhook would deliver, **asked for instead of waited for**, and it needs **no public endpoint, no signing secret, no Resend dashboard registration and no new environment variable** — it reuses the `RESEND_API_KEY` already sending the mail, so it works on DEV and PROD the moment it deploys. A webhook would have needed all four, plus a second registration because DEV and PROD share one Resend account.
+>
+> **The status vocabulary is Resend's `last_event`, sorted into three answers.** Arrived: `delivered`, `opened`, `clicked`, and `complained` (it reached the mailbox and the reader pressed spam — worth saying, **not** a delivery failure). Failed: `bounced`, `failed`, `canceled`, and **`suppressed`** — the quiet one this check earns its place on, because an address that hard-bounced for anyone on the account is suppressed, and a later send to it returns 200 with an id and is never attempted. Pending: `sent`, `queued`, `scheduled`, `delivery_delayed`.
+>
+> **UNCERTAINTY IS ALWAYS "PENDING", NEVER "FAILED"** — a timeout, a 5xx, an unreadable body, an event name Resend adds later. Telling an operator a return bounced when it did not would have them re-send a statutory notice to a client who already has it, **and every re-send reissues the whole case's approval links**, so the rest of the board gets asked again.
+>
+> **`GET /cases/{id}/verification/delivery`** (`nar1:read` — it changes nothing, and someone who may read a case may see whether its letters arrived) reports one row per director. It reads the newest `EMAIL_SENT` audit row for the case and asks Resend about each message. Note the id space: a NAR1 audit row carries the **case** in `entity_id` and the **company** in `case_id`, so filtering on `case_id` would return the whole company's trail and could report on a different year's return.
+>
+> **The per-recipient map lives in `metadata.deliveries`** (`[{email, name, message_id}]`), written by the send. `message_ids` alone cannot serve: it drops falsy ids, so its positions stop matching `intended_to` the moment one send returns without one, and pairing them would attribute a bounce to the wrong director. It is JSONB, so **no migration was needed**. Sends made before 2026-09-08 have no `deliveries` and are reported `unknown` rather than guessed at.
+
+> **The Send button opens a sending splash, and it is time-bounded on purpose** (Levi, 2026-09-08: *"we should actually wait for the resend to confirm the status of each email that is sent before allowing user to proceed"*). `VerificationDeliveryModal` polls the endpoint above every 3s, showing each director resolve `Sending… → Delivered ✓ / Not delivered ✗`, and the Done button stays disabled until Resend has reported.
+>
+> **It never blocks indefinitely.** Delivery confirmation has no upper bound — greylisting, queue retries, a bounce hours later — so at **60s** it stops asking, **names** the unresolved recipients and says plainly that this is *not* a failure. A hard bounce is normally known in seconds, because the receiving server rejects during the SMTP conversation, so the window catches the case it exists for. A **failed poll is not a failed delivery** and must never colour a director's row red.
+>
+> `onChanged()` is deferred to the splash closing, not fired on the send: refreshing the case underneath the modal would advance the stage behind it. A send whose response carries no `deliveries` skips the splash entirely and behaves as before.
+>
+> **Bounces cannot be produced on DEV at all** — the recipient lock replaces every address with the four `TEST_RECIPIENTS`, which are real mailboxes that deliver. Verified 2026-09-08 against four real DEV sends: all four returned `delivered` through the live API.
 >
 > **No unit test may resolve a real domain.** `conftest._no_dns_in_tests` stubs the probe for the whole suite. Nearly every fixture address here is at `example.com`, which is IANA-reserved with a **Null MX** and therefore genuinely undeliverable — live, the real probe would drop those recipients and fail dozens of unrelated assertions on correct code. Tests that want a specific answer re-patch the same name; the tests *of* the probe capture the real function at import time (`_probe`), since the autouse stub would otherwise make them assert on a mock.
 
@@ -101,7 +119,9 @@ The G-FlowDesk Admin Portal — a ZenexFlow-built internal tool for GSHK's data 
 | Environment | Frontend | Backend API |
 |-------------|----------|-------------|
 | DEV | `https://admin-dev.g-flowdesk.com` | `https://api-dev-admin.g-flowdesk.com` |
-| PROD | `https://admin.g-flowdesk.com` | `https://api-prod-admin.g-flowdesk.com` |
+| PROD | `https://admin.g-flowdesk.com` | `https://api-admin.g-flowdesk.com` |
+
+> **PROD's API hostname is `api-admin`, NOT `api-prod-admin`.** This table said the latter until 2026-09-08; it has never resolved (NXDOMAIN), while `api-admin.g-flowdesk.com/health` answers 200 with `"environment": "production"`. Verified again the day this was corrected. The wrong name is the kind that costs an hour, because a dead hostname looks exactly like a service that is down.
 
 ### Repo structure (target)
 

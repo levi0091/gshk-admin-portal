@@ -69,6 +69,11 @@ TEST_RECIPIENTS = (
 #: admin would never learn whether the client was mailed.
 TIMEOUT_SECONDS = 15.0
 
+#: Shorter than TIMEOUT_SECONDS: a delivery check runs on a loop behind a
+#: progress screen the operator is watching, and one slow answer must not hold
+#: the whole poll. An unanswered probe is simply "pending" and asked again.
+DELIVERY_TIMEOUT_SECONDS = 8.0
+
 #: Levi 2026-08-16. SPF/DKIM only align on a domain the sender controls, and
 #: GSHK controls getstarted.hk — which is what makes Resend viable here.
 DEFAULT_FROM = "no-reply@getstarted.hk"
@@ -189,6 +194,106 @@ def undeliverable_reason(address: str) -> str | None:
     except Exception:  # noqa: BLE001 -- see SILENCE IS PERMISSION above.
         return None
     return None
+
+
+#: Resend's `last_event` vocabulary, sorted into the only three answers this
+#: portal can act on. Anything Resend adds later falls through to "pending",
+#: which is the safe direction -- see delivery_status.
+#:
+#: `complained` counts as ARRIVED: the message reached the mailbox and the
+#: reader pressed "spam". That is worth telling the operator, so it carries a
+#: detail, but it is not a delivery failure and must not be reported as one.
+_ARRIVED_EVENTS = {
+    "delivered": None,
+    "opened": None,
+    "clicked": None,
+    "complained": "delivered, but the recipient marked it as spam",
+}
+
+#: The ones that mean the director does NOT have the return.
+_FAILED_EVENTS = {
+    "bounced": "the recipient's mail server rejected it",
+    "failed": "the message could not be sent",
+    # The quiet one, and the reason this check earns its place. An address that
+    # hard-bounced for anyone on this Resend account is suppressed, and a later
+    # send to it returns 200 with an id and is never attempted. Without asking,
+    # that is indistinguishable from a delivery.
+    "suppressed": ("this address is on Resend's suppression list after an "
+                   "earlier hard bounce, so nothing was sent to it"),
+    "canceled": "the send was canceled",
+}
+
+#: Still in flight. `delivery_delayed` belongs here and not in failures: the
+#: receiving server is retrying (a full mailbox, a transient fault), and it may
+#: still arrive.
+_PENDING_EVENTS = frozenset({"sent", "queued", "scheduled", "delivery_delayed"})
+
+
+def delivery_status(message_id: str) -> dict:
+    """What Resend currently knows about one message it accepted.
+
+    WHY THIS EXISTS. `send()` returning 200 means Resend took the message, not
+    that anybody received it: a dead mailbox at a live domain, and a suppressed
+    address, both look exactly like success at send time. `GET /emails/{id}`
+    reports the message's `last_event`, which is the same fact a bounce webhook
+    would deliver -- ASKED FOR rather than waited for.
+
+    That is the whole reason this is a poll and not a webhook: it needs no
+    public endpoint, no signing secret, no Resend dashboard registration and no
+    new environment variable. It reuses the API key that is already sending the
+    mail, so it works on DEV and PROD the moment it deploys.
+
+    Returns `{"status", "event", "detail"}` where status is one of:
+
+      delivered -- it reached the recipient's mail server
+      failed    -- it did not, and will not
+      pending   -- not resolved YET, or not knowable right now
+
+    UNCERTAINTY IS ALWAYS "PENDING", NEVER "FAILED". A timeout, a 5xx, an
+    unparseable body, an event name Resend has not documented here -- every one
+    of those returns pending. Telling an operator a return bounced when it did
+    not would have them re-send a statutory notice to a client who already has
+    it, and re-sending invalidates the approval links the rest of the board is
+    holding.
+    """
+    if not message_id:
+        return {"status": "pending", "event": None,
+                "detail": "no message id was recorded for this recipient"}
+
+    config = get_email_config()
+
+    try:
+        response = httpx.get(
+            f"{RESEND_ENDPOINT}/{message_id}",
+            headers={"Authorization": f"Bearer {config.api_key}"},
+            timeout=DELIVERY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let a probe fail a send
+        # Scrubbed: an httpx error can carry the request, and the request
+        # carries the Authorization header.
+        return {"status": "pending", "event": None,
+                "detail": _scrub(f"could not reach Resend to check delivery "
+                                 f"({type(exc).__name__})", config.api_key)}
+
+    if response.status_code >= 400:
+        return {"status": "pending", "event": None,
+                "detail": f"Resend could not report on this message "
+                          f"({response.status_code})"}
+
+    try:
+        event = ((response.json() or {}).get("last_event") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return {"status": "pending", "event": None,
+                "detail": "Resend's answer could not be read"}
+
+    if event in _ARRIVED_EVENTS:
+        return {"status": "delivered", "event": event,
+                "detail": _ARRIVED_EVENTS[event]}
+    if event in _FAILED_EVENTS:
+        return {"status": "failed", "event": event,
+                "detail": _FAILED_EVENTS[event]}
+    # Includes _PENDING_EVENTS and anything Resend adds after this was written.
+    return {"status": "pending", "event": event or None, "detail": None}
 
 
 class EmailConfig:

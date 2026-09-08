@@ -332,6 +332,49 @@ describe('Client Verification', () => {
     expect(detail).toMatch(/NOT sent to nope \(not a valid email address\)/)
   })
 
+  it('holds the operator on a sending splash until delivery is confirmed', async () => {
+    // Levi 2026-09-08: "after user click on send email we should actually wait
+    // for the resend to confirm the status of each email that is sent before
+    // allowing user to proceed with something else on screen."
+    //
+    // `onChanged` is DEFERRED to the splash closing, not fired on the send:
+    // refreshing the case underneath the modal would advance the stage behind
+    // it, and the operator would dismiss the splash onto a screen that moved.
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['chan@example.com'], failed_to: [], approval_links: true,
+      deliveries: [{ email: 'chan@example.com', name: 'CHAN', message_id: 'm1' }],
+    })
+    // LAYERED over the suite's default router, not replacing it: pressSend
+    // needs the recipients GET to resolve before the button is even live, and
+    // a blanket mockResolvedValue here would starve it.
+    const base = get.getMockImplementation()
+    get.mockImplementation(url => (
+      String(url).includes('/verification/delivery')
+        ? Promise.resolve({
+            sent_at: 'x', settled: true, delivered: 1, failed: 0, pending: 0,
+            recipients: [{ email: 'chan@example.com', name: 'CHAN',
+                           status: 'delivered', detail: null }],
+          })
+        : base(url)
+    ))
+    const user = await pressSend()
+    const splash = await screen.findByTestId('delivery-modal')
+    expect(onChanged).not.toHaveBeenCalled()
+    await waitFor(() => expect(within(splash).getByRole('button')).toBeEnabled())
+    await user.click(within(splash).getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+  })
+
+  it('skips the splash when the backend returned no per-recipient ids', async () => {
+    // An older backend, or a send that returned none. There is nothing to
+    // confirm, so the screen behaves exactly as it did before the splash.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'], failed_to: [],
+                             approval_links: true })
+    await pressSend()
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+    expect(screen.queryByTestId('delivery-modal')).not.toBeInTheDocument()
+  })
+
   it('reports an address whose DOMAIN does not exist, and names who did get it', async () => {
     // THE FAULT LEVI REPORTED ON 2026-09-08: "I sent an email to an address
     // that clearly does not exist... but I am still not getting an error on the

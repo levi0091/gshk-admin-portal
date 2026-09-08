@@ -795,6 +795,174 @@ def test_an_uncertain_dns_answer_lets_the_message_through(client):
 
 
 # ---------------------------------------------------------------------------
+# GET /verification/delivery — did each director's copy actually arrive?
+# (Levi 2026-09-08)
+#
+# "after user click on send email we should actually wait for the resend to
+# confirm the status of each email that is sent before allowing user to proceed"
+#
+# The send response now carries a per-recipient `deliveries` map, and the same
+# map is written into the EMAIL_SENT audit metadata so the answer survives the
+# operator closing the tab.
+# ---------------------------------------------------------------------------
+
+def _audit_rows(rows):
+    """Stub the one audit_log read this endpoint makes."""
+    table = MagicMock()
+    table.select.return_value = table
+    table.eq.return_value = table
+    table.order.return_value = table
+    table.limit.return_value = table
+    table.execute.return_value = MagicMock(data=rows)
+    sb = MagicMock()
+    sb.table.return_value = table
+    return patch("routers.cases.get_supabase", return_value=sb), table
+
+
+_SENT_ROW = [{"created_at": "2026-09-08T10:00:00+00:00",
+              "metadata": {"deliveries": [
+                  {"email": "chan@example.com", "name": "CHAN", "message_id": "m1"},
+                  {"email": "lee@example.com", "name": "LEE", "message_id": "m2"}]}}]
+
+
+def _statuses(*results):
+    return patch("routers.cases.email_service.delivery_status",
+                 side_effect=list(results))
+
+
+def test_the_send_returns_which_message_went_to_which_director(client):
+    """`message_ids` alone cannot say. It drops falsy ids, so its positions stop
+    matching `intended_to` the moment one send comes back without one."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send",
+               side_effect=[{"id": "m1"}, {"id": "m2"}]), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()) as log:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={**SEND, "to": ["chan@example.com",
+                                                    "lee@example.com"]})
+
+    deliveries = response.json()["deliveries"]
+    assert [(d["email"], d["message_id"]) for d in deliveries] == [
+        ("chan@example.com", "m1"), ("lee@example.com", "m2")]
+    # And the SAME map is in the audit metadata — that is what makes delivery
+    # answerable after the operator has closed the tab.
+    meta = [c for c in log.await_args_list
+            if c.kwargs.get("action_type") == "EMAIL_SENT"][0].kwargs["metadata"]
+    assert meta["deliveries"] == deliveries
+
+
+def test_delivery_reports_each_recipient(client):
+    supabase, _ = _audit_rows(_SENT_ROW)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, \
+         _statuses({"status": "delivered", "event": "delivered", "detail": None},
+                   {"status": "failed", "event": "bounced",
+                    "detail": "the recipient's mail server rejected it"}):
+        response = client.get("/cases/c1/verification/delivery", headers=H)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert [(r["email"], r["status"]) for r in body["recipients"]] == [
+        ("chan@example.com", "delivered"), ("lee@example.com", "failed")]
+    assert body["delivered"] == 1 and body["failed"] == 1
+    # Nothing left in flight, so the screen stops asking.
+    assert body["settled"] is True
+
+
+def test_delivery_is_NOT_settled_while_one_is_still_in_flight(client):
+    """The splash keeps polling on this. Calling it settled early would close
+    the wait before the bounce it exists to catch had arrived."""
+    supabase, _ = _audit_rows(_SENT_ROW)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, \
+         _statuses({"status": "delivered", "event": "delivered", "detail": None},
+                   {"status": "pending", "event": "sent", "detail": None}):
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+
+    assert body["pending"] == 1
+    assert body["settled"] is False
+
+
+def test_delivery_reads_the_CASE_not_the_company_trail(client):
+    """A NAR1 audit row carries the CASE in `entity_id` and the COMPANY in
+    `case_id` (see _audit_target). Filtering on `case_id` would return the whole
+    company's trail, whose newest EMAIL_SENT row can belong to another year's
+    return — and this endpoint would then report on the wrong filing."""
+    supabase, table = _audit_rows(_SENT_ROW)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, \
+         _statuses({"status": "delivered", "event": "delivered", "detail": None},
+                   {"status": "delivered", "event": "delivered", "detail": None}):
+        client.get("/cases/c1/verification/delivery", headers=H)
+
+    filters = [c.args for c in table.eq.call_args_list]
+    assert ("entity_id", "c1") in filters
+    assert ("entity_type", "nar1_case") in filters
+    assert ("action_type", "EMAIL_SENT") in filters
+    assert not any(f[0] == "case_id" for f in filters)
+
+
+def test_delivery_on_a_case_that_was_never_sent_is_empty_not_an_error(client):
+    supabase, _ = _audit_rows([])
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["recipients"] == []
+    assert body["sent_at"] is None
+    assert body["settled"] is True
+
+
+def test_a_send_made_BEFORE_deliveries_was_recorded_says_so(client):
+    """Older rows carry only a flat `message_ids`, whose positions were never
+    guaranteed to match `intended_to`. Pairing them would attribute a bounce to
+    the wrong director, so it reports unknown instead."""
+    old = [{"created_at": "2026-09-01T10:00:00+00:00",
+            "metadata": {"message_ids": ["m1", "m2"],
+                         "intended_to": ["chan@example.com", "lee@example.com"]}}]
+    supabase, _ = _audit_rows(old)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, patch("routers.cases.email_service.delivery_status") as probe:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["unknown"] is True
+    assert body["settled"] is True
+    probe.assert_not_called()
+
+
+def test_delivery_requires_nar1_read(client):
+    """`read`, not `write`: it changes nothing, and someone who may look at a
+    case may see whether its letters arrived. A role with NO nar1 permission at
+    all still cannot."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for", return_value=set()):
+        assert client.get("/cases/c1/verification/delivery",
+                          headers=H).status_code == 403
+
+
+def test_delivery_is_allowed_to_a_READ_ONLY_role(client):
+    """The other half — asserted explicitly, because gating it on `write` would
+    hide the delivery result from exactly the people who are asked to check on
+    a case they cannot edit."""
+    supabase, _ = _audit_rows([])
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for", return_value={"read"}), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), supabase:
+        assert client.get("/cases/c1/verification/delivery",
+                          headers=H).status_code == 200
+
+
+def test_delivery_rejects_an_unauthenticated_caller(client):
+    assert client.get("/cases/c1/verification/delivery").status_code == 403
+
+
+def test_delivery_on_a_missing_case_is_404(client):
+    with _super(), patch("routers.cases.nar1_cases.get_case",
+                         side_effect=LookupError("no such case")):
+        assert client.get("/cases/zz/verification/delivery",
+                          headers=H).status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # The response deadline — mandatory, and the operator's own (Levi 2026-09-07)
 # ---------------------------------------------------------------------------
 

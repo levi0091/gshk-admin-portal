@@ -1377,6 +1377,37 @@ tbody tr.clickable { cursor: pointer; }
 .cc-note b { color: var(--t-head); font-weight: 600; word-break: break-all; }
 .cc-icon { color: var(--t-muted); font-size: 13px; line-height: 1.35; }
 
+/* ---- The sending splash: one row per director ----------------------------
+   Shown while Resend is asked whether each message actually arrived. A Resend
+   200 only means it accepted the message, so this is where a dead mailbox or a
+   suppressed address finally becomes visible.
+
+   The mark column is FIXED WIDTH so the addresses stay left-aligned as rows
+   resolve from "…" to "✓"/"✗" — a list that shifts sideways while you read it
+   is the wrong thing to put in front of someone waiting. */
+.delivery-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.delivery-row {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px 8px;
+  align-items: baseline; padding: 9px 11px; border-radius: 8px;
+  background: var(--bg-page); border: 1px solid var(--border);
+  font-size: 12px; line-height: 1.5; color: var(--t-body);
+}
+.dr-mark { font-size: 13px; text-align: center; color: var(--t-muted); }
+/* break-all, not break-word: an address has no spaces to break at, and a long
+   one must not push the status column off the modal. */
+.dr-who { min-width: 0; word-break: break-all; }
+.dr-who b { color: var(--t-head); font-weight: 600; }
+.dr-status { font-size: 11px; font-weight: 600; color: var(--t-muted); white-space: nowrap; }
+/* Spans the two right-hand columns, under the address it explains. */
+.dr-detail { grid-column: 2 / -1; font-size: 11px; color: var(--t-muted); }
+
+.delivery-row.dr-delivered { background: var(--bang-10); border-color: #BFDFD1; }
+.delivery-row.dr-delivered .dr-mark,
+.delivery-row.dr-delivered .dr-status { color: var(--bang); }
+.delivery-row.dr-failed { background: var(--carrot-10); border-color: #F6C7B2; }
+.delivery-row.dr-failed .dr-mark,
+.delivery-row.dr-failed .dr-status { color: #B03A00; }
+
 @media (max-width: 720px) {
   .stepper { grid-template-columns: repeat(5, 1fr); padding: 14px 6px 12px; }
   .step-lbl { font-size: 10px; }

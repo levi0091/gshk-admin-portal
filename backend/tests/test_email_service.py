@@ -774,6 +774,121 @@ def test_client_cc_matches_the_screen():
             in jsx.read_text(encoding="utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# delivery_status — did Resend actually deliver it? (Levi 2026-09-08)
+#
+# A 200 from send() means Resend ACCEPTED the message. `GET /emails/{id}`
+# reports its `last_event`, which is the same fact a bounce webhook would push
+# — asked for rather than waited for, so it needs no public endpoint, no
+# signing secret and no dashboard registration.
+# ---------------------------------------------------------------------------
+
+def _get(status=200, payload=None):
+    return patch("services.email_service.httpx.get",
+                 return_value=_response(status, payload))
+
+
+def test_a_delivered_message_reports_delivered():
+    with _get(payload={"last_event": "delivered"}):
+        assert email_service.delivery_status("m1")["status"] == "delivered"
+
+
+def test_a_bounced_message_reports_failed_with_a_reason():
+    with _get(payload={"last_event": "bounced"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "failed"
+    assert result["event"] == "bounced"
+    assert "rejected" in result["detail"]
+
+
+def test_a_SUPPRESSED_address_reports_failed():
+    """The quiet one this check earns its place on. An address that hard-bounced
+    for anyone on this Resend account is suppressed, and a later send to it
+    returns 200 with an id and is never actually attempted — indistinguishable
+    from a delivery without asking."""
+    with _get(payload={"last_event": "suppressed"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "failed"
+    assert "suppression list" in result["detail"]
+
+
+def test_an_ACCEPTED_but_unresolved_message_is_pending_not_delivered():
+    """`sent` is what send() already told us. Treating it as delivered would
+    make the whole check a no-op that always says yes."""
+    with _get(payload={"last_event": "sent"}):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_a_delayed_delivery_is_pending_not_failed():
+    """The receiving server is retrying — a full mailbox, a transient fault. It
+    may still arrive, and calling it a failure would have the operator re-send
+    a statutory notice to a client who is about to get the first one."""
+    with _get(payload={"last_event": "delivery_delayed"}):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_a_COMPLAINT_still_counts_as_arrived():
+    """It reached the mailbox and the reader pressed 'spam'. Worth saying, but
+    it is not a delivery failure and must not send anyone chasing a re-send."""
+    with _get(payload={"last_event": "complained"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "delivered"
+    assert "spam" in result["detail"]
+
+
+@pytest.mark.parametrize("event", ["opened", "clicked"])
+def test_events_that_imply_delivery_count_as_delivered(event):
+    with _get(payload={"last_event": event}):
+        assert email_service.delivery_status(event)["status"] == "delivered"
+
+
+def test_an_UNKNOWN_event_is_pending_never_failed():
+    """Resend can add events after this was written. A name we do not recognise
+    is not evidence that a director was not written to."""
+    with _get(payload={"last_event": "something_new"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "pending"
+    assert result["event"] == "something_new"
+
+
+def test_a_TRANSPORT_FAILURE_is_pending_and_never_leaks_the_key():
+    """Telling an operator a return bounced when it did not would have them
+    re-send to a client who already has it — and re-sending invalidates every
+    approval link the rest of the board is holding."""
+    import httpx
+    with patch("services.email_service.httpx.get",
+               side_effect=httpx.ConnectError("boom")):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "pending"
+    assert "re_test_key" not in str(result)
+
+
+def test_an_ERROR_RESPONSE_is_pending():
+    with _get(status=500, payload={"message": "server error"}):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_an_UNREADABLE_BODY_is_pending():
+    broken = MagicMock(status_code=200)
+    broken.json.side_effect = ValueError("no json")
+    with patch("services.email_service.httpx.get", return_value=broken):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_a_missing_message_id_is_pending_without_calling_resend():
+    with patch("services.email_service.httpx.get") as get:
+        assert email_service.delivery_status("")["status"] == "pending"
+    get.assert_not_called()
+
+
+def test_the_check_authenticates_and_is_bounded():
+    with _get(payload={"last_event": "delivered"}) as get:
+        email_service.delivery_status("abc-123")
+    assert get.call_args.args[0].endswith("/emails/abc-123")
+    assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer re_test_key"
+    assert get.call_args.kwargs["timeout"] == email_service.DELIVERY_TIMEOUT_SECONDS
+
+
 def test_the_client_copy_is_NOT_one_of_the_test_recipients():
     """It is a real GSHK mailbox, so the non-production lock must DROP it
     rather than treat it as already-covered. If it were ever added to

@@ -15,6 +15,7 @@ from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
 from pydantic import BaseModel
 
 from middleware.auth import require_permission
+from db.supabase import get_supabase
 from services import (
     audit_events as ev, document_service, email_service, nar1_approvals,
     nar1_case_status, nar1_cases, nar1_return_data, table_filters as tf,
@@ -1476,6 +1477,19 @@ async def send_verification(
     intended_cc = _across("intended_cc")
     message_ids = [s["sent"].get("id") for s in sends if s["sent"].get("id")]
 
+    # WHICH message went to WHICH director, which `message_ids` alone cannot
+    # say -- it drops the falsy ids, so its positions stop matching
+    # `intended_to` the moment one send comes back without one.
+    #
+    # Written into the audit metadata (free-form JSONB, so no migration) rather
+    # than only returned, because that is what makes delivery answerable AFTER
+    # the operator has closed the tab: `GET /cases/{id}/verification/delivery`
+    # reads this row back and asks Resend about each id. Without it, a bounce
+    # arriving two minutes later would be knowable to nobody.
+    deliveries = [{"email": s["target"]["email"],
+                   "name": s["target"].get("name"),
+                   "message_id": s["sent"].get("id")} for s in sends]
+
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.EMAIL_SENT, event_code=ev.EMAIL_SENT,
@@ -1493,6 +1507,8 @@ async def send_verification(
                   # because there is now one message per director.
                   "message_id": message_ids[0] if message_ids else None,
                   "message_ids": message_ids,
+                  # The per-recipient map the delivery check reads back.
+                  "deliveries": deliveries,
                   "intended_to": intended,
                   "recipient_count": len(intended),
                   # Named, not counted. An operator who sees "2 of 3 sent" and
@@ -1569,6 +1585,10 @@ async def send_verification(
             "transport": sends[0]["sent"].get("transport", "resend"),
             "message_id": message_ids[0] if message_ids else None,
             "message_ids": message_ids,
+            # So the screen can show a row per director and start asking
+            # whether each one actually arrived, without a second round trip
+            # to find out who was written to.
+            "deliveries": deliveries,
             # Named so the operator can resend to exactly the people who were
             # missed, rather than re-mailing a board that mostly already has it.
             "failed_to": [f["email"] for f in failures],
@@ -1587,6 +1607,92 @@ async def send_verification(
             # decides whether the client can confirm with a button or must
             # reply to the email.
             "approval_links": bool(link_base)}
+
+
+@router.get("/{case_id}/verification/delivery")
+async def verification_delivery(
+    case_id: str,
+    user=Depends(require_permission("nar1", "read")),
+):
+    """Did each director's copy actually arrive?
+
+    A Resend 200 means Resend ACCEPTED the message, not that anyone received
+    it. The two ways that gap bites are a live domain with a dead mailbox, and
+    an address on Resend's suppression list after an earlier hard bounce --
+    neither is visible at send time, and both look exactly like success.
+
+    This asks Resend, per message, what it now knows. It is the same fact a
+    bounce webhook would push, PULLED instead: no public endpoint, no signing
+    secret, no dashboard registration, no new environment variable. It works
+    the moment it deploys, on DEV and PROD, because it reuses the key that is
+    already sending the mail.
+
+    Read-only and safe to call repeatedly -- the screen polls it behind the
+    sending splash, and reads it again whenever the case is reopened, which is
+    what lets a bounce that landed hours later still be seen.
+
+    `nar1:read`, not `write`: this changes nothing, and someone who may look at
+    a case may see whether its letters arrived.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    sb = get_supabase()
+    # The most recent send on this case. Note the id space: a NAR1 audit row
+    # carries the CASE in `entity_id` and the COMPANY in `case_id` -- see
+    # _audit_target. Filtering on `case_id` here would return the whole
+    # company's trail, and its newest EMAIL_SENT row could belong to a
+    # different year's return.
+    rows = (
+        sb.table("audit_log")
+        .select("created_at, metadata")
+        .eq("entity_id", case_id)
+        .eq("entity_type", "nar1_case")
+        .eq("action_type", ev.EMAIL_SENT)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    ).data or []
+
+    if not rows:
+        return {"sent_at": None, "recipients": [], "pending": 0,
+                "failed": 0, "delivered": 0, "settled": True}
+
+    metadata = rows[0].get("metadata") or {}
+    deliveries = metadata.get("deliveries") or []
+
+    # Sends made before `deliveries` was recorded (2026-09-08) carry only a
+    # flat `message_ids`. Their per-recipient mapping is not recoverable, so
+    # they are reported as settled-unknown rather than guessed at by pairing
+    # two lists whose positions were never guaranteed to correspond.
+    if not deliveries:
+        return {"sent_at": rows[0].get("created_at"), "recipients": [],
+                "pending": 0, "failed": 0, "delivered": 0, "settled": True,
+                "unknown": True}
+
+    # Concurrently, each on a worker thread: these are blocking HTTP calls in
+    # an async handler, and a board of five directors resolved in series would
+    # be five round trips the operator waits through.
+    statuses = await asyncio.gather(*[
+        asyncio.to_thread(email_service.delivery_status, d.get("message_id"))
+        for d in deliveries
+    ])
+
+    recipients = [{"email": d.get("email"), "name": d.get("name"),
+                   **status} for d, status in zip(deliveries, statuses)]
+
+    counts = {"delivered": 0, "failed": 0, "pending": 0}
+    for entry in recipients:
+        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+
+    return {"sent_at": rows[0].get("created_at"),
+            "recipients": recipients,
+            **counts,
+            # Nothing left in flight, so the screen can stop asking. It does
+            # NOT mean everything arrived -- read `failed` for that.
+            "settled": counts["pending"] == 0}
 
 
 class VerificationResponseIn(BaseModel):

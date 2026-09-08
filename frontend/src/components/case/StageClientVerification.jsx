@@ -6,6 +6,7 @@ import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { downloadFilingPdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
+import VerificationDeliveryModal from './VerificationDeliveryModal.jsx'
 import { describeError, verificationBlock, isSubmitted } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
 
@@ -158,6 +159,11 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // here too: a restarted case really does need reviewing again.
   const [reviewed, setReviewed] = useState(Boolean(caseRow.verification_sent_at))
   const [busy, setBusy] = useState(null)
+  // The per-recipient list from the send that just happened, or null when no
+  // send is being confirmed. Non-null puts the sending splash on screen and
+  // holds the operator there until Resend has reported (or the wait times
+  // out) — see VerificationDeliveryModal.
+  const [confirming, setConfirming] = useState(null)
   // NO LOCAL ERROR STATE. What the send refused goes to `onError` and what it
   // REPORTED — a partial delivery, a message without a Confirm button — goes
   // to `onWarn`. Both render at the top of the page and both scroll there, so
@@ -269,7 +275,24 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           + 'has to reply by email and you record the answer below. '
           + 'PUBLIC_API_BASE_URL needs setting on the backend.')
       }
-      onChanged()
+      // HOLD THE OPERATOR HERE UNTIL RESEND HAS REPORTED (Levi 2026-09-08).
+      // A 200 from the send means Resend accepted each message, not that
+      // anybody received it — a dead mailbox at a live domain and a suppressed
+      // address both look identical at this point. The splash asks, per
+      // recipient, and only then lets the screen move on.
+      //
+      // `onChanged()` is deferred to the modal closing rather than fired here:
+      // refreshing the case underneath a modal would advance the stage behind
+      // it, so the operator would dismiss the splash onto a screen that had
+      // already moved.
+      if (result?.deliveries?.length) {
+        setConfirming(result.deliveries)
+      } else {
+        // No per-recipient ids came back — an older backend, or a send that
+        // returned none. There is nothing to confirm, so behave exactly as
+        // this screen did before the splash existed.
+        onChanged()
+      }
     } catch (e) {
       // TO THE PAGE, like every other refusal. It used to be drawn here next
       // to the button because the banner sits above a 690px PDF frame and was
@@ -297,6 +320,16 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
   return (
     <>
+      {/* The sending splash. Rendered first so it overlays the stage, and only
+          while a send is being confirmed. Closing it is what refreshes the
+          case — see send(). */}
+      {confirming && (
+        <VerificationDeliveryModal
+          caseId={caseRow.id}
+          deliveries={confirming}
+          onClose={() => { setConfirming(null); onChanged() }}
+        />
+      )}
       {/* v11 leads this stage with the snapshot, because everything on it —
           the PDF, the email, and eventually the filing — reads the frozen copy
           rather than the company profile. Without this, a profile edited after
