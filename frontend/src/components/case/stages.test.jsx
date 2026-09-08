@@ -365,6 +365,35 @@ describe('Client Verification', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled())
   })
 
+  it('shows the splash on the CLICK, not when the send returns', async () => {
+    // Levi 2026-09-08: "there seems to be a lag between when i click on the
+    // send button and the popup appearing". The send is genuinely slow — a
+    // nine-page AcroForm plus one Resend call per director — so the splash now
+    // opens immediately and the work happens behind it.
+    let release
+    post.mockImplementation(() => new Promise(r => { release = r }))
+    const user = await pressSend()
+    // The POST has NOT resolved, and the splash is already up.
+    const splash = await screen.findByTestId('delivery-modal')
+    expect(within(splash).getByText(/Preparing the return/)).toBeInTheDocument()
+    expect(onChanged).not.toHaveBeenCalled()
+    release({ sent_at: 'x', to: ['chan@example.com'], failed_to: [],
+              approval_links: true, deliveries: [] })
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+    return user
+  })
+
+  it('takes the splash down when the send is REFUSED', async () => {
+    // The refusal goes to the page banner, which is drawn behind the overlay —
+    // leaving the splash up would hide the reason and strand the operator on a
+    // permanently disabled Done button.
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('not validated'), { status: 409 }))
+    await pressSend()
+    await waitFor(() => expect(onError).toHaveBeenCalled())
+    expect(screen.queryByTestId('delivery-modal')).not.toBeInTheDocument()
+  })
+
   it('skips the splash when the backend returned no per-recipient ids', async () => {
     // An older backend, or a send that returned none. There is nothing to
     // confirm, so the screen behaves exactly as it did before the splash.

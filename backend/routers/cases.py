@@ -1488,7 +1488,19 @@ async def send_verification(
     # arriving two minutes later would be knowable to nobody.
     deliveries = [{"email": s["target"]["email"],
                    "name": s["target"].get("name"),
-                   "message_id": s["sent"].get("id")} for s in sends]
+                   "message_id": s["sent"].get("id"),
+                   # WHERE THE MESSAGE ACTUALLY WENT, which outside production
+                   # is NOT the address above. The recipient lock substitutes
+                   # TEST_RECIPIENTS inside send(), so Resend's answer about
+                   # this message describes a DIFFERENT mailbox -- and pairing
+                   # that answer with the intended address told Levi on
+                   # 2026-09-08 that levi214839824@zenexflow.com, an address
+                   # that does not exist, had been "Delivered". It had not been
+                   # written to at all. Both halves are recorded for the same
+                   # reason `to` and `intended_to` are both on the audit row.
+                   "delivered_to": s["sent"].get("to") or [],
+                   "redirected": bool(s["sent"].get("redirected"))}
+                  for s in sends]
 
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
@@ -1658,7 +1670,7 @@ async def verification_delivery(
 
     if not rows:
         return {"sent_at": None, "recipients": [], "pending": 0,
-                "failed": 0, "delivered": 0, "settled": True}
+                "failed": 0, "delivered": 0, "redirected": 0, "settled": True}
 
     metadata = rows[0].get("metadata") or {}
     deliveries = metadata.get("deliveries") or []
@@ -1669,21 +1681,39 @@ async def verification_delivery(
     # two lists whose positions were never guaranteed to correspond.
     if not deliveries:
         return {"sent_at": rows[0].get("created_at"), "recipients": [],
-                "pending": 0, "failed": 0, "delivered": 0, "settled": True,
-                "unknown": True}
+                "pending": 0, "failed": 0, "delivered": 0, "redirected": 0,
+                "settled": True, "unknown": True}
 
-    # Concurrently, each on a worker thread: these are blocking HTTP calls in
-    # an async handler, and a board of five directors resolved in series would
-    # be five round trips the operator waits through.
-    statuses = await asyncio.gather(*[
-        asyncio.to_thread(email_service.delivery_status, d.get("message_id"))
-        for d in deliveries
-    ])
+    async def _status_for(record: dict) -> dict:
+        """One recipient's answer.
+
+        A REDIRECTED MESSAGE IS NEVER REPORTED ON THE ADDRESS ON SCREEN. Outside
+        production the recipient lock substitutes TEST_RECIPIENTS inside send(),
+        so Resend's record for that message describes the four internal
+        mailboxes -- asking about it and printing the answer beside the intended
+        address is how this screen told Levi that an address which does not
+        exist had been "Delivered" (2026-09-08). Nothing was sent there, so the
+        honest answer is "not sent", and Resend is not asked at all: its answer
+        could only be about somebody else's mailbox.
+        """
+        if record.get("redirected"):
+            went_to = ", ".join(record.get("delivered_to") or []) or                 "the internal test recipients"
+            return {"status": "redirected", "event": None,
+                    "detail": f"nothing was sent to this address — this is a "
+                              f"test environment, so the message went to "
+                              f"{went_to} instead"}
+        # Concurrently, each on a worker thread: these are blocking HTTP calls
+        # in an async handler, and a board of five directors resolved in series
+        # would be five round trips the operator waits through.
+        return await asyncio.to_thread(
+            email_service.delivery_status, record.get("message_id"))
+
+    statuses = await asyncio.gather(*[_status_for(d) for d in deliveries])
 
     recipients = [{"email": d.get("email"), "name": d.get("name"),
                    **status} for d, status in zip(deliveries, statuses)]
 
-    counts = {"delivered": 0, "failed": 0, "pending": 0}
+    counts = {"delivered": 0, "failed": 0, "pending": 0, "redirected": 0}
     for entry in recipients:
         counts[entry["status"]] = counts.get(entry["status"], 0) + 1
 

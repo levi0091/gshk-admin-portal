@@ -254,6 +254,15 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
   async function send() {
     onError(null); onWarn?.(null, null); setBusy('send')
+    // THE SPLASH OPENS ON THE CLICK, NOT ON THE RESPONSE (Levi 2026-09-08:
+    // "there seems to be a lag between when i click on the send button and the
+    // popup appearing"). The send is genuinely slow — it fills a 15-page
+    // AcroForm, issues a token per director and makes one Resend call each —
+    // and none of that used to show, so the button sat there looking dead.
+    //
+    // Seeded from the chips, which are exactly who is about to be written to,
+    // so the board is on screen from the first frame with nothing invented.
+    setConfirming({ phase: 'sending', recipients: (to || []).map(email => ({ email })) })
     try {
       // Always explicit, never `{}`. The chips on screen are what the operator
       // agreed to send to; letting the server re-derive the list would mail a
@@ -293,14 +302,18 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       // it, so the operator would dismiss the splash onto a screen that had
       // already moved.
       if (result?.deliveries?.length) {
-        setConfirming(result.deliveries)
+        setConfirming({ phase: 'confirming', recipients: result.deliveries })
       } else {
         // No per-recipient ids came back — an older backend, or a send that
-        // returned none. There is nothing to confirm, so behave exactly as
-        // this screen did before the splash existed.
+        // returned none. There is nothing to confirm, so close the splash and
+        // behave exactly as this screen did before it existed.
+        setConfirming(null)
         onChanged()
       }
     } catch (e) {
+      // The splash comes down before the refusal is raised: it is an overlay,
+      // and a page banner drawn behind it would be invisible.
+      setConfirming(null)
       // TO THE PAGE, like every other refusal. It used to be drawn here next
       // to the button because the banner sits above the PDF frame and was
       // therefore off-screen — but the page now scrolls to the banner on every
@@ -333,7 +346,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       {confirming && (
         <VerificationDeliveryModal
           caseId={caseRow.id}
-          deliveries={confirming}
+          phase={confirming.phase}
+          deliveries={confirming.recipients}
           onClose={() => { setConfirming(null); onChanged() }}
         />
       )}

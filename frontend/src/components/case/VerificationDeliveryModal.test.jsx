@@ -133,6 +133,70 @@ describe('VerificationDeliveryModal', () => {
     expect(screen.queryByText(/did not get it/)).not.toBeInTheDocument()
   })
 
+  it('NEVER shows a redirected send as Delivered', async () => {
+    // The bug Levi hit on 2026-09-08. Outside production the recipient lock
+    // sends every message to the internal test list, so Resend's "delivered"
+    // is true — of a DIFFERENT mailbox. Printing it beside the address the
+    // operator typed told him a non-existent address had been delivered to.
+    get.mockResolvedValue({
+      sent_at: 'x', settled: true, delivered: 0, failed: 0, pending: 0,
+      redirected: 1,
+      recipients: [{
+        email: 'levi214839824@zenexflow.com', name: null, status: 'redirected',
+        detail: 'nothing was sent to this address — this is a test environment, '
+              + 'so the message went to levi@zenexflow.com instead',
+      }],
+    })
+    renderIt()
+    await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
+    expect(screen.queryByText('Delivered')).not.toBeInTheDocument()
+    expect(screen.getByText('Not sent (test)')).toBeInTheDocument()
+    expect(screen.getByText(/Nothing was sent to this address/)).toBeInTheDocument()
+    expect(screen.getByText(/only be confirmed on production/)).toBeInTheDocument()
+  })
+
+  it('marks a redirected row so it cannot read as a success', async () => {
+    get.mockResolvedValue({
+      sent_at: 'x', settled: true, delivered: 0, failed: 0, pending: 0,
+      redirected: 1,
+      recipients: [{ email: 'a@b.com', name: null, status: 'redirected',
+                     detail: 'nothing was sent to this address' }],
+    })
+    const { container } = render(
+      <VerificationDeliveryModal caseId="c1" deliveries={DELIVERIES}
+                                 onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
+    // Not the delivered class — the green row is a claim this must not make.
+    expect(container.querySelector('.dr-redirected')).toBeTruthy()
+    expect(container.querySelector('.dr-delivered')).toBeFalsy()
+  })
+
+  it('shows the board immediately while the send is still in flight', async () => {
+    // Levi 2026-09-08: "there seems to be a lag between when i click on the
+    // send button and the popup appearing". The splash now opens on the click,
+    // seeded from the chips, and does not poll until the send has returned.
+    render(<VerificationDeliveryModal caseId="c1" deliveries={DELIVERIES}
+                                      phase="sending" onClose={vi.fn()} />)
+    expect(screen.getByText(/Preparing the return/)).toBeInTheDocument()
+    expect(screen.getByText('chan@example.com', { exact: false })).toBeInTheDocument()
+    // Nothing to poll yet: the audit row does not exist, and asking could
+    // return the PREVIOUS send and report this one as already settled.
+    expect(get).not.toHaveBeenCalled()
+    expect(screen.getByRole('button')).toBeDisabled()
+  })
+
+  it('starts polling only once the send has returned', async () => {
+    get.mockResolvedValue(ALL_GOOD)
+    const { rerender } = render(
+      <VerificationDeliveryModal caseId="c1" deliveries={DELIVERIES}
+                                 phase="sending" onClose={vi.fn()} />)
+    expect(get).not.toHaveBeenCalled()
+    rerender(<VerificationDeliveryModal caseId="c1" deliveries={DELIVERIES}
+                                        phase="confirming" onClose={vi.fn()} />)
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
+  })
+
   it('stops polling once unmounted', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     get.mockResolvedValue({ sent_at: 'x', settled: false, pending: 2, failed: 0,

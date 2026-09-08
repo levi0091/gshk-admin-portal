@@ -929,6 +929,85 @@ def test_a_send_made_BEFORE_deliveries_was_recorded_says_so(client):
     probe.assert_not_called()
 
 
+def test_a_REDIRECTED_send_is_never_reported_as_delivered(client):
+    """THE BUG LEVI HIT ON 2026-09-08.
+
+    He sent to levi214839824@zenexflow.com — an address he knew did not exist —
+    and the screen said "Delivered". It was not lying about Resend: outside
+    production the recipient lock substitutes TEST_RECIPIENTS inside send(), so
+    that message really was delivered — to the four internal mailboxes. The
+    fault was pairing THAT answer with the address on screen.
+
+    Verified against the real send: Resend's own record for both messages shows
+    `to` = the four test recipients, and neither ever went to the address the
+    operator typed.
+    """
+    row = [{"created_at": "2026-09-08T10:00:00+00:00",
+            "metadata": {"deliveries": [
+                {"email": "levi214839824@zenexflow.com", "name": None,
+                 "message_id": "m1", "redirected": True,
+                 "delivered_to": ["levi@zenexflow.com", "roy@zenexflow.com"]}]}}]
+    supabase, _ = _audit_rows(row)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE),          supabase, patch("routers.cases.email_service.delivery_status") as probe:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+
+    entry = body["recipients"][0]
+    assert entry["status"] == "redirected"
+    assert entry["status"] != "delivered"
+    assert body["delivered"] == 0
+    # It names where the message actually went, so the operator can tell this
+    # apart from a real delivery at a glance.
+    assert "nothing was sent to this address" in entry["detail"]
+    assert "levi@zenexflow.com" in entry["detail"]
+    # AND RESEND IS NOT ASKED AT ALL. Its answer could only describe somebody
+    # else's mailbox, so there is nothing to be learned by asking.
+    probe.assert_not_called()
+
+
+def test_a_redirected_send_is_settled_not_left_spinning(client):
+    """It will never resolve any further — there is nothing in flight."""
+    row = [{"created_at": "2026-09-08T10:00:00+00:00",
+            "metadata": {"deliveries": [
+                {"email": "a@example.com", "message_id": "m1",
+                 "redirected": True, "delivered_to": ["levi@zenexflow.com"]}]}}]
+    supabase, _ = _audit_rows(row)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE),          supabase:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["settled"] is True
+    assert body["redirected"] == 1
+
+
+def test_a_PRODUCTION_send_still_reports_the_real_delivery(client):
+    """The interlock must not leak into production: with redirected false, the
+    address on screen IS the address Resend delivered to."""
+    row = [{"created_at": "2026-09-08T10:00:00+00:00",
+            "metadata": {"deliveries": [
+                {"email": "client@realco.com", "message_id": "m1",
+                 "redirected": False, "delivered_to": ["client@realco.com"]}]}}]
+    supabase, _ = _audit_rows(row)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE),          supabase,          _statuses({"status": "delivered", "event": "delivered", "detail": None}):
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["recipients"][0]["status"] == "delivered"
+    assert body["delivered"] == 1
+
+
+def test_the_send_records_WHERE_each_message_actually_went(client):
+    """`deliveries` carries both halves for the same reason the audit row carries
+    `to` and `intended_to`: on a test deployment they differ, and a record of
+    only the intention claims a client was written to when they were not."""
+    with _super(), _Stack(*_sendable(directors=BOARD)),          patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": list(email_service.TEST_RECIPIENTS),
+                             "intended_to": ["chan@example.com"],
+                             "redirected": True}),          patch("routers.cases.nar1_cases.update_case", return_value=CASE),          patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={**SEND, "to": ["chan@example.com"]})
+
+    entry = response.json()["deliveries"][0]
+    assert entry["email"] == "chan@example.com"          # who it was FOR
+    assert entry["redirected"] is True                    # and that it did not go there
+    assert entry["delivered_to"] == list(email_service.TEST_RECIPIENTS)
+
+
 def test_delivery_requires_nar1_read(client):
     """`read`, not `write`: it changes nothing, and someone who may look at a
     case may see whether its letters arrived. A role with NO nar1 permission at

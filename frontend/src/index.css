@@ -1404,6 +1404,11 @@ tbody tr.clickable { cursor: pointer; }
 .delivery-row.dr-delivered { background: var(--bang-10); border-color: #BFDFD1; }
 .delivery-row.dr-delivered .dr-mark,
 .delivery-row.dr-delivered .dr-status { color: var(--bang); }
+/* A redirected row is NOT a success and must not be green: nothing reached the
+   address printed on it. Neutral rather than red, because it is not a fault
+   either — it is the test-environment lock working. */
+.delivery-row.dr-redirected { background: var(--bg-page); border-style: dashed; }
+.delivery-row.dr-redirected .dr-who { color: var(--t-muted); }
 .delivery-row.dr-failed { background: var(--carrot-10); border-color: #F6C7B2; }
 .delivery-row.dr-failed .dr-mark,
 .delivery-row.dr-failed .dr-status { color: #B03A00; }
