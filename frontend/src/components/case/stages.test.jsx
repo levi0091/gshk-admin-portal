@@ -100,7 +100,7 @@ const RECIPIENTS = {
 //: GET /cases/{id}/manual-receipt-prefill — what the manual receipt form fills
 //: in itself, and its dropdowns (nar1_cases.RECEIPT_VOCABULARY's shape).
 const PREFILL = {
-  fields: { caseNo: 'NAR-2026-0041', brNo: '2100028',
+  fields: { brNo: '2100028',
             engCoyName: 'Harbour Tech Ltd.', accNo: 'N00577470008' },
   deposit_payment_method: 'Deduct from Account',
   vocabulary: {
@@ -1511,6 +1511,7 @@ describe('Submission — manual', () => {
 
   /** The other half of the gate — the date, and the figure the trail reads. */
   const fillRequired = async user => {
+    await user.type(screen.getByLabelText('CR Case number'), '180256934')
     // A date input takes a whole ISO date or nothing; typing it a character
     // at a time goes through invalid intermediate values.
     fireEvent.change(screen.getByLabelText('Transaction date'),
@@ -1541,8 +1542,9 @@ describe('Submission — manual', () => {
     expect(receipt.transactionDate).toBe('16/08/2026')
     expect(receipt.totalAmount).toBe('105.00')
     expect(receipt.paymentRcptList[0].rcptNo).toBe('D77000418931')
-    // The case's identifiers are the backend's to fill, not the form's to send.
-    expect(receipt).not.toHaveProperty('caseNo')
+    // CR's case number is typed and sent; the company's identifiers are the
+    // backend's to fill, not the form's to send.
+    expect(receipt.caseNo).toBe('180256934')
     expect(receipt).not.toHaveProperty('brNo')
     expect(receipt.paymentRcptList[0]).not.toHaveProperty('_key')
   })
@@ -1552,20 +1554,29 @@ describe('Submission — manual', () => {
   it('shows the case\'s own identifiers instead of asking for them', async () => {
     renderIt()
     const derived = screen.getByTestId('receipt-derived')
-    await within(derived).findByText('NAR-2026-0041')
-    expect(within(derived).getByText('2100028')).toBeInTheDocument()
+    await within(derived).findByText('2100028')
     expect(within(derived).getByText('Harbour Tech Ltd.')).toBeInTheDocument()
-    for (const label of ['Case number', 'Business registration no.',
+    for (const label of ['Business registration no.',
       'Company name (English)', 'Account number']) {
       expect(screen.queryByRole('textbox', { name: label })).not.toBeInTheDocument()
     }
+  })
+
+  it('asks for CR\'s case number as plain text, named as CR\'s', async () => {
+    // Levi 2026-09-14: "I need the CR case number". The portal cannot know it
+    // for a filing made off-portal, and its own NAR-2026-… is not it.
+    renderIt()
+    const input = screen.getByRole('textbox', { name: 'CR Case number' })
+    expect(input).toHaveValue('')
+    expect(within(screen.getByTestId('receipt-derived'))
+      .queryByText(/Case number/)).not.toBeInTheDocument()
   })
 
   it('names the deposit account only for a deposit-account payment', async () => {
     const user = userEvent.setup()
     renderIt()
     const derived = screen.getByTestId('receipt-derived')
-    await within(derived).findByText('NAR-2026-0041')
+    await within(derived).findByText('2100028')
     expect(within(derived).queryByText('N00577470008')).not.toBeInTheDocument()
     await user.selectOptions(screen.getByLabelText('Payment method'), 'Deduct from Account')
     expect(within(derived).getByText('N00577470008')).toBeInTheDocument()
@@ -1612,6 +1623,7 @@ describe('Submission — manual', () => {
     renderIt()
     expect(screen.getByLabelText('Total amount')).toHaveAttribute('type', 'number')
     expect(screen.getByLabelText('Amount charged')).toHaveAttribute('type', 'number')
+    await user.type(screen.getByLabelText('CR Case number'), '180256934')
     fireEvent.change(screen.getByLabelText('Transaction date'),
                      { target: { value: '2026-08-16' } })
     await user.type(screen.getByLabelText('Total amount'), '2610')

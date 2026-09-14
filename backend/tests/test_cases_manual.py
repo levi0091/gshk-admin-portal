@@ -45,8 +45,8 @@ def client():
 #: What `receipt_prefill` derives for the case under test. The real function,
 #: kept aside BEFORE the autouse patch below replaces it on the module.
 _REAL_PREFILL = nar1_cases.receipt_prefill
-PREFILL = {"caseNo": "180256934", "brNo": "00000001",
-           "engCoyName": "TEST COMPANY LIMITED", "accNo": "N00061980009"}
+PREFILL = {"brNo": "00000001", "engCoyName": "TEST COMPANY LIMITED",
+           "accNo": "N00061980009"}
 
 
 @pytest.fixture(autouse=True)
@@ -158,9 +158,19 @@ def test_the_derived_fields_replace_whatever_was_sent():
     """Replaced, not merged: a receipt must never be recorded naming a
     different company from the case it is recorded on."""
     out = nar1_cases.with_derived_fields(
-        full_receipt(caseNo="WRONG", brNo="WRONG", engCoyName="WRONG"), PREFILL)
-    assert (out["caseNo"], out["brNo"], out["engCoyName"]) == (
-        "180256934", "00000001", "TEST COMPANY LIMITED")
+        full_receipt(brNo="WRONG", engCoyName="WRONG"), PREFILL)
+    assert (out["brNo"], out["engCoyName"]) == ("00000001", "TEST COMPANY LIMITED")
+
+
+def test_the_cr_case_number_is_typed_never_derived():
+    """Levi 2026-09-14: "I need the CR case number". It is CR's identifier,
+    printed on CR's receipt; the portal's own NAR-2026-… number under CR's key
+    would be a different identifier wearing CR's name."""
+    assert "caseNo" not in nar1_cases.RECEIPT_DERIVED
+    assert "caseNo" in nar1_cases.RECEIPT_REQUIRED
+    out = nar1_cases.with_derived_fields(
+        full_receipt(caseNo="180256934"), {**PREFILL, "caseNo": "NAR-2026-0075"})
+    assert out["caseNo"] == "180256934"
 
 
 def test_the_deposit_account_rides_only_with_a_deposit_payment():
@@ -179,8 +189,7 @@ def test_receipt_prefill_reads_the_case_the_company_and_the_deposit_account():
          patch("services.tpsi.shared_credentials.deposit_account_no",
                return_value="N9"):
         assert _REAL_PREFILL({"id": "c1", "case_no": "NAR-2026-0075"}) == {
-            "caseNo": "NAR-2026-0075", "brNo": "B1",
-            "engCoyName": "C LTD", "accNo": "N9"}
+            "brNo": "B1", "engCoyName": "C LTD", "accNo": "N9"}
 
 
 def test_receipt_prefill_survives_an_unreadable_deposit_account():
@@ -189,7 +198,7 @@ def test_receipt_prefill_survives_an_unreadable_deposit_account():
          patch("services.tpsi.shared_credentials.deposit_account_no",
                side_effect=RuntimeError("down")):
         prefill = _REAL_PREFILL({"id": "c1", "case_no": "NAR-1"})
-    assert prefill["accNo"] is None and prefill["caseNo"] == "NAR-1"
+    assert prefill["accNo"] is None and "caseNo" not in prefill
 
 
 def test_the_receipt_dropdowns_start_with_what_cr_actually_printed():
@@ -240,15 +249,17 @@ def test_manual_submit_records_the_case_s_own_identifiers_not_the_posted_ones(cl
          patch("routers.cases.log_event", new=AsyncMock()) as audit:
         response = client.post(
             "/cases/c1/manual-submit", headers=H,
-            json={"receipt": full_receipt(caseNo="TYPED", brNo="TYPED",
+            json={"receipt": full_receipt(caseNo="199900001", brNo="TYPED",
                                           pymtMtd="Cheque")})
     assert response.status_code == 200
     written = spy.call_args.args[1]["manual_receipt"]
-    assert written["caseNo"] == "180256934" and written["brNo"] == "00000001"
+    # CR's case number as typed; the company's identifiers from the case.
+    assert written["caseNo"] == "199900001" and written["brNo"] == "00000001"
     assert "accNo" not in written                 # a cheque touches no account
     # And the trail records what was stored, not what was posted.
     first = audit.await_args_list[0].kwargs
-    assert first["after_state"]["manual_receipt"]["caseNo"] == "180256934"
+    assert first["after_state"]["manual_receipt"]["brNo"] == "00000001"
+    assert first["metadata"]["caseNo"] == "199900001"
 
 
 def test_a_receipt_needs_at_least_one_payment_line():

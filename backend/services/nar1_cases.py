@@ -200,16 +200,18 @@ RECEIPT_LINE_ALLOWED = set(tpsi_filings.RECEIPT_LINE_FIELDS)
 #: intent survives a future reader.)
 RECEIPT_SCALARS = (str, int, float, bool, type(None))
 
-#: The receipt fields the portal FILLS rather than asks for (Levi 2026-09-14:
-#: "you should already have case number, business reg number, account number,
-#: company name"). Whatever a caller sends under these keys is DISCARDED and
-#: replaced by `with_derived_fields` — not merged under it — so the recorded
-#: receipt cannot name a different company from the case it is recorded on.
+#: The receipt fields the portal FILLS rather than asks for (Levi 2026-09-14).
+#: Whatever a caller sends under these keys is DISCARDED and replaced by
+#: `with_derived_fields` — not merged under it — so the recorded receipt cannot
+#: name a different company from the case it is recorded on.
 #:
-#: `caseNo` is THIS case's number (NAR-2026-0075). A paper filing is recorded
-#: against a portal case, and that is the number GSHK quotes back; the e-Sign
-#: path still stores CR's own case number, from CR's own response.
-RECEIPT_DERIVED = ("caseNo", "brNo", "engCoyName", "accNo")
+#: `caseNo` IS NOT ONE OF THEM, and briefly was. It is CR's case number — the
+#: number CR prints on its own receipt (e.g. 180256934) and the one GSHK quotes
+#: back to CR — which the portal cannot know for a filing made off-portal. For a
+#: few hours it was filled with the portal's own NAR-2026-… number instead: a
+#: different identifier under CR's key (Levi 2026-09-14: "I need the CR case
+#: number"). It is typed, and the screen labels it "CR Case number".
+RECEIPT_DERIVED = ("brNo", "engCoyName", "accNo")
 
 #: CR's own wording on every e-Signed receipt (8 of 8 on DEV, 2026-09-14). The
 #: one payment method that draws on GSHK's deposit account, so the one that
@@ -268,7 +270,6 @@ def receipt_prefill(case: dict) -> dict:
     except Exception:  # noqa: BLE001
         account = None
     return {
-        "caseNo": case.get("case_no") or None,
         "brNo": header.get("br_number") or None,
         "engCoyName": header.get("company_name") or None,
         "accNo": account,
@@ -292,7 +293,7 @@ def with_derived_fields(receipt: dict, prefill: dict) -> dict:
 
     out = {k: v for k, v in receipt.items()
            if k not in RECEIPT_DERIVED or smuggled(k)}
-    for key in ("caseNo", "brNo", "engCoyName"):
+    for key in ("brNo", "engCoyName"):
         if prefill.get(key) and not smuggled(key):
             out[key] = prefill[key]
     if (out.get("pymtMtd") == DEPOSIT_PAYMENT_METHOD and prefill.get("accNo")

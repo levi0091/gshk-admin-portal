@@ -182,7 +182,7 @@ describe.runIf(SHOOT)('visual harness', () => {
   it('4c · Submission — manual receipt', async () => {
     get.mockImplementation(url => String(url).includes('/manual-receipt-prefill')
       ? Promise.resolve({
-          fields: { caseNo: 'NAR-2026-0041', brNo: '76543210',
+          fields: { brNo: '76543210',
                     engCoyName: 'Skyline Capital Management Limited',
                     accNo: 'N00577470008' },
           deposit_payment_method: 'Deduct from Account',

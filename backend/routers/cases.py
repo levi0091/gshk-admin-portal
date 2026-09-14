@@ -911,9 +911,10 @@ async def manual_submit(
         )
 
     # The fields the portal already holds are the PORTAL's to fill (Levi
-    # 2026-09-14) — case number, BR number, company name and, for a
-    # deposit-account payment, the account. Replaced rather than merged, so a
-    # receipt can never be recorded naming a different company from its case.
+    # 2026-09-14) — BR number, company name and, for a deposit-account payment,
+    # the account. Replaced rather than merged, so a receipt can never be
+    # recorded naming a different company from its case. CR's case number is
+    # NOT among them: the portal cannot know it, so it is typed.
     receipt = nar1_cases.with_derived_fields(
         body.receipt, nar1_cases.receipt_prefill(case))
     problems = nar1_cases.validate_receipt(receipt)

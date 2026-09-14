@@ -9,12 +9,14 @@ import { describeError } from './workflow.js'
 
 /**
  * The receipt fields the portal FILLS, shown rather than asked for (Levi
- * 2026-09-14: "you should already have case number, business reg number,
- * account number, company name"). The backend replaces whatever is sent under
- * these keys — `nar1_cases.RECEIPT_DERIVED` — so this is a display, not input.
+ * 2026-09-14). The backend replaces whatever is sent under these keys —
+ * `nar1_cases.RECEIPT_DERIVED` — so this is a display, not input.
+ *
+ * NOT the case number. CR's case number is on CR's receipt and nowhere in the
+ * portal, so it is typed, as "CR Case number" — named so it cannot be mistaken
+ * for the portal's own NAR-2026-… number, which it briefly was.
  */
 const DERIVED_ROWS = [
-  ['caseNo', 'Case number'],
   ['brNo', 'Business registration no.'],
   ['engCoyName', 'Company name (English)'],
   ['accNo', 'Account number'],
@@ -22,11 +24,12 @@ const DERIVED_ROWS = [
 
 /**
  * The two figures the audit trail and fee reconciliation actually read
- * (spec §4), and the date. The backend validates every field and answers with
- * every problem at once; this shorter list is only what arms the button, so an
- * operator halfway through transcribing is not told the button is broken.
+ * (spec §4) — CR's case number and the total — and the date. The backend
+ * validates every field and answers with every problem at once; this shorter
+ * list is only what arms the button, so an operator halfway through
+ * transcribing is not told the button is broken.
  */
-const RECEIPT_REQUIRED = ['transactionDate', 'totalAmount']
+const RECEIPT_REQUIRED = ['caseNo', 'transactionDate', 'totalAmount']
 
 const OTHER = '__other__'
 
@@ -416,8 +419,8 @@ function MoneyInput({ id, value, onChange, disabled }) {
 
 function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const [fields, setFields] = useState({
-    pymtNo: '', pymtRefNo: '', transactionDate: '', transactionTime: '',
-    pymtMtd: '', totalAmount: '',
+    caseNo: '', pymtNo: '', pymtRefNo: '', transactionDate: '',
+    transactionTime: '', pymtMtd: '', totalAmount: '',
   })
   const [lines, setLines] = useState(() => [emptyLine()])
   const [problems, setProblems] = useState([])
@@ -462,9 +465,7 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
     }
     // The case row already carries these, so nothing flashes empty while the
     // prefill is in flight.
-    const fallback = {
-      caseNo: caseRow.case_no, brNo: caseRow.br_number, engCoyName: caseRow.company_name,
-    }
+    const fallback = { brNo: caseRow.br_number, engCoyName: caseRow.company_name }
     return derived[key] || fallback[key] || <span className="td-muted">Not on record</span>
   }
 
@@ -502,10 +503,11 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
     try {
       // In CR's own shapes — DD/MM/YYYY, HH:MM:SS, "2610.00" — so a manual
       // receipt renders beside an e-Signed one without looking like a
-      // different kind of record. The case's identifiers are NOT sent: the
+      // different kind of record. The company's identifiers are NOT sent: the
       // backend fills them (RECEIPT_DERIVED) and would discard them anyway.
       await api.post(`/cases/${caseRow.id}/manual-submit`, {
         receipt: {
+          caseNo: fields.caseNo.trim(),
           pymtNo: fields.pymtNo.trim(),
           pymtRefNo: fields.pymtRefNo.trim(),
           transactionDate: toCrDate(fields.transactionDate),
@@ -593,9 +595,9 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
       )}
 
       {/* WHAT THE PORTAL ALREADY KNOWS, shown rather than asked for (Levi
-          2026-09-14). These four were text boxes, so an operator retyped the
-          case, the BR number and the company name off a receipt about a
-          company the case already names — and could get one of them wrong. */}
+          2026-09-14). These were text boxes, so an operator retyped the BR
+          number and the company name off a receipt about a company the case
+          already names — and could get one of them wrong. */}
       <div className="tile-sec-lbl" style={{ marginTop: problems.length ? 16 : 0 }}>
         From the case record
       </div>
@@ -610,6 +612,12 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
 
       <div className="tile-sec-lbl">From CR's receipt</div>
       <div className="receipt-grid">
+        {/* CR's number, typed off CR's receipt — the portal cannot know it.
+            Labelled "CR" so nobody types the portal's NAR-2026-… here. */}
+        <Field id="rc-caseNo" label="CR Case number">
+          <input id="rc-caseNo" className="f-input" value={fields.caseNo}
+                 disabled={busy} onChange={e => setField('caseNo', e.target.value)} />
+        </Field>
         <Field id="rc-pymtNo" label="Payment number">
           <input id="rc-pymtNo" className="f-input" value={fields.pymtNo}
                  disabled={busy} onChange={e => setField('pymtNo', e.target.value)} />

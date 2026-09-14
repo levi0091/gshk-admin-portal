@@ -3,7 +3,9 @@ import { formatDateTime, formatMoney } from '../../lib/format.js'
 
 /** The receipt fields worth showing, in the order CR prints them. */
 const RECEIPT_ROWS = [
-  ['caseNo', 'Case number'],
+  // CR's case number on both paths — never the portal's NAR-2026-…, which is
+  // already in the action bar below. Named so the two cannot be confused.
+  ['caseNo', 'CR Case number'],
   ['brNo', 'Business registration no.'],
   ['engCoyName', 'Company name'],
   ['pymtNo', 'Payment number'],
