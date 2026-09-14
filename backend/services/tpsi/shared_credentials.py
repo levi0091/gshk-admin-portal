@@ -89,6 +89,19 @@ def get_metadata() -> dict | None:
     return _to_metadata(row) if row else None
 
 
+def deposit_account_no() -> str | None:
+    """GSHK's CR deposit account number, and nothing else from this row.
+
+    An identifier, not a secret — CR prints it on every receipt as `accNo` —
+    which is why the manual receipt form may read it without the `super_admin`
+    gate on the credential itself. Deliberately not `get_metadata()`: that
+    decrypts the password to build its hint, and a receipt has no business
+    touching the password at all.
+    """
+    row = _read()
+    return (row or {}).get("deposit_account_no") or None
+
+
 def load_for_use() -> SharedPresenter:
     """Decrypt for an actual CR call. Callers must not log the result."""
     row = _read()

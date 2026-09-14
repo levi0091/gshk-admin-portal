@@ -4,37 +4,63 @@ import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
 import FilingSummaryCard from './FilingSummaryCard.jsx'
 import { formatMoney as money } from '../../lib/format.js'
+import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { describeError } from './workflow.js'
 
-/** CR's own receipt vocabulary — mirrors nar1_cases.RECEIPT_REQUIRED. */
-const RECEIPT_FIELDS = [
+/**
+ * The receipt fields the portal FILLS, shown rather than asked for (Levi
+ * 2026-09-14: "you should already have case number, business reg number,
+ * account number, company name"). The backend replaces whatever is sent under
+ * these keys — `nar1_cases.RECEIPT_DERIVED` — so this is a display, not input.
+ */
+const DERIVED_ROWS = [
   ['caseNo', 'Case number'],
   ['brNo', 'Business registration no.'],
-  ['accNo', 'Account number'],
   ['engCoyName', 'Company name (English)'],
-  ['pymtNo', 'Payment number'],
-  ['pymtRefNo', 'Payment reference'],
-  ['transactionDate', 'Transaction date'],
-  ['transactionTime', 'Transaction time'],
-  ['pymtMtd', 'Payment method'],
-  ['totalAmount', 'Total amount'],
+  ['accNo', 'Account number'],
 ]
-const LINE_FIELDS = [
-  ['rcptNo', 'Receipt no.'],
-  ['revCode', 'Revenue code'],
-  ['docShtFrm', 'Document code'],
-  ['amtChrg', 'Amount charged'],
-]
-
-const emptyLine = () => ({ rcptNo: '', revCode: '', docShtFrm: '', amtChrg: '' })
 
 /**
  * The two figures the audit trail and fee reconciliation actually read
- * (spec §4). The backend validates ALL of RECEIPT_FIELDS and answers with every
- * problem at once; this shorter list is only what arms the button, so an
+ * (spec §4), and the date. The backend validates every field and answers with
+ * every problem at once; this shorter list is only what arms the button, so an
  * operator halfway through transcribing is not told the button is broken.
  */
-const RECEIPT_REQUIRED = ['caseNo', 'totalAmount']
+const RECEIPT_REQUIRED = ['transactionDate', 'totalAmount']
+
+const OTHER = '__other__'
+
+/** YYYY-MM-DD, as a date input holds it → DD/MM/YYYY, as CR prints it. */
+export function toCrDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''))
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : ''
+}
+
+/**
+ * HH:MM or HH:MM:SS → HH:MM:SS, as CR prints it. A time input drops the
+ * seconds when they are zero, so "13:36" is a real answer, not a partial one.
+ */
+export function toCrTime(value) {
+  const m = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(value || ''))
+  return m ? `${m[1]}:${m[2]}:${m[3] || '00'}` : ''
+}
+
+/**
+ * A typed amount → "2610.00". Sent as a STRING with two places — the backend
+ * keeps money out of floats, and CR's own receipt carries strings.
+ */
+export function toAmount(value) {
+  const text = String(value ?? '').trim()
+  if (!text) return ''
+  const n = Number(text)
+  return Number.isFinite(n) ? n.toFixed(2) : text
+}
+
+let lineSeq = 0
+/** A payment line. `_key` is the React key only — stripped before sending. */
+const emptyLine = () => ({
+  _key: `line-${++lineSeq}`, rcptNo: '', revCode: '', docShtFrm: '', amtChrg: '',
+})
 
 /**
  * Stage 4 — Submission. The chargeable, irreversible one.
@@ -57,7 +83,7 @@ const RECEIPT_REQUIRED = ['caseNo', 'totalAmount']
 export default function StageSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const manual = caseRow.signing_method === 'manual'
   return manual
-    ? <ManualSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} />
+    ? <ManualSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />
     : <ESignSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />
 }
 
@@ -335,13 +361,71 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
    because the banner could not show a table and was off-screen anyway; the
    banner now shows cards and the page scrolls to it. */
 
-function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
-  const [fields, setFields] = useState(
-    () => Object.fromEntries(RECEIPT_FIELDS.map(([k]) => [k, ''])))
-  const [lines, setLines] = useState([emptyLine()])
+/** One labelled control. The label is always tied to the control by id. */
+function Field({ id, label, children }) {
+  return (
+    <div className="f-group">
+      <label className="f-label" htmlFor={id}>{label}</label>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * A code from CR's receipt, picked rather than typed (Levi 2026-09-14) — with
+ * an "Other" that opens a box, because CR has more codes than any receipt GSHK
+ * has seen and a real receipt must never be untranscribable. The options come
+ * from the backend (`nar1_cases.RECEIPT_VOCABULARY`); this holds no copy.
+ */
+function VocabSelect({ id, label, options = [], value, onChange, disabled }) {
+  const known = options.some(o => o.code === value)
+  const [custom, setCustom] = useState(Boolean(value) && !known)
+  return (
+    <>
+      <select id={id} className="f-input" value={custom ? OTHER : (value || '')}
+              disabled={disabled}
+              onChange={e => {
+                const next = e.target.value
+                setCustom(next === OTHER)
+                onChange(next === OTHER ? '' : next)
+              }}>
+        <option value="">Choose…</option>
+        {options.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+        <option value={OTHER}>Other — type it as printed</option>
+      </select>
+      {custom && (
+        <input className="f-input vocab-other" aria-label={`${label} (as printed)`}
+               value={value} disabled={disabled} autoFocus
+               onChange={e => onChange(e.target.value)} />
+      )}
+    </>
+  )
+}
+
+/** HK$ amounts: a number field, never free text (Levi 2026-09-14). */
+function MoneyInput({ id, value, onChange, disabled }) {
+  return (
+    <div className="f-money">
+      <span className="f-money-cur" aria-hidden="true">HK$</span>
+      <input id={id} className="f-input" type="number" inputMode="decimal"
+             min="0" step="0.01" placeholder="0.00" value={value}
+             disabled={disabled} onChange={e => onChange(e.target.value)} />
+    </div>
+  )
+}
+
+function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
+  const [fields, setFields] = useState({
+    pymtNo: '', pymtRefNo: '', transactionDate: '', transactionTime: '',
+    pymtMtd: '', totalAmount: '',
+  })
+  const [lines, setLines] = useState(() => [emptyLine()])
   const [problems, setProblems] = useState([])
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
+  // undefined while loading, null when it could not be read, else the payload
+  // of GET /cases/{id}/manual-receipt-prefill.
+  const [prefill, setPrefill] = useState(undefined)
   const fileInput = useRef(null)
 
   const recorded = Boolean(caseRow.manual_submitted_at)
@@ -351,11 +435,50 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
   // figures, so neither substitutes for the other.
   const typed = RECEIPT_REQUIRED.every(k => String(fields[k] || '').trim())
 
+  useEffect(() => {
+    if (recorded || !canSubmit) return undefined
+    let live = true
+    api.get(`/cases/${caseRow.id}/manual-receipt-prefill`)
+      .then(p => { if (live) setPrefill(p) })
+      // Not fatal: the backend fills these fields on submit whatever this
+      // screen managed to show. Only the display and the dropdowns degrade.
+      .catch(() => { if (live) setPrefill(null) })
+    return () => { live = false }
+  }, [caseRow.id, recorded, canSubmit])
+
+  const vocab = prefill?.vocabulary || {}
+  const depositMethod = prefill?.deposit_payment_method || 'Deduct from Account'
+
+  function derivedValue(key) {
+    const derived = prefill?.fields || {}
+    if (key === 'accNo') {
+      // A cheque was not drawn from GSHK's deposit account; saying which
+      // account it came from would put a false fact on the receipt.
+      if (fields.pymtMtd !== depositMethod) {
+        return <span className="td-muted">Recorded only for a “{depositMethod}” payment</span>
+      }
+      return derived.accNo
+        || <span className="td-muted">No deposit account is set up under CR Credentials</span>
+    }
+    // The case row already carries these, so nothing flashes empty while the
+    // prefill is in flight.
+    const fallback = {
+      caseNo: caseRow.case_no, brNo: caseRow.br_number, engCoyName: caseRow.company_name,
+    }
+    return derived[key] || fallback[key] || <span className="td-muted">Not on record</span>
+  }
+
   function setField(key, value) {
     setFields(f => ({ ...f, [key]: value }))
   }
   function setLine(i, key, value) {
     setLines(ls => ls.map((l, j) => (j === i ? { ...l, [key]: value } : l)))
+  }
+  function removeLine(i) {
+    // Never the first: a receipt has at least one payment line, and the backend
+    // refuses one without.
+    if (i === 0) return
+    setLines(ls => ls.filter((_, j) => j !== i))
   }
 
   async function uploadReceipt(file) {
@@ -377,8 +500,25 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
   async function record() {
     onError(null); setProblems([]); setBusy(true)
     try {
+      // In CR's own shapes — DD/MM/YYYY, HH:MM:SS, "2610.00" — so a manual
+      // receipt renders beside an e-Signed one without looking like a
+      // different kind of record. The case's identifiers are NOT sent: the
+      // backend fills them (RECEIPT_DERIVED) and would discard them anyway.
       await api.post(`/cases/${caseRow.id}/manual-submit`, {
-        receipt: { ...fields, paymentRcptList: lines },
+        receipt: {
+          pymtNo: fields.pymtNo.trim(),
+          pymtRefNo: fields.pymtRefNo.trim(),
+          transactionDate: toCrDate(fields.transactionDate),
+          transactionTime: toCrTime(fields.transactionTime),
+          pymtMtd: fields.pymtMtd.trim(),
+          totalAmount: toAmount(fields.totalAmount),
+          paymentRcptList: lines.map(l => ({
+            rcptNo: l.rcptNo.trim(),
+            revCode: l.revCode.trim(),
+            docShtFrm: l.docShtFrm.trim(),
+            amtChrg: toAmount(l.amtChrg),
+          })),
+        },
       })
       onChanged()
     } catch (e) {
@@ -452,30 +592,90 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
         <FaultPanel faults={problems} title="The receipt is incomplete" />
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))',
-                    gap: 12, marginTop: problems.length ? 16 : 0 }}>
-        {RECEIPT_FIELDS.map(([key, label]) => (
-          <div className="f-group" key={key}>
-            <label className="f-label" htmlFor={`rc-${key}`}>{label}</label>
-            <input id={`rc-${key}`} className="f-input" value={fields[key]}
-                   disabled={busy}
-                   onChange={e => setField(key, e.target.value)} />
+      {/* WHAT THE PORTAL ALREADY KNOWS, shown rather than asked for (Levi
+          2026-09-14). These four were text boxes, so an operator retyped the
+          case, the BR number and the company name off a receipt about a
+          company the case already names — and could get one of them wrong. */}
+      <div className="tile-sec-lbl" style={{ marginTop: problems.length ? 16 : 0 }}>
+        From the case record
+      </div>
+      <div className="kv-list" data-testid="receipt-derived">
+        {DERIVED_ROWS.map(([key, label]) => (
+          <div className="kv-row" key={key}>
+            <span className="kv-key">{label}</span>
+            <span className="kv-val">{derivedValue(key)}</span>
           </div>
         ))}
       </div>
 
+      <div className="tile-sec-lbl">From CR's receipt</div>
+      <div className="receipt-grid">
+        <Field id="rc-pymtNo" label="Payment number">
+          <input id="rc-pymtNo" className="f-input" value={fields.pymtNo}
+                 disabled={busy} onChange={e => setField('pymtNo', e.target.value)} />
+        </Field>
+        <Field id="rc-pymtRefNo" label="Payment reference">
+          <input id="rc-pymtRefNo" className="f-input" value={fields.pymtRefNo}
+                 disabled={busy} onChange={e => setField('pymtRefNo', e.target.value)} />
+        </Field>
+        {/* Pickers, not text (Levi 2026-09-14). A receipt is never dated in
+            the future, so the calendar stops at today in Hong Kong. */}
+        <Field id="rc-transactionDate" label="Transaction date">
+          <input id="rc-transactionDate" className="f-input" type="date"
+                 max={hongKongTodayISO()} value={fields.transactionDate}
+                 disabled={busy}
+                 onChange={e => setField('transactionDate', e.target.value)} />
+        </Field>
+        <Field id="rc-transactionTime" label="Transaction time">
+          <input id="rc-transactionTime" className="f-input" type="time" step="1"
+                 value={fields.transactionTime} disabled={busy}
+                 onChange={e => setField('transactionTime', e.target.value)} />
+        </Field>
+        <Field id="rc-pymtMtd" label="Payment method">
+          <VocabSelect id="rc-pymtMtd" label="Payment method" options={vocab.pymtMtd}
+                       value={fields.pymtMtd} disabled={busy}
+                       onChange={v => setField('pymtMtd', v)} />
+        </Field>
+        <Field id="rc-totalAmount" label="Total amount">
+          <MoneyInput id="rc-totalAmount" value={fields.totalAmount} disabled={busy}
+                      onChange={v => setField('totalAmount', v)} />
+        </Field>
+      </div>
+
       <div className="tile-sec-lbl">Payment lines</div>
       {lines.map((line, i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))',
-                              gap: 10, marginBottom: 10 }}>
-          {LINE_FIELDS.map(([key, label]) => (
-            <div className="f-group" key={key}>
-              <label className="f-label" htmlFor={`rl-${i}-${key}`}>{label}</label>
-              <input id={`rl-${i}-${key}`} className="f-input" value={line[key]}
-                     disabled={busy}
-                     onChange={e => setLine(i, key, e.target.value)} />
-            </div>
-          ))}
+        <div key={line._key} className="pay-line" data-testid="payment-line">
+          <Field id={`rl-${i}-rcptNo`} label="Receipt no.">
+            <input id={`rl-${i}-rcptNo`} className="f-input" value={line.rcptNo}
+                   disabled={busy} onChange={e => setLine(i, 'rcptNo', e.target.value)} />
+          </Field>
+          <Field id={`rl-${i}-revCode`} label="Revenue code">
+            <VocabSelect id={`rl-${i}-revCode`} label="Revenue code"
+                         options={vocab.revCode} value={line.revCode} disabled={busy}
+                         onChange={v => setLine(i, 'revCode', v)} />
+          </Field>
+          <Field id={`rl-${i}-docShtFrm`} label="Document code">
+            <VocabSelect id={`rl-${i}-docShtFrm`} label="Document code"
+                         options={vocab.docShtFrm} value={line.docShtFrm} disabled={busy}
+                         onChange={v => setLine(i, 'docShtFrm', v)} />
+          </Field>
+          <Field id={`rl-${i}-amtChrg`} label="Amount charged">
+            <MoneyInput id={`rl-${i}-amtChrg`} value={line.amtChrg} disabled={busy}
+                        onChange={v => setLine(i, 'amtChrg', v)} />
+          </Field>
+          {/* Every line but the first can be taken back out (Levi
+              2026-09-14). The first stays: a receipt has at least one. The
+              cell is kept on the first line too, so the columns line up. */}
+          <div className="pay-line-x">
+            {i > 0 && (
+              <button type="button" className="pay-line-remove"
+                      aria-label={`Remove payment line ${i + 1}`}
+                      title="Remove this payment line"
+                      disabled={busy} onClick={() => removeLine(i)}>
+                ×
+              </button>
+            )}
+          </div>
         </div>
       ))}
 
@@ -525,7 +725,16 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError }) {
 
       {(
         <div className="action-bar">
-          <div className="ab-note">
+          <div className="ab-note" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {/* Back to the signed scan: the upload no longer throws the
+                operator forward, and from here they may still find they
+                attached the wrong one (Levi 2026-09-14). */}
+            {onGo && (
+              <button type="button" className="btn btn-outline btn-sm"
+                      disabled={busy} onClick={() => onGo(3)}>
+                ← Back to Signing
+              </button>
+            )}
             <button type="button" className="btn btn-outline btn-sm"
                     onClick={() => setLines(ls => [...ls, emptyLine()])} disabled={busy}>
               + Add payment line

@@ -167,6 +167,12 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
                   403 for it. Read-only shows the CHOSEN VALUE rather than
                   nothing, because which capacity was picked decides whether
                   CR will accept the signature. */}
+              {/* THE DEFAULT IS SHOWN SELECTED (Levi 2026-09-14). It used to
+                  render blank for a natural-person signatory while the backend
+                  filed "Company Secretary" anyway — so the screen said nothing
+                  was chosen and CR was sent something regardless. The API now
+                  answers with the value that WILL be filed, default included,
+                  and this just draws it. */}
               {canWrite ? (
                 <select
                   className="f-input"
@@ -175,7 +181,9 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
                   disabled={saving}
                   onChange={e => saveCapacity(e.target.value)}
                 >
-                  <option value="">Choose how the signatory signs…</option>
+                  {!data.signatory_capacity && (
+                    <option value="">Choose how the signatory signs…</option>
+                  )}
                   {(data.signatory_capacity_options || []).map(opt => (
                     <option key={opt} value={opt}>{opt}</option>
                   ))}
@@ -183,6 +191,14 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
               ) : (
                 data.signatory_capacity
                   || <span className="td-muted">Not chosen yet</span>
+              )}
+              {data.signatory_capacity_is_default && (
+                <div className="f-hint" data-testid="capacity-default-note"
+                     style={{ marginTop: 6 }}>
+                  The default. {canWrite
+                    ? 'Change it if the signatory signs in another capacity.'
+                    : 'Nobody has chosen another capacity for this case.'}
+                </div>
               )}
               {saveError && (
                 <div className="f-hint" style={{ color: 'var(--carrot)', marginTop: 6 }}>

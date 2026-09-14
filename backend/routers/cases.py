@@ -832,6 +832,32 @@ async def manual_receipt(
             "file_name": document.get("file_name")}
 
 
+@router.get("/{case_id}/manual-receipt-prefill")
+async def manual_receipt_prefill(
+    case_id: str,
+    user=Depends(require_permission("tpsi", "submit")),
+):
+    """What the manual receipt form fills in itself, and its dropdowns.
+
+    The derived half of the receipt (`nar1_cases.RECEIPT_DERIVED`) is shown on
+    the form rather than typed into it, and this is where the form reads it —
+    the SAME function `manual-submit` records from, so what the operator sees
+    is what gets written.
+
+    `tpsi:submit`, matching the two routes this form feeds: a role that cannot
+    record the submission has no form to fill. Read-only, so no audit row.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    return {
+        "fields": nar1_cases.receipt_prefill(case),
+        "vocabulary": nar1_cases.RECEIPT_VOCABULARY,
+        "deposit_payment_method": nar1_cases.DEPOSIT_PAYMENT_METHOD,
+    }
+
+
 @router.post("/{case_id}/manual-submit")
 async def manual_submit(
     case_id: str,
@@ -884,7 +910,13 @@ async def manual_submit(
             "the typed figures are not evidence on their own",
         )
 
-    problems = nar1_cases.validate_receipt(body.receipt)
+    # The fields the portal already holds are the PORTAL's to fill (Levi
+    # 2026-09-14) — case number, BR number, company name and, for a
+    # deposit-account payment, the account. Replaced rather than merged, so a
+    # receipt can never be recorded naming a different company from its case.
+    receipt = nar1_cases.with_derived_fields(
+        body.receipt, nar1_cases.receipt_prefill(case))
+    problems = nar1_cases.validate_receipt(receipt)
     if problems:
         raise HTTPException(400, {"message": "receipt is incomplete",
                                   "problems": problems})
@@ -899,7 +931,7 @@ async def manual_submit(
     # audit_log is insert-only, so a second NAR1_MANUAL_SUBMISSION_RECORDED for
     # one return could never be taken back.
     claimed = nar1_cases.claim_manual_submission(case_id, {
-        "manual_receipt": body.receipt,
+        "manual_receipt": receipt,
         "manual_submitted_at": now,
         "signing_method": "manual",
         "submitted_at": now,
@@ -919,9 +951,9 @@ async def manual_submit(
         action_type=ev.NAR1_MANUAL_RECEIPT_ENTERED,
         event_code=ev.NAR1_MANUAL_RECEIPT_ENTERED,
         **_audit_target(case),
-        after_state={"manual_receipt": body.receipt},
-        metadata={"caseNo": body.receipt.get("caseNo"),
-                  "totalAmount": body.receipt.get("totalAmount")},
+        after_state={"manual_receipt": receipt},
+        metadata={"caseNo": receipt.get("caseNo"),
+                  "totalAmount": receipt.get("totalAmount")},
     )
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],

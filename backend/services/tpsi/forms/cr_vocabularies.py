@@ -875,16 +875,27 @@ CAPACITY_BODY_CORPORATE = frozenset({
 #: stored choice always wins.
 DEFAULT_CAPACITY_BODY_CORPORATE = "Director of the Company Secretary (Body Corporate)"
 
+#: The same answer for a natural-person signatory: they sign as a Director
+#: (Levi 2026-09-14). From the INDIVIDUAL vocabulary — CR keeps two, and a
+#: "(Body Corporate)" value on a natural person is a misstatement
+#: `_check_capacity` refuses.
+#:
+#: This used to be no default at all, which did not mean "no capacity": the
+#: picker showed blank while `nar1_mapper` quietly filed "Company Secretary", so
+#: what the operator saw and what CR was sent disagreed on every such case.
+DEFAULT_CAPACITY_INDIVIDUAL = "Director"
 
-def default_capacity(*, is_corporate: bool) -> str | None:
+
+def default_capacity(*, is_corporate: bool) -> str:
     """The capacity to assume when the operator has not chosen one.
 
-    Only for a body corporate. CR keeps two separate vocabularies, and an
-    individual signatory carrying a "(Body Corporate)" capacity is a
-    misstatement `_check_capacity` would rightly refuse — so an individual
-    gets no default and, as before, must be answered explicitly.
+    One value per vocabulary, and every caller — the Data Verification picker,
+    `prepare`, the drift gate and the mapper's own fallback — takes it from
+    here, so the screen can never show one capacity while CR is sent another.
+    A stored choice on the case always wins over it.
     """
-    return DEFAULT_CAPACITY_BODY_CORPORATE if is_corporate else None
+    return (DEFAULT_CAPACITY_BODY_CORPORATE if is_corporate
+            else DEFAULT_CAPACITY_INDIVIDUAL)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
  *
  * Skipped unless SHOOT=1, so it never runs in CI.
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, vi, beforeEach } from 'vitest'
 import fs from 'node:fs'
@@ -20,6 +20,7 @@ import StageConfirmation from './StageConfirmation.jsx'
 import RefusalDetail from './RefusalDetail.jsx'
 import { describeError } from './workflow.js'
 import { ClosedPanel } from '../../pages/CaseWorkflowPage.jsx'
+import VipBar from '../VipBar.jsx'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
 const blob = vi.fn(); const upload = vi.fn()
@@ -165,6 +166,67 @@ describe.runIf(SHOOT)('visual harness', () => {
       <StageSigning caseRow={{ ...CASE, signing_method: 'manual' }} canWrite
                     onChanged={noop} onError={noop} onGo={noop} />,
       () => waitFor(() => screen.getByText(/Choose the signed PDF/)))
+  })
+
+  it('3c · Signing — manual, scan attached', async () => {
+    // Levi 2026-09-14: the upload no longer advances the page. What the
+    // operator sees instead: the attached version, Replace, and Continue.
+    await dump('3c-signing-manual-attached',
+      <StageSigning caseRow={{ ...CASE, signing_method: 'manual',
+                               manual_signed_document_id: 'd1',
+                               manual_signed_document_version: 2 }}
+                    canWrite onChanged={noop} onError={noop} onGo={noop} />,
+      () => waitFor(() => screen.getByText(/Continue to Submission/)))
+  })
+
+  it('4c · Submission — manual receipt', async () => {
+    get.mockImplementation(url => String(url).includes('/manual-receipt-prefill')
+      ? Promise.resolve({
+          fields: { caseNo: 'NAR-2026-0041', brNo: '76543210',
+                    engCoyName: 'Skyline Capital Management Limited',
+                    accNo: 'N00577470008' },
+          deposit_payment_method: 'Deduct from Account',
+          vocabulary: {
+            pymtMtd: [{ code: 'Deduct from Account', label: 'Deduct from Account' },
+                      { code: 'Cheque', label: 'Cheque' }],
+            revCode: [{ code: '16', label: '16 — Registration of annual return (private company)' },
+                      { code: '118', label: '118 — Annual return fee' }],
+            docShtFrm: [{ code: 'NAR1', label: 'NAR1 — delivered on time' },
+                        { code: 'NAR1L', label: 'NAR1L — delivered late' }],
+          },
+        })
+      : Promise.resolve({}))
+    await dump('4c-submission-manual',
+      <StageSubmission caseRow={{ ...CASE, signing_method: 'manual', receipt: null,
+                                  manual_signed_document_id: 'd1',
+                                  manual_receipt_document_id: 'r1',
+                                  manual_receipt_document_version: 1 }}
+                       canSubmit onChanged={noop} onError={noop} onGo={noop} />,
+      async () => {
+        await waitFor(() => screen.getByRole('option', { name: 'Cheque' }))
+        fireEvent.change(screen.getByLabelText('Payment method'),
+                         { target: { value: 'Deduct from Account' } })
+        fireEvent.change(screen.getByLabelText('Revenue code'),
+                         { target: { value: '16' } })
+        fireEvent.change(screen.getByLabelText('Total amount'),
+                         { target: { value: '2610' } })
+        fireEvent.click(screen.getByRole('button', { name: /Add payment line/ }))
+      })
+  })
+
+  it('7 · VIP bar — VIP by rule', async () => {
+    await dump('7-vip-bar-on',
+      <VipBar vip={{ is_vip: true, automatic: true,
+                     reasons: ['affiliated_agent', 'companies'],
+                     company_count: 5, threshold: 3 }}
+              isAgent canWrite onSave={noop} />)
+  })
+
+  it('7b · VIP bar — standard client', async () => {
+    await dump('7b-vip-bar-off',
+      <VipBar vip={{ is_vip: false, automatic: false, reasons: [],
+                     company_count: 2, threshold: 3 }}
+              canWrite onSave={noop} />)
   })
 
   it('4 · Submission', async () => {

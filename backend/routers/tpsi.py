@@ -679,9 +679,10 @@ async def prepare_filing(
     # so a prepare that ignored it would refuse the filing for want of a
     # capacity the operator can plainly see on screen.
     #
-    # An INDIVIDUAL signatory still gets nothing. CR keeps two vocabularies and
-    # a "(Body Corporate)" capacity on a natural person is a misstatement, so
-    # the mapper's refusal stands for that case — with its remedy on screen.
+    # An INDIVIDUAL signatory defaults to "Director" (Levi 2026-09-14), from the
+    # Individual vocabulary — CR keeps two, and a "(Body Corporate)" capacity on
+    # a natural person is a misstatement. It used to get no default here, and
+    # the mapper then filed "Company Secretary" while the picker showed blank.
     if not capacity:
         try:
             resolved = nar1_mapper._derive_signatory(graph)

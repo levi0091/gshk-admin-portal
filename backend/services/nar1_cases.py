@@ -5,7 +5,9 @@ fact: tpsi_filings owns those, and nar1_case_status.derive() reads both to
 produce the badge.
 """
 import asyncio
+import re
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from db.supabase import get_supabase
 from services import nar1_approvals, nar1_case_status, table_filters as tf
@@ -167,8 +169,14 @@ def current_filing(case_id: str) -> dict | None:
 # chiCoyName, docCodesWithBarcode and refNo are NOT required: a company with no
 # Chinese name genuinely has none, and neither the barcode string nor refNo is
 # printed on the paper receipt.
+#
+# NOR IS accNo, any more (Levi 2026-09-14). It is the CR deposit account the fee
+# was drawn from, and a paper filing paid by cheque was not drawn from one —
+# requiring it made the operator invent an account number for a payment that
+# never touched it. It is filled from the shared credential when the receipt
+# says "Deduct from Account", and absent otherwise; see `with_derived_fields`.
 RECEIPT_REQUIRED = (
-    "caseNo", "brNo", "accNo", "engCoyName", "pymtNo", "pymtRefNo",
+    "caseNo", "brNo", "engCoyName", "pymtNo", "pymtRefNo",
     "transactionDate", "transactionTime", "pymtMtd", "totalAmount",
 )
 RECEIPT_LINE_REQUIRED = ("rcptNo", "revCode", "docShtFrm", "amtChrg")
@@ -191,6 +199,145 @@ RECEIPT_LINE_ALLOWED = set(tpsi_filings.RECEIPT_LINE_FIELDS)
 #: payload past a name check. (bool is a subclass of int; named anyway so the
 #: intent survives a future reader.)
 RECEIPT_SCALARS = (str, int, float, bool, type(None))
+
+#: The receipt fields the portal FILLS rather than asks for (Levi 2026-09-14:
+#: "you should already have case number, business reg number, account number,
+#: company name"). Whatever a caller sends under these keys is DISCARDED and
+#: replaced by `with_derived_fields` — not merged under it — so the recorded
+#: receipt cannot name a different company from the case it is recorded on.
+#:
+#: `caseNo` is THIS case's number (NAR-2026-0075). A paper filing is recorded
+#: against a portal case, and that is the number GSHK quotes back; the e-Sign
+#: path still stores CR's own case number, from CR's own response.
+RECEIPT_DERIVED = ("caseNo", "brNo", "engCoyName", "accNo")
+
+#: CR's own wording on every e-Signed receipt (8 of 8 on DEV, 2026-09-14). The
+#: one payment method that draws on GSHK's deposit account, so the one that
+#: carries an `accNo`.
+DEPOSIT_PAYMENT_METHOD = "Deduct from Account"
+
+#: The dropdowns on the manual receipt form. Served by
+#: GET /cases/{id}/manual-receipt-prefill so the screen holds no copy.
+#:
+#: Taken from what CR has actually printed, not invented: revenue code 16 /
+#: document NAR1L is every live CR charge on DEV (a late return, HK$2,610),
+#: and 118 / NAR1 is CR's own TPSI example of an on-time one (HK$105). NOT a
+#: closed list — CR has more codes than any receipt GSHK has seen, and the
+#: screen offers "Other" so a real receipt is never untranscribable. Which is
+#: also why `validate_receipt` does not enforce membership.
+RECEIPT_VOCABULARY = {
+    "pymtMtd": [
+        {"code": DEPOSIT_PAYMENT_METHOD, "label": DEPOSIT_PAYMENT_METHOD},
+        {"code": "Cheque", "label": "Cheque"},
+        {"code": "Credit Card", "label": "Credit Card"},
+        {"code": "PPS", "label": "PPS"},
+        {"code": "FPS", "label": "FPS"},
+        {"code": "Cash", "label": "Cash"},
+    ],
+    "revCode": [
+        {"code": "16",
+         "label": "16 — Registration of annual return (private company)"},
+        {"code": "118", "label": "118 — Annual return fee"},
+    ],
+    "docShtFrm": [
+        {"code": "NAR1", "label": "NAR1 — delivered on time"},
+        {"code": "NAR1L", "label": "NAR1L — delivered late"},
+    ],
+}
+
+#: The shapes CR prints (every receipt on DEV): 28/06/2022 and 13:36:44. The
+#: date is checked for being a real day as well as for its shape, because
+#: 31/02/2026 has the shape.
+_RECEIPT_DATE_FORMAT = "%d/%m/%Y"
+_RECEIPT_TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$")
+
+
+def receipt_prefill(case: dict) -> dict:
+    """The derived receipt fields for this case — see RECEIPT_DERIVED.
+
+    Read-only, and never fatal: a company header or deposit account that
+    cannot be read comes back None, and `validate_receipt` then names the
+    missing field, which is a better answer than a 500 on a read.
+    """
+    header = _company_header(case["id"]) if case.get("id") else {}
+    try:
+        # Local import: shared_credentials pulls in the crypto module, and this
+        # service is imported by every case route.
+        from services.tpsi import shared_credentials
+        account = shared_credentials.deposit_account_no()
+    except Exception:  # noqa: BLE001
+        account = None
+    return {
+        "caseNo": case.get("case_no") or None,
+        "brNo": header.get("br_number") or None,
+        "engCoyName": header.get("company_name") or None,
+        "accNo": account,
+    }
+
+
+def with_derived_fields(receipt: dict, prefill: dict) -> dict:
+    """The receipt as it will be recorded: typed fields plus derived ones.
+
+    The derived keys are REPLACED, never merged — see RECEIPT_DERIVED. `accNo`
+    only rides along with a deposit-account payment; a cheque was not drawn on
+    GSHK's deposit account and its receipt must not say it was.
+
+    EXCEPT A STRUCTURE. A caller that put `{"password": ...}` under `caseNo` is
+    left holding it, so `validate_receipt` refuses the whole receipt with a
+    400. Quietly overwriting it would be the same outcome for the record and a
+    worse one for the caller, who would never learn their payload was wrong.
+    """
+    def smuggled(key):
+        return key in receipt and not isinstance(receipt[key], RECEIPT_SCALARS)
+
+    out = {k: v for k, v in receipt.items()
+           if k not in RECEIPT_DERIVED or smuggled(k)}
+    for key in ("caseNo", "brNo", "engCoyName"):
+        if prefill.get(key) and not smuggled(key):
+            out[key] = prefill[key]
+    if (out.get("pymtMtd") == DEPOSIT_PAYMENT_METHOD and prefill.get("accNo")
+            and not smuggled("accNo")):
+        out["accNo"] = prefill["accNo"]
+    return out
+
+
+def _amount_problem(where: str, value) -> str | None:
+    """A money field must be an amount — the Confirmation screen groups it and
+    fee reconciliation adds it up. Blank is the required-check's business."""
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return None
+    try:
+        amount = Decimal(text)
+    except InvalidOperation:
+        return f"{where}: {value!r} is not an amount"
+    if not amount.is_finite() or amount < 0:
+        return f"{where}: {value!r} is not an amount of zero or more"
+    return None
+
+
+def _format_problems(receipt: dict) -> list[str]:
+    """Date, time and amount must read the way CR prints them, so a manual
+    receipt renders beside an e-Signed one without looking like a different
+    kind of record."""
+    problems = []
+    date_text = str(receipt.get("transactionDate") or "").strip()
+    if date_text:
+        try:
+            datetime.strptime(date_text, _RECEIPT_DATE_FORMAT)
+        except ValueError:
+            problems.append(
+                f"transactionDate: {date_text!r} is not a date as CR prints it "
+                "(DD/MM/YYYY)")
+    time_text = str(receipt.get("transactionTime") or "").strip()
+    if time_text and not _RECEIPT_TIME.match(time_text):
+        problems.append(
+            f"transactionTime: {time_text!r} is not a time as CR prints it "
+            "(HH:MM:SS)")
+    amount = _amount_problem("totalAmount", receipt.get("totalAmount"))
+    if amount:
+        problems.append(amount)
+    return problems
 
 #: Stages that mean CR already holds this return. Recording an off-portal
 #: submission on top would put a second statutory filing in the register for one
@@ -248,6 +395,7 @@ def validate_receipt(receipt: dict) -> list[str]:
         if key in RECEIPT_ALLOWED and key != "paymentRcptList"
         and not isinstance(value, RECEIPT_SCALARS)
     ]
+    problems += _format_problems(receipt)
 
     lines = receipt.get("paymentRcptList") or []
     if not lines:
@@ -280,6 +428,10 @@ def validate_receipt(receipt: dict) -> list[str]:
             if key in RECEIPT_LINE_ALLOWED
             and not isinstance(value, RECEIPT_SCALARS)
         ]
+        amount = _amount_problem(f"paymentRcptList[{index}].amtChrg",
+                                 line.get("amtChrg"))
+        if amount:
+            problems.append(amount)
     return problems
 
 

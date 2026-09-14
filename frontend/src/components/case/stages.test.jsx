@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -97,6 +97,22 @@ const RECIPIENTS = {
 //: GET /tpsi/credentials — the SIGNING credential of whoever is logged in. It
 //: is the only thing that can sign a NAR1 (Q1), so the Signing stage reads it
 //: to say whose signature is about to be applied, and refuses without it.
+//: GET /cases/{id}/manual-receipt-prefill — what the manual receipt form fills
+//: in itself, and its dropdowns (nar1_cases.RECEIPT_VOCABULARY's shape).
+const PREFILL = {
+  fields: { caseNo: 'NAR-2026-0041', brNo: '2100028',
+            engCoyName: 'Harbour Tech Ltd.', accNo: 'N00577470008' },
+  deposit_payment_method: 'Deduct from Account',
+  vocabulary: {
+    pymtMtd: [{ code: 'Deduct from Account', label: 'Deduct from Account' },
+              { code: 'Cheque', label: 'Cheque' }],
+    revCode: [{ code: '16', label: '16 — Registration of annual return (private company)' },
+              { code: '118', label: '118 — Annual return fee' }],
+    docShtFrm: [{ code: 'NAR1', label: 'NAR1 — delivered on time' },
+                { code: 'NAR1L', label: 'NAR1L — delivered late' }],
+  },
+}
+
 //: Reassigned per-test where the absence is the point.
 let CREDENTIALS = {
   eservice_user_id: 'GSHKPN02', has_eservice_password: true,
@@ -116,6 +132,7 @@ beforeEach(() => {
     if (u.includes('/verification/recipients')) return Promise.resolve(RECIPIENTS)
     if (u.includes('/summary')) return Promise.resolve(FILING_SUMMARY)
     if (u.includes('/tpsi/credentials')) return Promise.resolve(CREDENTIALS)
+    if (u.includes('/manual-receipt-prefill')) return Promise.resolve(PREFILL)
     return Promise.resolve({ fee: '105.00', max_fee: '3480.00',
                              fee_is_certain: false,
                              balance: '12480', sufficient: true })
@@ -1129,6 +1146,38 @@ describe('Signing', () => {
     expect(onGo).toHaveBeenCalledWith(4)
   })
 
+  // Levi 2026-09-14: attaching the scan used to throw the operator straight
+  // onto Submission, so a wrong file was only discovered a stage later.
+  it('stays on Signing once the scan is attached, so a wrong file can be replaced', async () => {
+    const onRefresh = vi.fn(); const onAdvance = vi.fn()
+    render(
+      <MemoryRouter>
+        <StageSigning caseRow={at({ signing_method: 'manual' })} canWrite
+                      onChanged={onAdvance} onRefresh={onRefresh}
+                      onError={onError} onGo={vi.fn()} />
+      </MemoryRouter>)
+    const file = new File(['%PDF-1.4'], 'signed.pdf', { type: 'application/pdf' })
+    await userEvent.setup().upload(screen.getByLabelText('Wet-signed NAR1'), file)
+    await waitFor(() => expect(onRefresh).toHaveBeenCalled())
+    expect(upload.mock.calls[0][0]).toBe('/cases/c1/manual-sign')
+    // Re-read, NOT advanced: `onChanged` is what moves the page on a stage.
+    expect(onAdvance).not.toHaveBeenCalled()
+  })
+
+  it('moves on to Submission only when the operator says so', async () => {
+    const onGo = vi.fn()
+    render(
+      <MemoryRouter>
+        <StageSigning caseRow={at({ signing_method: 'manual', manual_signed_document_id: 'd1',
+                                    manual_signed_document_version: 1 })}
+                      canWrite onChanged={onChanged} onError={onError} onGo={onGo} />
+      </MemoryRouter>)
+    expect(await screen.findByRole('button', { name: /Replace/ })).toBeEnabled()
+    await userEvent.setup().click(
+      screen.getByRole('button', { name: /Continue to Submission/ }))
+    expect(onGo).toHaveBeenCalledWith(4)
+  })
+
   it('does not offer the e-Sign form on the manual route', () => {
     renderIt({ signing_method: 'manual' })
     expect(screen.queryByLabelText(/e-Service signing password/)).not.toBeInTheDocument()
@@ -1460,9 +1509,12 @@ describe('Submission — manual', () => {
     <StageSubmission caseRow={manual(over)} canSubmit
                      onChanged={onChanged} onError={onError} {...props} />)
 
-  /** The other half of the gate — the two figures the audit trail reads. */
+  /** The other half of the gate — the date, and the figure the trail reads. */
   const fillRequired = async user => {
-    await user.type(screen.getByLabelText('Case number'), '141945492')
+    // A date input takes a whole ISO date or nothing; typing it a character
+    // at a time goes through invalid intermediate values.
+    fireEvent.change(screen.getByLabelText('Transaction date'),
+                     { target: { value: '2026-08-16' } })
     await user.type(screen.getByLabelText('Total amount'), '105.00')
   }
 
@@ -1485,8 +1537,114 @@ describe('Submission — manual', () => {
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
     const { receipt } = post.mock.calls[0][1]
-    expect(receipt.caseNo).toBe('141945492')
+    // In CR's own shapes: DD/MM/YYYY and a two-place amount.
+    expect(receipt.transactionDate).toBe('16/08/2026')
+    expect(receipt.totalAmount).toBe('105.00')
     expect(receipt.paymentRcptList[0].rcptNo).toBe('D77000418931')
+    // The case's identifiers are the backend's to fill, not the form's to send.
+    expect(receipt).not.toHaveProperty('caseNo')
+    expect(receipt).not.toHaveProperty('brNo')
+    expect(receipt.paymentRcptList[0]).not.toHaveProperty('_key')
+  })
+
+  // ---- Levi 2026-09-14: fill what we know, pick what we can ---------------
+
+  it('shows the case\'s own identifiers instead of asking for them', async () => {
+    renderIt()
+    const derived = screen.getByTestId('receipt-derived')
+    await within(derived).findByText('NAR-2026-0041')
+    expect(within(derived).getByText('2100028')).toBeInTheDocument()
+    expect(within(derived).getByText('Harbour Tech Ltd.')).toBeInTheDocument()
+    for (const label of ['Case number', 'Business registration no.',
+      'Company name (English)', 'Account number']) {
+      expect(screen.queryByRole('textbox', { name: label })).not.toBeInTheDocument()
+    }
+  })
+
+  it('names the deposit account only for a deposit-account payment', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    const derived = screen.getByTestId('receipt-derived')
+    await within(derived).findByText('NAR-2026-0041')
+    expect(within(derived).queryByText('N00577470008')).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Payment method'), 'Deduct from Account')
+    expect(within(derived).getByText('N00577470008')).toBeInTheDocument()
+  })
+
+  it('offers payment method, revenue code and document code as dropdowns', async () => {
+    renderIt()
+    await screen.findByRole('option', { name: 'Cheque' })
+    expect(screen.getByLabelText('Payment method').tagName).toBe('SELECT')
+    expect(screen.getByLabelText('Revenue code').tagName).toBe('SELECT')
+    expect(screen.getByLabelText('Document code').tagName).toBe('SELECT')
+    expect(screen.getByRole('option', { name: /NAR1L — delivered late/ })).toBeInTheDocument()
+  })
+
+  it('takes a code the list does not have, typed as printed', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByRole('option', { name: 'Cheque' })
+    await fillRequired(user)
+    await user.selectOptions(screen.getByLabelText('Revenue code'), 'Other — type it as printed')
+    await user.type(screen.getByLabelText('Revenue code (as printed)'), '99')
+    await user.selectOptions(screen.getByLabelText('Document code'), 'NAR1L')
+    await user.click(screen.getByRole('button', { name: /Record the filing/ }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    const line = post.mock.calls[0][1].receipt.paymentRcptList[0]
+    expect(line.revCode).toBe('99')
+    expect(line.docShtFrm).toBe('NAR1L')
+  })
+
+  it('takes the date and time from pickers, and sends them as CR prints them', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    expect(screen.getByLabelText('Transaction date')).toHaveAttribute('type', 'date')
+    expect(screen.getByLabelText('Transaction time')).toHaveAttribute('type', 'time')
+    await fillRequired(user)
+    fireEvent.change(screen.getByLabelText('Transaction time'), { target: { value: '13:36' } })
+    await user.click(screen.getByRole('button', { name: /Record the filing/ }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post.mock.calls[0][1].receipt.transactionTime).toBe('13:36:00')
+  })
+
+  it('takes amounts as numbers and sends them to two places', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    expect(screen.getByLabelText('Total amount')).toHaveAttribute('type', 'number')
+    expect(screen.getByLabelText('Amount charged')).toHaveAttribute('type', 'number')
+    fireEvent.change(screen.getByLabelText('Transaction date'),
+                     { target: { value: '2026-08-16' } })
+    await user.type(screen.getByLabelText('Total amount'), '2610')
+    await user.type(screen.getByLabelText('Amount charged'), '2610')
+    await user.click(screen.getByRole('button', { name: /Record the filing/ }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    const { receipt } = post.mock.calls[0][1]
+    expect(receipt.totalAmount).toBe('2610.00')
+    expect(receipt.paymentRcptList[0].amtChrg).toBe('2610.00')
+  })
+
+  it('can remove any payment line but the first', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    // One line, and nothing to remove it with.
+    expect(screen.queryByRole('button', { name: /Remove payment line/ })).toBeNull()
+    await user.click(screen.getByRole('button', { name: /Add payment line/ }))
+    await user.click(screen.getByRole('button', { name: /Add payment line/ }))
+    expect(screen.getAllByTestId('payment-line')).toHaveLength(3)
+    expect(screen.queryByRole('button', { name: 'Remove payment line 1' })).toBeNull()
+    await user.type(screen.getAllByLabelText('Receipt no.')[2], 'KEEP-ME')
+    await user.click(screen.getByRole('button', { name: 'Remove payment line 2' }))
+    expect(screen.getAllByTestId('payment-line')).toHaveLength(2)
+    // The line removed was the second one, not whichever React re-used.
+    expect(screen.getAllByLabelText('Receipt no.')[1]).toHaveValue('KEEP-ME')
+  })
+
+  it('offers a way back to Signing, where the scan can still be replaced', async () => {
+    const user = userEvent.setup()
+    const onGo = vi.fn()
+    renderIt({}, { onGo })
+    await user.click(screen.getByRole('button', { name: /Back to Signing/ }))
+    expect(onGo).toHaveBeenCalledWith(3)
   })
 
   it('shows EVERY problem with the receipt at once', async () => {

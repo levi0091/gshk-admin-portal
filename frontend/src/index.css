@@ -1016,6 +1016,76 @@ tbody tr.clickable { cursor: pointer; }
 
 /* Focusable but off-screen: the real <input type="file"> behind .up-zone.
    display:none would take it out of the tab order and break the picker. */
+/* ═══════════ Person-profile VIP status (wireframe v11 s11, migration 041) ═══════════
+   Lifted from the wireframe's own CSS. The gold is the one departure from the
+   brand palette, and it is the wireframe's: a VIP bar has to read as
+   different from every other card at a glance, which is its whole job. */
+.vip-bar { border-radius: 14px; margin-bottom: 20px; position: relative; overflow: hidden; }
+.vip-bar.on { background: linear-gradient(103deg, #7A4E12 0%, #AE7A1E 44%, #E4B24A 100%); border: 1px solid #C79A3A; box-shadow: 0 12px 28px -14px rgba(122,78,18,.65); }
+.vip-bar.off { background: var(--bg-card); border: 1.5px solid var(--border); }
+.vip-inner { display: flex; align-items: center; gap: 18px; padding: 15px 18px; flex-wrap: wrap; }
+.vip-id { display: flex; align-items: center; gap: 15px; flex: 1 1 300px; min-width: 0; }
+.vip-medal { width: 50px; height: 50px; border-radius: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.vip-bar.on .vip-medal { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.42); box-shadow: inset 0 1px 0 rgba(255,255,255,.4); }
+.vip-bar.off .vip-medal { background: var(--indigo-5); border: 1px solid var(--border); }
+.vip-eyebrow { font-size: 10px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+.vip-bar.on .vip-eyebrow { color: rgba(255,255,255,.82); }
+.vip-bar.off .vip-eyebrow { color: var(--t-muted); }
+.vip-title { font-size: 19px; font-weight: 800; line-height: 1.15; margin: 2px 0 3px; }
+.vip-bar.on .vip-title { color: #fff; text-shadow: 0 1px 2px rgba(80,50,8,.35); }
+.vip-bar.off .vip-title { color: var(--t-head); }
+.vip-sub { font-size: 12px; line-height: 1.45; max-width: 520px; }
+.vip-bar.on .vip-sub { color: rgba(255,255,255,.92); }
+.vip-bar.off .vip-sub { color: var(--t-muted); }
+.vip-reasons { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 9px; }
+.vip-reason { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 10px 3px 8px; border-radius: 20px; }
+.vip-bar.on .vip-reason { background: rgba(255,255,255,.2); color: #fff; border: 1px solid rgba(255,255,255,.32); }
+.vip-bar.off .vip-reason { background: var(--indigo-5); color: var(--t-body); border: 1px solid var(--border); }
+.vip-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 15px; border-radius: 12px; flex-shrink: 0; }
+.vip-bar.on .vip-controls { background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.3); }
+.vip-bar.off .vip-controls { background: var(--bg-page); border: 1px solid var(--border); }
+.vip-sw-row { display: flex; align-items: center; gap: 10px; }
+.vip-sw-txt { display: flex; flex-direction: column; line-height: 1.2; }
+.vip-sw-lbl { font-size: 12px; font-weight: 700; }
+.vip-bar.on .vip-sw-lbl { color: #fff; }
+.vip-bar.off .vip-sw-lbl { color: var(--t-head); }
+.vip-sw-hint { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.vip-bar.on .vip-sw-hint { color: rgba(255,255,255,.78); }
+.vip-bar.off .vip-sw-hint { color: var(--t-muted); }
+.vip-sw { width: 42px; height: 24px; border-radius: 20px; position: relative; flex-shrink: 0; background: #C9CCDA; border: none; padding: 0; cursor: pointer; transition: background .18s; }
+.vip-bar.on .vip-sw { background: rgba(255,255,255,.35); }
+.vip-sw.on { background: var(--bang) !important; }
+.vip-knob { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: left .18s; }
+.vip-sw.on .vip-knob { left: 21px; }
+.vip-sw.vip-sw-lock { cursor: not-allowed; opacity: .9; }
+.vip-sw:disabled:not(.vip-sw-lock) { cursor: progress; opacity: .6; }
+.vip-div { width: 1px; height: 36px; flex-shrink: 0; }
+.vip-bar.on .vip-div { background: rgba(255,255,255,.28); }
+.vip-bar.off .vip-div { background: var(--border); }
+.vip-mark-btn { display: inline-flex; align-items: center; gap: 7px; font-family: inherit; font-size: 12px; font-weight: 700; color: #fff; background: var(--carrot); border: none; border-radius: 8px; padding: 9px 15px; cursor: pointer; transition: background .15s; }
+.vip-mark-btn:hover:not(:disabled) { background: #E05A1F; }
+.vip-mark-btn:disabled { opacity: .6; cursor: progress; }
+.vip-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; letter-spacing: .03em; color: #6E450F; background: linear-gradient(100deg, #F4CF6B, #E2AE3E); border: 1px solid #C79A3A; border-radius: 20px; padding: 3px 10px; box-shadow: 0 1px 2px rgba(122,78,18,.25); }
+.vip-error { font-size: 12px; font-weight: 600; color: #B91C1C; margin-top: 8px; }
+.vip-bar.on .vip-error { color: #fff; }
+@media (max-width: 720px) { .vip-controls { width: 100%; justify-content: space-between; } }
+
+/* ═══════════ Manual receipt form (Submission, manual path) ═══════════
+   `min-width: 0` on every cell: a `1fr` track will not shrink below a
+   <select>'s longest option, and "16 — Registration of annual return
+   (private company)" is long enough to push the grid off the card. */
+.receipt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.pay-line { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)) 32px; gap: 10px; align-items: end; margin-bottom: 10px; }
+.receipt-grid > *, .pay-line > * { min-width: 0; }
+.receipt-grid .f-input, .pay-line .f-input { width: 100%; min-width: 0; }
+.pay-line-x { display: flex; align-items: flex-end; justify-content: center; }
+.pay-line-remove { width: 32px; height: 36px; display: inline-flex; align-items: center; justify-content: center; font-family: inherit; font-size: 18px; line-height: 1; color: var(--t-muted); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-sm); cursor: pointer; }
+.pay-line-remove:hover:not(:disabled) { color: var(--carrot); border-color: var(--carrot); background: var(--carrot-10); }
+.f-money { position: relative; }
+.f-money-cur { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 12px; font-weight: 600; color: var(--t-muted); pointer-events: none; }
+.f-money .f-input { padding-left: 40px; }
+.vocab-other { margin-top: 6px; }
+
 .visually-hidden {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;

@@ -170,6 +170,49 @@ beforeEach(() => {
   }
 })
 
+describe('PersonProfilePage — VIP status (migration 041)', () => {
+  const STANDARD = { is_vip: false, automatic: false, reasons: [], company_count: 2, threshold: 3 }
+
+  it('draws the VIP bar at the top, and a VIP chip beside the name', async () => {
+    mockGet({
+      ...PERSON, is_affiliated_agent: true,
+      vip: { is_vip: true, automatic: true, reasons: ['affiliated_agent'],
+             company_count: 2, threshold: 3 },
+    })
+    renderPage()
+    await screen.findByText('Personal Information')
+    expect(screen.getByText('VIP Client')).toBeInTheDocument()
+    expect(screen.getByTestId('vip-chip')).toBeInTheDocument()
+  })
+
+  it('marks a person VIP, then re-reads the verdict from the server', async () => {
+    const user = userEvent.setup()
+    mockGet({ ...PERSON, vip: STANDARD })
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: /Mark as VIP/ }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/persons/p1', { is_vip_marked: true }))
+    await waitFor(() => expect(
+      api.get.mock.calls.filter(([u]) => u === '/persons/p1').length).toBe(2))
+  })
+
+  it('shows a read-only role the status and no way to change it', async () => {
+    auth = { ...auth, hasPermission: (_m, level) => level === 'read' }
+    mockGet({ ...PERSON, vip: STANDARD })
+    renderPage()
+    expect(await screen.findByText('Standard client')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Mark as VIP/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+  })
+
+  it('draws no chip for a standard client', async () => {
+    mockGet({ ...PERSON, vip: STANDARD })
+    renderPage()
+    await screen.findByText('Standard client')
+    expect(screen.queryByTestId('vip-chip')).not.toBeInTheDocument()
+  })
+})
+
 describe('PersonProfilePage', () => {
   it('renders personal information and residential address', async () => {
     renderPage()

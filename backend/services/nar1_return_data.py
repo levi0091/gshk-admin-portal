@@ -113,9 +113,16 @@ def summarise(graph: dict, *, year: int | None = None,
     # runs, so the picker and the verdict cannot disagree — a screen showing a
     # capacity while still reporting "this company cannot be filed" would be
     # the worst of both.
+    #
+    # A natural person now defaults too, to Director (Levi 2026-09-14). The
+    # picker used to show blank for them while the mapper filed "Company
+    # Secretary" — so the screen said nothing was chosen and CR was sent
+    # something anyway. `prepare` and the drift gate apply the same default.
+    capacity_is_default = False
     if not signatory_capacity and signatory:
         signatory_capacity = default_capacity(
             is_corporate=signatory.get("is_corporate") is True)
+        capacity_is_default = True
 
     problems: list[str] = []
     try:
@@ -152,6 +159,10 @@ def summarise(graph: dict, *, year: int | None = None,
         # renders a picker from this rather than holding its own copy of a CR
         # list that would drift the first time CR revised it.
         "signatory_capacity": signatory_capacity,
+        # True when nobody has chosen and the value above is the default. The
+        # picker SHOWS it selected either way — this only lets it say so, so an
+        # operator can tell a deliberate answer from an assumed one.
+        "signatory_capacity_is_default": capacity_is_default,
         "signatory_capacity_options": sorted(
             CAPACITY_BODY_CORPORATE
             if (signatory or {}).get("is_corporate") is True
