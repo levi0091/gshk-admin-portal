@@ -34,7 +34,7 @@ def test_the_share_capital_total_row_is_filled():
     """It was BLANK on every return ever generated.
     `field_map.SHARE_CAPITAL_TOTALS` existed from the day the map was written
     and nothing ever referenced it."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.SHARE_CAPITAL_TOTALS["currency"]] == ["HKD"]
     assert values[fm.SHARE_CAPITAL_TOTALS["total_number"]] == ["100"]
     assert values[fm.SHARE_CAPITAL_TOTALS["total_amount"]] == ["100.00"]
@@ -44,7 +44,7 @@ def test_the_share_capital_total_row_is_filled():
 def test_the_total_row_sums_the_classes_rather_than_copying_one():
     """Three classes of 100 total 300. Copying the first row's figure would
     under-report the company's issued capital by two thirds."""
-    values = values_of(fill.render(build_xml(share_classes=3)))
+    values = values_of(fill.render_fields(build_xml(share_classes=3)))
     assert values[fm.SHARE_CAPITAL_TOTALS["total_number"]] == ["300"]
     assert values[fm.SHARE_CAPITAL_TOTALS["total_amount"]] == ["300.00"]
     assert values[fm.SHARE_CAPITAL_TOTALS["paid_up"]] == ["300.00"]
@@ -57,7 +57,7 @@ def test_classes_in_different_currencies_state_no_money_total():
     added across currencies."""
     xml = build_xml(share_classes=2).replace(
         "<cr:currency>HKD</cr:currency>", "<cr:currency>USD</cr:currency>", 1)
-    values = values_of(fill.render(xml))
+    values = values_of(fill.render_fields(xml))
     assert values[fm.SHARE_CAPITAL_TOTALS["total_number"]] == ["200"]
     assert fm.SHARE_CAPITAL_TOTALS["currency"] not in values
     assert fm.SHARE_CAPITAL_TOTALS["total_amount"] not in values
@@ -67,7 +67,7 @@ def test_the_amount_column_is_an_amount_and_the_number_column_is_a_count():
     """CR transmits "100" for both and prints "100" and "100.00". Rendering
     the raw string made the Total Number and Total Amount columns identical at
     a glance, which is exactly the pair a director is checking."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.share_capital(0, "total_number")] == ["100"]
     assert values[fm.share_capital(0, "total_amount")] == ["100.00"]
 
@@ -91,7 +91,7 @@ def test_an_unparseable_figure_is_printed_as_it_stands():
 
 
 def test_a_share_count_reaches_the_schedule_grouped_too():
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.SCHEDULE_1[0]["shares_held"]] == ["100"]
     assert values[fm.SCHEDULE_1_HEADER["class_total_issued"]] == ["1,000"]
 
@@ -105,7 +105,7 @@ def test_the_signatory_name_is_on_the_name_line_not_in_the_date_box():
     fill_12_P.8 -- the Date box -- so every generated return showed the
     signatory floating above "日DD / 月MM / 年YYYY" and left "姓名 Name"
     blank."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.MEMBERS_AND_SIGNATURE["signed_name"]] == ["Wong Mei Ling"]
     assert values[fm.MEMBERS_AND_SIGNATURE["signed_name"]] != \
         values[fm.MEMBERS_AND_SIGNATURE["signed_date"]]
@@ -114,7 +114,7 @@ def test_the_signatory_name_is_on_the_name_line_not_in_the_date_box():
 def test_a_supplied_signing_date_lands_in_the_date_box():
     """It is not in the validated XML -- CR does not hand one back -- so it is
     the caller's to supply."""
-    values = values_of(fill.render(build_xml(), signed_on="2026-07-25"))
+    values = values_of(fill.render_fields(build_xml(), signed_on="2026-07-25"))
     assert values[fm.MEMBERS_AND_SIGNATURE["signed_date"]] == ["25/07/2026"]
 
 
@@ -124,7 +124,7 @@ def test_the_date_box_is_never_left_empty():
     the box beside the signature went to directors, and would have gone to CR,
     blank -- while CR's own filed return has it filled. This reverses the rule
     that a missing date should print as nothing."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     printed = values[fm.MEMBERS_AND_SIGNATURE["signed_date"]]
     assert printed == [fill.signature_date("")]
     assert re.fullmatch(r"\d{2}/\d{2}/\d{4}", printed[0]), printed
@@ -161,7 +161,7 @@ def test_a_plain_date_is_taken_verbatim_and_never_shifted():
 def test_the_continuation_sheet_counts_are_all_answered():
     """A blank count row reads as "nobody said whether pages are missing from
     this bundle". The specimen writes a nought in each of the five."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     ms = fm.MEMBERS_AND_SIGNATURE
     for key in ("count_sheet_a", "count_sheet_b", "count_sheet_c",
                 "count_sheet_d", "count_sheet_e"):
@@ -179,7 +179,7 @@ def test_the_presenter_block_carries_GSHKs_whole_address_not_just_a_name():
     filing. It rendered with an empty Address, Tel and Reference and named
     `no-reply@` -- the address the portal SENDS from, a different job that had
     been conflated with this one."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     m1 = fm.MAIN_1
     assert values[m1["presenter_name"]] == ["Get Started HK Limited"]
     address = values[m1["presenter_address"]][0]
@@ -194,7 +194,7 @@ def test_the_reference_is_the_form_the_year_and_the_company():
     -- `DEFAULT_PRESENTER` carries no reference and nothing derived one -- on
     the only line of the form that tells CR which of GSHK's files a piece of
     correspondence belongs to."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.MAIN_1["presenter_reference"]] == \
         ["NAR1/2026/TEST COMPANY LIMITED"]
 
@@ -203,7 +203,7 @@ def test_the_reference_year_is_the_returns_own_not_the_calendar_year():
     """A 2025 return filed late is still the 2025 return. Stamping it with the
     year it happened to be printed would give two different references to one
     filing."""
-    values = values_of(fill.render(build_xml(date="01/02/2025")))
+    values = values_of(fill.render_fields(build_xml(date="01/02/2025")))
     assert values[fm.MAIN_1["presenter_reference"]].pop().startswith(
         "NAR1/2025/")
 
@@ -236,7 +236,7 @@ def test_a_long_company_name_is_shortened_rather_than_shrunk_to_nothing():
     survives."""
     long_name = "A VERY LONG HONG KONG COMPANY NAME (INTERNATIONAL) LIMITED"
     xml = build_xml().replace("TEST COMPANY LIMITED", long_name)
-    reference = values_of(fill.render(xml))[
+    reference = values_of(fill.render_fields(xml))[
         fm.MAIN_1["presenter_reference"]].pop()
 
     assert reference.startswith("NAR1/2026/")
@@ -253,7 +253,7 @@ def test_the_reference_is_never_drawn_below_the_legible_floor():
     ap.register_fonts()
     long_name = "A VERY LONG HONG KONG COMPANY NAME (INTERNATIONAL) LIMITED"
     xml = build_xml().replace("TEST COMPANY LIMITED", long_name)
-    reference = values_of(fill.render(xml))[
+    reference = values_of(fill.render_fields(xml))[
         fm.MAIN_1["presenter_reference"]].pop()
     rect = (0.0, 0.0, fill.PRESENTER_REFERENCE_WIDTH + 2 * ap._INSET, 14.02)
     lines, size = ap.layout(reference, rect, size=ap.DEFAULT_SIZE, bold=False)
@@ -263,7 +263,7 @@ def test_the_reference_is_never_drawn_below_the_legible_floor():
 
 
 def test_a_caller_with_its_own_reference_scheme_still_wins():
-    values = values_of(fill.render(
+    values = values_of(fill.render_fields(
         build_xml(),
         presenter=dict(fill.DEFAULT_PRESENTER, reference="GS/2026/0042")))
     assert values[fm.MAIN_1["presenter_reference"]] == ["GS/2026/0042"]
@@ -287,7 +287,7 @@ def test_the_presenter_address_wraps_rather_than_shrinking_to_a_smear():
 # ---------------------------------------------------------------------------
 
 def test_a_hong_kong_district_prints_its_name_not_its_code():
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.MAIN_1["ro_district"]] == ["Central"]
 
 
@@ -295,7 +295,7 @@ def test_a_country_prints_its_name_not_its_code():
     """The reference return's director is Swedish. The XML says "SWE"."""
     xml = build_xml().replace("<cr:ctryRegion>HKG</cr:ctryRegion>",
                               "<cr:ctryRegion>SWE</cr:ctryRegion>")
-    values = values_of(fill.render(xml))
+    values = values_of(fill.render_fields(xml))
     assert values[fm.DIRECTOR_INDIVIDUAL["addr_country"]] == ["Sweden"]
 
 
@@ -304,7 +304,7 @@ def test_a_passport_issuing_country_prints_its_name_too():
         "<cr:indvHkidNo>A123</cr:indvHkidNo>",
         "<cr:indvPptIssCtry>SWE</cr:indvPptIssCtry>"
         "<cr:indvPptNo>AA253</cr:indvPptNo>")
-    values = values_of(fill.render(xml))
+    values = values_of(fill.render_fields(xml))
     assert values[fm.DIRECTOR_INDIVIDUAL["passport_country"]] == ["Sweden"]
 
 
@@ -318,7 +318,7 @@ def test_an_overseas_city_line_is_left_exactly_as_filed():
                     "</cr:dstCtyStatePostal>")
            .replace("<cr:ctryRegion>HKG</cr:ctryRegion>",
                     "<cr:ctryRegion>SWE</cr:ctryRegion>"))
-    values = values_of(fill.render(xml))
+    values = values_of(fill.render_fields(xml))
     assert values[fm.DIRECTOR_INDIVIDUAL["addr_district_city_state"]] == \
         ["Stockholm 11859"]
 
@@ -331,7 +331,7 @@ def test_a_section_that_does_not_apply_says_so_rather_than_going_blank():
     """The specimen uses N/A for a whole numbered section that does not apply
     to this company and a dash for a single absent particular, and does not
     use them interchangeably."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     m1, m2, ms = fm.MAIN_1, fm.MAIN_2, fm.MEMBERS_AND_SIGNATURE
     assert values[m1["business_name"]] == ["N/A"]         # s2, no trade name
     assert values[m1["fin_period_from_mm"]] == ["N/A"]    # s5, private company
@@ -345,7 +345,7 @@ def test_a_section_that_does_not_apply_says_so_rather_than_going_blank():
 def test_a_public_company_still_states_its_financial_period():
     """The N/A on section 5 is "a private company need not complete this",
     not a blanket. A public company's real dates must not be overwritten."""
-    values = values_of(fill.render(build_xml(), company_type="public"))
+    values = values_of(fill.render_fields(build_xml(), company_type="public"))
     assert values[fm.MAIN_1["fin_period_from_mm"]] == ["01"]
     assert values[fm.MAIN_1["fin_period_to_mm"]] == ["12"]
 
@@ -354,7 +354,7 @@ def test_an_absent_particular_of_a_real_officer_is_dashed():
     """The director in the fixture has a surname, an address and an HKID and
     none of the rest -- exactly like the specimen's Swedish director, whose
     Chinese name, previous names, alias, flat and building all read "-"."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     block = fm.DIRECTOR_INDIVIDUAL
     for key in ("name_zh", "prev_name_zh", "prev_name_en", "alias_zh",
                 "alias_en", "passport_country", "passport_partial",
@@ -371,7 +371,7 @@ def test_an_officer_page_with_no_officer_stays_BLANK_not_dashed():
     officer has no Chinese name"; a blank page says "there is no such
     officer". Dashing an unused page would assert an officer into existence.
     """
-    values = values_of(fill.render(build_xml(secretaries=0)))
+    values = values_of(fill.render_fields(build_xml(secretaries=0)))
     for key in ("name_zh", "surname_en", "addr_flat_floor", "prev_name_en"):
         assert fm.SECRETARY_INDIVIDUAL[key] not in values, \
             f"the empty secretary page filled {key}"
@@ -381,7 +381,7 @@ def test_a_prose_box_is_left_empty_rather_than_dashed():
     """The TCSP "Reason" and a member's "Remarks" stay blank on the specimen:
     an empty prose box already reads as "nothing to say", while an empty NAME
     box reads as an omission."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert fm.SECRETARY_INDIVIDUAL["tcsp_reason"] not in values
     assert fm.SCHEDULE_1[0]["remarks"] not in values
 
@@ -414,20 +414,17 @@ def test_a_tick_is_drawn_into_the_page_and_not_left_to_the_widget():
 
     A stroked checkmark in the page's own content stream is what proves the
     tick no longer depends on the viewer -- one per ticked box, on the page
-    that box is on.
+    that box is on. The boxes are counted on the FILLED form, because the
+    shipped return has no checkbox widgets left: `bake()` removes them, since
+    a phone that ignored their Hidden flag drew a second tick over ours.
     """
     pdf = fill.render(build_xml())
-    reader = PdfReader(io.BytesIO(pdf))
+    filled = PdfReader(io.BytesIO(fill.render_fields(build_xml())))
     total = 0
-    for page_index, page in enumerate(reader.pages):
-        ticked = 0
-        for annot in (page.get("/Annots") or []):
-            obj = annot.get_object()
-            if obj.get("/FT") != "/Btn" or not ap._is_ticked(obj):
-                continue
-            ticked += 1
-            assert int(obj.get("/F", 0)) & 2, \
-                "a ticked checkbox widget is still visible over the layer"
+    for page_index, page in enumerate(filled.pages):
+        ticked = sum(1 for annot in (page.get("/Annots") or [])
+                     if annot.get_object().get("/FT") == "/Btn"
+                     and ap._is_ticked(annot.get_object()))
         drawn = _content(pdf, page_index).count(_TICK_MARK)
         assert drawn == ticked, (
             f"page {page_index + 1} has {ticked} ticked boxes but {drawn} "

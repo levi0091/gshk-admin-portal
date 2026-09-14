@@ -138,27 +138,94 @@ def _baked():
     return fill.render(build_xml())
 
 
-def test_baking_clears_need_appearances():
-    """The flag that made two viewers disagree."""
-    reader = PdfReader(io.BytesIO(_baked()))
-    acroform = reader.trailer["/Root"]["/AcroForm"]
-    assert not acroform.get("/NeedAppearances")
+def _widgets(pdf_bytes):
+    """(page index, field name) for every widget left on any page."""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    return [(index, str(annot.get_object().get("/T")))
+            for index, page in enumerate(reader.pages)
+            for annot in (page.get("/Annots") or [])
+            if annot.get_object().get("/Subtype") == "/Widget"]
 
 
-def test_every_drawn_widget_is_hidden():
-    """A visible widget paints its own box, and its own guess of the text,
-    on top of the layer we just drew."""
+def test_no_form_widget_survives_baking():
+    """THE MOBILE REPORT (2026-09-14): opened on a phone, every value printed
+    TWICE -- once in our bold, left-aligned 10pt layer, and again on top of it,
+    centred, at 12pt, in a substitute face.
+
+    The second copy was the widget. `bake()` used to draw the layer and then
+    only set each widget's Hidden flag, leaving its `/V`, its appearance stream
+    in the non-embedded `/PMingLiU`, and the template's `/Q 1` all in place.
+    Desktop viewers honour the flag; iOS Quick Look does not, and drew all 115
+    valued widgets over the layer. A flag is a request to the viewer. Removing
+    the widget leaves the viewer nothing to draw."""
+    assert _widgets(_baked()) == []
+
+
+def test_no_widget_survives_even_on_a_return_with_continuation_sheets():
+    """The widgets are re-registered per page copy, so an extra sheet is an
+    extra set of them. Every copy has to go, not just the first."""
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    pdf = fill.render(build_xml(directors=("CHAN", "LEE", "WONG"),
+                                secretaries=2, members=("A", "B", "C")))
+    assert _widgets(pdf) == []
+
+
+def test_baking_removes_the_acroform():
+    """No fields, so no form -- and with it go `/NeedAppearances`, the flag
+    that first made two viewers disagree, and the `/DR` that names the
+    non-embedded /PMingLiU a viewer would reach for."""
     reader = PdfReader(io.BytesIO(_baked()))
-    for page in reader.pages:
-        for annot in (page.get("/Annots") or []):
-            obj = annot.get_object()
-            if obj.get("/FT") != "/Tx":
-                continue
-            value = obj.get("/V")
-            if value is None or not str(value).strip():
-                continue
-            assert int(obj.get("/F", 0)) & 2, \
-                f"a valued widget is still visible: {obj.get('/T')}"
+    assert "/AcroForm" not in reader.trailer["/Root"]
+
+
+def test_the_removed_widgets_do_not_linger_in_the_file():
+    """A widget taken off its page but left in the file is still there for any
+    tool that walks objects rather than pages -- and it is dead weight in an
+    email attachment. `/FT` appears on nothing but a form field."""
+    assert b"/FT" not in _baked()
+
+
+def test_every_value_the_form_carried_is_drawn_on_the_page():
+    """Removing a widget is only safe once its value is on the page. Every word
+    of every value `render_fields()` put in a box must be in the text of the
+    document `render()` ships, or flattening has deleted a statutory
+    particular."""
+    from tests.test_nar1_form_fill import build_xml, text_of
+    from services.nar1_form import fill
+    xml = build_xml(directors=("CHAN", "LEE", "WONG"), members=("A", "B", "C"))
+    shipped = text_of(fill.render(xml))
+    filled = PdfReader(io.BytesIO(fill.render_fields(xml)))
+    checked = 0
+    for name, spec in (filled.get_fields() or {}).items():
+        if spec.get("/FT") != "/Tx" or not str(spec.get("/V") or "").strip():
+            continue
+        for word in str(spec["/V"]).split():
+            assert word in shipped, f"{word!r} from {name} was not drawn"
+        checked += 1
+    assert checked > 100, f"only {checked} values checked; discovery broke"
+
+
+def test_a_value_bake_cannot_draw_is_refused_not_deleted():
+    """`bake()` draws text boxes and ticks. Anything else carrying a value --
+    the signature line's strike-through dropdown, if a caller ever fills it --
+    would be removed with its widget and vanish from the return without a
+    word. That has to be loud."""
+    from pypdf import PdfWriter
+    from pypdf.generic import NameObject, TextStringObject
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    writer = PdfWriter(clone_from=PdfReader(
+        io.BytesIO(fill.render_fields(build_xml()))))
+    choice = next(annot.get_object()
+                  for page in writer.pages
+                  for annot in (page.get("/Annots") or [])
+                  if annot.get_object().get("/FT") == "/Ch")
+    choice[NameObject("/V")] = TextStringObject(fm.STRIKE_THROUGH)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    with pytest.raises(ap.AppearanceError, match="/Ch"):
+        ap.bake(buffer.getvalue())
 
 
 def test_both_latin_and_cjk_faces_are_embedded_when_both_are_used():
@@ -189,12 +256,6 @@ def test_both_latin_and_cjk_faces_are_embedded_when_both_are_used():
                 found["cjk"] = embedded
     assert found.get("latin") is True, "the Latin face is missing or external"
     assert found.get("cjk") is True, "the CJK face is missing or external"
-
-
-def test_the_pmingliu_default_no_longer_decides_anything():
-    """Even if a stray /DA survives, no viewer should be reaching for it."""
-    reader = PdfReader(io.BytesIO(_baked()))
-    assert not reader.trailer["/Root"]["/AcroForm"].get("/NeedAppearances")
 
 
 def test_a_chinese_name_survives_into_the_text_layer():
@@ -398,11 +459,13 @@ def test_the_alignment_list_is_the_specimens_and_not_the_templates():
         assert name not in fill.CENTRED_FIELDS,             f"{name} is left-aligned on CR's own filed return"
 
 
-def _field_rect(reader, page_index, field_name):
-    """The widget rectangle CR laid out for `field_name` on `reader`'s page
-    `page_index`, read back from the rendered document's own AcroForm --
-    not assumed, so a template change cannot make this test drift silently."""
-    page = reader.pages[page_index]
+def _field_rect(filled_pdf, page_index, field_name):
+    """The widget rectangle CR laid out for `field_name` on page `page_index`,
+    read back from the FILLED FORM `render_fields()` produces -- not assumed,
+    so a template change cannot make this test drift silently. The shipped
+    return has no widgets left to read it from; it is the same pages in the
+    same order, so the rectangle carries across."""
+    page = PdfReader(io.BytesIO(filled_pdf)).pages[page_index]
     for annot in page.get("/Annots") or []:
         obj = annot.get_object()
         name = str(obj.get("/T") or "").split("__p")[0]
@@ -464,7 +527,8 @@ def test_the_baked_fidelity_wiring_is_actually_applied():
     _, name_x, name_size, _name_font = name_runs[0]
     full_name = "TEST COMPANY LIMITED  測試有限公司"     # what fill._company_name
                                                           # actually joins
-    rect = _field_rect(reader, 0, fm2.MAIN_1["company_name"])
+    rect = _field_rect(fill.render_fields(build_xml()), 0,
+                       fm2.MAIN_1["company_name"])
     left_pad = rect[0] + ap._INSET
     centred_x = ap.draw_position(full_name, rect, size=name_size, quadding=1,
                                  bold=True)

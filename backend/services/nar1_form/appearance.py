@@ -9,10 +9,18 @@ away and regenerate from `/DA`. Acrobat and Outlook obey; Chrome's pdfium
 largely renders the existing stream. Same bytes, two documents, which is
 exactly what the client reported.
 
-So the values are drawn as a real page layer in fonts we embed, the widgets
-are hidden so nothing paints over it, and NeedAppearances is cleared. `/V` is
-still written -- the data stays machine-readable and the existing suite still
-asserts on it -- but no viewer is asked to interpret it any more.
+So the values are drawn as a real page layer in fonts we embed, and then the
+form is REMOVED: every widget comes off its page and the AcroForm goes with it.
+
+HIDING WAS NOT ENOUGH (2026-09-14). The widgets used to stay, flagged Hidden,
+still carrying `/V`, the template's `/Q 1` and a /PMingLiU appearance stream.
+Desktop viewers honour the flag. iOS Quick Look does not: on a phone every
+value printed twice, ours and the widget's centred 12pt guess overlapping it.
+A viewer can ignore a flag; it cannot draw a widget that is not there.
+
+The field values are still available to anyone asking which value went in
+which box -- `fill.render_fields()` returns the form before it is baked -- but
+the document that is sent to anybody carries none.
 """
 from __future__ import annotations
 
@@ -20,7 +28,7 @@ import io
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject, NumberObject
+from pypdf.generic import ArrayObject, NameObject
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
@@ -228,9 +236,6 @@ def split_runs(text: str, *, bold: bool = True, latin: str | None = None
             runs.append((face, char))
     return runs
 
-
-#: /F bit 2 on an annotation: Hidden.
-_ANNOT_HIDDEN = 2
 
 #: Top and bottom breathing room inside a widget box, in points.
 _PAD = 2.0
@@ -511,7 +516,7 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
          regular: frozenset[str] | set[str] | None = None,
          centred: frozenset[str] | set[str] | None = None,
          faces: dict[str, str] | None = None) -> bytes:
-    """Draw every field value as page content and hide the widgets.
+    """Draw every field value as page content, then remove the form itself.
 
     Every one of these four is keyed on a field's ORIGINAL template name, and
     every one of them was measured off GSHK's filed NAR1 rather than read off
@@ -554,24 +559,34 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
         layer = rl_canvas.Canvas(
             buffer, pagesize=(float(box.width), float(box.height)))
         drew = False
+        # Every annotation that is NOT a form widget stays where it was.
+        kept = ArrayObject()
 
         for annot in (page.get("/Annots") or []):
             obj = annot.get_object()
-            kind = obj.get("/FT")
-            if kind == "/Btn":
-                if not _is_ticked(obj):
-                    continue
-                draw_tick(layer, obj["/Rect"])
-                obj[NameObject("/F")] = NumberObject(
-                    int(obj.get("/F", 0)) | _ANNOT_HIDDEN)
-                drew = True
+            if obj.get("/Subtype") != "/Widget":
+                kept.append(annot)
                 continue
-            if kind != "/Tx":
+            kind = obj.get("/FT")
+            name = str(obj.get("/T") or "").split("__p")[0]
+            if kind == "/Btn":
+                if _is_ticked(obj):
+                    draw_tick(layer, obj["/Rect"])
+                    drew = True
                 continue
             value = obj.get("/V")
             if value is None or not str(value).strip():
                 continue
-            name = str(obj.get("/T") or "").split("__p")[0]
+            if kind != "/Tx":
+                # The widget is about to be deleted, and this draws text boxes
+                # and ticks only. Anything else with a value -- the signature
+                # line's strike-through dropdown, if a caller ever fills it --
+                # would leave the return without a word.
+                raise AppearanceError(
+                    f"field {name!r} is a {kind} carrying {str(value)!r}, and "
+                    f"only text boxes and ticks are drawn. Flattening would "
+                    f"delete the value from the return."
+                )
             draw_value(layer, str(value), obj["/Rect"],
                        size=sizes.get(name, DEFAULT_SIZE),
                        bold=name not in regular,
@@ -579,8 +594,6 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
                        quadding=1 if name in centred else 0,
                        latin=faces.get(name),
                        field=name)
-            obj[NameObject("/F")] = NumberObject(
-                int(obj.get("/F", 0)) | _ANNOT_HIDDEN)
             drew = True
 
         layer.save()
@@ -588,22 +601,42 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
             buffer.seek(0)
             page.merge_page(PdfReader(buffer).pages[0])
 
-    acroform = writer._root_object.get("/AcroForm")
-    if acroform is not None:
-        # Already carried across by clone_from; only the flag needs clearing.
-        # The layer IS the appearance now. Leaving NeedAppearances true invites
-        # a viewer to discard it and redraw from /DA -- the original defect.
-        # DELETED rather than set to BooleanObject(False): pypdf's
-        # BooleanObject has no __bool__ override, so any instance -- true OR
-        # false -- is truthy in Python (verified against pypdf 6.16.1), which
-        # would make `acroform.get("/NeedAppearances")` read as set either way
-        # once the bytes are re-parsed. The PDF spec's own default for an
-        # ABSENT key is false, so deleting it is both correct and what a
-        # re-parsed reader actually reports as falsy.
-        acroform = acroform.get_object()
-        if "/NeedAppearances" in acroform:
-            del acroform[NameObject("/NeedAppearances")]
+        # THE WIDGETS GO, not just out of sight. They used to stay with their
+        # Hidden flag set, still carrying `/V`, the template's `/Q 1` and an
+        # appearance stream in the non-embedded /PMingLiU. A flag is a request
+        # to the viewer: desktop viewers honour it, iOS Quick Look does not,
+        # and on a phone every value printed twice -- ours, and the widget's
+        # centred 12pt guess on top of it. Nothing that is not on the page can
+        # be drawn over it.
+        if "/Annots" in page:
+            if kept:
+                page[NameObject("/Annots")] = kept
+            else:
+                del page[NameObject("/Annots")]
+
+    # No fields left, so no form. This also takes `/NeedAppearances` -- the
+    # flag that first made two viewers disagree -- and the `/DR` resources
+    # naming /PMingLiU with it. The client is asked to APPROVE this return,
+    # not to edit it, and a flattened page is the one form of "read-only" no
+    # viewer can second-guess.
+    if "/AcroForm" in writer._root_object:
+        del writer._root_object[NameObject("/AcroForm")]
 
     out = io.BytesIO()
     writer.write(out)
+
+    # The widget dictionaries and their appearance streams are now reachable
+    # from nothing, but pypdf writes every object it holds -- so each removed
+    # widget, and its copy of the value, would still ship inside the file:
+    # invisible, and there for any tool that walks objects rather than pages.
+    #
+    # NOT `compress_identical_objects(remove_unreferenced=True)`. That marks an
+    # object as referenced if ANY object it holds points at it, orphans
+    # included, in one pass (pypdf 6.16.1, `_writer.py`). The widgets were
+    # still pointed at by the orphaned `/Annots` arrays and the AcroForm's
+    # `/Fields`, so it dropped those containers and kept all 222 widgets.
+    # Cloning from the root copies only what the document can actually reach.
+    swept = PdfWriter(clone_from=PdfReader(io.BytesIO(out.getvalue())))
+    out = io.BytesIO()
+    swept.write(out)
     return out.getvalue()
