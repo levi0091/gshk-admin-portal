@@ -109,9 +109,31 @@ describe('ReturnDataCard', () => {
        'Director', 'Reserve Director'])
   })
 
-  it('starts unchosen rather than defaulting to a capacity nobody picked', async () => {
-    // A wrong capacity is accepted by CR's schema and rejected server-side
-    // AFTER the fee, so a plausible-looking default is worse than a blank.
+  it('shows the default the backend will file, selected, and says it is one', async () => {
+    // Levi 2026-09-14. The picker used to render blank for a natural person
+    // while the backend filed "Company Secretary" — the screen and the filing
+    // disagreed. The API now answers with the value that WILL be filed.
+    get.mockResolvedValue({
+      ...DATA, signatory_capacity: 'Director', signatory_capacity_is_default: true,
+    })
+    render(<ReturnDataCard caseId="c1" />)
+    expect(await screen.findByLabelText('Signing capacity')).toHaveValue('Director')
+    expect(screen.getByTestId('capacity-default-note')).toHaveTextContent(/default/i)
+    // No blank "Choose…" to fall back to once there is an answer.
+    expect([...screen.getByLabelText('Signing capacity').options].map(o => o.value))
+      .not.toContain('')
+  })
+
+  it('does not call a chosen capacity the default', async () => {
+    get.mockResolvedValue({
+      ...DATA, signatory_capacity: 'Company Secretary', signatory_capacity_is_default: false,
+    })
+    render(<ReturnDataCard caseId="c1" />)
+    await screen.findByLabelText('Signing capacity')
+    expect(screen.queryByTestId('capacity-default-note')).not.toBeInTheDocument()
+  })
+
+  it('still offers a blank prompt when nothing at all can be filed yet', async () => {
     render(<ReturnDataCard caseId="c1" />)
     expect(await screen.findByLabelText('Signing capacity')).toHaveValue('')
   })

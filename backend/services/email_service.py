@@ -69,9 +69,39 @@ TEST_RECIPIENTS = (
 #: admin would never learn whether the client was mailed.
 TIMEOUT_SECONDS = 15.0
 
+#: Shorter than TIMEOUT_SECONDS: a delivery check runs on a loop behind a
+#: progress screen the operator is watching, and one slow answer must not hold
+#: the whole poll. An unanswered probe is simply "pending" and asked again.
+DELIVERY_TIMEOUT_SECONDS = 8.0
+
 #: Levi 2026-08-16. SPF/DKIM only align on a domain the sender controls, and
 #: GSHK controls getstarted.hk — which is what makes Resend viable here.
 DEFAULT_FROM = "no-reply@getstarted.hk"
+
+#: The copy on every client-facing message (Levi 2026-09-08).
+#:
+#: THIS REPLACES COPYING THE CASE WORKER. Until now `POST /cases/{id}/
+#: verification/send` put `user["email"]` -- whichever staff member happened to
+#: press Send -- on the CC line of a letter about a client's statutory return.
+#: Two things were wrong with that. The client saw an individual's personal
+#: work address on a formal filing notice, and the record of what GSHK told
+#: that client lived in one person's mailbox, so it left with them when they
+#: were on leave or off the account.
+#:
+#: A shared, GSHK-controlled mailbox fixes both: the copy is the team's record
+#: rather than an individual's, and it is on the same domain the message is
+#: sent from, so it reads as the company writing rather than a person.
+#:
+#: A module constant, exactly like TEST_RECIPIENTS above and for the same
+#: reason: which address hears about a client's return is not a per-deployment
+#: setting somebody can point somewhere else by editing a Railway variable.
+#:
+#: THE SAME MAILBOX THE LETTER NAMES, and defined as `RENEWAL_MAILBOX` below
+#: because that is the role the client sees. Two literals would be two things to
+#: change, and the failure mode of changing one is a letter telling clients to
+#: write to a mailbox that no longer receives the copies.
+RENEWAL_MAILBOX = "renewal@getstarted.hk"
+CLIENT_CC = RENEWAL_MAILBOX
 
 
 class EmailError(RuntimeError):
@@ -97,6 +127,173 @@ class EmailError(RuntimeError):
 #
 # Do not reintroduce it. If mail must be suppressed in some future environment,
 # suppress it somewhere that cannot report a delivery that did not happen.
+
+
+#: How long to wait for the DNS answer behind undeliverable_reason(). Short on
+#: purpose: this runs before a send the operator is watching, and a slow
+#: resolver must cost them a moment, not the send. A timeout is NOT a failure
+#: -- see the function.
+DNS_TIMEOUT_SECONDS = 5.0
+
+
+def undeliverable_reason(address: str) -> str | None:
+    """Why `address` cannot receive mail, or None if it might.
+
+    WHY THIS EXISTS. Resend answers 200 for any syntactically valid address:
+    it accepts the message, then discovers the mailbox is unreachable and
+    bounces it minutes later, out of band. So a send to a domain that does not
+    exist reported complete success on the Client Verification screen, and the
+    operator learned nothing -- which is exactly what Levi hit on 2026-09-07
+    with an address that plainly did not exist. `EmailError` could not have
+    caught it; there was no error to catch.
+
+    What is checkable BEFORE sending is whether the domain can receive mail at
+    all: an MX record, or the A/AAAA fallback RFC 5321 §5 allows. That is a
+    real answer to "is this address deliverable", and it is the half of the
+    question that does not need a bounce.
+
+    WHAT THIS CANNOT DO, and the caller must not imply otherwise: a real domain
+    with a dead mailbox -- nosuchuser@gmail.com -- is indistinguishable from a
+    live one until it bounces. Only a bounce webhook can close that gap. This
+    catches the typo'd and made-up domains, which is what operators actually
+    produce.
+
+    SILENCE IS PERMISSION. Every uncertain answer -- a timeout, a resolver that
+    will not respond, no network, an unexpected library error -- returns None
+    and the send proceeds. A wrongly withheld verification email is far worse
+    than a bounce: it stalls a statutory filing on a director who was never
+    written to. Only a definitive "this domain does not exist" or "does not
+    accept email" refuses, and even then the message still goes to everyone
+    else on the board.
+    """
+    try:
+        from email_validator import (
+            EmailNotValidError, EmailUndeliverableError, validate_email,
+        )
+    except Exception:  # noqa: BLE001 -- see SILENCE IS PERMISSION above.
+        return None
+
+    try:
+        validate_email(
+            address,
+            check_deliverability=True,
+            timeout=DNS_TIMEOUT_SECONDS,
+        )
+    except EmailUndeliverableError as exc:
+        # The library's own wording: "The domain name X does not exist." /
+        # "... does not accept email." It names the domain, which is the part
+        # the operator has to fix, so it is passed through rather than
+        # replaced with a generic phrase.
+        return str(exc) or "the domain does not accept email"
+    except EmailNotValidError:
+        # A syntax complaint, not a deliverability one. The caller has already
+        # applied its own syntax gate and phrased its own refusal; re-reporting
+        # the same address in different words here would put two entries in the
+        # failure list for one mistake.
+        return None
+    except Exception:  # noqa: BLE001 -- see SILENCE IS PERMISSION above.
+        return None
+    return None
+
+
+#: Resend's `last_event` vocabulary, sorted into the only three answers this
+#: portal can act on. Anything Resend adds later falls through to "pending",
+#: which is the safe direction -- see delivery_status.
+#:
+#: `complained` counts as ARRIVED: the message reached the mailbox and the
+#: reader pressed "spam". That is worth telling the operator, so it carries a
+#: detail, but it is not a delivery failure and must not be reported as one.
+_ARRIVED_EVENTS = {
+    "delivered": None,
+    "opened": None,
+    "clicked": None,
+    "complained": "delivered, but the recipient marked it as spam",
+}
+
+#: The ones that mean the director does NOT have the return.
+_FAILED_EVENTS = {
+    "bounced": "the recipient's mail server rejected it",
+    "failed": "the message could not be sent",
+    # The quiet one, and the reason this check earns its place. An address that
+    # hard-bounced for anyone on this Resend account is suppressed, and a later
+    # send to it returns 200 with an id and is never attempted. Without asking,
+    # that is indistinguishable from a delivery.
+    "suppressed": ("this address is on Resend's suppression list after an "
+                   "earlier hard bounce, so nothing was sent to it"),
+    "canceled": "the send was canceled",
+}
+
+#: Still in flight. `delivery_delayed` belongs here and not in failures: the
+#: receiving server is retrying (a full mailbox, a transient fault), and it may
+#: still arrive.
+_PENDING_EVENTS = frozenset({"sent", "queued", "scheduled", "delivery_delayed"})
+
+
+def delivery_status(message_id: str) -> dict:
+    """What Resend currently knows about one message it accepted.
+
+    WHY THIS EXISTS. `send()` returning 200 means Resend took the message, not
+    that anybody received it: a dead mailbox at a live domain, and a suppressed
+    address, both look exactly like success at send time. `GET /emails/{id}`
+    reports the message's `last_event`, which is the same fact a bounce webhook
+    would deliver -- ASKED FOR rather than waited for.
+
+    That is the whole reason this is a poll and not a webhook: it needs no
+    public endpoint, no signing secret, no Resend dashboard registration and no
+    new environment variable. It reuses the API key that is already sending the
+    mail, so it works on DEV and PROD the moment it deploys.
+
+    Returns `{"status", "event", "detail"}` where status is one of:
+
+      delivered -- it reached the recipient's mail server
+      failed    -- it did not, and will not
+      pending   -- not resolved YET, or not knowable right now
+
+    UNCERTAINTY IS ALWAYS "PENDING", NEVER "FAILED". A timeout, a 5xx, an
+    unparseable body, an event name Resend has not documented here -- every one
+    of those returns pending. Telling an operator a return bounced when it did
+    not would have them re-send a statutory notice to a client who already has
+    it, and re-sending invalidates the approval links the rest of the board is
+    holding.
+    """
+    if not message_id:
+        return {"status": "pending", "event": None,
+                "detail": "no message id was recorded for this recipient"}
+
+    config = get_email_config()
+
+    try:
+        response = httpx.get(
+            f"{RESEND_ENDPOINT}/{message_id}",
+            headers={"Authorization": f"Bearer {config.api_key}"},
+            timeout=DELIVERY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let a probe fail a send
+        # Scrubbed: an httpx error can carry the request, and the request
+        # carries the Authorization header.
+        return {"status": "pending", "event": None,
+                "detail": _scrub(f"could not reach Resend to check delivery "
+                                 f"({type(exc).__name__})", config.api_key)}
+
+    if response.status_code >= 400:
+        return {"status": "pending", "event": None,
+                "detail": f"Resend could not report on this message "
+                          f"({response.status_code})"}
+
+    try:
+        event = ((response.json() or {}).get("last_event") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return {"status": "pending", "event": None,
+                "detail": "Resend's answer could not be read"}
+
+    if event in _ARRIVED_EVENTS:
+        return {"status": "delivered", "event": event,
+                "detail": _ARRIVED_EVENTS[event]}
+    if event in _FAILED_EVENTS:
+        return {"status": "failed", "event": event,
+                "detail": _FAILED_EVENTS[event]}
+    # Includes _PENDING_EVENTS and anything Resend adds after this was written.
+    return {"status": "pending", "event": event or None, "detail": None}
 
 
 class EmailConfig:
@@ -358,9 +555,9 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
 # the reader has been asked to CHECK particulars, so showing them in the shape
 # they will meet on the form makes the check natural instead of decorative.
 #
-# There is deliberately NO action button. Nothing here is clickable: the client
-# confirms by replying, and a button that only opened a mail composer would be
-# dressing up the ask as something it is not.
+# There is ONE action button, "Confirm NAR1", and nothing else here is
+# clickable. It carries the client's own approval link; see `_approval_button`
+# and routers/public_approval for why a GET on it changes nothing.
 # ---------------------------------------------------------------------------
 
 #: Brand tokens, verbatim from the repo's design system. Named here so the
@@ -414,9 +611,11 @@ GSHK_RENEWAL_WHATSAPP = "+852 5541 1994"
 GSHK_ADDRESS = ("Suite C, Level 7, World Trust Tower, 50 Stanley Street, "
                 "Central, Hong Kong")
 GSHK_SERVICES = "Corporate Advisory | Company Formation | Accounting Services"
-GSHK_SENDER_TITLE = "Account Manager"
 
-#: The three page references, verbatim from the sample.
+#: The FOUR page references, verbatim from `docs/Auto email - NAR1 Review_v2.pdf`
+#: (Levi 2026-09-08). `(where, what, when)`; `when` is the parenthetical the
+#: sample sets in italics after the label, and is "" for the three that always
+#: apply.
 #:
 #: THEY ARE HARDCODED BECAUSE CR'S FORM IS STATIC (spec §1b). CR keeps a
 #: section's page whether or not it has content, so "Page 5" is Page 5 on every
@@ -424,44 +623,58 @@ GSHK_SENDER_TITLE = "Account Manager"
 #: measured them against a renderer that DROPPED empty pages — the renderer was
 #: the bug and it is fixed. If that regressed, this list would quietly misdirect
 #: every client, which is why the fill tests assert a nine-page document.
+#:
+#: Continuation Sheet C is the ONE conditional entry, and it says so in its own
+#: text rather than being computed: the sheet exists only where the board runs
+#: past the space Page 5 gives it, and a client reading a bullet about a sheet
+#: that is not in their PDF is better served by "if applicable" than by our
+#: guessing from a snapshot.
 NAR1_CHECK_POINTS = (
-    ("Page 2", "Share capital"),
-    ("Page 5", "Director's details"),
-    ("Schedule 1", "Shareholder's details"),
+    ("Page 2", "Share Capital", ""),
+    ("Page 5", "Director's Details", ""),
+    ("Schedule 1", "Shareholder's Details", ""),
+    ("Continuation Sheet C", "Additional Director's Details",
+     "if applicable, where there is more than one director"),
 )
 
-#: The service charge a later amendment attracts. Sample wording: "Any
-#: amendments later will incur a HK$1000 service cost."
-AMENDMENT_FEE = "HK$1000"
+#: The service charge, and WHEN it applies. The wording changed with the sample
+#: (Levi 2026-09-08): it is no longer "any amendments later" but specifically
+#: changes requested AFTER FILING, which is the point at which a correction
+#: costs GSHK a second submission.
+AMENDMENT_FEE = "HK$1,000"
 
-
-def _first_name(full_name: str | None) -> str:
-    """What to call the reader.
-
-    Returns the WHOLE name, not a first token. The sample greets "Hi Dominique"
-    because that is a Western given name; this book is mostly Hong Kong
-    directors recorded surname-first, where the first token is the SURNAME and
-    "Hi Chan" is not how anybody is addressed. The caller passes `given_names`
-    when the record has them and the full name otherwise, so the split is made
-    against the database's own field rather than guessed from a string.
-    """
-    return (full_name or "").strip()
+# Where a client sends changes is `RENEWAL_MAILBOX`, defined beside CLIENT_CC
+# at the top of this module because it is the same mailbox: the letter names it
+# and the copy of the letter goes to it. NOT the reply address -- this message
+# is sent from no-reply@getstarted.hk and the sample tells the reader in as
+# many words that replies are not monitored, so the one mailbox it names has to
+# be a mailbox somebody actually reads.
 
 
 def verification_email(case: dict, entity: dict,
                        attachment_name: str | None = None,
                        approval_url: str | None = None,
-                       deadline=None,
-                       recipient_name: str | None = None,
-                       sender_name: str | None = None) -> tuple[str, str]:
+                       deadline=None) -> tuple[str, str]:
     """The client-verification message: subject and HTML body.
 
-    THE WORDING IS `docs/Confirmation NAR1 Notice.pdf`, VERBATIM (Levi
-    2026-09-01), with the company, the director and the dates substituted. It
-    is the letter GSHK already sends by hand, so a client who has had one
-    before receives the same message from the portal — which is the point:
-    an automated mail that reads differently from the one they know is an
-    automated mail they treat as suspicious.
+    THE WORDING IS `docs/Auto email - NAR1 Review_v2.pdf`, VERBATIM (Levi
+    2026-09-08), with the company and the deadline substituted. It REPLACES the
+    `Confirmation NAR1 Notice` letter this function carried before, and the
+    differences are the point rather than a restyling:
+
+      * it addresses "Dear Client", not a named director. The sample is written
+        to be sent unattended, and this message now goes out per-director from
+        an automated job — greeting each recipient personally would imply a
+        human picked them;
+      * it is signed by the COMPANY, not by the case worker. There is therefore
+        no `sender_name` argument any more, and no "Account Manager" line;
+      * it says in as many words that replies are not monitored, and names
+        `renewal@getstarted.hk` as where changes go. `reply_to` is still set on
+        the message by the caller, so a client who replies anyway reaches the
+        case worker rather than a black hole — but the mailbox the letter TELLS
+        them to use is the one GSHK actually watches;
+      * the charge is for changes requested AFTER FILING, which is a different
+        (and later) event than the "any amendments later" the old letter named.
 
     Every interpolated value is escaped. Company names come out of the Viewpoint
     ETL, and an unescaped one lands in the client's mailbox as live markup.
@@ -480,44 +693,52 @@ def verification_email(case: dict, entity: dict,
         gateway that visits every link in every message cannot approve anything;
       * that page asks for no credential, no password and no payment detail, so
         there is nothing on it worth phishing FOR;
-      * the message still asks the client to reply if anything is wrong, so the
-        link is the "yes" path only and the human path is unchanged;
       * `approval_url` is None when the deployment cannot build one, and the
-        message then reads exactly as it did before.
+        letter then asks for a reply instead — the only place its wording
+        departs from the sample, because "click Confirm below" beside no button
+        is worse than a sentence the sample does not contain.
 
-    `deadline` is the date the auto-approval job will act on, read from the same
-    value that job reads, so the email and the job can never state different
-    dates.
+    `deadline` is the date the auto-approval job will act on — the date the
+    operator entered on the Client Verification screen, stored as the approval
+    token's `expires_at` and read back from it here, so the email, the approval
+    page and the job can never state different dates.
     """
     company = (entity.get("company_name") or "").strip()
     case_no = (case.get("case_no") or "").strip()
     br_number = (entity.get("br_number") or "").strip()
-    greeting_name = _first_name(recipient_name)
-    signer = (sender_name or "").strip() or "Get Started HK Limited"
 
     # The sample's own subject line.
     subject = (
-        f"Compliance Reminder: Registration Due - {company}"
-        if company else "Compliance Reminder: Registration Due"
+        f"[Action Required] NAR1 Review & Confirmation - {company}"
+        if company else "[Action Required] NAR1 Review & Confirmation"
     )
 
     bullets = "".join(
-        f'<tr><td style="padding:3px 0;font-family:{_FONT};font-size:15px;'
+        f'<tr>'
+        f'<td width="14" valign="top" style="width:14px;padding:4px 0 0;'
+        f'font-family:{_FONT};font-size:15px;line-height:1.6;'
+        f'color:{_T_MUTED}">&bull;</td>'
+        f'<td style="padding:4px 0;font-family:{_FONT};font-size:15px;'
         f'line-height:1.6;color:{_T_BODY}">'
         f'<span style="font-weight:600;color:{_T_HEAD}">'
-        f"{_html.escape(where)}:</span> {_html.escape(what)}</td></tr>"
-        for where, what in NAR1_CHECK_POINTS
+        f"{_html.escape(where)}</span>"
+        + (f'<em style="color:{_T_BODY}"> ({_html.escape(when_)})</em>'
+           if when_ else "")
+        + f": {_html.escape(what)}</td></tr>"
+        for where, what, when_ in NAR1_CHECK_POINTS
     )
 
     when = _deadline_text(deadline)
-    # "If we do not hear from you by <date>" — omitted entirely when there is no
-    # date, rather than rendered with a blank where a legal deadline should be.
+    # "If we do not hear from you by <date>" — the date omitted entirely when
+    # there is none, rather than rendered as a blank where a legal deadline
+    # should be. The rest of the sentence stands either way: what silence means
+    # is the fact the client most needs, and it does not depend on the date.
     by_when = (f"If we do not hear from you by "
-               f"<strong>{_html.escape(when)}</strong>, we will assume you "
-               f"confirm the document and proceed with filing. "
+               f"<strong>{_html.escape(when)}</strong>, the draft will be "
+               f"deemed confirmed and we will proceed with the NAR1 filing."
                if when else
-               "If we do not hear from you, we will assume you confirm the "
-               "document and proceed with filing. ")
+               "If we do not hear from you, the draft will be deemed confirmed "
+               "and we will proceed with the NAR1 filing.")
 
     attached = ""
     if attachment_name:
@@ -571,49 +792,58 @@ def verification_email(case: dict, entity: dict,
         f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
 
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY};padding-bottom:16px">'
-        f'Hi {_html.escape(greeting_name) or "there"},</div>'
+        f'color:{_T_BODY};padding-bottom:16px">Dear Client,</div>'
 
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY}">I enclose herewith the NAR1 for your review. '
-        f"Please carefully check and confirm the following:</div>"
+        f'color:{_T_BODY}">Your draft NAR1 is now available for review.</div>'
 
-        f'<div style="font-family:{_FONT};font-size:15px;font-weight:600;'
-        f'color:{_T_HEAD};padding:20px 0 6px">'
-        f"1. NAR1 Form - Signature not required</div>"
+        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+        f'color:{_T_BODY};padding-top:14px">Please review the attached draft '
+        f"carefully, with particular attention to the following:</div>"
 
         f'<table role="presentation" cellpadding="0" cellspacing="0" '
-        f'border="0" style="margin:0 0 6px">{bullets}</table>'
+        f'border="0" style="margin:10px 0 0">{bullets}</table>'
 
-        # The director's duty, the deadline and the amendment charge — the one
-        # paragraph in this message with legal weight, so it gets the single
-        # carrot rule the design spends its accent on.
+        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+        f'color:{_T_BODY};padding-top:20px">'
+        f"{_confirm_instruction(approval_url)}</div>"
+
+        # The deadline and the amendment charge — the two sentences in this
+        # message with money and a statutory filing behind them, so they get the
+        # single carrot rule the design spends its accent on.
         f'<table role="presentation" width="100%" cellpadding="0" '
-        f'cellspacing="0" border="0" style="margin:22px 0 0"><tr>'
+        f'cellspacing="0" border="0" style="margin:20px 0 0"><tr>'
         f'<td width="3" bgcolor="{_CARROT}" '
         f'style="width:3px;background:{_CARROT};border-radius:2px">&nbsp;</td>'
         f'<td style="padding:2px 0 2px 18px">'
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY}">Please note that the director has the duty to '
-        f"ensure <strong>ALL</strong> information on NAR1 is correct before "
-        f"registration. {by_when}Any amendments later will incur a "
-        f"{_html.escape(AMENDMENT_FEE)} service cost.</div>"
+        f'color:{_T_BODY}">{by_when}</div>'
+        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+        f'color:{_T_BODY};padding-top:12px">Any changes requested after filing '
+        f"will be subject to a {_html.escape(AMENDMENT_FEE)} service fee. "
+        f"{_change_instruction(approval_url)}</div>"
         f"</td></tr></table>"
 
-        f"{_approval_button(approval_url, None)}"
-        f'<div style="font-family:{_FONT};font-size:13px;line-height:1.6;'
-        f'color:{_T_MUTED};padding-top:14px">'
-        f"{_confirm_instruction(approval_url)}</div>"
-
+        # The attachment chip BEFORE the disclaimer, so the sample's last two
+        # lines — "replies are not monitored", then the sign-off — stay
+        # together. Between them it reads as an interruption.
         f"{attached}"
 
-        # Signature block, from the sample.
+        f"{_unmonitored_notice(approval_url)}"
+
+        # Signature block, from the sample. The COMPANY signs it, not the case
+        # worker: this message is generated and sent without a human in the
+        # loop, and a personal name on it would claim otherwise.
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY};padding-top:26px">Best regards,</div>'
+        f'color:{_T_BODY};padding-top:26px">Kind regards,</div>'
         f'<div style="font-family:{_FONT};font-size:15px;font-weight:600;'
-        f'color:{_T_HEAD};padding-top:14px">{_html.escape(signer)}</div>'
-        f'<div style="font-family:{_FONT};font-size:14px;color:{_T_BODY}">'
-        f"{_html.escape(GSHK_SENDER_TITLE)}</div>"
+        f'color:{_T_HEAD};padding-top:4px">Get Started HK Limited</div>'
+
+        # The button sits AFTER the sign-off, as the sample places it, and
+        # centred — it is the one action in the message and the last thing the
+        # reader meets.
+        f"{_approval_button(approval_url)}"
+
         f"{reference}"
         f"</td></tr>"
 
@@ -636,21 +866,53 @@ def verification_email(case: dict, entity: dict,
 
 
 def _confirm_instruction(approval_url: str | None) -> str:
-    """What the reader is asked to do — which differs by whether a link exists.
+    """How the reader says yes — which differs by whether a link exists.
 
-    Kept as one sentence per case rather than a link appended to a fixed
-    sentence: "Reply to confirm" followed by a Confirm button asks for the same
-    thing twice, and a reader doing both produces two answers for one return.
+    THE SAMPLE'S SENTENCE, and its one departure from the sample. With a link
+    it is verbatim. Without one, "click Confirm below" would point at a button
+    that is not there, so the deployment-without-a-link case asks for the reply
+    that was the only path before spec §5. The "No signature is required."
+    half is true either way and survives both.
     """
     if approval_url:
-        return ("If it is correct, press <strong>Confirm</strong> below. If "
-                "anything needs changing, reply to this email and tell us what "
-                "is wrong &mdash; we will revise the form before it is filed.")
-    return ("Reply to this email to confirm it is correct, or tell us what "
-            "needs changing and we will revise the form before it is filed.")
+        return ("If the information is correct, please click "
+                "<strong>Confirm</strong> below. No signature is required.")
+    return ("If the information is correct, please reply to this email to "
+            "confirm. No signature is required.")
 
 
-def _approval_button(approval_url: str | None, deadline) -> str:
+def _change_instruction(approval_url: str | None) -> str:
+    """Where a client sends changes, in the sample's own words.
+
+    `renewal@getstarted.hk` and not a reply, because the message says replies
+    are not monitored — see `_unmonitored_notice`. Without a button there is no
+    "do not click confirm" to give, so that clause goes and the mailbox stays.
+    """
+    if approval_url:
+        return ("If changes are required, please <strong>do not click "
+                f"confirm</strong> and email {_html.escape(RENEWAL_MAILBOX)} "
+                "before the deadline.")
+    return ("If changes are required, please email "
+            f"{_html.escape(RENEWAL_MAILBOX)} before the deadline.")
+
+
+def _unmonitored_notice(approval_url: str | None) -> str:
+    """"This is an automatically generated email. Replies are not monitored."
+
+    OMITTED when there is no approval link, and that is not a style choice: the
+    fallback letter above asks the reader to REPLY, and a message that asks for
+    a reply and then says replies are not read has told the client to do
+    nothing at all.
+    """
+    if not approval_url:
+        return ""
+    return (f'<div style="font-family:{_FONT};font-size:14px;line-height:1.6;'
+            f'color:{_T_MUTED};font-style:italic;padding-top:20px">'
+            f"This is an automatically generated email. Replies to this email "
+            f"are not monitored.</div>")
+
+
+def _approval_button(approval_url: str | None) -> str:
     """The one-press confirmation (spec §5), or nothing at all.
 
     A BULLETPROOF button: a bordered table cell with the anchor filling it, not
@@ -658,30 +920,36 @@ def _approval_button(approval_url: str | None, deadline) -> str:
     inline anchors and leaves a bare blue link where the call to action should
     be — the same reason this whole message is tables and inline styles.
 
+    CENTRED, as the sample sets it, via an `align` attribute on a wrapper cell
+    rather than `margin:0 auto` — Word ignores auto margins on tables.
+
+    "Confirm NAR1" (Levi 2026-09-08) is the sample's own label, even though the
+    body copy above it says "click Confirm below" — that mismatch is in the
+    sample and is kept, because the two are unambiguous together and the rule
+    on this letter is verbatim. The label the button MUST match is the approval
+    page's, which reads "Confirm & File": that pair is what tells a client
+    mid-flow that they are still in the same transaction.
+
     The URL is escaped like every other interpolated value. It is ours, not the
     client's, but the escaping rule in this module has no exceptions: the one
     place a rule is relaxed is where the next injection lands.
     """
     if not approval_url:
         return ""
-    note = ""
-    when = _deadline_text(deadline)
-    if when:
-        note = (f'<div style="font-family:{_FONT};font-size:13px;'
-                f'line-height:1.6;color:{_T_MUTED};padding-top:12px">'
-                f"If we do not hear from you by {_html.escape(when)}, we will "
-                f"proceed with filing this return as prepared.</div>")
     return (
+        f'<table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" style="margin:26px 0 4px">'
+        f'<tr><td align="center">'
         f'<table role="presentation" cellpadding="0" cellspacing="0" '
-        f'border="0" style="margin:26px 0 0"><tr>'
+        f'border="0"><tr>'
         f'<td bgcolor="{_CARROT}" style="background:{_CARROT};'
         f'border-radius:6px" align="center">'
         f'<a href="{_html.escape(approval_url, quote=True)}" '
-        f'style="display:inline-block;padding:13px 26px;font-family:{_FONT};'
-        f'font-size:15px;font-weight:600;color:#FFFFFF;text-decoration:none">'
-        f"Confirm these particulars are correct</a>"
+        f'style="display:inline-block;padding:14px 40px;font-family:{_FONT};'
+        f'font-size:17px;font-weight:600;color:#FFFFFF;text-decoration:none">'
+        f"Confirm NAR1</a>"
         f"</td></tr></table>"
-        f"{note}"
+        f"</td></tr></table>"
     )
 
 

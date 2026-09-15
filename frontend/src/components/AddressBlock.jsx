@@ -1,4 +1,5 @@
 import { optionsFor } from '../lib/lookups.js'
+import { formatNumber } from '../lib/format.js'
 import FieldWarning from './FieldWarning.jsx'
 
 /**
@@ -190,7 +191,7 @@ function CountedLine({ id, label, value, onChange }) {
  */
 function SharedNote({ count, readOnly = false }) {
   if (count <= 1) return null
-  const n = count.toLocaleString()
+  const n = formatNumber(count)
   return (
     <div className="ab-note" role="note">
       Shared by <b>{n}</b> records.{' '}

@@ -22,11 +22,19 @@ import {
  *      role you tried because that role also held something else.
  */
 
-/** Every (module, permission) pair the portal can grant. CLAUDE.md's table. */
+/**
+ * Every (module, permission) pair the portal can grant. CLAUDE.md's table.
+ *
+ * `documents:read/write/delete` ARE NOT HERE ANY MORE (Levi 2026-09-07,
+ * migration 040). The module is gone: a document is filed against a company, a
+ * person or a case and takes that record's grant. Leaving the three in this
+ * list would keep the power set honest about a permission nobody can be given,
+ * and — worse — the "no other permission moves this" property below would still
+ * pass while asserting nothing about the modules that now decide.
+ */
 const ALL = [
   'companies:read', 'companies:write',
   'persons:read', 'persons:write',
-  'documents:read', 'documents:write', 'documents:delete',
   'nar1:read', 'nar1:write',
   'tpsi:read', 'tpsi:write', 'tpsi:submit',
   'audit_trail:read',
@@ -59,18 +67,22 @@ const CONTRACT = [
     toggleFlags: 'companies:write',
     editShareClasses: 'companies:write',
     editParties: 'companies:write',
-    uploadDocument: 'documents:write',
-    downloadDocument: 'documents:read',
-    removeDocument: 'documents:delete',
+    // A company's papers follow the company (migration 040). `removeDocument`
+    // is a WRITE, not a delete level — `companies` has none, and removing a
+    // document is a change to what the record holds.
+    uploadDocument: 'companies:write',
+    downloadDocument: 'companies:read',
+    removeDocument: 'companies:write',
     openCase: 'nar1:write',
   }],
   ['personProfile', personProfileCaps, {
     editPerson: 'persons:write',
     editIdentityDocuments: 'persons:write',
     addIdentityDocument: 'persons:write',
-    uploadDocument: 'documents:write',
-    downloadDocument: 'documents:read',
-    removeDocument: 'documents:delete',
+    // Now the same grant the identity documents beside them always used.
+    uploadDocument: 'persons:write',
+    downloadDocument: 'persons:read',
+    removeDocument: 'persons:write',
   }],
   ['companyRegistry', companyRegistryCaps, {
     addCompany: 'companies:write',
@@ -175,37 +187,56 @@ describe('the module separations that actually bit', () => {
     case: caseWorkflowCaps(canFrom(new Set(held))),
   })
 
-  it('keeps documents independent of companies', () => {
-    // A role may file documents against a company it cannot edit, and edit a
-    // company whose documents it may not touch. Both directions.
-    const docsOnly = caps(['companies:read', 'documents:write', 'documents:read'])
-    expect(docsOnly.company.uploadDocument).toBe(true)
-    expect(docsOnly.company.downloadDocument).toBe(true)
-    expect(docsOnly.company.editCompany).toBe(false)
+  // REVERSES "keeps documents independent of companies" (Levi 2026-09-07).
+  //
+  // That test asserted the old three-module split — "a role may file documents
+  // against a company it cannot edit, and edit a company whose documents it may
+  // not touch, both directions" — and both directions turned out to be bugs
+  // wearing a principle's clothes. Migration 040 drops the module; a document
+  // now follows the record it is filed against.
 
-    const companyOnly = caps(['companies:read', 'companies:write'])
-    expect(companyOnly.company.editCompany).toBe(true)
-    expect(companyOnly.company.uploadDocument).toBe(false)
-    expect(companyOnly.company.downloadDocument).toBe(false)
-    expect(companyOnly.company.removeDocument).toBe(false)
+  it("gives a company's papers to whoever holds the company", () => {
+    // The complaint: a role granted Companies (edit) could not upload the
+    // certificate of incorporation for a company it was trusted to edit the CR
+    // number of, and had to be given a second grant nobody knew to ask for.
+    const companyEditor = caps(['companies:read', 'companies:write'])
+    expect(companyEditor.company.editCompany).toBe(true)
+    expect(companyEditor.company.uploadDocument).toBe(true)
+    expect(companyEditor.company.downloadDocument).toBe(true)
+    expect(companyEditor.company.removeDocument).toBe(true)
   })
 
-  it('keeps documents:delete apart from documents:write', () => {
-    // Uploading a new version is not the same act as destroying what is filed.
-    const writeNotDelete = caps(['documents:read', 'documents:write'])
-    expect(writeNotDelete.company.uploadDocument).toBe(true)
-    expect(writeNotDelete.company.removeDocument).toBe(false)
+  it('lets a company READER download but never upload or remove', () => {
+    // Reading opens the record and the papers on it. Changing what the record
+    // holds is a write, and that includes removing a document.
+    const reader = caps(['companies:read'])
+    expect(reader.company.downloadDocument).toBe(true)
+    expect(reader.company.uploadDocument).toBe(false)
+    expect(reader.company.removeDocument).toBe(false)
+    expect(reader.company.editCompany).toBe(false)
   })
 
-  it("treats a person's IDENTITY documents as persons, not documents", () => {
-    // An identity record is part of the person even when it carries a scan:
-    // POST /persons/{id}/identity-documents is gated on persons:write.
-    const personsOnly = caps(['persons:read', 'persons:write'])
-    expect(personsOnly.person.addIdentityDocument).toBe(true)
-    expect(personsOnly.person.editIdentityDocuments).toBe(true)
-    // ...and the scan itself is still a document, which this role cannot read.
-    expect(personsOnly.person.downloadDocument).toBe(false)
-    expect(personsOnly.person.uploadDocument).toBe(false)
+  it("gives a person's papers to whoever holds the person", () => {
+    // The identity documents were ALWAYS `persons` — an identity record is
+    // part of the person even when it carries a scan. What changed is that the
+    // ordinary documents beside them now agree, which is what an operator
+    // already assumed was true.
+    const personEditor = caps(['persons:read', 'persons:write'])
+    expect(personEditor.person.addIdentityDocument).toBe(true)
+    expect(personEditor.person.editIdentityDocuments).toBe(true)
+    expect(personEditor.person.uploadDocument).toBe(true)
+    expect(personEditor.person.downloadDocument).toBe(true)
+    expect(personEditor.person.removeDocument).toBe(true)
+  })
+
+  it("does not let a company grant reach a PERSON's documents", () => {
+    // The module is read off the record, not off the caller's best grant. A
+    // role that may edit companies has no business removing a director's
+    // identity scan.
+    const companyEditor = caps(['companies:read', 'companies:write'])
+    expect(companyEditor.person.downloadDocument).toBe(false)
+    expect(companyEditor.person.uploadDocument).toBe(false)
+    expect(companyEditor.person.removeDocument).toBe(false)
   })
 
   it('keeps opening a case out of companies:write', () => {

@@ -153,6 +153,17 @@ export default function CaseWorkflowPage() {
     })
   }, [load])
 
+  // A re-read that does NOT advance. For an action that finishes a stage but
+  // whose result the operator must still be able to check and undo before
+  // moving on — attaching the wet-signed scan (Levi 2026-09-14). Through
+  // `onChanged` the upload threw them straight onto Submission, so a wrong
+  // file was only discovered, if at all, a stage later. The stage offers its
+  // own "Continue to Submission →" instead.
+  const onRefresh = useCallback(async () => {
+    setFailure(null)
+    await load()
+  }, [load])
+
   if (caseRow === undefined) {
     return <div className="empty-state" style={{ padding: 32 }}>Loading case…</div>
   }
@@ -166,7 +177,7 @@ export default function CaseWorkflowPage() {
   if (!caseRow) return null
 
   const c = caseRow
-  const { text: annivText, due } = labelForDays(c.days_to_anniversary)
+  const { text: annivText, overdue } = labelForDays(c.days_to_anniversary)
   const current = step ?? 1
   // `reachedStage` answers 0 for a closed case — no stage is reachable — and
   // `step` follows it, so `STAGE_LABELS[current - 1]` is `STAGE_LABELS[-1]`:
@@ -184,7 +195,7 @@ export default function CaseWorkflowPage() {
   // three directors. It renders in the same place as an error and scrolls the
   // same way, so no stage has a reason to grow an alert of its own.
   const stageProps = {
-    caseRow: c, onChanged, onError: setFailure, onWarn: warn, onGo: goTo,
+    caseRow: c, onChanged, onRefresh, onError: setFailure, onWarn: warn, onGo: goTo,
   }
 
   // THE ONLY PLACE A CR REFUSAL IS DRAWN. The stages used to render the same
@@ -243,7 +254,7 @@ export default function CaseWorkflowPage() {
             {c.br_number ? ` · BRN ${c.br_number}` : ''}
             {annivText ? ' · ' : ''}
             {annivText && (
-              <span className={due ? 'td-anniv-due' : ''}>{annivText}</span>
+              <span className={overdue ? 'td-anniv-overdue' : ''}>{annivText}</span>
             )}
           </div>
         </div>

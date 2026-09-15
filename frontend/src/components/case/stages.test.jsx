@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -8,6 +8,7 @@ import StageClientVerification from './StageClientVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
+import { hongKongTodayISO } from '../../lib/anniversary.js'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
 const blob = vi.fn(); const upload = vi.fn()
@@ -96,6 +97,22 @@ const RECIPIENTS = {
 //: GET /tpsi/credentials — the SIGNING credential of whoever is logged in. It
 //: is the only thing that can sign a NAR1 (Q1), so the Signing stage reads it
 //: to say whose signature is about to be applied, and refuses without it.
+//: GET /cases/{id}/manual-receipt-prefill — what the manual receipt form fills
+//: in itself, and its dropdowns (nar1_cases.RECEIPT_VOCABULARY's shape).
+const PREFILL = {
+  fields: { brNo: '2100028',
+            engCoyName: 'Harbour Tech Ltd.', accNo: 'N00577470008' },
+  deposit_payment_method: 'Deduct from Account',
+  vocabulary: {
+    pymtMtd: [{ code: 'Deduct from Account', label: 'Deduct from Account' },
+              { code: 'Cheque', label: 'Cheque' }],
+    revCode: [{ code: '16', label: '16 — Registration of annual return (private company)' },
+              { code: '118', label: '118 — Annual return fee' }],
+    docShtFrm: [{ code: 'NAR1', label: 'NAR1 — delivered on time' },
+                { code: 'NAR1L', label: 'NAR1L — delivered late' }],
+  },
+}
+
 //: Reassigned per-test where the absence is the point.
 let CREDENTIALS = {
   eservice_user_id: 'GSHKPN02', has_eservice_password: true,
@@ -115,6 +132,7 @@ beforeEach(() => {
     if (u.includes('/verification/recipients')) return Promise.resolve(RECIPIENTS)
     if (u.includes('/summary')) return Promise.resolve(FILING_SUMMARY)
     if (u.includes('/tpsi/credentials')) return Promise.resolve(CREDENTIALS)
+    if (u.includes('/manual-receipt-prefill')) return Promise.resolve(PREFILL)
     return Promise.resolve({ fee: '105.00', max_fee: '3480.00',
                              fee_is_certain: false,
                              balance: '12480', sufficient: true })
@@ -273,15 +291,26 @@ describe('Client Verification', () => {
     <StageClientVerification caseRow={at(over)} canWrite onWarn={onWarn}
                              onChanged={onChanged} onError={onError} />)
 
+  //: The deadline every send now carries (Levi 2026-09-07). Far enough out that
+  //: it stays in the future for the life of this suite — the field's own `min`
+  //: is today, and a date in the past is refused by the API.
+  const RESPOND_BY = '2027-12-31'
+
+  /** Fill the mandatory deadline. Its own helper because it gates every send. */
+  const setDeadline = (user, value = RESPOND_BY) =>
+    user.type(screen.getByLabelText(/Client must reply by/), value)
+
   // ── spec §5: one message per director, so a send can partly succeed ─────
 
   async function pressSend() {
     // Same gate the other send tests go through: the chips have to be on
-    // screen and the review ticked before the button is live.
+    // screen, the review ticked and a deadline chosen before the button is
+    // live.
     const user = userEvent.setup()
     renderIt()
     await screen.findByText('chan@example.com')
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
     return user
   }
@@ -297,8 +326,149 @@ describe('Client Verification', () => {
     await waitFor(() => expect(onWarn).toHaveBeenCalledWith(
       'The return did not reach everyone.',
       expect.stringMatching(/b@x\.com/)))
-    expect(onWarn).toHaveBeenLastCalledWith(
-      expect.any(String), expect.stringMatching(/The others have it/))
+  })
+
+  it('names who DID get it as well as who did not', async () => {
+    // Levi 2026-09-07. Naming only the failures left the operator unable to
+    // tell whether the rest of the board had been told — so the safe move was
+    // to send to everybody again, and a director who had already confirmed got
+    // a second request for the same return.
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['a@x.com', 'b@x.com'],
+      failed_to: ['nope'],
+      failed: [{ email: 'nope', reason: 'not a valid email address' }],
+      approval_links: true,
+    })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    const [, detail] = onWarn.mock.calls.at(-1)
+    expect(detail).toMatch(/Sent to a@x\.com, b@x\.com/)
+    expect(detail).toMatch(/those links are live/)
+    // The REASON, because the two failures need different actions: a bad
+    // address is fixed on the chip, a provider rejection by pressing again.
+    expect(detail).toMatch(/NOT sent to nope \(not a valid email address\)/)
+  })
+
+  it('holds the operator on a sending splash until delivery is confirmed', async () => {
+    // Levi 2026-09-08: "after user click on send email we should actually wait
+    // for the resend to confirm the status of each email that is sent before
+    // allowing user to proceed with something else on screen."
+    //
+    // `onChanged` is DEFERRED to the splash closing, not fired on the send:
+    // refreshing the case underneath the modal would advance the stage behind
+    // it, and the operator would dismiss the splash onto a screen that moved.
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['chan@example.com'], failed_to: [], approval_links: true,
+      deliveries: [{ email: 'chan@example.com', name: 'CHAN', message_id: 'm1' }],
+    })
+    // LAYERED over the suite's default router, not replacing it: pressSend
+    // needs the recipients GET to resolve before the button is even live, and
+    // a blanket mockResolvedValue here would starve it.
+    const base = get.getMockImplementation()
+    get.mockImplementation(url => (
+      String(url).includes('/verification/delivery')
+        ? Promise.resolve({
+            sent_at: 'x', settled: true, delivered: 1, failed: 0, pending: 0,
+            recipients: [{ email: 'chan@example.com', name: 'CHAN',
+                           status: 'delivered', detail: null }],
+          })
+        : base(url)
+    ))
+    const user = await pressSend()
+    const splash = await screen.findByTestId('delivery-modal')
+    expect(onChanged).not.toHaveBeenCalled()
+    await waitFor(() => expect(within(splash).getByRole('button')).toBeEnabled())
+    await user.click(within(splash).getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+  })
+
+  it('shows the splash on the CLICK, not when the send returns', async () => {
+    // Levi 2026-09-08: "there seems to be a lag between when i click on the
+    // send button and the popup appearing". The send is genuinely slow — a
+    // nine-page AcroForm plus one Resend call per director — so the splash now
+    // opens immediately and the work happens behind it.
+    let release
+    post.mockImplementation(() => new Promise(r => { release = r }))
+    const user = await pressSend()
+    // The POST has NOT resolved, and the splash is already up.
+    const splash = await screen.findByTestId('delivery-modal')
+    expect(within(splash).getByText(/Preparing the return/)).toBeInTheDocument()
+    expect(onChanged).not.toHaveBeenCalled()
+    release({ sent_at: 'x', to: ['chan@example.com'], failed_to: [],
+              approval_links: true, deliveries: [] })
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+    return user
+  })
+
+  it('takes the splash down when the send is REFUSED', async () => {
+    // The refusal goes to the page banner, which is drawn behind the overlay —
+    // leaving the splash up would hide the reason and strand the operator on a
+    // permanently disabled Done button.
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('not validated'), { status: 409 }))
+    await pressSend()
+    await waitFor(() => expect(onError).toHaveBeenCalled())
+    expect(screen.queryByTestId('delivery-modal')).not.toBeInTheDocument()
+  })
+
+  it('skips the splash when the backend returned no per-recipient ids', async () => {
+    // An older backend, or a send that returned none. There is nothing to
+    // confirm, so the screen behaves exactly as it did before the splash.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'], failed_to: [],
+                             approval_links: true })
+    await pressSend()
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+    expect(screen.queryByTestId('delivery-modal')).not.toBeInTheDocument()
+  })
+
+  it('reports an address whose DOMAIN does not exist, and names who did get it', async () => {
+    // THE FAULT LEVI REPORTED ON 2026-09-08: "I sent an email to an address
+    // that clearly does not exist... but I am still not getting an error on the
+    // client verification page to say that the email to this address failed to
+    // send." Resend answers 200 for anything well-formed and bounces it out of
+    // band, so the backend now refuses the address up front on a DNS check and
+    // reports it in the same `failed` list as a typo'd chip. This asserts the
+    // screen carries that through — including, in the same sentence, the
+    // successes, "so that there is no doubt that there were other successful
+    // emails".
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['chan@example.com', 'lee@example.com'],
+      failed_to: ['ghost@nosuchdomain.invalid'],
+      failed: [{ email: 'ghost@nosuchdomain.invalid',
+                 reason: 'The domain name nosuchdomain.invalid does not exist.' }],
+      approval_links: true,
+    })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    const [, detail] = onWarn.mock.calls.at(-1)
+    expect(detail).toMatch(/Sent to chan@example\.com, lee@example\.com/)
+    expect(detail).toMatch(/those links are live/)
+    expect(detail).toMatch(/NOT sent to ghost@nosuchdomain\.invalid/)
+    expect(detail).toMatch(/does not exist/)
+  })
+
+  it('warns that sending again reissues everyone else\'s link', async () => {
+    // Every send supersedes the whole case's outstanding tokens, so a second
+    // send does not quietly top up the one that was missed. An operator told
+    // only "send again" would find that out from a client.
+    post.mockResolvedValue({
+      sent_at: 'x', to: ['a@x.com'],
+      failed: [{ email: 'nope', reason: 'not a valid email address' }],
+      failed_to: ['nope'], approval_links: true,
+    })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    expect(onWarn.mock.calls.at(-1)[1]).toMatch(/reissues every link/)
+  })
+
+  it('still reports a failure the backend sent without a reason', async () => {
+    // Older responses carry `failed_to` and no `failed`. Rendering nothing for
+    // them would silently lose the one fact this warning exists to carry.
+    post.mockResolvedValue({ sent_at: 'x', to: ['a@x.com'],
+                             failed_to: ['b@x.com'], approval_links: true })
+    await pressSend()
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    expect(onWarn.mock.calls.at(-1)[1]).toMatch(/NOT sent to b@x\.com\./)
   })
 
   it('says nothing about a partial send when everyone got it', async () => {
@@ -360,15 +530,17 @@ describe('Client Verification', () => {
     expect(blob.mock.calls[1][0]).toBe('/tpsi/filings/f1/pdf')
   })
 
-  it('gives the preview enough height to read a statutory return', async () => {
+  it('leaves room below the preview for the controls that act on it', async () => {
     renderIt()
     const frame = await screen.findByLabelText('NAR1 preview')
-    // 690px at 100% zoom. The return is nine A4 pages and the operator is
-    // checking particulars against the company record, not glancing at it.
-    expect(frame).toHaveStyle({ height: '690px' })
+    // 725px at 100% zoom — 1035 cut by 30% (Levi 2026-09-09). Still a full A4
+    // page, but no longer the whole screen: at 1035 the recipients and the
+    // Send button below the frame were off the bottom on a laptop, reachable
+    // only by scrolling past an embedded viewer that eats the wheel.
+    expect(frame).toHaveStyle({ height: '725px' })
   })
 
-  it('opens the return full screen — even 690px cannot show a nine-page form', async () => {
+  it('opens the return full screen — no embedded height shows a nine-page form', async () => {
     const open = vi.fn()
     vi.stubGlobal('open', open)
     const user = userEvent.setup()
@@ -432,13 +604,58 @@ describe('Client Verification', () => {
     const send = screen.getByRole('button', { name: /Send to client/ })
     expect(send).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     expect(screen.getByRole('button', { name: /Send to client/ })).toBeEnabled()
+  })
+
+  // ── the client's response deadline (Levi 2026-09-07) ────────────────────
+
+  it('will NOT send until a response deadline is chosen', async () => {
+    // It used to default to `sent + 14 days`, chosen by nobody — and that date
+    // decides when `jobs.auto_approve_nar1` files the return on the client's
+    // silence, which is not a decision to make by default.
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
+    // And it SAYS which field is missing, rather than leaving a dead button. A
+    // date box scrolled past is exactly what nobody notices is empty.
+    expect(screen.getByText(/Choose the date the client must reply by/))
+      .toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('starts the deadline EMPTY — a default would be the old behaviour back', async () => {
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByLabelText(/Client must reply by/)).toHaveValue('')
+  })
+
+  it('will not offer a deadline in the past', async () => {
+    renderIt()
+    await screen.findByText('chan@example.com')
+    // Today in HONG KONG, built from the parts — `toISOString()` on a local
+    // midnight renders the previous day for anyone east of UTC, which is every
+    // actual user of this portal.
+    expect(screen.getByLabelText(/Client must reply by/))
+      .toHaveAttribute('min', hongKongTodayISO())
+  })
+
+  it('sends the chosen deadline, not a fortnight from today', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await reviewAndSend(user)
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/cases/c1/verification/send',
+      expect.objectContaining({ respond_by: RESPOND_BY })))
   })
 
   const reviewAndSend = async user => {
     // The chips must be on screen first — the send button is gated on them.
     await screen.findByText('chan@example.com')
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
   }
 
@@ -465,26 +682,67 @@ describe('Client Verification', () => {
     expect(chips.compareDocumentPosition(send) & 4).toBeTruthy()
   })
 
-  it('names the address the copy goes to, rather than promising "you"', async () => {
+  it('names the SHARED renewals mailbox as the copy, not the signed-in user', async () => {
+    // Levi 2026-09-08. The note used to name whoever was looking at the screen,
+    // because that is who was copied. Both halves changed: the copy is now a
+    // fixed GSHK mailbox, and the note has to say so — an operator who reads
+    // "a copy goes to you" and gets none would be right to distrust the page.
     auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
     renderIt()
     await screen.findByText('chan@example.com')
-    expect(screen.getByText('levi@zenexflow.com')).toBeInTheDocument()
-    expect(screen.getByText(/reply comes back to you/)).toBeInTheDocument()
+    expect(screen.getByText('renewal@getstarted.hk')).toBeInTheDocument()
+    // The reply still comes back to the case worker — deliberately unchanged,
+    // and the reason both facts are still spelled out separately.
+    expect(screen.getByText(/still reaches you rather than/)).toBeInTheDocument()
   })
 
-  it('still explains the copy when the profile has no address to name', async () => {
+  // The letter stopped ASKING for a reply (Levi 2026-09-08): it says replies
+  // are not monitored and names the renewals mailbox. An operator who still
+  // believes it asks for one will wait for a reply nobody was told to send.
+  it('says the letter gives the client that same mailbox for changes', async () => {
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/replies are not monitored/)).toBeInTheDocument()
+  })
+
+  it('names the same copy regardless of who is signed in', async () => {
+    // The note no longer depends on the profile at all. It used to fall back to
+    // a vaguer "a copy goes to you" when the identity carried no address; there
+    // is nothing left to fall back FROM.
     auth = { isTestEnv: false, profile: {} }
     renderIt()
     await screen.findByText('chan@example.com')
-    expect(screen.getByText(/A copy goes to you/)).toBeInTheDocument()
+    expect(screen.getByText('renewal@getstarted.hk')).toBeInTheDocument()
+    expect(screen.queryByText(/A copy goes to you/)).not.toBeInTheDocument()
+  })
+
+  it('never puts the signed-in user forward as the copy', async () => {
+    // The reported fault, asserted directly rather than inferred: the operator's
+    // own address must not appear as the CC anywhere on this screen.
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    const note = document.querySelector('.cc-note')
+    expect(note).toBeTruthy()
+    expect(note.textContent).toContain('renewal@getstarted.hk')
+    expect(note.textContent).not.toContain('levi@zenexflow.com')
+  })
+
+  // The letter stopped asking for a reply (Levi 2026-09-08). An operator who
+  // still believes it does will sit waiting for one that was never requested.
+  it('says the letter points changes at the renewal mailbox', async () => {
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/renewal@getstarted\.hk/)).toBeInTheDocument()
   })
 
   // ── The failure Levi hit: a refused send that looked like a dead button ──
 
   it('reports a refused send to the PAGE, and draws none of its own', async () => {
     // It used to be drawn at the button, because the page banner sits above a
-    // 690px PDF frame — about a screen and a half up — and a refused send
+    // PDF frame — a screenful up — and a refused send
     // therefore looked like a dead button. The page now scrolls to the banner
     // on every failure, so the reason is gone; keeping it would leave this one
     // stage with an error surface no other stage has (Levi 2026-09-03).
@@ -559,7 +817,7 @@ describe('Client Verification', () => {
     await reviewAndSend(user)
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/cases/c1/verification/send',
-      { to: ['chan@example.com', 'lee@example.com'] }))
+      { to: ['chan@example.com', 'lee@example.com'], respond_by: RESPOND_BY }))
   })
 
   it('sends the list on screen, so a removed director is not mailed', async () => {
@@ -568,9 +826,11 @@ describe('Client Verification', () => {
     await screen.findByText('chan@example.com')
     await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
     await waitFor(() => expect(post).toHaveBeenCalledWith(
-      '/cases/c1/verification/send', { to: ['lee@example.com'] }))
+      '/cases/c1/verification/send',
+      { to: ['lee@example.com'], respond_by: RESPOND_BY }))
   })
 
   it('adds an extra recipient who is not on the board', async () => {
@@ -582,7 +842,8 @@ describe('Client Verification', () => {
     await reviewAndSend(user)
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/cases/c1/verification/send',
-      { to: ['chan@example.com', 'lee@example.com', 'levi@zenexflow.com'] }))
+      { to: ['chan@example.com', 'lee@example.com', 'levi@zenexflow.com'],
+        respond_by: RESPOND_BY }))
   })
 
   it('refuses to add something that is not an address', async () => {
@@ -885,6 +1146,38 @@ describe('Signing', () => {
     expect(onGo).toHaveBeenCalledWith(4)
   })
 
+  // Levi 2026-09-14: attaching the scan used to throw the operator straight
+  // onto Submission, so a wrong file was only discovered a stage later.
+  it('stays on Signing once the scan is attached, so a wrong file can be replaced', async () => {
+    const onRefresh = vi.fn(); const onAdvance = vi.fn()
+    render(
+      <MemoryRouter>
+        <StageSigning caseRow={at({ signing_method: 'manual' })} canWrite
+                      onChanged={onAdvance} onRefresh={onRefresh}
+                      onError={onError} onGo={vi.fn()} />
+      </MemoryRouter>)
+    const file = new File(['%PDF-1.4'], 'signed.pdf', { type: 'application/pdf' })
+    await userEvent.setup().upload(screen.getByLabelText('Wet-signed NAR1'), file)
+    await waitFor(() => expect(onRefresh).toHaveBeenCalled())
+    expect(upload.mock.calls[0][0]).toBe('/cases/c1/manual-sign')
+    // Re-read, NOT advanced: `onChanged` is what moves the page on a stage.
+    expect(onAdvance).not.toHaveBeenCalled()
+  })
+
+  it('moves on to Submission only when the operator says so', async () => {
+    const onGo = vi.fn()
+    render(
+      <MemoryRouter>
+        <StageSigning caseRow={at({ signing_method: 'manual', manual_signed_document_id: 'd1',
+                                    manual_signed_document_version: 1 })}
+                      canWrite onChanged={onChanged} onError={onError} onGo={onGo} />
+      </MemoryRouter>)
+    expect(await screen.findByRole('button', { name: /Replace/ })).toBeEnabled()
+    await userEvent.setup().click(
+      screen.getByRole('button', { name: /Continue to Submission/ }))
+    expect(onGo).toHaveBeenCalledWith(4)
+  })
+
   it('does not offer the e-Sign form on the manual route', () => {
     renderIt({ signing_method: 'manual' })
     expect(screen.queryByLabelText(/e-Service signing password/)).not.toBeInTheDocument()
@@ -997,6 +1290,54 @@ describe('Submission — e-Sign', () => {
     expect(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /Submit NAR1 to Companies Registry/ }))
     expect(post).not.toHaveBeenCalled()
+  })
+
+  it('BLOCKS filing when the return date has not arrived yet', async () => {
+    // Levi 2026-09-07. An annual return reports on the year ending at the
+    // company's return date, so CR will not take it before that date at any
+    // price. `filings.submit` refuses independently; this is the screen not
+    // offering an irreversible-looking button whose one outcome is a 409.
+    const user = userEvent.setup()
+    withPreflight({
+      too_early: true, return_date: '2027-03-14', days_until_return_date: 188,
+    })
+    renderIt()
+    await screen.findByText(/not due yet, so it cannot be filed/)
+    expect(screen.getByText(/2027-03-14/)).toBeInTheDocument()
+    expect(screen.getByText(/188 days from today/)).toBeInTheDocument()
+
+    expect(screen.getByRole('button',
+      { name: /I understand this submits NAR1 to CR/ })).toBeDisabled()
+    const submit = screen.getByRole('button',
+      { name: /Submit NAR1 to Companies Registry/ })
+    expect(submit).toBeDisabled()
+    await user.click(submit)
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('does not blame the balance for a return that is merely early', async () => {
+    // Topping up changes nothing here, and the deposit arithmetic beside a
+    // refusal reads as an invitation to do exactly that.
+    withPreflight({
+      too_early: true, return_date: '2027-03-14', days_until_return_date: 188,
+    })
+    renderIt()
+    await screen.findByText(/not due yet, so it cannot be filed/)
+    expect(document.querySelector('.deposit-box')).not.toBeInTheDocument()
+    expect(screen.queryByText(/balance covers the fee/)).not.toBeInTheDocument()
+    expect(screen.getByText(/blocked until this company's return date/))
+      .toBeInTheDocument()
+  })
+
+  it('offers filing when the pre-flight says the return is due', async () => {
+    // The other half of the gate: `too_early: false` must not be read as
+    // "unknown" and quietly block every filing.
+    withPreflight({ too_early: false, return_date: '2026-08-01' })
+    renderIt()
+    await screen.findByText(/Fee HK\$ 105/)
+    expect(screen.queryByTestId('submission-too-early')).not.toBeInTheDocument()
+    expect(screen.getByRole('button',
+      { name: /I understand this submits NAR1 to CR/ })).not.toBeDisabled()
   })
 
   it('BLOCKS filing when the pre-flight itself failed', async () => {
@@ -1168,9 +1509,13 @@ describe('Submission — manual', () => {
     <StageSubmission caseRow={manual(over)} canSubmit
                      onChanged={onChanged} onError={onError} {...props} />)
 
-  /** The other half of the gate — the two figures the audit trail reads. */
+  /** The other half of the gate — the date, and the figure the trail reads. */
   const fillRequired = async user => {
-    await user.type(screen.getByLabelText('Case number'), '141945492')
+    await user.type(screen.getByLabelText('CR Case number'), '180256934')
+    // A date input takes a whole ISO date or nothing; typing it a character
+    // at a time goes through invalid intermediate values.
+    fireEvent.change(screen.getByLabelText('Transaction date'),
+                     { target: { value: '2026-08-16' } })
     await user.type(screen.getByLabelText('Total amount'), '105.00')
   }
 
@@ -1193,8 +1538,125 @@ describe('Submission — manual', () => {
     await user.click(screen.getByRole('button', { name: /Record the filing/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
     const { receipt } = post.mock.calls[0][1]
-    expect(receipt.caseNo).toBe('141945492')
+    // In CR's own shapes: DD/MM/YYYY and a two-place amount.
+    expect(receipt.transactionDate).toBe('16/08/2026')
+    expect(receipt.totalAmount).toBe('105.00')
     expect(receipt.paymentRcptList[0].rcptNo).toBe('D77000418931')
+    // CR's case number is typed and sent; the company's identifiers are the
+    // backend's to fill, not the form's to send.
+    expect(receipt.caseNo).toBe('180256934')
+    expect(receipt).not.toHaveProperty('brNo')
+    expect(receipt.paymentRcptList[0]).not.toHaveProperty('_key')
+  })
+
+  // ---- Levi 2026-09-14: fill what we know, pick what we can ---------------
+
+  it('shows the case\'s own identifiers instead of asking for them', async () => {
+    renderIt()
+    const derived = screen.getByTestId('receipt-derived')
+    await within(derived).findByText('2100028')
+    expect(within(derived).getByText('Harbour Tech Ltd.')).toBeInTheDocument()
+    for (const label of ['Business registration no.',
+      'Company name (English)', 'Account number']) {
+      expect(screen.queryByRole('textbox', { name: label })).not.toBeInTheDocument()
+    }
+  })
+
+  it('asks for CR\'s case number as plain text, named as CR\'s', async () => {
+    // Levi 2026-09-14: "I need the CR case number". The portal cannot know it
+    // for a filing made off-portal, and its own NAR-2026-… is not it.
+    renderIt()
+    const input = screen.getByRole('textbox', { name: 'CR Case number' })
+    expect(input).toHaveValue('')
+    expect(within(screen.getByTestId('receipt-derived'))
+      .queryByText(/Case number/)).not.toBeInTheDocument()
+  })
+
+  it('names the deposit account only for a deposit-account payment', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    const derived = screen.getByTestId('receipt-derived')
+    await within(derived).findByText('2100028')
+    expect(within(derived).queryByText('N00577470008')).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Payment method'), 'Deduct from Account')
+    expect(within(derived).getByText('N00577470008')).toBeInTheDocument()
+  })
+
+  it('offers payment method, revenue code and document code as dropdowns', async () => {
+    renderIt()
+    await screen.findByRole('option', { name: 'Cheque' })
+    expect(screen.getByLabelText('Payment method').tagName).toBe('SELECT')
+    expect(screen.getByLabelText('Revenue code').tagName).toBe('SELECT')
+    expect(screen.getByLabelText('Document code').tagName).toBe('SELECT')
+    expect(screen.getByRole('option', { name: /NAR1L — delivered late/ })).toBeInTheDocument()
+  })
+
+  it('takes a code the list does not have, typed as printed', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByRole('option', { name: 'Cheque' })
+    await fillRequired(user)
+    await user.selectOptions(screen.getByLabelText('Revenue code'), 'Other — type it as printed')
+    await user.type(screen.getByLabelText('Revenue code (as printed)'), '99')
+    await user.selectOptions(screen.getByLabelText('Document code'), 'NAR1L')
+    await user.click(screen.getByRole('button', { name: /Record the filing/ }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    const line = post.mock.calls[0][1].receipt.paymentRcptList[0]
+    expect(line.revCode).toBe('99')
+    expect(line.docShtFrm).toBe('NAR1L')
+  })
+
+  it('takes the date and time from pickers, and sends them as CR prints them', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    expect(screen.getByLabelText('Transaction date')).toHaveAttribute('type', 'date')
+    expect(screen.getByLabelText('Transaction time')).toHaveAttribute('type', 'time')
+    await fillRequired(user)
+    fireEvent.change(screen.getByLabelText('Transaction time'), { target: { value: '13:36' } })
+    await user.click(screen.getByRole('button', { name: /Record the filing/ }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post.mock.calls[0][1].receipt.transactionTime).toBe('13:36:00')
+  })
+
+  it('takes amounts as numbers and sends them to two places', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    expect(screen.getByLabelText('Total amount')).toHaveAttribute('type', 'number')
+    expect(screen.getByLabelText('Amount charged')).toHaveAttribute('type', 'number')
+    await user.type(screen.getByLabelText('CR Case number'), '180256934')
+    fireEvent.change(screen.getByLabelText('Transaction date'),
+                     { target: { value: '2026-08-16' } })
+    await user.type(screen.getByLabelText('Total amount'), '2610')
+    await user.type(screen.getByLabelText('Amount charged'), '2610')
+    await user.click(screen.getByRole('button', { name: /Record the filing/ }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    const { receipt } = post.mock.calls[0][1]
+    expect(receipt.totalAmount).toBe('2610.00')
+    expect(receipt.paymentRcptList[0].amtChrg).toBe('2610.00')
+  })
+
+  it('can remove any payment line but the first', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    // One line, and nothing to remove it with.
+    expect(screen.queryByRole('button', { name: /Remove payment line/ })).toBeNull()
+    await user.click(screen.getByRole('button', { name: /Add payment line/ }))
+    await user.click(screen.getByRole('button', { name: /Add payment line/ }))
+    expect(screen.getAllByTestId('payment-line')).toHaveLength(3)
+    expect(screen.queryByRole('button', { name: 'Remove payment line 1' })).toBeNull()
+    await user.type(screen.getAllByLabelText('Receipt no.')[2], 'KEEP-ME')
+    await user.click(screen.getByRole('button', { name: 'Remove payment line 2' }))
+    expect(screen.getAllByTestId('payment-line')).toHaveLength(2)
+    // The line removed was the second one, not whichever React re-used.
+    expect(screen.getAllByLabelText('Receipt no.')[1]).toHaveValue('KEEP-ME')
+  })
+
+  it('offers a way back to Signing, where the scan can still be replaced', async () => {
+    const user = userEvent.setup()
+    const onGo = vi.fn()
+    renderIt({}, { onGo })
+    await user.click(screen.getByRole('button', { name: /Back to Signing/ }))
+    expect(onGo).toHaveBeenCalledWith(3)
   })
 
   it('shows EVERY problem with the receipt at once', async () => {

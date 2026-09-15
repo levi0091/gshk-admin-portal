@@ -49,6 +49,14 @@ def _graph_with_corporate_secretary():
     return _mapper_graph()
 
 
+def _graph_with_individual_secretary():
+    """CR's seeded test companies' shape: a NATURAL-PERSON secretary, who signs
+    — the case whose picker used to show blank."""
+    return _mapper_graph(
+        secretaries=[{"person_id": "p1", "is_gshk": False, "is_current": True}],
+        persons={"p1": _person()})
+
+
 def test_a_body_corporate_signatory_has_no_derived_capacity():
     """The premise. If this ever starts returning a capacity, the mapper has
     begun guessing a value CR accepts and the filing would misstate."""
@@ -286,9 +294,39 @@ def test_the_default_is_a_capacity_cr_actually_accepts():
     assert default_capacity(is_corporate=True) in CAPACITY_BODY_CORPORATE
 
 
-def test_an_individual_signatory_gets_no_body_corporate_default():
+def test_an_individual_signatory_defaults_to_director():
+    """Levi 2026-09-14. It used to get no default, and "no default" did not mean
+    no capacity: the picker showed blank while the mapper filed "Company
+    Secretary". Director, from the INDIVIDUAL vocabulary."""
     from services.tpsi.forms.cr_vocabularies import default_capacity
-    assert default_capacity(is_corporate=False) is None
+    assert default_capacity(is_corporate=False) == "Director"
+    assert default_capacity(is_corporate=False) in CAPACITY_INDIVIDUAL
+
+
+def test_an_individual_default_is_never_a_body_corporate_value():
+    """CR keeps two vocabularies; crossing them is a misstatement CR's schema
+    accepts and its server rejects, after the fee."""
+    from services.tpsi.forms.cr_vocabularies import default_capacity
+    assert default_capacity(is_corporate=False) not in CAPACITY_BODY_CORPORATE
+
+
+def test_the_mapper_files_the_same_default_the_picker_shows():
+    """The bug this closes: blank on screen, "Company Secretary" in the XML.
+    With nothing chosen, what is filed must be exactly what the picker says."""
+    graph = _graph_with_individual_secretary()
+    data = nar1_return_data.summarise(graph, year=2026, signatory_capacity=None)
+    block = nar1_mapper._signatory_block(graph, None, [], None)
+    assert data["signatory_capacity"] == "Director"
+    assert data["signatory_capacity_is_default"] is True
+    assert block["selectCapacityDesc"] == data["signatory_capacity"]
+
+
+def test_a_stored_individual_choice_is_not_reported_as_the_default():
+    data = nar1_return_data.summarise(
+        _graph_with_individual_secretary(), year=2026,
+        signatory_capacity="Company Secretary")
+    assert data["signatory_capacity"] == "Company Secretary"
+    assert data["signatory_capacity_is_default"] is False
 
 
 def test_the_return_data_reports_the_default_so_the_picker_shows_it():

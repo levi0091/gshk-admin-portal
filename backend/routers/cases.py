@@ -8,13 +8,14 @@ import asyncio
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
                      UploadFile)
 from pydantic import BaseModel
 
 from middleware.auth import require_permission
+from db.supabase import get_supabase
 from services import (
     audit_events as ev, document_service, email_service, nar1_approvals,
     nar1_case_status, nar1_cases, nar1_return_data, table_filters as tf,
@@ -831,6 +832,32 @@ async def manual_receipt(
             "file_name": document.get("file_name")}
 
 
+@router.get("/{case_id}/manual-receipt-prefill")
+async def manual_receipt_prefill(
+    case_id: str,
+    user=Depends(require_permission("tpsi", "submit")),
+):
+    """What the manual receipt form fills in itself, and its dropdowns.
+
+    The derived half of the receipt (`nar1_cases.RECEIPT_DERIVED`) is shown on
+    the form rather than typed into it, and this is where the form reads it —
+    the SAME function `manual-submit` records from, so what the operator sees
+    is what gets written.
+
+    `tpsi:submit`, matching the two routes this form feeds: a role that cannot
+    record the submission has no form to fill. Read-only, so no audit row.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    return {
+        "fields": nar1_cases.receipt_prefill(case),
+        "vocabulary": nar1_cases.RECEIPT_VOCABULARY,
+        "deposit_payment_method": nar1_cases.DEPOSIT_PAYMENT_METHOD,
+    }
+
+
 @router.post("/{case_id}/manual-submit")
 async def manual_submit(
     case_id: str,
@@ -883,7 +910,14 @@ async def manual_submit(
             "the typed figures are not evidence on their own",
         )
 
-    problems = nar1_cases.validate_receipt(body.receipt)
+    # The fields the portal already holds are the PORTAL's to fill (Levi
+    # 2026-09-14) — BR number, company name and, for a deposit-account payment,
+    # the account. Replaced rather than merged, so a receipt can never be
+    # recorded naming a different company from its case. CR's case number is
+    # NOT among them: the portal cannot know it, so it is typed.
+    receipt = nar1_cases.with_derived_fields(
+        body.receipt, nar1_cases.receipt_prefill(case))
+    problems = nar1_cases.validate_receipt(receipt)
     if problems:
         raise HTTPException(400, {"message": "receipt is incomplete",
                                   "problems": problems})
@@ -898,7 +932,7 @@ async def manual_submit(
     # audit_log is insert-only, so a second NAR1_MANUAL_SUBMISSION_RECORDED for
     # one return could never be taken back.
     claimed = nar1_cases.claim_manual_submission(case_id, {
-        "manual_receipt": body.receipt,
+        "manual_receipt": receipt,
         "manual_submitted_at": now,
         "signing_method": "manual",
         "submitted_at": now,
@@ -918,9 +952,9 @@ async def manual_submit(
         action_type=ev.NAR1_MANUAL_RECEIPT_ENTERED,
         event_code=ev.NAR1_MANUAL_RECEIPT_ENTERED,
         **_audit_target(case),
-        after_state={"manual_receipt": body.receipt},
-        metadata={"caseNo": body.receipt.get("caseNo"),
-                  "totalAmount": body.receipt.get("totalAmount")},
+        after_state={"manual_receipt": receipt},
+        metadata={"caseNo": receipt.get("caseNo"),
+                  "totalAmount": receipt.get("totalAmount")},
     )
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
@@ -989,7 +1023,7 @@ MAX_RECIPIENTS = 20
 
 
 class VerificationSendIn(BaseModel):
-    """Who this send goes to.
+    """Who this send goes to, and by when they must answer.
 
     A list, because a board of three directors is three recipients on ONE
     message. A bare string is still accepted: it is what the route shipped with,
@@ -999,8 +1033,61 @@ class VerificationSendIn(BaseModel):
     send time, not by the client. An empty LIST is not the same thing and is
     refused: it says the operator cleared every chip, and mailing the directors
     anyway would send a statutory return to people they had just removed.
+
+    `respond_by` IS REQUIRED, and is declared optional here only so that leaving
+    it out is answered by _deadline_from() below with a sentence somebody can
+    read. Pydantic's own refusal for a missing required field is a 422 that
+    echoes the submitted body back, which on this route means echoing a list of
+    directors' email addresses into an error the browser logs.
     """
     to: list[str] | str | None = None
+    respond_by: str | None = None
+
+
+#: The end of the chosen day, Hong Kong. A deadline is a DATE, and a client told
+#: "by 20 September" has until that day is over -- not until midnight UTC, which
+#: is 08:00 on the 20th to them and would expire the link during the morning of
+#: the day they were given.
+_HK = timezone(timedelta(hours=8))
+
+
+def _deadline_from(respond_by: str | None) -> datetime:
+    """The operator's chosen deadline, as the instant it actually expires.
+
+    MANDATORY (Levi 2026-09-07). This used to be `sent + 14 days`, computed
+    inside the token issuer, and nobody chose it. The fortnight was not a
+    business rule -- some clients are chased inside a week, and a return
+    prepared months before its filing window should not have its link die long
+    before anyone intends to file. So the case worker picks the date, the screen
+    will not send without one, and this is where a caller that skipped it is
+    told so in words.
+
+    Refused when it is not in the future: a deadline already past would issue a
+    link that is dead on arrival and hand `jobs.auto_approve_nar1` a case it
+    would approve on the client's "silence" the same night -- recording consent
+    from somebody who never had time to answer.
+    """
+    if not (respond_by or "").strip():
+        raise HTTPException(
+            422, "a response deadline is required: pick the date the client "
+                 "must reply by before sending this return")
+    try:
+        day = date.fromisoformat(str(respond_by).strip()[:10])
+    except ValueError:
+        raise HTTPException(
+            422, f"not a date: {respond_by!r} — the response deadline must be "
+                 "a calendar date, as YYYY-MM-DD")
+
+    today = datetime.now(_HK).date()
+    if day < today:
+        raise HTTPException(
+            422, f"the response deadline {day.isoformat()} is in the past. The "
+                 "client would receive a link that has already expired, and "
+                 "the return would be approved on their silence tonight.")
+
+    # 23:59:59 on the chosen day, in Hong Kong, stored as the UTC instant.
+    return datetime.combine(day, time(23, 59, 59), tzinfo=_HK).astimezone(
+        timezone.utc)
 
 
 @router.get("/{case_id}/verification/recipients")
@@ -1059,6 +1146,43 @@ def _approval_link_base(request: Request) -> str | None:
     return base.rstrip("/")
 
 
+async def _undeliverable(addresses: list[str]) -> dict[str, str]:
+    """Which of `addresses` sit on a domain that cannot receive mail, and why.
+
+    Resend accepts anything syntactically valid and bounces it later, so a send
+    to a made-up domain reported total success and the operator learned nothing
+    -- the fault this closes. See email_service.undeliverable_reason for what
+    the check can and cannot know; in short it catches a domain that does not
+    exist, not a dead mailbox at a real one, and any uncertain answer lets the
+    address through.
+
+    ONE LOOKUP PER DOMAIN, not per address. A board of five directors at the
+    same company asks one question, and asking it five times would put four
+    needless DNS round-trips in front of an operator waiting on the send. They
+    run concurrently, and each on a worker thread, because this is blocking
+    socket I/O inside an `async def` -- resolving them in series here would
+    stall every other request this worker is serving.
+    """
+    by_domain: dict[str, list[str]] = {}
+    for address in addresses:
+        by_domain.setdefault(
+            address.rsplit("@", 1)[-1].lower(), []).append(address)
+    if not by_domain:
+        return {}
+
+    reasons = await asyncio.gather(*[
+        asyncio.to_thread(email_service.undeliverable_reason, group[0])
+        for group in by_domain.values()
+    ])
+
+    out: dict[str, str] = {}
+    for group, reason in zip(by_domain.values(), reasons):
+        if reason:
+            for address in group:
+                out[address] = reason
+    return out
+
+
 @router.post("/{case_id}/verification/send")
 async def send_verification(
     case_id: str, body: VerificationSendIn, request: Request,
@@ -1086,6 +1210,18 @@ async def send_verification(
     if refusal:
         raise HTTPException(409, refusal)
 
+    # Before anything is rendered or mailed. A missing deadline is a refusal
+    # the operator fixes in two seconds, and finding that out after a 15-page
+    # AcroForm has been filled is a wasted CPU-second and a slower answer.
+    deadline_at = _deadline_from(body.respond_by)
+
+    #: Addresses that will NOT be mailed, each with the reason. Seeded here
+    #: rather than at the send loop because a malformed address fails before any
+    #: send is attempted, and it has to land in the SAME report as a Resend
+    #: rejection — the operator's question is "who did not get it", and the
+    #: answer must not depend on which of two ways an address failed.
+    failures: list[dict] = []
+
     if body.to is not None:
         given = [body.to] if isinstance(body.to, str) else list(body.to)
         # Refused, not quietly turned back into "the directors" — see
@@ -1103,16 +1239,37 @@ async def send_verification(
         seen = set()
         for address in given:
             address = (address or "").strip()
-            # These direct a document carrying directors' residential addresses
-            # and identity numbers. Free text is not an address.
+            # ONE BAD ADDRESS NO LONGER REFUSES THE WHOLE SEND (Levi
+            # 2026-09-07). This used to raise 422, so a three-director board
+            # with one typo'd address left all three unmailed and the operator
+            # with a refusal naming the typo but nothing else — and, since this
+            # is one message per director, there was never any reason the other
+            # two could not have gone. The bad address is reported by name in
+            # `failed` alongside anything Resend rejects, and the send proceeds.
+            #
+            # The check itself stays exactly as strict. These direct a document
+            # carrying directors' residential addresses and identity numbers;
+            # free text is not an address and is never handed to Resend.
             if not _ADDRESS.match(address):
-                raise HTTPException(422, f"not an email address: {address!r}")
+                failures.append({
+                    "email": address or "(blank)",
+                    "reason": "not a valid email address",
+                })
+                continue
             # Case-insensitively deduped: two chips differing only in case are
             # one mailbox, and Resend would deliver the return to it twice.
             if address.lower() in seen:
                 continue
             seen.add(address.lower())
             recipients.append(address)
+        # Every address given was malformed, so there is nobody to send to and
+        # nothing partial to report. Named, so the operator can see which chip
+        # to fix rather than re-reading all twenty.
+        if not recipients:
+            bad = ", ".join(f["email"] for f in failures)
+            raise HTTPException(
+                422, f"nothing was sent: no valid email address was given "
+                     f"({bad})")
     else:
         # Every current director with an address — the people whose particulars
         # this return declares. The company contact is the fallback for a
@@ -1127,6 +1284,35 @@ async def send_verification(
             raise HTTPException(
                 409, "no email address is on record for this company or its "
                      "directors; supply one explicitly to send the verification")
+
+    # --- and can those domains actually receive mail? --------------------- #
+    #
+    # AFTER the branches, so it covers BOTH. The syntax gate above only ever
+    # ran on addresses an operator typed, which left the commoner case
+    # unchecked entirely: a director address that came out of Viewpoint years
+    # ago, on a domain that has since lapsed, went to Resend unexamined and
+    # reported success. "Who did not get it" must not depend on which branch
+    # supplied the address.
+    #
+    # Into the SAME `failures` list as a malformed chip and a Resend
+    # rejection, for the reason given where that list is seeded: the
+    # operator's question is "who did not get it", and the answer must not
+    # depend on which of three ways an address failed.
+    undeliverable = await _undeliverable(recipients)
+    if undeliverable:
+        failures.extend({"email": address, "reason": reason}
+                        for address, reason in undeliverable.items())
+        recipients = [a for a in recipients if a not in undeliverable]
+
+    # Everyone is unreachable, so there is no partial send to report and
+    # nothing to write on the case. Named WITH REASONS -- this refusal is the
+    # only thing the operator will see, and "nothing was sent" without the
+    # domain that caused it is not actionable.
+    if not recipients:
+        named = "; ".join(f"{f['email']} ({f['reason']})" for f in failures)
+        raise HTTPException(
+            422, f"nothing was sent: no address on this case can receive mail "
+                 f"({named})")
 
     entity = nar1_cases.entity_for(case["entity_id"])
 
@@ -1187,7 +1373,11 @@ async def send_verification(
     link_base = _approval_link_base(request)
     if link_base:
         try:
-            targets = nar1_approvals.issue(case_id=case_id, recipients=targets)
+            # The operator's deadline, not a fortnight from now. One value for
+            # the date the email prints, the moment the link dies and the
+            # moment the auto-approval job acts — see nar1_approvals.issue.
+            targets = nar1_approvals.issue(
+                case_id=case_id, recipients=targets, expires_at=deadline_at)
         except Exception as exc:  # noqa: BLE001
             # A token store that will not write must not stop the return going
             # out. Without links the message is exactly the one that shipped
@@ -1199,8 +1389,8 @@ async def send_verification(
 
     operator = (user.get("email") or "").strip() or None
 
-    sends, failures = [], []
-    for index, target in enumerate(targets):
+    sends = []
+    for target in targets:
         approval_url = (
             f"{link_base}/public/nar1-approval/{target['token']}"
             if link_base and target.get("token") else None
@@ -1208,14 +1398,17 @@ async def send_verification(
         subject, html = email_service.verification_email(
             case, entity, attachment_name=attachment_name,
             approval_url=approval_url,
-            deadline=target.get("expires_at"),
-            # The GIVEN name where the record has one. The letter greets the
-            # reader by name, and this book is mostly Hong Kong directors
-            # recorded surname-first — splitting a full name on whitespace
-            # would greet CHAN TAI MAN as "Hi CHAN", which is their surname.
-            recipient_name=target.get("given_names") or target.get("name"),
-            # The case worker signs it, as they do when they send it by hand.
-            sender_name=user.get("display_name"),
+            # The chosen deadline, whether or not a token was issued: the
+            # letter's "if we do not hear from you by ..." sentence is the one
+            # thing that must survive a deployment that cannot build links.
+            deadline=target.get("expires_at") or deadline_at,
+            # NO recipient_name AND NO sender_name (Levi 2026-09-08). The
+            # letter now opens "Dear Client" and is signed "Get Started HK
+            # Limited", per docs/Auto email - NAR1 Review_v2.pdf — it is sent
+            # unattended, so neither a director's given name nor the case
+            # worker's belongs on it. The names still travel: `given_names`
+            # names the person on the approval token and in the audit trail,
+            # and `user` is still the reply-to below.
         )
 
         try:
@@ -1223,17 +1416,40 @@ async def send_verification(
             # httpx.post with a 15-second timeout, so a hung Resend would stall
             # the whole worker rather than this one request.
             #
-            # The COPY goes on the first message only. The case worker asked to
-            # be copied on the request (Levi 2026-08-30), not on each director's
-            # copy of it -- three directors must not mean three identical mails
-            # in their inbox. `reply_to` is on EVERY message, because it is the
-            # load-bearing half: the mail is sent from no-reply@getstarted.hk
-            # and asks the client to reply, so without it the one action the
-            # message requests reaches nobody.
+            # THE COPY IS THE SHARED RENEWALS MAILBOX, NOT THE CASE WORKER
+            # (Levi 2026-09-08). This reverses "the case worker is CC'd" of
+            # 2026-08-30: whoever pressed Send used to land on the CC line of a
+            # letter about a client's statutory return, which showed the client
+            # an individual's personal address and left GSHK's record of what it
+            # told that client inside one person's mailbox. See
+            # email_service.CLIENT_CC.
+            #
+            # ON EVERY MESSAGE, where the case worker's copy was on the first
+            # only. That rule existed so three directors would not mean three
+            # identical mails in one person's inbox -- but these messages are
+            # NOT identical (each carries its own approval link and its own
+            # greeting), and a shared mailbox holding the first of three would
+            # misrepresent the send as complete, which is the failure this
+            # file's audit comment warns about a few lines down. renewal@ is a
+            # record, so it gets the whole record.
+            #
+            # `reply_to` is still the case worker, deliberately -- but it is
+            # now the SAFETY NET rather than the asked-for path. Since
+            # 2026-09-08 the letter states that replies are not monitored and
+            # names renewal@getstarted.hk for changes; it is still sent from
+            # no-reply@getstarted.hk, so a client who replies regardless must
+            # reach a human who knows the case rather than a black hole. A
+            # stray answer going to a person while the copy goes to the team is
+            # the intended split.
+            #
+            # Outside production `_apply_test_cc_lock` DROPS this, as it
+            # dropped the case worker: renewal@getstarted.hk is a real GSHK
+            # mailbox and is NOT one of the four TEST_RECIPIENTS, so a test
+            # deployment must not reach it.
             sent = await asyncio.to_thread(
                 email_service.send,
                 to=[target["email"]],
-                cc=[operator] if (operator and index == 0) else None,
+                cc=[email_service.CLIENT_CC],
                 reply_to=operator,
                 subject=subject, html=html,
                 attachments=[(attachment_name, pdf)],
@@ -1294,6 +1510,31 @@ async def send_verification(
     intended_cc = _across("intended_cc")
     message_ids = [s["sent"].get("id") for s in sends if s["sent"].get("id")]
 
+    # WHICH message went to WHICH director, which `message_ids` alone cannot
+    # say -- it drops the falsy ids, so its positions stop matching
+    # `intended_to` the moment one send comes back without one.
+    #
+    # Written into the audit metadata (free-form JSONB, so no migration) rather
+    # than only returned, because that is what makes delivery answerable AFTER
+    # the operator has closed the tab: `GET /cases/{id}/verification/delivery`
+    # reads this row back and asks Resend about each id. Without it, a bounce
+    # arriving two minutes later would be knowable to nobody.
+    deliveries = [{"email": s["target"]["email"],
+                   "name": s["target"].get("name"),
+                   "message_id": s["sent"].get("id"),
+                   # WHERE THE MESSAGE ACTUALLY WENT, which outside production
+                   # is NOT the address above. The recipient lock substitutes
+                   # TEST_RECIPIENTS inside send(), so Resend's answer about
+                   # this message describes a DIFFERENT mailbox -- and pairing
+                   # that answer with the intended address told Levi on
+                   # 2026-09-08 that levi214839824@zenexflow.com, an address
+                   # that does not exist, had been "Delivered". It had not been
+                   # written to at all. Both halves are recorded for the same
+                   # reason `to` and `intended_to` are both on the audit row.
+                   "delivered_to": s["sent"].get("to") or [],
+                   "redirected": bool(s["sent"].get("redirected"))}
+                  for s in sends]
+
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
         action_type=ev.EMAIL_SENT, event_code=ev.EMAIL_SENT,
@@ -1311,11 +1552,23 @@ async def send_verification(
                   # because there is now one message per director.
                   "message_id": message_ids[0] if message_ids else None,
                   "message_ids": message_ids,
+                  # The per-recipient map the delivery check reads back.
+                  "deliveries": deliveries,
                   "intended_to": intended,
                   "recipient_count": len(intended),
                   # Named, not counted. An operator who sees "2 of 3 sent" and
                   # not WHICH one failed cannot resend to the right person.
                   "failed_to": [f["email"] for f in failures],
+                  # And WHY each one failed. "not a valid email address" is
+                  # fixed on the chip; a Resend rejection is fixed by pressing
+                  # Send again — the trail should not make a reader guess
+                  # which of those happened.
+                  "failed": failures,
+                  # The deadline the client was actually given. It is the same
+                  # instant the links expire on and the same one
+                  # `jobs.auto_approve_nar1` reads, so a trail that recorded a
+                  # different date could not be used to check either.
+                  "respond_by": deadline_at.isoformat(),
                   # Both, for the same reason `to` and `intended_to` are both
                   # here: on a test deployment the copy is dropped rather than
                   # delivered, and a trail that recorded only the intention
@@ -1377,14 +1630,132 @@ async def send_verification(
             "transport": sends[0]["sent"].get("transport", "resend"),
             "message_id": message_ids[0] if message_ids else None,
             "message_ids": message_ids,
+            # So the screen can show a row per director and start asking
+            # whether each one actually arrived, without a second round trip
+            # to find out who was written to.
+            "deliveries": deliveries,
             # Named so the operator can resend to exactly the people who were
             # missed, rather than re-mailing a board that mostly already has it.
             "failed_to": [f["email"] for f in failures],
+            # The same list WITH REASONS. The screen tells the operator which
+            # addresses arrived and which did not, and "not a valid email
+            # address" is a different instruction from "the mail provider
+            # refused it" — one is fixed by editing a chip, the other by
+            # pressing Send again.
+            "failed": failures,
+            # What the client was actually told, echoed back so the screen can
+            # state the deadline it just committed GSHK to rather than the one
+            # it thinks it asked for.
+            "respond_by": deadline_at.isoformat(),
             # False when PUBLIC_API_BASE_URL is unset and the request's own
             # base URL is unusable. The screen says so, because the difference
             # decides whether the client can confirm with a button or must
             # reply to the email.
             "approval_links": bool(link_base)}
+
+
+@router.get("/{case_id}/verification/delivery")
+async def verification_delivery(
+    case_id: str,
+    user=Depends(require_permission("nar1", "read")),
+):
+    """Did each director's copy actually arrive?
+
+    A Resend 200 means Resend ACCEPTED the message, not that anyone received
+    it. The two ways that gap bites are a live domain with a dead mailbox, and
+    an address on Resend's suppression list after an earlier hard bounce --
+    neither is visible at send time, and both look exactly like success.
+
+    This asks Resend, per message, what it now knows. It is the same fact a
+    bounce webhook would push, PULLED instead: no public endpoint, no signing
+    secret, no dashboard registration, no new environment variable. It works
+    the moment it deploys, on DEV and PROD, because it reuses the key that is
+    already sending the mail.
+
+    Read-only and safe to call repeatedly -- the screen polls it behind the
+    sending splash, and reads it again whenever the case is reopened, which is
+    what lets a bounce that landed hours later still be seen.
+
+    `nar1:read`, not `write`: this changes nothing, and someone who may look at
+    a case may see whether its letters arrived.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    sb = get_supabase()
+    # The most recent send on this case. Note the id space: a NAR1 audit row
+    # carries the CASE in `entity_id` and the COMPANY in `case_id` -- see
+    # _audit_target. Filtering on `case_id` here would return the whole
+    # company's trail, and its newest EMAIL_SENT row could belong to a
+    # different year's return.
+    rows = (
+        sb.table("audit_log")
+        .select("created_at, metadata")
+        .eq("entity_id", case_id)
+        .eq("entity_type", "nar1_case")
+        .eq("action_type", ev.EMAIL_SENT)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    ).data or []
+
+    if not rows:
+        return {"sent_at": None, "recipients": [], "pending": 0,
+                "failed": 0, "delivered": 0, "redirected": 0, "settled": True}
+
+    metadata = rows[0].get("metadata") or {}
+    deliveries = metadata.get("deliveries") or []
+
+    # Sends made before `deliveries` was recorded (2026-09-08) carry only a
+    # flat `message_ids`. Their per-recipient mapping is not recoverable, so
+    # they are reported as settled-unknown rather than guessed at by pairing
+    # two lists whose positions were never guaranteed to correspond.
+    if not deliveries:
+        return {"sent_at": rows[0].get("created_at"), "recipients": [],
+                "pending": 0, "failed": 0, "delivered": 0, "redirected": 0,
+                "settled": True, "unknown": True}
+
+    async def _status_for(record: dict) -> dict:
+        """One recipient's answer.
+
+        A REDIRECTED MESSAGE IS NEVER REPORTED ON THE ADDRESS ON SCREEN. Outside
+        production the recipient lock substitutes TEST_RECIPIENTS inside send(),
+        so Resend's record for that message describes the four internal
+        mailboxes -- asking about it and printing the answer beside the intended
+        address is how this screen told Levi that an address which does not
+        exist had been "Delivered" (2026-09-08). Nothing was sent there, so the
+        honest answer is "not sent", and Resend is not asked at all: its answer
+        could only be about somebody else's mailbox.
+        """
+        if record.get("redirected"):
+            went_to = ", ".join(record.get("delivered_to") or []) or                 "the internal test recipients"
+            return {"status": "redirected", "event": None,
+                    "detail": f"nothing was sent to this address — this is a "
+                              f"test environment, so the message went to "
+                              f"{went_to} instead"}
+        # Concurrently, each on a worker thread: these are blocking HTTP calls
+        # in an async handler, and a board of five directors resolved in series
+        # would be five round trips the operator waits through.
+        return await asyncio.to_thread(
+            email_service.delivery_status, record.get("message_id"))
+
+    statuses = await asyncio.gather(*[_status_for(d) for d in deliveries])
+
+    recipients = [{"email": d.get("email"), "name": d.get("name"),
+                   **status} for d, status in zip(deliveries, statuses)]
+
+    counts = {"delivered": 0, "failed": 0, "pending": 0, "redirected": 0}
+    for entry in recipients:
+        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+
+    return {"sent_at": rows[0].get("created_at"),
+            "recipients": recipients,
+            **counts,
+            # Nothing left in flight, so the screen can stop asking. It does
+            # NOT mean everything arrived -- read `failed` for that.
+            "settled": counts["pending"] == 0}
 
 
 class VerificationResponseIn(BaseModel):

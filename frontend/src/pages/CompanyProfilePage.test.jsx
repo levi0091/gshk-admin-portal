@@ -558,8 +558,60 @@ describe('CompanyProfilePage — the CR form fields', () => {
     expect(within(tile).getAllByText('HKD').length).toBeGreaterThan(0)
   })
 
+  it('offers Copy from on the Beneficial Owner tile, and nowhere else', async () => {
+    // A significant controller is nearly always one of the members, listed on
+    // this same screen. `+ Add` made you search the whole Natural Person
+    // Registry for them by name, one at a time (Levi 2026-09-07). The other
+    // tiles have no such source to copy from, so they do not get the button.
+    renderPage()
+    const bo = (await screen.findByText('Beneficial Owner(s)')).closest('.card')
+    expect(within(bo).getByRole('button', { name: 'Copy from' })).toBeInTheDocument()
+
+    for (const title of ['Director(s)', 'Shareholder(s)', 'Company Secretary']) {
+      const tile = screen.getByText(title).closest('.card')
+      expect(within(tile).queryByRole('button', { name: 'Copy from' }))
+        .not.toBeInTheDocument()
+      // …and the tile that HAS it still has its + Add.
+      expect(within(tile).getByRole('button', { name: '+ Add' })).toBeInTheDocument()
+    }
+  })
+
+  it('opens the copy dialog on the shareholders of THIS company', async () => {
+    const user = userEvent.setup()
+    mockGet({
+      ...CLIENT,
+      shareholders: [{ id: 'sh1', person_id: 'p1', shares_held: 5000,
+                       is_current: true, share_class_id: 'sc1',
+                       persons: { full_name: 'John Smith' } }],
+    })
+    renderPage()
+    const bo = (await screen.findByText('Beneficial Owner(s)')).closest('.card')
+    await user.click(within(bo).getByRole('button', { name: 'Copy from' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Copy beneficial owners' })
+    // 5,000 of the 10,000 issued Ordinary shares — over 25%, so pre-ticked.
+    expect(within(dialog).getByText('50.00%')).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /John Smith/ })).toBeChecked()
+  })
+
+  it('says "1 Missing Information" on a card header, not "1 to fix"', async () => {
+    // Levi 2026-09-07. The old wording sat in the same carrot as the field
+    // notes it was summarising, so the one mark meant to survive a glance
+    // read as decoration. `.warn-pill` is red and heavier now (index.css).
+    mockGet({
+      ...CLIENT,
+      share_classes: [{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD',
+                        total_issued: 100, issued_amount: null, total_paid: 100 }],
+    })
+    renderPage()
+    const tile = (await screen.findByText(/Share Capital/)).closest('.card')
+    const pill = within(tile).getByText('1 Missing Information')
+    expect(pill).toHaveClass('warn-pill')
+    expect(within(tile).queryByText('1 to fix')).not.toBeInTheDocument()
+  })
+
   it('can edit a share class — the card shipped with no way to fix it', async () => {
-    // THE DEFECT. The card showed "1 to fix" beside a blank Total Amount and
+    // THE DEFECT. The card showed a count beside a blank Total Amount and
     // offered no control that could fix it. A badge you cannot act on is
     // worse than no badge.
     const user = userEvent.setup()
@@ -882,6 +934,13 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(within(tile).getByText('John Smith')).toBeInTheDocument()
   })
 
+  it('renders no Copy from either — it writes, so it is not rendered', async () => {
+    renderPage()
+    const tile = (await screen.findByText('Beneficial Owner(s)')).closest('.card')
+    expect(within(tile).queryByRole('button', { name: 'Copy from' }))
+      .not.toBeInTheDocument()
+  })
+
   it('renders no Add or Edit on share capital, but still lists the classes', async () => {
     renderPage()
     const tile = (await screen.findByText(/Share Capital/)).closest('.card')
@@ -902,9 +961,16 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(screen.queryByRole('button', { name: /New case/ })).not.toBeInTheDocument()
   })
 
-  it('renders no upload button — a THIRD module, asked separately', async () => {
-    // `documents:write`. A role can hold `companies:write` and still not be
-    // allowed to file documents, and vice versa.
+  // The three tests here used to assert a SEPARATE `documents` module — no
+  // upload without `documents:write`, no download without `documents:read`, no
+  // remove without `documents:delete`, all independent of `companies`. That
+  // module is gone (Levi 2026-09-07, migration 040): a company's papers follow
+  // the company. What survives is the read/write line, which is the one that
+  // was ever worth drawing.
+
+  it('renders no upload button for a company it cannot edit', async () => {
+    // `companies:write` now. Reading opens the record and the papers on it;
+    // adding to them is a change to the record.
     renderPage()
     await screen.findByText('Document History')
     const card = sectionCard('Certificates')
@@ -915,38 +981,33 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(card).toBeInTheDocument()
   })
 
-  it('renders no Download or Remove beside a filed document', async () => {
-    // Three separate grants: `documents:read` downloads, `documents:delete`
-    // removes. This role holds neither.
+  it('DOWNLOADS on companies:read, but offers no Remove', async () => {
+    // The split that matters. This role can read the company, so it can read
+    // the papers filed against it — and removing one is a write it does not
+    // hold.
     renderPage()
     await screen.findByText('Document History')
     const card = sectionCard('Certificates')
 
-    expect(within(card).queryByRole('button', { name: 'Download' }))
-      .not.toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Download' })).toBeEnabled()
     expect(within(card).queryByRole('button', { name: 'Remove' }))
       .not.toBeInTheDocument()
-    // ...and the document is still named.
     expect(within(card).getByText('Certificate of Incorporation')).toBeInTheDocument()
   })
 
-  it('lets a role that holds documents:write upload, on a company it cannot edit', async () => {
-    // The permissions really are independent — this is the proof that the
-    // screen asks each of them rather than gating everything on one.
-    auth.hasPermission = holding('companies:read', 'documents:read',
-                                 'documents:write')
+  it('gives a company EDITOR the upload and remove it was refused before', async () => {
+    // The complaint this reversed: a role granted Companies (edit) could not
+    // upload the certificate of incorporation for a company it was trusted to
+    // edit the CR number of, and had to be given a second grant nobody knew to
+    // ask for.
+    auth.hasPermission = holding('companies:read', 'companies:write')
     renderPage()
     await screen.findByText('Document History')
     const card = sectionCard('Certificates')
 
     expect(within(card).getByRole('button', { name: /Upload Document/ }))
       .toBeEnabled()
-    // Download comes with documents:read; Remove needs documents:delete, which
-    // this role does not hold.
     expect(within(card).getByRole('button', { name: 'Download' })).toBeEnabled()
-    expect(within(card).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
-    // ...and still no company Edit.
-    expect(within(screen.getByText('Company Information').closest('.card'))
-      .queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Remove' })).toBeEnabled()
   })
 })

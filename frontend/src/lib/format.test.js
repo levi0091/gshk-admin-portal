@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-import { formatDate, formatDateTime, HK_TZ } from './format.js'
+import {
+  formatDate, formatDateTime, formatMoney, formatNumber, HK_TZ,
+} from './format.js'
 
 afterEach(() => vi.useRealTimers())
 
@@ -47,5 +49,58 @@ describe('formatDateTime', () => {
 describe('HK_TZ', () => {
   it('is the single place the zone is named', () => {
     expect(HK_TZ).toBe('Asia/Hong_Kong')
+  })
+})
+
+describe('formatNumber', () => {
+  it('groups every three digits — 1,234,567', () => {
+    expect(formatNumber(1234567)).toBe('1,234,567')
+  })
+
+  it('groups a figure that arrived from the API as a string', () => {
+    // Share capital and issued amounts are `numeric` server-side and are
+    // serialised as strings, so this is the shape the screens actually get.
+    expect(formatNumber('10000')).toBe('10,000')
+    expect(formatNumber(' 5000 ')).toBe('5,000')
+  })
+
+  it('leaves a figure under a thousand alone', () => {
+    expect(formatNumber(999)).toBe('999')
+    expect(formatNumber(0)).toBe('0')
+  })
+
+  it('keeps the decimals a figure actually carries', () => {
+    expect(formatNumber(1234.5)).toBe('1,234.5')
+  })
+
+  it('returns null for an absent value rather than inventing a zero', () => {
+    expect(formatNumber(null)).toBeNull()
+    expect(formatNumber(undefined)).toBeNull()
+    expect(formatNumber('')).toBeNull()
+  })
+
+  it('shows a non-numeric legacy value exactly as stored', () => {
+    // Viewpoint free text. Mangling it would hide the thing that needs fixing.
+    expect(formatNumber('n/a')).toBe('n/a')
+  })
+})
+
+describe('formatMoney', () => {
+  it('always shows two decimals, grouped', () => {
+    expect(formatMoney('12480')).toBe('12,480.00')
+    expect(formatMoney(3480)).toBe('3,480.00')
+    expect(formatMoney('2610.5')).toBe('2,610.50')
+  })
+
+  it('prints a genuine zero balance rather than hiding it', () => {
+    expect(formatMoney(0)).toBe('0.00')
+  })
+
+  it('shows an em dash when there is no figure at all — never "0.00"', () => {
+    // `Number(null)` is 0, so the copies this replaced turned a missing deposit
+    // balance into the claim that the account was empty.
+    expect(formatMoney(null)).toBe('—')
+    expect(formatMoney(undefined)).toBe('—')
+    expect(formatMoney('')).toBe('—')
   })
 })

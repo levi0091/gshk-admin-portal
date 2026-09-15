@@ -1293,12 +1293,24 @@ async def update_flags(
 #  Company-scoped documents
 #  (declared BEFORE the /{relation} catch-all so "documents" isn't matched as a
 #   relation segment)
+#
+#  GATED ON `companies`, NOT ON A `documents` MODULE (Levi 2026-09-07). There
+#  is no longer a documents module: a document is not a thing that happens to
+#  nobody, it is filed against a company or a person, and the right to read or
+#  change that record is the right to read or change the papers on it. Three
+#  separate grants meant a role could be given Companies (edit) and then be
+#  unable to upload the certificate of incorporation it had just been trusted
+#  to record the number of — and, the other way, a role with documents:delete
+#  and no companies grant at all could remove a company's papers.
+#
+#  Migration 040 drops the module's rows. See services/document_permissions.py
+#  for the id-keyed routes, which resolve the owner before they can answer.
 # --------------------------------------------------------------------------- #
 
 @router.get("/{company_id}/documents")
 async def list_company_documents(
     company_id: str,
-    user=Depends(require_permission("documents", "read")),
+    user=Depends(require_permission("companies", "read")),
 ):
     return document_service.list_documents(owner_kind="entity", owner_id=company_id)
 
@@ -1309,7 +1321,7 @@ async def upload_company_document(
     file: UploadFile = File(...),
     document_type_code: str = Form(...),
     title: Optional[str] = Form(None),
-    user=Depends(require_permission("documents", "write")),
+    user=Depends(require_permission("companies", "write")),
 ):
     content = await file.read()
     return await document_service.upload_document(

@@ -9,6 +9,7 @@ So the false-positive tests here are as load-bearing as the detection ones: an
 unmodified case must produce ZERO differences, whatever noise (element order,
 absent-vs-empty, the declaration date moving) the two documents carry.
 """
+from datetime import date as _date
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -279,9 +280,14 @@ def test_submit_proceeds_when_nothing_has_moved():
     with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
          patch("services.tpsi.filings.case_of", return_value={}), \
          patch("services.tpsi.drift.current_xml_for", return_value=xml_for(BASE)), \
-         patch("services.tpsi.filings.fee_quote_for") as quote, \
+         patch("services.tpsi.filings.assess") as assess, \
          patch("services.tpsi.reads.check_balance", return_value=0):
-        quote.return_value = MagicMock(amount=0, band="on time", certain=True)
+        # `submit` reads the company record ONCE and takes the fee and the
+        # return date off it together (`filings.assess`), so that is the seam.
+        # The return date is today, which is the on-time case — these tests are
+        # about drift, not about the return-date gate.
+        assess.return_value = (
+            MagicMock(amount=0, band="on time", certain=True), _date.today())
         with patch("services.tpsi.filings._update"), \
              patch("services.tpsi.filings._write_back_receipt"), \
              patch("services.tpsi.filings.parse_receipt",
@@ -400,8 +406,11 @@ def test_a_non_nar1_filing_is_not_drift_checked():
     which is where everything stood before this gate existed."""
     client = MagicMock()
     with patch("services.tpsi.filings.get_filing",
-               return_value=_filing(form_code="Nnc1")),          patch("services.tpsi.filings.case_of", return_value={}),          patch("services.tpsi.drift.current_xml_for") as rebuild,          patch("services.tpsi.filings.fee_quote_for") as quote,          patch("services.tpsi.reads.check_balance", return_value=0):
-        quote.return_value = MagicMock(amount=0, band="on time", certain=True)
+               return_value=_filing(form_code="Nnc1")),          patch("services.tpsi.filings.case_of", return_value={}),          patch("services.tpsi.drift.current_xml_for") as rebuild,          patch("services.tpsi.filings.assess") as assess,          patch("services.tpsi.reads.check_balance", return_value=0):
+        # No return date on a non-NAR1 — only an annual return has one, which
+        # is why the gate cannot fire here. See `filings.assess`.
+        assess.return_value = (
+            MagicMock(amount=0, band="on time", certain=True), None)
         with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={}):
             filings.submit(client, "f1", True, "N00061980009")
     rebuild.assert_not_called()

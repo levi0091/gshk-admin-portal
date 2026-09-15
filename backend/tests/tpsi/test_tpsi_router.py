@@ -1749,9 +1749,13 @@ def test_prepare_keeps_the_operators_stored_capacity_over_the_default(client):
     assert p["map"].call_args.kwargs["signatory_capacity"] == chosen
 
 
-def test_prepare_invents_no_capacity_for_an_individual_signatory(client):
-    """CR keeps two vocabularies. A "(Body Corporate)" capacity on a natural
-    person is a misstatement, so an individual is still answered explicitly."""
+def test_prepare_defaults_an_individual_signatory_to_director(client):
+    """Levi 2026-09-14: the Individual default is "Director", and prepare files
+    the SAME default the Data Verification picker shows. CR keeps two
+    vocabularies, so it is an Individual value, never a "(Body Corporate)" one.
+
+    This used to assert None — and None did not mean "no capacity": the mapper
+    then filed "Company Secretary" while the picker showed blank."""
     p = _prepare_patches(case=MagicMock(return_value={
         "id": "c1", "entity_id": "e1", "manual_receipt": None,
         "signatory_capacity": None,
@@ -1762,7 +1766,7 @@ def test_prepare_invents_no_capacity_for_an_individual_signatory(client):
         response = client.post("/tpsi/filings/prepare", headers=H,
                                json={"entity_id": "e1", "nar1_case_id": "c1"})
     assert response.status_code == 201
-    assert p["map"].call_args.kwargs["signatory_capacity"] is None
+    assert p["map"].call_args.kwargs["signatory_capacity"] == "Director"
 
 
 # ---- CR business rejections must not be 5xx (2026-08-31) --------------------

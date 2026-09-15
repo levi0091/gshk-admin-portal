@@ -42,12 +42,31 @@ def client():
     return TestClient(app)
 
 
+#: What `receipt_prefill` derives for the case under test. The real function,
+#: kept aside BEFORE the autouse patch below replaces it on the module.
+_REAL_PREFILL = nar1_cases.receipt_prefill
+PREFILL = {"brNo": "00000001", "engCoyName": "TEST COMPANY LIMITED",
+           "accNo": "N00061980009"}
+
+
+@pytest.fixture(autouse=True)
+def _prefill():
+    """manual-submit fills the case's own identifiers (Levi 2026-09-14). Patched
+    for every test: unpatched, it reads the registry view and the shared
+    credential through the real Supabase client."""
+    with patch("routers.cases.nar1_cases.receipt_prefill",
+               return_value=dict(PREFILL)) as spy:
+        yield spy
+
+
 def full_receipt(**over):
     receipt = {
         "caseNo": "180256934", "brNo": "00000001", "accNo": "N00061980009",
         "chiCoyName": "測試有限公司", "engCoyName": "TEST COMPANY LIMITED",
         "docCodesWithBarcode": "NAR1", "pymtNo": "P001", "pymtRefNo": "R001",
-        "transactionDate": "2026-08-16", "transactionTime": "10:30:00",
+        # As CR prints them — the shape `validate_receipt` now holds a manual
+        # receipt to, so it renders beside an e-Signed one.
+        "transactionDate": "16/08/2026", "transactionTime": "10:30:00",
         "pymtMtd": "DEPOSIT", "totalAmount": "105.00",
         "paymentRcptList": [
             {"rcptNo": "RC1", "revCode": "AR", "docShtFrm": "NAR1",
@@ -65,7 +84,7 @@ def test_a_complete_receipt_has_no_problems():
 
 
 @pytest.mark.parametrize("missing", [
-    "caseNo", "brNo", "accNo", "engCoyName", "pymtNo", "pymtRefNo",
+    "caseNo", "brNo", "engCoyName", "pymtNo", "pymtRefNo",
     "transactionDate", "transactionTime", "pymtMtd", "totalAmount",
 ])
 def test_every_required_receipt_field_is_checked(missing):
@@ -89,6 +108,158 @@ def test_the_optional_fields_really_are_optional():
     for optional in ("chiCoyName", "docCodesWithBarcode"):
         receipt.pop(optional)
     assert nar1_cases.validate_receipt(receipt) == []
+
+
+def test_a_cheque_receipt_needs_no_account_number():
+    """accNo is the deposit account the fee was drawn from. A cheque was not
+    drawn from one, and requiring it made the operator invent a number."""
+    receipt = full_receipt(pymtMtd="Cheque")
+    receipt.pop("accNo")
+    assert nar1_cases.validate_receipt(receipt) == []
+
+
+@pytest.mark.parametrize("value", ["2026-08-16", "16-08-2026", "31/02/2026", "16/8/26"])
+def test_the_transaction_date_must_read_as_cr_prints_it(value):
+    problems = nar1_cases.validate_receipt(full_receipt(transactionDate=value))
+    assert any(p.startswith("transactionDate") for p in problems)
+
+
+@pytest.mark.parametrize("value", ["13:36", "13:36:44", "00:00:00"])
+def test_a_time_with_or_without_seconds_is_accepted(value):
+    assert nar1_cases.validate_receipt(full_receipt(transactionTime=value)) == []
+
+
+@pytest.mark.parametrize("value", ["1pm", "25:00:00", "13:36:4", "13.36"])
+def test_a_time_cr_would_not_print_is_a_problem(value):
+    problems = nar1_cases.validate_receipt(full_receipt(transactionTime=value))
+    assert any(p.startswith("transactionTime") for p in problems)
+
+
+@pytest.mark.parametrize("value", ["2610.0", "105", "0", 105])
+def test_an_amount_is_accepted(value):
+    assert nar1_cases.validate_receipt(full_receipt(totalAmount=value)) == []
+
+
+@pytest.mark.parametrize("value", ["abc", "-5", "HK$105", "NaN"])
+def test_a_total_that_is_not_an_amount_is_a_problem(value):
+    problems = nar1_cases.validate_receipt(full_receipt(totalAmount=value))
+    assert any(p.startswith("totalAmount") for p in problems)
+
+
+def test_a_payment_line_amount_is_checked_too():
+    line = {"rcptNo": "RC1", "revCode": "16", "docShtFrm": "NAR1L", "amtChrg": "lots"}
+    problems = nar1_cases.validate_receipt(full_receipt(paymentRcptList=[line]))
+    assert any("amtChrg" in p for p in problems)
+
+
+# ---- the fields the portal fills itself (Levi 2026-09-14) --------------------
+
+def test_the_derived_fields_replace_whatever_was_sent():
+    """Replaced, not merged: a receipt must never be recorded naming a
+    different company from the case it is recorded on."""
+    out = nar1_cases.with_derived_fields(
+        full_receipt(brNo="WRONG", engCoyName="WRONG"), PREFILL)
+    assert (out["brNo"], out["engCoyName"]) == ("00000001", "TEST COMPANY LIMITED")
+
+
+def test_the_cr_case_number_is_typed_never_derived():
+    """Levi 2026-09-14: "I need the CR case number". It is CR's identifier,
+    printed on CR's receipt; the portal's own NAR-2026-… number under CR's key
+    would be a different identifier wearing CR's name."""
+    assert "caseNo" not in nar1_cases.RECEIPT_DERIVED
+    assert "caseNo" in nar1_cases.RECEIPT_REQUIRED
+    out = nar1_cases.with_derived_fields(
+        full_receipt(caseNo="180256934"), {**PREFILL, "caseNo": "NAR-2026-0075"})
+    assert out["caseNo"] == "180256934"
+
+
+def test_the_deposit_account_rides_only_with_a_deposit_payment():
+    cheque = nar1_cases.with_derived_fields(
+        full_receipt(pymtMtd="Cheque", accNo="N-TYPED"), PREFILL)
+    assert "accNo" not in cheque
+    deposit = nar1_cases.with_derived_fields(
+        full_receipt(pymtMtd=nar1_cases.DEPOSIT_PAYMENT_METHOD, accNo="N-TYPED"),
+        PREFILL)
+    assert deposit["accNo"] == "N00061980009"
+
+
+def test_receipt_prefill_reads_the_case_the_company_and_the_deposit_account():
+    with patch.object(nar1_cases, "_company_header",
+                      return_value={"br_number": "B1", "company_name": "C LTD"}), \
+         patch("services.tpsi.shared_credentials.deposit_account_no",
+               return_value="N9"):
+        assert _REAL_PREFILL({"id": "c1", "case_no": "NAR-2026-0075"}) == {
+            "brNo": "B1", "engCoyName": "C LTD", "accNo": "N9"}
+
+
+def test_receipt_prefill_survives_an_unreadable_deposit_account():
+    """A read must not 500 over a field `validate_receipt` can name instead."""
+    with patch.object(nar1_cases, "_company_header", return_value={}), \
+         patch("services.tpsi.shared_credentials.deposit_account_no",
+               side_effect=RuntimeError("down")):
+        prefill = _REAL_PREFILL({"id": "c1", "case_no": "NAR-1"})
+    assert prefill["accNo"] is None and "caseNo" not in prefill
+
+
+def test_the_receipt_dropdowns_start_with_what_cr_actually_printed():
+    """Every live CR charge on DEV: 'Deduct from Account', revenue code 16,
+    document NAR1L. The vocabulary must at least hold those."""
+    codes = {k: [o["code"] for o in v]
+             for k, v in nar1_cases.RECEIPT_VOCABULARY.items()}
+    assert nar1_cases.DEPOSIT_PAYMENT_METHOD in codes["pymtMtd"]
+    assert "16" in codes["revCode"]
+    assert {"NAR1", "NAR1L"} <= set(codes["docShtFrm"])
+
+
+def test_the_prefill_route_serves_the_fields_and_the_vocabulary(client):
+    with _super(), patch("routers.cases.nar1_cases.get_case",
+                         return_value={"id": "c1", "case_no": "NAR-1"}):
+        response = client.get("/cases/c1/manual-receipt-prefill", headers=H)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fields"] == PREFILL
+    assert body["deposit_payment_method"] == "Deduct from Account"
+    assert set(body["vocabulary"]) == {"pymtMtd", "revCode", "docShtFrm"}
+
+
+def test_the_prefill_route_404s_an_unknown_case(client):
+    with _super(), patch("routers.cases.nar1_cases.get_case",
+                         side_effect=LookupError("no case c9")):
+        assert client.get("/cases/c9/manual-receipt-prefill",
+                          headers=H).status_code == 404
+
+
+def test_the_prefill_route_needs_tpsi_submit(client):
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        msb.return_value.table.return_value.select.return_value.eq.return_value \
+            .execute.return_value.data = []
+        response = client.get("/cases/c1/manual-receipt-prefill", headers=H)
+    assert response.status_code == 403
+
+
+def test_manual_submit_records_the_case_s_own_identifiers_not_the_posted_ones(client):
+    with _super(), _no_filing(), \
+         patch("routers.cases.nar1_cases.get_case",
+               return_value={"id": "c1", "manual_signed_document_id": "d1",
+                             "manual_receipt_document_id": "r1"}), \
+         patch("routers.cases.nar1_cases.claim_manual_submission",
+               return_value={"id": "c1"}) as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event", new=AsyncMock()) as audit:
+        response = client.post(
+            "/cases/c1/manual-submit", headers=H,
+            json={"receipt": full_receipt(caseNo="199900001", brNo="TYPED",
+                                          pymtMtd="Cheque")})
+    assert response.status_code == 200
+    written = spy.call_args.args[1]["manual_receipt"]
+    # CR's case number as typed; the company's identifiers from the case.
+    assert written["caseNo"] == "199900001" and written["brNo"] == "00000001"
+    assert "accNo" not in written                 # a cheque touches no account
+    # And the trail records what was stored, not what was posted.
+    first = audit.await_args_list[0].kwargs
+    assert first["after_state"]["manual_receipt"]["brNo"] == "00000001"
+    assert first["metadata"]["caseNo"] == "199900001"
 
 
 def test_a_receipt_needs_at_least_one_payment_line():
@@ -136,7 +307,14 @@ def test_a_receipt_cr_itself_produced_validates():
     """The strongest shape check available without CR: run a receipt built by
     the e-Sign path's own parser through the manual path's validator."""
     receipt = {f: "x" for f in tpsi_filings.RECEIPT_FIELDS}
-    receipt["paymentRcptList"] = [{f: "x" for f in tpsi_filings.RECEIPT_LINE_FIELDS}]
+    # The formatted fields in the shapes CR's own receipt carries them
+    # (tests/tpsi/test_submit_gate.RECEIPT) — a manual receipt is now held to
+    # exactly those, so "x" is no longer a value the validator should pass.
+    receipt.update(transactionDate="28/06/2022", transactionTime="13:36:44",
+                   totalAmount="105.0")
+    line = {f: "x" for f in tpsi_filings.RECEIPT_LINE_FIELDS}
+    line["amtChrg"] = "105.0"
+    receipt["paymentRcptList"] = [line]
     assert nar1_cases.validate_receipt(receipt) == []
 
 

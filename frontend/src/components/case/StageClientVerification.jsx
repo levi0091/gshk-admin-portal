@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { formatDateTime } from '../../lib/format.js'
+import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { downloadFilingPdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
+import VerificationDeliveryModal from './VerificationDeliveryModal.jsx'
 import { describeError, verificationBlock, isSubmitted } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
 
@@ -14,6 +16,38 @@ import { ActionWithheld } from '../RequirePermission.jsx'
 const ZOOM_MIN = 60
 const ZOOM_MAX = 200
 const ZOOM_STEP = 20
+
+/**
+ * The address copied on every client verification email (Levi 2026-09-08).
+ *
+ * MUST MATCH `email_service.CLIENT_CC` — the backend decides who is actually
+ * copied; this only tells the operator who that is. The screen states it as a
+ * promise about a message that has not been sent yet, so it cannot read the
+ * value back off a response, which is why the constant is repeated here at all.
+ * `test_client_cc_matches_the_screen` in the backend suite reads THIS FILE and
+ * fails if the two ever drift, so a change on either side has to be made on
+ * both.
+ */
+export const CLIENT_CC = 'renewal@getstarted.hk'
+
+/**
+ * The frame's height at 100%, in CSS pixels.
+ *
+ * 1035 was 30% too tall (Levi 2026-09-09) — a partial reversal of the raise
+ * made two days earlier. That raise bought a bigger glance at the return and
+ * paid for it with the rest of the screen: at 1035px the recipients and the
+ * Send button sat below the fold on a laptop, and reaching them meant
+ * scrolling PAST an <object> that swallows the wheel, so the preview held the
+ * page hostage.
+ *
+ * The reasoning behind the raise still stands — the operator checking these
+ * particulars is the last human between a wrong director's address and a
+ * filing made in the client's name — but no embedded height that leaves room
+ * for the controls holds a NINE-page return, so the frame was never going to
+ * be where that check is done. `Open full screen` above is, and 725 still
+ * clears a full A4 page at 100%.
+ */
+const FRAME_HEIGHT = 725
 
 /**
  * What a failed SEND means — which is not what a failed CR call means.
@@ -61,6 +95,51 @@ export function describeSendError(err) {
 }
 
 /**
+ * What a partly-successful send actually did — who has the return, and who
+ * does not, and why not.
+ *
+ * ONE MESSAGE PER DIRECTOR means a send can now half-work, and the report has
+ * to answer the operator's real question, which is "do I need to do this
+ * again, and for whom". Naming only the failures made re-sending to the whole
+ * board the safe move, and that puts a second request for the same return in
+ * front of a director who has already confirmed.
+ *
+ * The REASON is carried per address because the two failures need different
+ * actions: a malformed address is fixed on the chip and re-sent, while a
+ * provider rejection is fixed by pressing Send again with nothing changed.
+ *
+ * IT SAYS WHAT SENDING AGAIN COSTS, and that is not a detail. Every send
+ * reissues the whole case's tokens (`nar1_approvals.issue` supersedes the
+ * outstanding set), so a second send does not quietly top up the directors who
+ * were missed: it kills the links the others are holding and asks them again.
+ * An operator told only "send again" would find that out from a client.
+ */
+export function describePartialSend(result) {
+  const failed = result?.failed?.length
+    ? result.failed
+    : (result?.failed_to || []).map(email => ({ email, reason: null }))
+  const delivered = result?.to || []
+
+  const missed = failed
+    .map(f => (f.reason ? `${f.email} (${f.reason})` : f.email))
+    .join(', ')
+  const one = failed.length === 1
+
+  const sent = delivered.length
+    ? `Sent to ${delivered.join(', ')} — ${delivered.length === 1 ? 'that link is' : 'those links are'} live. `
+    : ''
+
+  const again = delivered.length
+    ? ' Sending again reissues every link on this case, so anyone above who '
+      + 'already has it will be asked a second time and their current link '
+      + 'stops working.'
+    : ''
+
+  return `${sent}NOT sent to ${missed}. `
+    + `Fix ${one ? 'that address' : 'those addresses'} and send again.${again}`
+}
+
+/**
  * Stage 2 — Client Verification (FE-3).
  *
  * The client sees the return before it is filed in their name. The PDF is
@@ -73,7 +152,10 @@ export function describeSendError(err) {
  * admin presses, and why it is audited as CLIENT_APPROVAL_RECEIVED.
  */
 export default function StageClientVerification({ caseRow, canWrite, onChanged, onError, onWarn }) {
-  const { isTestEnv, profile } = useAuth()
+  // `profile` was read here only to name the signed-in user as the CC. The
+  // copy is now the fixed renewals mailbox, so the screen no longer depends on
+  // who is looking at it.
+  const { isTestEnv } = useAuth()
   // Seeded from the case, not defaulted to false. The tick gates the send, and
   // the send is the evidence it was given: a mail cannot have gone out without
   // it. Leaving it unticked on a case whose banner says "Sent 31 Aug 2026,
@@ -84,6 +166,11 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // here too: a restarted case really does need reviewing again.
   const [reviewed, setReviewed] = useState(Boolean(caseRow.verification_sent_at))
   const [busy, setBusy] = useState(null)
+  // The per-recipient list from the send that just happened, or null when no
+  // send is being confirmed. Non-null puts the sending splash on screen and
+  // holds the operator there until Resend has reported (or the wait times
+  // out) — see VerificationDeliveryModal.
+  const [confirming, setConfirming] = useState(null)
   // NO LOCAL ERROR STATE. What the send refused goes to `onError` and what it
   // REPORTED — a partial delivery, a message without a Confirm button — goes
   // to `onWarn`. Both render at the top of the page and both scroll there, so
@@ -95,6 +182,13 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   const [maxRecipients, setMaxRecipients] = useState(20)
   const [zoom, setZoom] = useState(100)
   const [saving, setSaving] = useState(false)
+  // THE CLIENT'S DEADLINE, and it starts EMPTY (Levi 2026-09-07). It used to be
+  // `sent + 14 days`, computed in the token issuer, chosen by nobody — and a
+  // fortnight is not a business rule: some clients are chased inside a week,
+  // and a return prepared months before its filing window should not have its
+  // link die long before anyone intends to file. Seeding it with a default
+  // would put the old behaviour back behind a field the operator never reads.
+  const [respondBy, setRespondBy] = useState('')
 
   const filingId = caseRow.filing_id
   const sent = Boolean(caseRow.verification_sent_at)
@@ -160,13 +254,22 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
   async function send() {
     onError(null); onWarn?.(null, null); setBusy('send')
+    // THE SPLASH OPENS ON THE CLICK, NOT ON THE RESPONSE (Levi 2026-09-08:
+    // "there seems to be a lag between when i click on the send button and the
+    // popup appearing"). The send is genuinely slow — it fills a 15-page
+    // AcroForm, issues a token per director and makes one Resend call each —
+    // and none of that used to show, so the button sat there looking dead.
+    //
+    // Seeded from the chips, which are exactly who is about to be written to,
+    // so the board is on screen from the first frame with nothing invented.
+    setConfirming({ phase: 'sending', recipients: (to || []).map(email => ({ email })) })
     try {
       // Always explicit, never `{}`. The chips on screen are what the operator
       // agreed to send to; letting the server re-derive the list would mail a
       // director they had just removed, and the two answers can differ the
       // moment someone edits the company in another tab.
       const result = await api.post(
-        `/cases/${caseRow.id}/verification/send`, { to })
+        `/cases/${caseRow.id}/verification/send`, { to, respond_by: respondBy })
       // ONE MESSAGE PER DIRECTOR now, so a send can partly succeed. The
       // response names the addresses that failed; showing only a green tick
       // would leave a director unasked with nothing on screen saying so.
@@ -176,21 +279,43 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       // an operator is most likely to miss, because the stage advances and the
       // status changes around it.
       if (result?.failed_to?.length) {
-        const one = result.failed_to.length === 1
-        onWarn?.('The return did not reach everyone.',
-          `${result.failed_to.join(', ')} — send again to just `
-          + `${one ? 'that address' : 'those addresses'}. The others have it `
-          + 'and their links are live.')
+        // BOTH HALVES, NAMED (Levi 2026-09-07). This used to name only the
+        // failures, which left the operator unable to tell whether the rest of
+        // the board had been told — so the safe move was to send again to
+        // everybody, and a director who had already confirmed got a second
+        // request for the same return.
+        onWarn?.('The return did not reach everyone.', describePartialSend(result))
       } else if (result?.approval_links === false) {
         onWarn?.('Sent without a Confirm button.',
           'This deployment could not build the approval link, so the client '
           + 'has to reply by email and you record the answer below. '
           + 'PUBLIC_API_BASE_URL needs setting on the backend.')
       }
-      onChanged()
+      // HOLD THE OPERATOR HERE UNTIL RESEND HAS REPORTED (Levi 2026-09-08).
+      // A 200 from the send means Resend accepted each message, not that
+      // anybody received it — a dead mailbox at a live domain and a suppressed
+      // address both look identical at this point. The splash asks, per
+      // recipient, and only then lets the screen move on.
+      //
+      // `onChanged()` is deferred to the modal closing rather than fired here:
+      // refreshing the case underneath a modal would advance the stage behind
+      // it, so the operator would dismiss the splash onto a screen that had
+      // already moved.
+      if (result?.deliveries?.length) {
+        setConfirming({ phase: 'confirming', recipients: result.deliveries })
+      } else {
+        // No per-recipient ids came back — an older backend, or a send that
+        // returned none. There is nothing to confirm, so close the splash and
+        // behave exactly as this screen did before it existed.
+        setConfirming(null)
+        onChanged()
+      }
     } catch (e) {
+      // The splash comes down before the refusal is raised: it is an overlay,
+      // and a page banner drawn behind it would be invisible.
+      setConfirming(null)
       // TO THE PAGE, like every other refusal. It used to be drawn here next
-      // to the button because the banner sits above a 690px PDF frame and was
+      // to the button because the banner sits above the PDF frame and was
       // therefore off-screen — but the page now scrolls to the banner on every
       // failure, so the reason for the exception is gone, and keeping it would
       // leave this screen with an error surface no other stage has (Levi
@@ -215,6 +340,17 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
   return (
     <>
+      {/* The sending splash. Rendered first so it overlays the stage, and only
+          while a send is being confirmed. Closing it is what refreshes the
+          case — see send(). */}
+      {confirming && (
+        <VerificationDeliveryModal
+          caseId={caseRow.id}
+          phase={confirming.phase}
+          deliveries={confirming.recipients}
+          onClose={() => { setConfirming(null); onChanged() }}
+        />
+      )}
       {/* v11 leads this stage with the snapshot, because everything on it —
           the PDF, the email, and eventually the filing — reads the frozen copy
           rather than the company profile. Without this, a profile edited after
@@ -243,8 +379,9 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               {saving ? 'Preparing…' : 'Download PDF'}
             </button>
             {/* A tab, not a modal: the operator is checking this against the
-                company record in another window, and even 690px of embedded
-                viewer is not a whole nine-page statutory return. */}
+                company record in another window, and no embedded viewer that
+                leaves room for the controls below it is a whole nine-page
+                statutory return. */}
             <button type="button" className="btn btn-outline btn-sm"
                     disabled={!pdfUrl}
                     onClick={() => window.open(pdfUrl, '_blank', 'noopener')}>
@@ -283,7 +420,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
                 frame is what the embedded viewer actually reads as bigger. */}
             <object data={pdfUrl} type="application/pdf" aria-label="NAR1 preview"
                     className="pdf-frame"
-                    style={{ height: Math.round(690 * zoom / 100) }}>
+                    style={{ height: Math.round(FRAME_HEIGHT * zoom / 100) }}>
               {/* Some browsers refuse to embed; a link is not a dead end. */}
               <a href={pdfUrl} target="_blank" rel="noreferrer">Open the NAR1 preview</a>
             </object>
@@ -336,18 +473,63 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           maxRecipients={maxRecipients}
         />
 
-        {/* Named, not implied. "A copy goes to you" is unverifiable; the
+        {/* THE DEADLINE, and it is the operator's to choose (Levi 2026-09-07).
+            It sits between the recipients and the Send button because that is
+            the order the decision is made: what, who, by when, go.
+
+            It is one date doing three jobs — what the letter prints, when the
+            Confirm links stop working, and when `jobs.auto_approve_nar1` reads
+            the client's silence as consent. That last one is why there is no
+            default: a date nobody chose still decides that a return goes to CR
+            unanswered. */}
+        <div className="f-group" style={{ marginTop: 14 }}>
+          <label className="f-label" htmlFor="respond-by">
+            Client must reply by<span className="f-req"> *</span>
+          </label>
+          <input
+            id="respond-by"
+            type="date"
+            className="f-input"
+            style={{ maxWidth: 220 }}
+            value={respondBy}
+            // Today is allowed and the past is not — the backend refuses a past
+            // date independently. A deadline already gone would issue a link
+            // that is dead on arrival and hand the auto-approval job a case it
+            // would approve on "silence" the same night.
+            min={hongKongTodayISO()}
+            disabled={!canWrite || busy !== null || Boolean(blocked) || filed}
+            onChange={e => setRespondBy(e.target.value)}
+          />
+          <span className="f-hint">
+            The letter tells the client that if you do not hear from them by
+            this date, GSHK will take the return as confirmed and file it. The
+            Confirm link in their email expires at the end of this day.
+          </span>
+        </div>
+
+        {/* Named, not implied. "A copy goes to the team" is unverifiable; the
             address is the whole assurance. Both facts are stated because they
             are different promises — one is a copy, the other is where the
-            client's answer lands. */}
+            client's answer lands.
+
+            THE COPY IS NO LONGER THE PERSON PRESSING SEND (Levi 2026-09-08).
+            It is the shared renewals mailbox, so this no longer reads the
+            signed-in user's address — see email_service.CLIENT_CC.
+
+            AND THE LETTER NOW SENDS THE CLIENT THERE TOO (Levi 2026-09-08): it
+            says in as many words that replies are not monitored, and names this
+            mailbox for changes. reply-to is still you, so a client who replies
+            regardless is not shouting into a no-reply address — but an operator
+            who believes the letter ASKS for a reply will sit waiting for one
+            that was never requested, which is why both facts are spelled out
+            and which is now the more useful of the two. */}
         <div className="cc-note">
           <span className="cc-icon" aria-hidden="true">↩</span>
           <div>
-            {profile?.email
-              ? <>A copy goes to <b>{profile.email}</b>, and the client's reply
-                  comes back to you rather than to the no-reply address.</>
-              : <>A copy goes to you, and the client's reply comes back to you
-                  rather than to the no-reply address.</>}
+            A copy goes to <b>{CLIENT_CC}</b> — the same mailbox the letter
+            gives the client for changes, since it tells them replies are not
+            monitored. A client who replies anyway still reaches you rather
+            than the no-reply address.
           </div>
         </div>
 
@@ -356,16 +538,22 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             being tested. The backend substitutes a fixed internal list before
             anything leaves the process (email_service.TEST_RECIPIENTS), which
             no environment variable can override. */}
+        {/* The reason the copy is dropped CHANGED with the CC (2026-09-08).
+            It used to be "you are already on that list", which was true of the
+            case worker and is not true of renewal@getstarted.hk — that is a
+            real GSHK mailbox and deliberately NOT one of the test recipients,
+            so a test deployment must not reach it either. */}
         {isTestEnv && (
           <div className="f-hint" style={{ marginTop: 10, lineHeight: 1.5 }}>
             This is a test environment, so nothing is delivered to the client —
             the message goes to the fixed internal test recipients instead, and
-            the copy to you is dropped because you are already on that list.
+            the copy to {CLIENT_CC} is dropped, because that is a real GSHK
+            mailbox and nothing sent from here may reach it.
           </div>
         )}
 
         {/* NEITHER THE REFUSAL NOR THE PARTIAL-SEND REPORT IS DRAWN HERE
-            any more. They were, because the page banner sits above a 690px PDF
+            any more. They were, because the page banner sits above the PDF
             frame and a refused send therefore looked like a dead button. The
             page now scrolls to the banner on every failure, which removes the
             reason — and leaving them would give this one stage an error
@@ -395,14 +583,22 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
                     ? 'Loading the recipients…'
                     : to.length === 0
                       ? 'Add at least one recipient above.'
-                      : `The return will be attached as a PDF, to ${to.length} `
-                        + `recipient${to.length === 1 ? '' : 's'}.`}
+                      // Last, because it is the last field on the card and
+                      // because the other three are about who is being asked
+                      // at all. Named rather than left to the disabled button:
+                      // a date box the operator scrolled past is exactly the
+                      // thing they will not notice is empty.
+                      : !respondBy
+                        ? 'Choose the date the client must reply by.'
+                        : `The return will be attached as a PDF, to ${to.length} `
+                          + `recipient${to.length === 1 ? '' : 's'}.`}
             </div>
             <div className="ab-actions">
               <span className="perm-tag">Requires <b>nar1:write</b></span>
               <button className="btn btn-action"
                       disabled={!reviewed || busy !== null || !to
-                                || to.length === 0 || Boolean(blocked)}
+                                || to.length === 0 || Boolean(blocked)
+                                || !respondBy}
                       onClick={send}>
                 {busy === 'send' ? 'Sending…' : sent ? 'Send again' : 'Send to client'}
               </button>

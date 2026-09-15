@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
-import { formatDateTime } from '../../lib/format.js'
+import { formatDateTime, formatMoney as money } from '../../lib/format.js'
 import { describeError, signedOff } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
 
@@ -26,7 +26,7 @@ import { ActionWithheld } from '../RequirePermission.jsx'
  * radio list goes with it: there is nothing to choose. What survives is v11's
  * `pick-sig` row, which named the person who signed.
  */
-export default function StageSigning({ caseRow, canWrite, onChanged, onError, onGo }) {
+export default function StageSigning({ caseRow, canWrite, onChanged, onRefresh, onError, onGo }) {
   const method = caseRow.signing_method || 'esign'
   const [busy, setBusy] = useState(null)
   const [cred, setCred] = useState(null)
@@ -103,7 +103,12 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
       const form = new FormData()
       form.append('file', file)
       await api.upload(`/cases/${caseRow.id}/manual-sign`, form)
-      onChanged()
+      // RE-READ, DO NOT ADVANCE (Levi 2026-09-14). The upload completes this
+      // stage, and `onChanged` would move the page on to Submission the moment
+      // it did — leaving an operator who attached the wrong scan looking at
+      // receipt fields. They stay here, see the attached version with its
+      // Replace, and move on with "Continue to Submission →" when satisfied.
+      await (onRefresh || onChanged)()
     } catch (e) {
       onError(describeError(e))
     } finally {
@@ -209,7 +214,7 @@ export default function StageSigning({ caseRow, canWrite, onChanged, onError, on
         <div className="action-bar">
           <div className="ab-note">
             {method === 'manual'
-              ? 'Record the receipt CR issued for the paper filing.'
+              ? 'Check this is the right signed scan — Replace it if not — then record the receipt CR issued.'
               : 'Nothing has been charged yet. The fee is taken at Submission.'}
           </div>
           <div className="ab-actions">
@@ -290,13 +295,6 @@ function MethodChoice({ method, disabled, readOnly = false, onPick }) {
  * it is appended to the balance sentence rather than replacing it.
  */
 const PWD_WARN_DAYS = 30
-
-function money(value) {
-  const n = Number(value)
-  return Number.isFinite(n)
-    ? n.toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : String(value)
-}
 
 export function daysUntil(iso) {
   if (!iso) return null
@@ -399,7 +397,8 @@ function ManualUpload({ caseRow, canWrite, busy, fileInput, onPick, attached }) 
           <div className="card-title">Upload the wet-signed NAR1</div>
           <div className="card-sub">
             A scan of the printed form, signed by hand. There is no e-signature
-            on this path — the upload is what unlocks Submission.
+            on this path. Once it is attached, check it and continue to
+            Submission — it can be replaced until the filing is recorded.
           </div>
         </div>
       </div>

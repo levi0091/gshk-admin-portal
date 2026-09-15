@@ -52,7 +52,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, NameObject, NumberObject, TextStringObject
+from pypdf.generic import ArrayObject, NameObject, TextStringObject
 
 from services.nar1_form import appearance
 from services.nar1_form import field_map as fm
@@ -1297,8 +1297,13 @@ def _add_page(writer: PdfWriter, template_page: int, suffix: str) -> dict:
     return mapping
 
 
-def _render(pages: _Pages) -> bytes:
-    """Write the composed pages onto copies of CR's template."""
+def _fill(pages: _Pages) -> bytes:
+    """Write the composed pages onto copies of CR's template, as FORM FIELDS.
+
+    The result is the filled AcroForm -- every value sitting in its widget's
+    `/V` and nothing drawn -- and it is NOT a document to send anybody.
+    `render()` passes it through `_bake()`; `render_fields()` exists so tests
+    can still ask which value went in which box."""
     template = PdfReader(str(TEMPLATE))
     writer = PdfWriter()
 
@@ -1329,13 +1334,9 @@ def _render(pages: _Pages) -> bytes:
             writer.pages[-1], renamed, auto_regenerate=False
         )
 
-    # Read-only, because the client is being asked to APPROVE this document,
-    # not to edit it. Bit 1 of /Ff is ReadOnly.
-    for page in writer.pages:
-        for annot in (page.get("/Annots") or []):
-            obj = annot.get_object()
-            flags = int(obj.get("/Ff", 0)) | 1
-            obj[NameObject("/Ff")] = NumberObject(flags)
+    # No read-only flag is set here any more. The client is asked to APPROVE
+    # this document, not to edit it, and `_bake()` now removes every field --
+    # which no viewer can second-guess the way it can a flag.
 
     # Every page copy carries its own clone of the template's fonts and CR's
     # logo, so a nine-page return weighs 6.3MB before this and 0.9MB after —
@@ -1345,12 +1346,17 @@ def _render(pages: _Pages) -> bytes:
 
     buffer = io.BytesIO()
     writer.write(buffer)
-    # The values are drawn as page content in fonts we embed, and the widgets
-    # are hidden. Until this call the document still renders through CR's
-    # non-embedded /PMingLiU, which is what made the emailed copy and the
-    # portal preview disagree.
+    return buffer.getvalue()
+
+
+def _bake(filled: bytes) -> bytes:
+    """The filled form, drawn as page content in fonts we embed, with the
+    form itself removed. Until this runs the document renders through CR's
+    non-embedded /PMingLiU -- which made the emailed copy and the portal
+    preview disagree -- and, after it, a viewer has no widget left to draw a
+    second copy of any value from, which is what a phone did."""
     try:
-        return appearance.bake(buffer.getvalue(), sizes=FIELD_SIZES,
+        return appearance.bake(filled, sizes=FIELD_SIZES,
                                regular=REGULAR_WEIGHT_FIELDS,
                                centred=CENTRED_FIELDS, faces=FIELD_FACES)
     except appearance.AppearanceError as exc:
@@ -1360,6 +1366,42 @@ def _render(pages: _Pages) -> bytes:
         # uncaught AppearanceError would surface as an opaque 500 instead of
         # "this character on this field cannot be rendered."
         raise FormFillError(str(exc)) from exc
+
+
+def _composed(validated_xml: str, *, company_type: str,
+              presenter: dict | None, signed_on: str) -> _Pages:
+    """The checked page layout both `render()` and `render_fields()` fill."""
+    if company_type not in COMPANY_TYPES:
+        raise FormFillError(
+            f"company_type must be one of {COMPANY_TYPES}, not {company_type!r}"
+        )
+    if not TEMPLATE.exists():
+        raise FormFillError(f"CR's blank form is missing: {TEMPLATE}")
+
+    model = parse_validated_xml(validated_xml)
+    pages = _compose(model, company_type=company_type,
+                     presenter=presenter or DEFAULT_PRESENTER,
+                     signed_on=signed_on)
+    _assert_nothing_dropped(model, pages)
+    return pages
+
+
+def render_fields(validated_xml: str, *, company_type: str = "private",
+                  presenter: dict | None = None, signed_on: str = "") -> bytes:
+    """The same return as `render()`, BEFORE it is baked: CR's template with
+    every value in its form field's `/V` and nothing drawn.
+
+    For asking what went IN WHICH BOX -- the one question the shipped return
+    can no longer answer, because `bake()` flattens it. Same pages, same order,
+    same widget rectangles.
+
+    NEVER SEND THIS TO ANYBODY. Its values exist only as widget appearance
+    streams in CR's non-embedded /PMingLiU, and how those are drawn is up to
+    the viewer: the same bytes are a different document on a desktop and on a
+    phone.
+    """
+    return _fill(_composed(validated_xml, company_type=company_type,
+                           presenter=presenter, signed_on=signed_on))
 
 
 def render(validated_xml: str, *, company_type: str = "private",
@@ -1377,17 +1419,10 @@ def render(validated_xml: str, *, company_type: str = "private",
     `signed_on` is the date beside the signature -- `tpsi_filings.signed_at`
     once CR's PIN signing has succeeded, and nothing before that. Empty means
     TODAY IN HONG KONG, not an empty box; see `signature_date`.
-    """
-    if company_type not in COMPANY_TYPES:
-        raise FormFillError(
-            f"company_type must be one of {COMPANY_TYPES}, not {company_type!r}"
-        )
-    if not TEMPLATE.exists():
-        raise FormFillError(f"CR's blank form is missing: {TEMPLATE}")
 
-    model = parse_validated_xml(validated_xml)
-    pages = _compose(model, company_type=company_type,
-                     presenter=presenter or DEFAULT_PRESENTER,
-                     signed_on=signed_on)
-    _assert_nothing_dropped(model, pages)
-    return _render(pages)
+    The result is FLAT: every value is page content and there is no form
+    field left in it. See `appearance.bake` for why a hidden field was not
+    enough.
+    """
+    return _bake(_fill(_composed(validated_xml, company_type=company_type,
+                                 presenter=presenter, signed_on=signed_on)))

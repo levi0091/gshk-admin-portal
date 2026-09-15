@@ -7,6 +7,7 @@ POST /cases/{id}/verification/response. Both routes are staff-only
 caller can reach, which is the whole reason this flow has no security surface to
 get wrong.
 """
+import datetime as _dt
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,11 +17,27 @@ from fastapi.testclient import TestClient
 from main import app
 from services import email_service
 
+#: The fixed copy on every client-facing message. Read from the module rather
+#: than retyped, so a test cannot keep passing against an address the code no
+#: longer uses.
+CLIENT_CC = email_service.CLIENT_CC
+
 SUPER = {"id": "u1", "display_name": "Levi", "role_name": "super_admin",
          "role_id": "role-sa"}
 REGULAR = {"id": "u2", "display_name": "Staff", "role_name": "staff",
            "role_id": "role-x"}
 H = {"Authorization": "Bearer tok"}
+
+#: The response deadline is MANDATORY on every send (Levi 2026-09-07), so it is
+#: part of the minimum body rather than something individual tests remember.
+#:
+#: RELATIVE TO TODAY, not a literal date. The route refuses a deadline in the
+#: past, so a hardcoded 2026 date would turn this whole file red on a calendar
+#: boundary rather than on a code change — the same trap `_TODAY` avoids in
+#: tests/tpsi/test_submit_gate.py.
+_RESPOND_BY = (_dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).date()
+               + _dt.timedelta(days=21))
+SEND = {"respond_by": _RESPOND_BY.isoformat()}
 
 
 def _super():
@@ -39,8 +56,12 @@ def _approval_tokens():
     The stub returns a deterministic token per recipient so the link that lands
     in the email body is assertable, and keeps the shape `issue` returns.
     """
-    def issue(*, case_id, recipients, sent_at=None):
-        return [{**r, "token": f"tok-{i}", "expires_at": "2026-09-15T00:00:00+00:00"}
+    def issue(*, case_id, recipients, sent_at=None, expires_at=None):
+        # ECHOES `expires_at` BACK. The route now passes the operator's chosen
+        # deadline down, and a stub that ignored it would let the email print a
+        # date nobody picked while every test still passed.
+        return [{**r, "token": f"tok-{i}",
+                 "expires_at": expires_at or "2026-09-15T00:00:00+00:00"}
                 for i, r in enumerate(recipients)]
 
     with patch("routers.cases.nar1_approvals.issue", side_effect=issue),          patch("routers.cases.nar1_approvals.supersede_outstanding",
@@ -139,7 +160,7 @@ def test_send_attaches_the_pdf_rendered_from_the_validated_xml(client):
                              "redirected": False}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 200
     assert send.call_args.kwargs["attachments"][0][1] == b"%PDF-1.4"
     assert send.call_args.kwargs["to"] == ["client@example.com"]
@@ -166,7 +187,7 @@ def test_send_renders_the_CR_validated_snapshot_on_CRs_own_form(client):
          patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     # The CR-validated snapshot, never the live profile: showing a client one
     # document and filing another is the failure this guards.
     assert render.call_args.args[0] == "<x/>"
@@ -182,7 +203,7 @@ def test_send_is_refused_before_cr_validation(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=draft):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
 
 
@@ -190,7 +211,7 @@ def test_send_is_refused_when_no_filing_exists_at_all(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=None):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
 
 
@@ -204,7 +225,7 @@ def test_send_is_refused_when_the_latest_validation_failed(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=stale):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
     assert "validation" in response.json()["detail"].lower()
 
@@ -217,7 +238,7 @@ def test_send_is_refused_for_a_form_that_is_not_nar1(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=other):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
 
 
@@ -229,7 +250,7 @@ def test_send_is_refused_once_the_return_is_already_filed(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
          patch("routers.cases.nar1_cases.current_filing", return_value=filed):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
 
 
@@ -238,13 +259,13 @@ def test_send_is_refused_when_the_case_was_completed_off_portal(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", return_value=done), \
          patch("routers.cases.nar1_cases.current_filing", return_value=VALIDATED):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
 
 
 def test_send_is_refused_when_no_recipient_is_on_record(client):
     with _super(), _Stack(*_sendable(recipient=None)):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
 
 
@@ -255,7 +276,7 @@ def test_an_explicit_recipient_overrides_the_address_on_record(client):
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H,
-                               json={"to": "other@example.com"})
+                               json={**SEND, "to": "other@example.com"})
     assert response.status_code == 200
     assert send.call_args.kwargs["to"] == ["other@example.com"]
 
@@ -265,7 +286,7 @@ def test_a_recipient_override_that_is_not_an_address_is_refused(client):
     and identity numbers. Free text is not an address."""
     with _super(), _Stack(*_sendable()):
         response = client.post("/cases/c1/verification/send", headers=H,
-                               json={"to": "not-an-address"})
+                               json={**SEND, "to": "not-an-address"})
     assert response.status_code == 422
 
 
@@ -291,7 +312,7 @@ def test_every_director_with_an_address_is_mailed_by_default(client):
                return_value={"id": "m1"}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 200
     assert _addresses_sent(send) == ["chan@example.com", "lee@example.com"]
 
@@ -303,7 +324,7 @@ def test_the_company_address_is_used_only_when_no_director_has_one(client):
          patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert "client@example.com" not in _addresses_sent(send)
 
 
@@ -314,7 +335,7 @@ def test_an_explicit_list_is_sent_verbatim(client):
          patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post(
             "/cases/c1/verification/send", headers=H,
-            json={"to": ["a@example.com", "b@example.com", "c@example.com"]})
+            json={**SEND, "to": ["a@example.com", "b@example.com", "c@example.com"]})
     assert response.status_code == 200
     assert _addresses_sent(send) == [
         "a@example.com", "b@example.com", "c@example.com"]
@@ -328,15 +349,23 @@ def test_an_explicit_list_is_not_topped_up_with_the_directors(client):
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         client.post("/cases/c1/verification/send", headers=H,
-                    json={"to": ["chan@example.com"]})
+                    json={**SEND, "to": ["chan@example.com"]})
     assert _addresses_sent(send) == ["chan@example.com"]
 
 
 # ---------------------------------------------------------------------------
-# The case worker is copied, and the client's reply is aimed at them
+# The SHARED RENEWALS MAILBOX is copied, and the client's reply is aimed at
+# the case worker
 #
-# Levi 2026-08-30: "whoever is logged in should be in the cc as well.. so that
-# the person who is working on the case can get an email."
+# Levi 2026-09-08: "right now the person that triggers sending the email in
+# gflowdesk is also in cc to the email that is sent to client. this is the
+# wrong behavior... for all emails to client we should cc a fixed email
+# address: renewal@getstarted.hk".
+#
+# This REVERSES Levi 2026-08-30 ("whoever is logged in should be in the cc as
+# well.. so that the person who is working on the case can get an email"). The
+# reply path is unchanged and still reaches that person — what moved is the
+# COPY, from an individual's mailbox to the team's.
 # ---------------------------------------------------------------------------
 
 #: The same super admin, but resolved with the address they signed in with.
@@ -353,29 +382,47 @@ def _send_as_operator(client, json=None, user=None):
     with patch("middleware.auth._resolve_user", return_value=user or SUPER_MAILED), \
          _Stack(*_sendable(directors=BOARD)), \
          patch("routers.cases.email_service.send",
-               return_value={"id": "m1", "cc": ["levi@zenexflow.com"],
-                             "intended_cc": ["levi@zenexflow.com"]}) as send, \
+               return_value={"id": "m1", "cc": [CLIENT_CC],
+                             "intended_cc": [CLIENT_CC]}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H,
-                               json=json if json is not None else {})
+                               json={**SEND, **(json or {})})
     return send, response
 
 
-def test_the_logged_in_user_is_copied_on_the_clients_email(client):
+def test_the_shared_renewals_mailbox_is_copied_not_the_logged_in_user(client):
+    """The whole point of Levi's 2026-09-08 change. The client must not see an
+    individual staff member's address on a letter about their statutory
+    return, and GSHK's record of what it told that client must not live in one
+    person's mailbox."""
     send, response = _send_as_operator(client)
     assert response.status_code == 200
-    # ON THE FIRST MESSAGE ONLY. Spec §5 made this one message per director, and
-    # the case worker asked to be copied on the REQUEST, not to receive an
-    # identical mail for every member of the board.
-    assert send.call_args_list[0].kwargs["cc"] == ["levi@zenexflow.com"]
-    assert [c.kwargs["cc"] for c in send.call_args_list[1:]] == [None]
+    copies = [c.kwargs["cc"] for c in send.call_args_list]
+    assert copies == [[CLIENT_CC], [CLIENT_CC]]
+    # The operator signed in as levi@zenexflow.com. That address must appear on
+    # no CC line anywhere — asserted explicitly rather than inferred from the
+    # equality above, because THIS is the behaviour that was reported wrong.
+    assert not any("levi@zenexflow.com" in (c or []) for c in copies)
 
 
-def test_the_reply_address_is_on_every_message_even_though_the_copy_is_not(client):
-    """`reply_to` is the load-bearing half. A director who got the second copy
-    must still be able to reply to a human — the message asks them to, and it
-    is sent from no-reply@getstarted.hk."""
+def test_the_copy_is_on_EVERY_message_not_just_the_first(client):
+    """The case worker's copy went on the first message only, so three
+    directors did not mean three identical mails in one inbox. That reasoning
+    does not carry over: these messages are not identical (each carries its own
+    approval link), and a shared mailbox holding the first of three would
+    misrepresent a partial send as a complete one."""
+    send, _ = _send_as_operator(client)
+    assert len(send.call_args_list) == 2
+    assert all(c.kwargs["cc"] == [CLIENT_CC] for c in send.call_args_list)
+
+
+def test_the_reply_address_is_the_case_worker_on_every_message(client):
+    """`reply_to` is the load-bearing half and is DELIBERATELY UNCHANGED by the
+    CC move. The message asks the client to reply and is sent from
+    no-reply@getstarted.hk, so the reply must reach a human who knows the case
+    — the copy going to the team while the answer goes to a person is the
+    intended split."""
     send, _ = _send_as_operator(client)
     assert {c.kwargs["reply_to"] for c in send.call_args_list} == {
         "levi@zenexflow.com"}
@@ -408,25 +455,30 @@ def test_a_send_still_works_for_an_identity_carrying_no_address(client):
     before the key existed."""
     send, response = _send_as_operator(client, user=SUPER)
     assert response.status_code == 200
-    assert send.call_args.kwargs["cc"] is None
+    # The COPY no longer depends on the identity at all, which is the point:
+    # an identity with no address used to mean the message went out with
+    # nobody copied. The renewals mailbox is copied either way.
+    assert send.call_args.kwargs["cc"] == [CLIENT_CC]
+    # Only the reply address is still the operator's, and it is legitimately
+    # absent here — there is no address to aim the reply at.
     assert send.call_args.kwargs["reply_to"] is None
 
 
 def test_the_copy_is_recorded_in_the_audit_row(client):
     """Both `cc` and `intended_cc`: on a test deployment the copy is DROPPED,
-    and a trail recording only the intention would claim the case worker was
-    copied when nothing reached them."""
+    and a trail recording only the intention would claim the renewals mailbox
+    was copied when nothing reached it."""
     with _super_mailed(), _Stack(*_sendable(directors=BOARD)), \
          patch("routers.cases.email_service.send",
                return_value={"id": "m1", "cc": [],
-                             "intended_cc": ["levi@zenexflow.com"],
+                             "intended_cc": [CLIENT_CC],
                              "redirected": True}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()) as log:
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     meta = log.await_args_list[0].kwargs["metadata"]
     assert meta["cc"] == []
-    assert meta["intended_cc"] == ["levi@zenexflow.com"]
+    assert meta["intended_cc"] == [CLIENT_CC]
 
 
 def test_the_attachment_name_is_the_one_the_email_announces(client):
@@ -436,7 +488,7 @@ def test_the_attachment_name_is_the_one_the_email_announces(client):
          patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     name = send.call_args.kwargs["attachments"][0][0]
     assert name == "NAR1-NAR-2026-0041.pdf"
     assert name in send.call_args.kwargs["html"]
@@ -449,22 +501,632 @@ def test_an_empty_list_is_refused_rather_than_treated_as_absent(client):
          patch("routers.cases.email_service.send") as send, \
          patch("routers.cases.nar1_cases.update_case") as update:
         response = client.post("/cases/c1/verification/send", headers=H,
-                               json={"to": []})
+                               json={**SEND, "to": []})
     assert response.status_code == 422
     send.assert_not_called()
     update.assert_not_called()
 
 
-def test_one_bad_address_in_a_list_refuses_the_whole_send(client):
-    """Not "send to the good ones": the operator asked for a set, and a partial
-    send that reports success is indistinguishable from a complete one."""
+def test_one_bad_address_no_longer_refuses_the_whole_send(client):
+    """REVERSES "the operator asked for a set" (Levi 2026-09-07).
+
+    That reasoning held while this route sent ONE message to several addresses,
+    where a partial send really was indistinguishable from a complete one. Spec
+    §5 made it one message per director, so the other two directors can be told
+    and there is never a reason not to — what was actually happening was that a
+    typo in the third chip left a whole board unmailed.
+
+    The bad address is named, with its reason, in the same report as anything
+    Resend rejects: the operator's question is "who did not get it".
+    """
     with _super(), _Stack(*_sendable(directors=BOARD)), \
-         patch("routers.cases.email_service.send") as send:
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H,
-                               json={"to": ["good@example.com", "nope"]})
+                               json={**SEND, "to": ["good@example.com", "nope"]})
+
+    assert response.status_code == 200
+    body = response.json()
+    # The good one went, and is reported as delivered.
+    assert _addresses_sent(send) == ["good@example.com"]
+    assert body["to"] == ["good@example.com"]
+    # The bad one did not, is named, and says WHY — "not a valid email address"
+    # is fixed by editing the chip; a provider rejection is fixed by pressing
+    # Send again, and the operator must be able to tell those apart.
+    assert body["failed_to"] == ["nope"]
+    assert body["failed"] == [
+        {"email": "nope", "reason": "not a valid email address"}]
+
+
+def test_a_malformed_address_is_never_handed_to_the_transport(client):
+    """The check is exactly as strict as it was. What changed is what happens
+    to the REST of the board — not whether free text can reach Resend."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={**SEND, "to": ["good@example.com", "please send to Mary"]})
+
+    assert "please send to Mary" not in _addresses_sent(send)
+
+
+def test_a_list_of_nothing_but_bad_addresses_is_still_refused(client):
+    """There is no partial success to report, so this stays a refusal — and it
+    names the addresses, so the operator knows which chips to fix."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send") as send, \
+         patch("routers.cases.nar1_cases.update_case") as update:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={**SEND, "to": ["nope", "also-bad"]})
+
     assert response.status_code == 422
     assert "nope" in response.json()["detail"]
+    assert "also-bad" in response.json()["detail"]
     send.assert_not_called()
+    # NOTHING is marked sent: a case that says it went out while waiting on a
+    # reply to nothing sits in Awaiting Client forever.
+    update.assert_not_called()
+
+
+def test_the_failed_addresses_and_their_reasons_are_audited(client):
+    """`failed_to` alone made a reader guess whether an address was rejected by
+    Resend or was never an address at all."""
+    logged = AsyncMock()
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=logged):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={**SEND, "to": ["good@example.com", "nope"]})
+
+    email_rows = [c for c in logged.await_args_list
+                  if c.kwargs.get("action_type") == "EMAIL_SENT"]
+    assert email_rows
+    meta = email_rows[0].kwargs["metadata"]
+    assert meta["failed_to"] == ["nope"]
+    assert meta["failed"] == [
+        {"email": "nope", "reason": "not a valid email address"}]
+
+
+# ---------------------------------------------------------------------------
+# An address whose DOMAIN cannot receive mail (Levi 2026-09-08)
+#
+# "I sent an email to an address that clearly does not exist... but I am still
+# not getting an error on the client verification page to say that the email to
+# this address failed to send."
+#
+# Resend answers 200 for anything syntactically valid and bounces it out of
+# band, minutes later, so `EmailError` never fired and the screen reported
+# total success. What IS knowable before sending is whether the domain accepts
+# mail at all, and that is what these cover.
+# ---------------------------------------------------------------------------
+
+def _dns_rejects(*domains, reason=None):
+    """Patch the DNS probe so addresses at `domains` come back undeliverable.
+
+    Keyed by DOMAIN, because that is the question the probe actually asks —
+    one lookup per domain, never one per address. The autouse `_no_dns_in_tests`
+    fixture patches the same name to return None; this overrides it for the
+    tests that want a specific answer, and neither touches the network.
+    """
+    def probe(address):
+        domain = address.rsplit("@", 1)[-1].lower()
+        if domain in domains:
+            return reason or f"The domain name {domain} does not exist."
+        return None
+    return patch("services.email_service.undeliverable_reason",
+                 side_effect=probe)
+
+
+def test_an_address_whose_domain_does_not_exist_is_reported_as_failed(client):
+    """THE REPORTED FAULT. This used to return a clean 200 naming nothing: the
+    address was well-formed, so the syntax gate passed it, and Resend accepted
+    it, so there was no EmailError to catch."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["good@example.com",
+                                 "ghost@nosuchdomain.invalid"]})
+
+    assert response.status_code == 200
+    body = response.json()
+    # It was never handed to the transport — there is no point paying for a
+    # send that can only bounce.
+    assert _addresses_sent(send) == ["good@example.com"]
+    assert body["failed_to"] == ["ghost@nosuchdomain.invalid"]
+    assert body["failed"] == [{
+        "email": "ghost@nosuchdomain.invalid",
+        "reason": "The domain name nosuchdomain.invalid does not exist."}]
+
+
+def test_the_report_also_names_who_DID_receive_it(client):
+    """Levi asked for this in the same breath as the failure: "The message
+    should also indicate what other emails were successful, so that there is no
+    doubt that there were other successful emails." A report naming only the
+    failure makes re-sending to the whole board look like the safe move, which
+    puts a second request in front of a director who already has one."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["chan@example.com", "lee@example.com",
+                                 "ghost@nosuchdomain.invalid"]})
+
+    body = response.json()
+    assert body["to"] == ["chan@example.com", "lee@example.com"]
+    assert body["failed_to"] == ["ghost@nosuchdomain.invalid"]
+    # And the case IS marked sent, because two directors really were told.
+    assert body["sent_at"]
+
+
+def test_a_DIRECTOR_address_on_a_dead_domain_is_checked_too(client):
+    """The gap this closed. The syntax gate only ever ran on addresses an
+    OPERATOR typed, so a director address that came out of Viewpoint years ago
+    on a since-lapsed domain went to Resend completely unexamined. "Who did not
+    get it" must not depend on which branch supplied the address."""
+    board = [{"person_id": "p1", "name": "CHAN", "given_names": "Tai Man",
+              "email": "chan@deadco.invalid"},
+             {"person_id": "p2", "name": "LEE", "given_names": "Siu Ming",
+              "email": "lee@example.com"}]
+    with _super(), _Stack(*_sendable(directors=board)), \
+         _dns_rejects("deadco.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        # NO "to" in the body — the default-recipients branch.
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json=SEND)
+
+    assert response.status_code == 200
+    assert _addresses_sent(send) == ["lee@example.com"]
+    assert response.json()["failed_to"] == ["chan@deadco.invalid"]
+
+
+def test_a_board_whose_every_domain_is_dead_is_refused_with_the_reasons(client):
+    """No partial success to report, so it stays a refusal — and it names the
+    addresses AND why, because this refusal is the only thing the operator
+    sees and "nothing was sent" alone is not actionable."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid", "alsogone.invalid"), \
+         patch("routers.cases.email_service.send") as send, \
+         patch("routers.cases.nar1_cases.update_case") as update:
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["a@nosuchdomain.invalid",
+                                 "b@alsogone.invalid"]})
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "a@nosuchdomain.invalid" in detail
+    assert "b@alsogone.invalid" in detail
+    assert "does not exist" in detail
+    send.assert_not_called()
+    # Nothing is marked sent: a case that says it went out while waiting on a
+    # reply to nothing sits in Awaiting Client forever.
+    update.assert_not_called()
+
+
+def test_a_malformed_chip_and_a_dead_domain_land_in_ONE_report(client):
+    """Two different ways to be unreachable, one question: "who did not get
+    it". The operator must not have to read two lists."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["good@example.com", "nope",
+                                 "ghost@nosuchdomain.invalid"]})
+
+    body = response.json()
+    assert sorted(body["failed_to"]) == ["ghost@nosuchdomain.invalid", "nope"]
+    reasons = {f["email"]: f["reason"] for f in body["failed"]}
+    assert reasons["nope"] == "not a valid email address"
+    assert "does not exist" in reasons["ghost@nosuchdomain.invalid"]
+
+
+def test_the_dead_domain_and_its_reason_are_audited(client):
+    """The trail answers "who was told" and must not imply a bounce-to-be was
+    a delivery."""
+    logged = AsyncMock()
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         _dns_rejects("nosuchdomain.invalid"), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=logged):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={**SEND, "to": ["good@example.com",
+                                         "ghost@nosuchdomain.invalid"]})
+
+    meta = [c for c in logged.await_args_list
+            if c.kwargs.get("action_type") == "EMAIL_SENT"][0].kwargs["metadata"]
+    assert meta["failed_to"] == ["ghost@nosuchdomain.invalid"]
+    assert "does not exist" in meta["failed"][0]["reason"]
+    # And the delivered address is still the one recorded as told.
+    assert meta["intended_to"] == ["good@example.com"]
+
+
+def test_one_dns_lookup_per_DOMAIN_not_per_address(client):
+    """A board of five directors at the same company asks one question. Asking
+    it five times puts four needless round-trips in front of an operator who is
+    watching a spinner."""
+    probe = MagicMock(return_value=None)
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("services.email_service.undeliverable_reason", new=probe), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H,
+                    json={**SEND, "to": ["a@example.com", "b@example.com",
+                                         "c@example.com", "d@other.test"]})
+
+    domains = sorted(c.args[0].rsplit("@", 1)[-1] for c in probe.call_args_list)
+    assert domains == ["example.com", "other.test"]
+
+
+def test_an_uncertain_dns_answer_lets_the_message_through(client):
+    """SILENCE IS PERMISSION. A timeout, a resolver that will not answer, no
+    network at all — every one of those returns None from the probe and the
+    send proceeds. A wrongly withheld verification email stalls a statutory
+    filing on a director who was never written to, which is far worse than a
+    bounce."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("services.email_service.undeliverable_reason", return_value=None), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post(
+            "/cases/c1/verification/send", headers=H,
+            json={**SEND, "to": ["unknown@whoknows.invalid"]})
+
+    assert response.status_code == 200
+    assert _addresses_sent(send) == ["unknown@whoknows.invalid"]
+    assert response.json()["failed"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /verification/delivery — did each director's copy actually arrive?
+# (Levi 2026-09-08)
+#
+# "after user click on send email we should actually wait for the resend to
+# confirm the status of each email that is sent before allowing user to proceed"
+#
+# The send response now carries a per-recipient `deliveries` map, and the same
+# map is written into the EMAIL_SENT audit metadata so the answer survives the
+# operator closing the tab.
+# ---------------------------------------------------------------------------
+
+def _audit_rows(rows):
+    """Stub the one audit_log read this endpoint makes."""
+    table = MagicMock()
+    table.select.return_value = table
+    table.eq.return_value = table
+    table.order.return_value = table
+    table.limit.return_value = table
+    table.execute.return_value = MagicMock(data=rows)
+    sb = MagicMock()
+    sb.table.return_value = table
+    return patch("routers.cases.get_supabase", return_value=sb), table
+
+
+_SENT_ROW = [{"created_at": "2026-09-08T10:00:00+00:00",
+              "metadata": {"deliveries": [
+                  {"email": "chan@example.com", "name": "CHAN", "message_id": "m1"},
+                  {"email": "lee@example.com", "name": "LEE", "message_id": "m2"}]}}]
+
+
+def _statuses(*results):
+    return patch("routers.cases.email_service.delivery_status",
+                 side_effect=list(results))
+
+
+def test_the_send_returns_which_message_went_to_which_director(client):
+    """`message_ids` alone cannot say. It drops falsy ids, so its positions stop
+    matching `intended_to` the moment one send comes back without one."""
+    with _super(), _Stack(*_sendable(directors=BOARD)), \
+         patch("routers.cases.email_service.send",
+               side_effect=[{"id": "m1"}, {"id": "m2"}]), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()) as log:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={**SEND, "to": ["chan@example.com",
+                                                    "lee@example.com"]})
+
+    deliveries = response.json()["deliveries"]
+    assert [(d["email"], d["message_id"]) for d in deliveries] == [
+        ("chan@example.com", "m1"), ("lee@example.com", "m2")]
+    # And the SAME map is in the audit metadata — that is what makes delivery
+    # answerable after the operator has closed the tab.
+    meta = [c for c in log.await_args_list
+            if c.kwargs.get("action_type") == "EMAIL_SENT"][0].kwargs["metadata"]
+    assert meta["deliveries"] == deliveries
+
+
+def test_delivery_reports_each_recipient(client):
+    supabase, _ = _audit_rows(_SENT_ROW)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, \
+         _statuses({"status": "delivered", "event": "delivered", "detail": None},
+                   {"status": "failed", "event": "bounced",
+                    "detail": "the recipient's mail server rejected it"}):
+        response = client.get("/cases/c1/verification/delivery", headers=H)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert [(r["email"], r["status"]) for r in body["recipients"]] == [
+        ("chan@example.com", "delivered"), ("lee@example.com", "failed")]
+    assert body["delivered"] == 1 and body["failed"] == 1
+    # Nothing left in flight, so the screen stops asking.
+    assert body["settled"] is True
+
+
+def test_delivery_is_NOT_settled_while_one_is_still_in_flight(client):
+    """The splash keeps polling on this. Calling it settled early would close
+    the wait before the bounce it exists to catch had arrived."""
+    supabase, _ = _audit_rows(_SENT_ROW)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, \
+         _statuses({"status": "delivered", "event": "delivered", "detail": None},
+                   {"status": "pending", "event": "sent", "detail": None}):
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+
+    assert body["pending"] == 1
+    assert body["settled"] is False
+
+
+def test_delivery_reads_the_CASE_not_the_company_trail(client):
+    """A NAR1 audit row carries the CASE in `entity_id` and the COMPANY in
+    `case_id` (see _audit_target). Filtering on `case_id` would return the whole
+    company's trail, whose newest EMAIL_SENT row can belong to another year's
+    return — and this endpoint would then report on the wrong filing."""
+    supabase, table = _audit_rows(_SENT_ROW)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, \
+         _statuses({"status": "delivered", "event": "delivered", "detail": None},
+                   {"status": "delivered", "event": "delivered", "detail": None}):
+        client.get("/cases/c1/verification/delivery", headers=H)
+
+    filters = [c.args for c in table.eq.call_args_list]
+    assert ("entity_id", "c1") in filters
+    assert ("entity_type", "nar1_case") in filters
+    assert ("action_type", "EMAIL_SENT") in filters
+    assert not any(f[0] == "case_id" for f in filters)
+
+
+def test_delivery_on_a_case_that_was_never_sent_is_empty_not_an_error(client):
+    supabase, _ = _audit_rows([])
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["recipients"] == []
+    assert body["sent_at"] is None
+    assert body["settled"] is True
+
+
+def test_a_send_made_BEFORE_deliveries_was_recorded_says_so(client):
+    """Older rows carry only a flat `message_ids`, whose positions were never
+    guaranteed to match `intended_to`. Pairing them would attribute a bounce to
+    the wrong director, so it reports unknown instead."""
+    old = [{"created_at": "2026-09-01T10:00:00+00:00",
+            "metadata": {"message_ids": ["m1", "m2"],
+                         "intended_to": ["chan@example.com", "lee@example.com"]}}]
+    supabase, _ = _audit_rows(old)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, patch("routers.cases.email_service.delivery_status") as probe:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["unknown"] is True
+    assert body["settled"] is True
+    probe.assert_not_called()
+
+
+def test_a_REDIRECTED_send_is_never_reported_as_delivered(client):
+    """THE BUG LEVI HIT ON 2026-09-08.
+
+    He sent to levi214839824@zenexflow.com — an address he knew did not exist —
+    and the screen said "Delivered". It was not lying about Resend: outside
+    production the recipient lock substitutes TEST_RECIPIENTS inside send(), so
+    that message really was delivered — to the four internal mailboxes. The
+    fault was pairing THAT answer with the address on screen.
+
+    Verified against the real send: Resend's own record for both messages shows
+    `to` = the four test recipients, and neither ever went to the address the
+    operator typed.
+    """
+    row = [{"created_at": "2026-09-08T10:00:00+00:00",
+            "metadata": {"deliveries": [
+                {"email": "levi214839824@zenexflow.com", "name": None,
+                 "message_id": "m1", "redirected": True,
+                 "delivered_to": ["levi@zenexflow.com", "roy@zenexflow.com"]}]}}]
+    supabase, _ = _audit_rows(row)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE),          supabase, patch("routers.cases.email_service.delivery_status") as probe:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+
+    entry = body["recipients"][0]
+    assert entry["status"] == "redirected"
+    assert entry["status"] != "delivered"
+    assert body["delivered"] == 0
+    # It names where the message actually went, so the operator can tell this
+    # apart from a real delivery at a glance.
+    assert "nothing was sent to this address" in entry["detail"]
+    assert "levi@zenexflow.com" in entry["detail"]
+    # AND RESEND IS NOT ASKED AT ALL. Its answer could only describe somebody
+    # else's mailbox, so there is nothing to be learned by asking.
+    probe.assert_not_called()
+
+
+def test_a_redirected_send_is_settled_not_left_spinning(client):
+    """It will never resolve any further — there is nothing in flight."""
+    row = [{"created_at": "2026-09-08T10:00:00+00:00",
+            "metadata": {"deliveries": [
+                {"email": "a@example.com", "message_id": "m1",
+                 "redirected": True, "delivered_to": ["levi@zenexflow.com"]}]}}]
+    supabase, _ = _audit_rows(row)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE),          supabase:
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["settled"] is True
+    assert body["redirected"] == 1
+
+
+def test_a_PRODUCTION_send_still_reports_the_real_delivery(client):
+    """The interlock must not leak into production: with redirected false, the
+    address on screen IS the address Resend delivered to."""
+    row = [{"created_at": "2026-09-08T10:00:00+00:00",
+            "metadata": {"deliveries": [
+                {"email": "client@realco.com", "message_id": "m1",
+                 "redirected": False, "delivered_to": ["client@realco.com"]}]}}]
+    supabase, _ = _audit_rows(row)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE),          supabase,          _statuses({"status": "delivered", "event": "delivered", "detail": None}):
+        body = client.get("/cases/c1/verification/delivery", headers=H).json()
+    assert body["recipients"][0]["status"] == "delivered"
+    assert body["delivered"] == 1
+
+
+def test_the_send_records_WHERE_each_message_actually_went(client):
+    """`deliveries` carries both halves for the same reason the audit row carries
+    `to` and `intended_to`: on a test deployment they differ, and a record of
+    only the intention claims a client was written to when they were not."""
+    with _super(), _Stack(*_sendable(directors=BOARD)),          patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": list(email_service.TEST_RECIPIENTS),
+                             "intended_to": ["chan@example.com"],
+                             "redirected": True}),          patch("routers.cases.nar1_cases.update_case", return_value=CASE),          patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={**SEND, "to": ["chan@example.com"]})
+
+    entry = response.json()["deliveries"][0]
+    assert entry["email"] == "chan@example.com"          # who it was FOR
+    assert entry["redirected"] is True                    # and that it did not go there
+    assert entry["delivered_to"] == list(email_service.TEST_RECIPIENTS)
+
+
+def test_delivery_requires_nar1_read(client):
+    """`read`, not `write`: it changes nothing, and someone who may look at a
+    case may see whether its letters arrived. A role with NO nar1 permission at
+    all still cannot."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for", return_value=set()):
+        assert client.get("/cases/c1/verification/delivery",
+                          headers=H).status_code == 403
+
+
+def test_delivery_is_allowed_to_a_READ_ONLY_role(client):
+    """The other half — asserted explicitly, because gating it on `write` would
+    hide the delivery result from exactly the people who are asked to check on
+    a case they cannot edit."""
+    supabase, _ = _audit_rows([])
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for", return_value={"read"}), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), supabase:
+        assert client.get("/cases/c1/verification/delivery",
+                          headers=H).status_code == 200
+
+
+def test_delivery_rejects_an_unauthenticated_caller(client):
+    assert client.get("/cases/c1/verification/delivery").status_code == 403
+
+
+def test_delivery_on_a_missing_case_is_404(client):
+    with _super(), patch("routers.cases.nar1_cases.get_case",
+                         side_effect=LookupError("no such case")):
+        assert client.get("/cases/zz/verification/delivery",
+                          headers=H).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# The response deadline — mandatory, and the operator's own (Levi 2026-09-07)
+# ---------------------------------------------------------------------------
+
+
+def test_a_send_without_a_deadline_is_refused(client):
+    """It used to default to `sent + 14 days`, chosen by nobody. Some clients
+    are chased inside a week; a return prepared months before its filing window
+    should not have its link die long before anyone intends to file."""
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.email_service.send") as send, \
+         patch("routers.cases.nar1_cases.update_case") as update:
+        response = client.post("/cases/c1/verification/send", headers=H, json={})
+
+    assert response.status_code == 422
+    assert "deadline" in response.json()["detail"]
+    # Refused BEFORE the 15-page AcroForm is filled and before anything is
+    # marked sent.
+    send.assert_not_called()
+    update.assert_not_called()
+
+
+def test_a_deadline_in_the_past_is_refused(client):
+    """The link would be dead on arrival, and `jobs.auto_approve_nar1` would
+    approve the return on the client's "silence" the same night — recording
+    consent from somebody who never had time to answer."""
+    yesterday = (_RESPOND_BY - _dt.timedelta(days=22)).isoformat()
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.email_service.send") as send:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={"respond_by": yesterday})
+
+    assert response.status_code == 422
+    assert "past" in response.json()["detail"]
+    send.assert_not_called()
+
+
+def test_a_deadline_that_is_not_a_date_is_refused(client):
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.email_service.send") as send:
+        response = client.post("/cases/c1/verification/send", headers=H,
+                               json={"respond_by": "next Tuesday"})
+    assert response.status_code == 422
+    send.assert_not_called()
+
+
+def test_the_chosen_deadline_is_what_the_tokens_expire_on(client):
+    """ONE VALUE, THREE JOBS: the date the email prints, the moment the link
+    dies, and the moment the auto-approval job reads silence as consent. They
+    are one argument precisely so the message cannot promise a date the job
+    does not honour."""
+    issued = {}
+
+    def issue(*, case_id, recipients, sent_at=None, expires_at=None):
+        issued["expires_at"] = expires_at
+        return [{**r, "token": "tok", "expires_at": expires_at}
+                for r in recipients]
+
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.nar1_approvals.issue", side_effect=issue), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 200
+    # The END of the chosen day in Hong Kong. A client told "by 20 September"
+    # has until that day is over — expiring at midnight UTC would kill the link
+    # at 08:00 on the morning of the day they were given.
+    assert issued["expires_at"].date().isoformat() >= _RESPOND_BY.isoformat()
+    assert issued["expires_at"].astimezone(
+        _dt.timezone(_dt.timedelta(hours=8))).date() == _RESPOND_BY
+    assert response.json()["respond_by"] == issued["expires_at"].isoformat()
+
+
+def test_the_chosen_deadline_is_the_date_the_client_is_given(client):
+    """The letter's "if we do not hear from you by ..." sentence — the whole
+    reason the field exists."""
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    html = send.call_args.kwargs["html"]
+    assert _RESPOND_BY.strftime("%d %B %Y") in html
 
 
 def test_addresses_differing_only_in_case_are_one_recipient(client):
@@ -475,7 +1137,7 @@ def test_addresses_differing_only_in_case_are_one_recipient(client):
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()):
         client.post("/cases/c1/verification/send", headers=H,
-                    json={"to": ["Chan@Example.com", "chan@example.com"]})
+                    json={**SEND, "to": ["Chan@Example.com", "chan@example.com"]})
     assert _addresses_sent(send) == ["Chan@Example.com"]
 
 
@@ -485,7 +1147,7 @@ def test_too_many_recipients_is_refused(client):
     with _super(), _Stack(*_sendable(directors=BOARD)), \
          patch("routers.cases.email_service.send") as send:
         response = client.post("/cases/c1/verification/send", headers=H,
-                               json={"to": many})
+                               json={**SEND, "to": many})
     assert response.status_code == 422
     send.assert_not_called()
 
@@ -494,7 +1156,7 @@ def test_the_refusal_names_directors_as_well_as_the_company(client):
     """The operator's next move is to find an address. A message that mentions
     only the company sends them to the wrong screen."""
     with _super(), _Stack(*_sendable(recipient=None, directors=[BOARD[2]])):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 409
     assert "director" in response.json()["detail"].lower()
 
@@ -515,7 +1177,7 @@ def test_the_trail_names_every_recipient_not_just_the_first(client):
                              "redirected": False}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", side_effect=fake_log):
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert logged[0]["new_value"] == "chan@example.com, lee@example.com"
     assert logged[0]["metadata"]["recipient_count"] == 2
 
@@ -536,7 +1198,7 @@ def test_a_stubbed_send_is_audited_as_one(client):
          _ok_send(transport="console", id=None), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", side_effect=fake_log):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.json()["transport"] == "console"
     assert logged[0]["metadata"]["transport"] == "console"
 
@@ -552,7 +1214,7 @@ def test_a_real_send_is_not_labelled_as_stubbed(client):
     with _super(), _Stack(*_sendable(directors=BOARD)), _ok_send(), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", side_effect=fake_log):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.json()["transport"] == "resend"
     assert logged[0]["metadata"]["transport"] == "resend"
 
@@ -620,7 +1282,7 @@ def test_send_records_the_timestamp_and_audits(client):
                return_value={"id": "m1", "redirected": False}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE) as spy, \
          patch("routers.cases.log_event", side_effect=fake_log):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 200
     assert spy.call_args.args[1]["verification_sent_at"] is not None
     assert response.json()["sent_at"] == spy.call_args.args[1]["verification_sent_at"]
@@ -645,7 +1307,7 @@ def test_the_audit_entry_carries_no_document_content(client):
          patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", side_effect=fake_log):
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     blob = str(logged[0])
     assert "%PDF" not in blob
     assert logged[0].get("after_state") is None
@@ -659,7 +1321,7 @@ def test_a_failed_send_does_not_mark_the_case_as_sent(client):
                side_effect=email_service.EmailError("domain not verified")), \
          patch("routers.cases.nar1_cases.update_case") as spy, \
          patch("routers.cases.log_event", new=AsyncMock()):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 502
     spy.assert_not_called()
 
@@ -672,7 +1334,7 @@ def test_an_unconfigured_deployment_answers_503_not_500(client):
                side_effect=RuntimeError("RESEND_API_KEY must be set to send email")), \
          patch("routers.cases.nar1_cases.update_case") as spy, \
          patch("routers.cases.log_event", new=AsyncMock()):
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 503
     assert "RESEND_API_KEY" in response.json()["detail"]
     spy.assert_not_called()
@@ -689,7 +1351,7 @@ def test_an_unrenderable_snapshot_is_422_not_500(client):
          patch("routers.cases.nar1_form_fill.render",
                side_effect=ValueError("no <formModel> in the payload")), \
          patch("routers.cases.email_service.send") as send:
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 422
     send.assert_not_called()
 
@@ -714,7 +1376,7 @@ def test_an_uncoverable_character_is_422_not_500(client):
                side_effect=AppearanceError(
                    "cannot draw '杨' (U+6768): no glyph in NAR1-CJK")), \
          patch("routers.cases.email_service.send") as send:
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
     assert response.status_code == 422
     assert "U+6768" in response.json()["detail"]
     send.assert_not_called()
@@ -734,7 +1396,7 @@ def test_resending_supersedes_the_previous_client_answer(client):
          patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
          patch("routers.cases.nar1_cases.update_case", return_value=rejected) as spy, \
          patch("routers.cases.log_event", side_effect=fake_log):
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     patch_sent = spy.call_args.args[1]
     assert patch_sent["client_approved"] is None
     assert patch_sent["client_response_at"] is None
@@ -753,7 +1415,7 @@ def test_a_first_send_does_not_log_a_superseded_response(client):
          patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", side_effect=fake_log):
-        client.post("/cases/c1/verification/send", headers=H, json={})
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
     # CLIENT_APPROVAL_LINK_SENT follows it, one per director whose link went
     # out (spec §5). Filtered here rather than added to the expectation: this
     # test is about which STATUS events a first send does or does not write.
@@ -764,7 +1426,7 @@ def test_a_first_send_does_not_log_a_superseded_response(client):
 def test_send_404s_on_an_unknown_case(client):
     with _super(), \
          patch("routers.cases.nar1_cases.get_case", side_effect=LookupError("no case")):
-        response = client.post("/cases/nope/verification/send", headers=H, json={})
+        response = client.post("/cases/nope/verification/send", headers=H, json=SEND)
     assert response.status_code == 404
 
 
@@ -931,7 +1593,7 @@ def test_send_drives_the_real_renderer_and_the_real_transport(client, monkeypatc
          patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
          patch("routers.cases.log_event", new=AsyncMock()), \
          patch("services.email_service.httpx.post", return_value=posted) as post:
-        response = client.post("/cases/c1/verification/send", headers=H, json={})
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
 
     assert response.status_code == 200
     payload = post.call_args.kwargs["json"]

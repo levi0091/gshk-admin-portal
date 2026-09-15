@@ -71,8 +71,9 @@ describe('PersonsRegistryPage', () => {
   it('shows distinct-person role counts on the tabs', async () => {
     renderPage()
     await screen.findByText('John Smith')
-    expect(screen.getByRole('tab', { name: /All/ })).toHaveTextContent('6850')
-    expect(screen.getByRole('tab', { name: /Directors/ })).toHaveTextContent('6259')
+    // Grouped (Levi 2026-09-07) — see the same change on the company registry.
+    expect(screen.getByRole('tab', { name: /All/ })).toHaveTextContent('6,850')
+    expect(screen.getByRole('tab', { name: /Directors/ })).toHaveTextContent('6,259')
     expect(screen.getByRole('tab', { name: /Secretaries/ })).toHaveTextContent('13')
   })
 

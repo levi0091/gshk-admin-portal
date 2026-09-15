@@ -30,6 +30,7 @@ across 648 glyph advances on all nine pages, Tinos differs from CR's embedded
 Times New Roman by at most 0.15pt and on average by 0.03pt -- which is the
 rounding in CR's own `/Widths` array. The face was never wrong. The size was.
 """
+import functools
 import io
 
 import pytest
@@ -85,19 +86,30 @@ def _runs(page):
     return hits
 
 
-def _widget(reader, field):
-    """(page index, rect) for `field` on the rendered return."""
-    for index, page in enumerate(reader.pages):
+@functools.lru_cache(maxsize=1)
+def _filled():
+    """The same return BEFORE `bake()` -- the only copy that still has boxes.
+
+    The shipped return carries no widgets (`bake()` removes them, because a
+    phone drew them over the text layer), but it is the same pages in the same
+    order, so a box's page index and rectangle carry straight across. Rendered
+    from the same `build_xml()` as `rendered`, which every test here uses."""
+    return PdfReader(io.BytesIO(fill.render_fields(build_xml())))
+
+
+def _widget(field):
+    """(page index, rect) for `field`, read off the filled form."""
+    for index, page in enumerate(_filled().pages):
         for annot in page.get("/Annots") or []:
             obj = annot.get_object()
             if str(obj.get("/T") or "").split("__p")[0] == field:
                 return index, [float(v) for v in obj["/Rect"]]
-    raise AssertionError(f"no widget named {field!r} on the rendered return")
+    raise AssertionError(f"no widget named {field!r} on the filled form")
 
 
 def drawn(reader, field):
     """The first run drawn inside `field`'s box: (text, x, y, size, face)."""
-    index, rect = _widget(reader, field)
+    index, rect = _widget(field)
     x0, y0, x1, y1 = min(rect[0], rect[2]), min(rect[1], rect[3]), \
         max(rect[0], rect[2]), max(rect[1], rect[3])
     inside = [r for r in _runs(reader.pages[index])
@@ -108,7 +120,7 @@ def drawn(reader, field):
 
 def box(reader, field):
     """`field`'s widget rectangle, normalised."""
-    _, rect = _widget(reader, field)
+    _, rect = _widget(field)
     return (min(rect[0], rect[2]), min(rect[1], rect[3]),
             max(rect[0], rect[2]), max(rect[1], rect[3]))
 
@@ -122,7 +134,7 @@ def rule_left_of(pdf_bytes, reader, field):
     against the rule is what makes the number here comparable with the number
     read off CR's own filed return, which carries no widgets at all.
     """
-    index, rect = _widget(reader, field)
+    index, rect = _widget(field)
     page = pymupdf.open(stream=pdf_bytes, filetype="pdf")[index]
     height = page.rect.height
     x0, y0, y1 = min(rect[0], rect[2]), min(rect[1], rect[3]), \

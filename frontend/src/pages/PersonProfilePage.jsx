@@ -6,6 +6,7 @@ import { downloadDocument } from '../lib/download.js'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import IdentityDocumentModal from '../components/IdentityDocumentModal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import VipBar, { VipChip } from '../components/VipBar.jsx'
 import {
   DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
 } from '../components/DocumentSections.jsx'
@@ -337,6 +338,14 @@ export default function PersonProfilePage() {
     }
   }
 
+  // The VIP bar's two switches (migration 041). Re-read WITHOUT `load()`: that
+  // flips the whole page to "Loading…" for a one-flag change. The verdict is
+  // the server's, so it is re-read rather than guessed from the flag sent.
+  async function saveVip(patch) {
+    await api.patch(`/persons/${personId}`, patch)
+    setPerson(await api.get(`/persons/${personId}`))
+  }
+
   if (loading) return <div className="empty-state">Loading…</div>
   if (error) {
     return (
@@ -386,6 +395,11 @@ export default function PersonProfilePage() {
 
   return (
     <>
+      {/* "A bar at the very top so colleagues can quickly identify whether the
+          client is important" (GSHK, 16 July) — above the header, where
+          wireframe v11 draws it. */}
+      <VipBar vip={person.vip} isAgent={person.is_affiliated_agent === true}
+              canWrite={canWrite} onSave={saveVip} />
       <div className="pg-hdr">
         <div>
           <div className="breadcrumb">
@@ -396,6 +410,7 @@ export default function PersonProfilePage() {
           <div className="profile-eyebrow">Person Profile</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <div className="profile-name">{person.full_name}</div>
+            {person.vip?.is_vip && <VipChip />}
             {Object.entries(roleCounts).map(([rel, n]) => (
               <span key={rel} className={`role-tag ${rel === 'officer' ? 'role-dir' : rel === 'shareholder' ? 'role-shr' : 'role-bo'}`}>
                 {RELATION_LABEL[rel] || rel} ×{n}

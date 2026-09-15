@@ -139,6 +139,10 @@ def build_xml(*, directors=("CHAN",), corporate_directors=(),
 def values_of(pdf_bytes) -> dict:
     """Every filled field, keyed by the name it had on CR's template.
 
+    Pass it `fill.render_fields(...)`, not `fill.render(...)`: the shipped
+    return is flattened -- `bake()` removes every field, because a phone drew
+    them over the text layer -- so it has no `/V` left to read.
+
     The renderer suffixes each page copy's fields (`fill_6_P.13__p7`) so two
     continuation sheets do not collide; this strips that back off, keeping ALL
     values per original name so a test can assert on both copies.
@@ -180,19 +184,23 @@ def test_the_printed_notes_are_dropped():
 
 def test_the_company_identifies_itself_on_every_page():
     """A page separated from the bundle must still say which company it is."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     for header in (fm.MAIN_1["br_number"], fm.MAIN_2["br_number"],
                    fm.SECRETARY_INDIVIDUAL["br_number"]):
         assert values.get(header) == ["T0001137"]
 
 
-def test_the_return_is_read_only():
-    """The client is asked to APPROVE this, not to edit it."""
+def test_the_return_has_nothing_left_to_edit():
+    """The client is asked to APPROVE this, not to edit it. That used to be
+    done by marking each field read-only; `bake()` now flattens the return, so
+    there is no field left to type into -- the stronger form of the same
+    guarantee, and the one a phone's viewer cannot second-guess."""
     reader = PdfReader(io.BytesIO(fill.render(build_xml())))
+    assert "/AcroForm" not in reader.trailer["/Root"]
     for page in reader.pages:
         for annot in (page.get("/Annots") or []):
-            assert int(annot.get_object().get("/Ff", 0)) & 1, \
-                "a field is still editable"
+            assert annot.get_object().get("/Subtype") != "/Widget", \
+                "a form field survived on the shipped return"
 
 
 def test_it_refuses_a_filing_with_no_validated_xml():
@@ -220,7 +228,7 @@ def test_both_of_CRs_date_formats_are_read_the_same_way(given, expected):
 
 
 def test_the_return_date_lands_in_the_right_boxes():
-    values = values_of(fill.render(build_xml(date="09/03/2026")))
+    values = values_of(fill.render_fields(build_xml(date="09/03/2026")))
     assert values[fm.MAIN_1["return_date_dd"]] == ["09"]
     assert values[fm.MAIN_1["return_date_mm"]] == ["03"]
     assert values[fm.MAIN_1["return_date_yyyy"]] == ["2026"]
@@ -234,7 +242,7 @@ def test_a_private_company_ticks_private_and_leaves_section_5_empty():
     """"A private company needs not complete this section" — the form's own
     instruction. Filling it would assert something about financial statements
     a private company does not deliver."""
-    values = values_of(fill.render(build_xml(), company_type="private"))
+    values = values_of(fill.render_fields(build_xml(), company_type="private"))
     assert values[fm.MAIN_1["type_private"]] == [fm.CHECKBOX_ON]
     assert fm.MAIN_1["type_public"] not in values
     for field in ("fin_period_from_dd", "fin_period_to_yyyy"):
@@ -242,29 +250,29 @@ def test_a_private_company_ticks_private_and_leaves_section_5_empty():
 
 
 def test_a_public_company_ticks_public_and_completes_section_5():
-    values = values_of(fill.render(build_xml(), company_type="public"))
+    values = values_of(fill.render_fields(build_xml(), company_type="public"))
     assert values[fm.MAIN_1["type_public"]] == [fm.CHECKBOX_ON]
     assert fm.MAIN_1["type_private"] not in values
     assert values[fm.MAIN_1["fin_period_from_yyyy"]] == ["2025"]
 
 
 def test_a_guarantee_company_ticks_guarantee():
-    values = values_of(fill.render(build_xml(), company_type="guarantee"))
+    values = values_of(fill.render_fields(build_xml(), company_type="guarantee"))
     assert values[fm.MAIN_1["type_guarantee"]] == [fm.CHECKBOX_ON]
 
 
 def test_only_a_private_company_makes_the_section_16_statement():
     """It is a statement of fact about not having invited public subscription,
     so it is never ticked speculatively."""
-    private = values_of(fill.render(build_xml(), company_type="private"))
-    public = values_of(fill.render(build_xml(), company_type="public"))
+    private = values_of(fill.render_fields(build_xml(), company_type="private"))
+    public = values_of(fill.render_fields(build_xml(), company_type="public"))
     assert fm.MEMBERS_AND_SIGNATURE["statement_private"] in private
     assert fm.MEMBERS_AND_SIGNATURE["statement_private"] not in public
 
 
 def test_a_listed_company_uses_schedule_2_and_a_private_one_schedule_1():
-    private = values_of(fill.render(build_xml(), company_type="private"))
-    public = values_of(fill.render(build_xml(), company_type="public"))
+    private = values_of(fill.render_fields(build_xml(), company_type="private"))
+    public = values_of(fill.render_fields(build_xml(), company_type="public"))
     assert fm.MEMBERS_AND_SIGNATURE["members_in_schedule_1"] in private
     assert fm.MEMBERS_AND_SIGNATURE["members_in_schedule_2"] in public
     assert fm.SCHEDULE_1_HEADER["share_class"] in private
@@ -286,7 +294,7 @@ def test_a_single_director_stays_on_the_main_form():
     # whether or not a sheet was added — the first version of this test looked
     # for it and failed on a correct document. The absence of the sheet's own
     # FIELDS is the fact worth asserting.
-    values = values_of(fill.render(build_xml(directors=("CHAN",))))
+    values = values_of(fill.render_fields(build_xml(directors=("CHAN",))))
     assert values[fm.DIRECTOR_INDIVIDUAL["surname_en"]] == ["CHAN"]
     assert fm.SHEET_C["surname_en"] not in values
     # The COUNT still prints, as a nought. "This Return includes the following
@@ -300,23 +308,25 @@ def test_three_directors_produce_two_continuation_sheets_and_lose_nobody():
     """The printed form holds ONE natural-person director. A return that
     quietly showed only the first would misstate the board, and it is a
     document a client approves and CR registers."""
-    pdf = fill.render(build_xml(directors=("CHAN", "LEE", "WONG")))
-    values = values_of(pdf)
+    xml = build_xml(directors=("CHAN", "LEE", "WONG"))
+    values = values_of(fill.render_fields(xml))
     surnames = set(values[fm.DIRECTOR_INDIVIDUAL["surname_en"]]) | \
         set(values.get(fm.SHEET_C["surname_en"], []))
     assert surnames == {"CHAN", "LEE", "WONG"}
-    assert "Continuation Sheet C" in text_of(pdf)
+    shipped = text_of(fill.render(xml))
+    assert "Continuation Sheet C" in shipped
+    assert {"CHAN", "LEE", "WONG"} <= set(shipped.split())
 
 
 def test_the_form_says_how_many_continuation_sheets_it_carries():
-    values = values_of(fill.render(build_xml(directors=("A", "B", "C"))))
+    values = values_of(fill.render_fields(build_xml(directors=("A", "B", "C"))))
     assert values[fm.MEMBERS_AND_SIGNATURE["count_sheet_c"]] == ["2"]
 
 
 def test_three_corporate_directors_overflow_to_sheet_D():
     """Page 6 holds TWO; the third is the first to need Sheet D."""
-    pdf = fill.render(build_xml(corporate_directors=("ALPHA LTD", "BETA LTD",
-                                                     "GAMMA LTD")))
+    pdf = fill.render_fields(build_xml(
+        corporate_directors=("ALPHA LTD", "BETA LTD", "GAMMA LTD")))
     values = values_of(pdf)
     names = set()
     for slot in fm.DIRECTOR_CORPORATE:
@@ -327,7 +337,7 @@ def test_three_corporate_directors_overflow_to_sheet_D():
 
 
 def test_two_secretaries_overflow_to_sheet_A():
-    pdf = fill.render(build_xml(secretaries=2))
+    pdf = fill.render_fields(build_xml(secretaries=2))
     values = values_of(pdf)
     assert values[fm.SECRETARY_INDIVIDUAL["surname_en"]] == ["SEC0"]
     assert values[fm.SHEET_A["surname_en"]] == ["SEC1"]
@@ -335,7 +345,7 @@ def test_two_secretaries_overflow_to_sheet_A():
 
 def test_five_members_produce_three_schedules_and_lose_nobody():
     """Two member slots per schedule page."""
-    pdf = fill.render(build_xml(members=("A", "B", "C", "D", "E")))
+    pdf = fill.render_fields(build_xml(members=("A", "B", "C", "D", "E")))
     values = values_of(pdf)
     surnames = set(values[fm.SCHEDULE_1[0]["surname_en"]]) | \
         set(values.get(fm.SCHEDULE_1[1]["surname_en"], []))
@@ -345,7 +355,7 @@ def test_five_members_produce_three_schedules_and_lose_nobody():
 
 def test_each_schedule_page_says_which_of_how_many_it_is():
     """A schedule page separated from the bundle still has to say so."""
-    values = values_of(fill.render(build_xml(members=("A", "B", "C"))))
+    values = values_of(fill.render_fields(build_xml(members=("A", "B", "C"))))
     assert sorted(values[fm.SCHEDULE_1_PAGING["page_no"]]) == ["1", "2"]
     assert set(values[fm.SCHEDULE_1_PAGING["page_of"]]) == {"2"}
 
@@ -355,7 +365,7 @@ def test_two_copies_of_one_sheet_do_not_share_a_field():
     Continuation Sheet C keep the same `fill_7_P.13` unless renamed — and the
     second fill silently overwrites the first, rendering the same director
     twice. This is the test for that renaming."""
-    pdf = fill.render(build_xml(directors=("CHAN", "LEE", "WONG")))
+    pdf = fill.render_fields(build_xml(directors=("CHAN", "LEE", "WONG")))
     reader = PdfReader(io.BytesIO(pdf))
     names = [n for n in (reader.get_fields() or {})
              if n.startswith(fm.SHEET_C["surname_en"])]
@@ -407,7 +417,7 @@ def test_the_officer_guard_still_passes_a_correctly_laid_out_return():
 # ---------------------------------------------------------------------------
 
 def test_the_registered_office_fills_its_four_lines():
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.MAIN_1["ro_flat_floor_block"]] == ["Flat A, 12/F"]
     assert values[fm.MAIN_1["ro_building"]] == ["Test Tower"]
     assert values[fm.MAIN_1["ro_street"]] == ["1 Test Street"]
@@ -419,7 +429,7 @@ def test_the_registered_office_fills_its_four_lines():
 
 
 def test_both_company_names_appear_on_the_name_line():
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     line = values[fm.MAIN_1["company_name"]][0]
     assert "TEST COMPANY LIMITED" in line
     assert "測試有限公司" in line
@@ -428,7 +438,7 @@ def test_both_company_names_appear_on_the_name_line():
 def test_no_mortgages_reads_Nil_rather_than_blank():
     """On a statutory declaration an empty box reads as "not answered"; the
     form asks for a stated nil. Spelt as GSHK's own filed return spells it."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.MAIN_2["mortgages_total"]] == ["Nil"]
 
 
@@ -436,7 +446,7 @@ def test_a_director_address_uses_the_overseas_line_not_the_district_line():
     """A director's correspondence address may be outside Hong Kong, so CR
     gives it a combined District/City/Province/State/Postal Code line where the
     secretary gets a plain District. They are different boxes."""
-    values = values_of(fill.render(build_xml()))
+    values = values_of(fill.render_fields(build_xml()))
     assert values[fm.DIRECTOR_INDIVIDUAL["addr_district_city_state"]] == ["Central"]
     assert values[fm.DIRECTOR_INDIVIDUAL["addr_country"]] == ["Hong Kong"]
     # The secretary's plain District carries the same value on ITS block.
@@ -474,7 +484,7 @@ def test_a_memberless_return_still_carries_a_schedule_page():
     pdf = fill.render(build_xml(members=()))
     reader = PdfReader(io.BytesIO(pdf))
     assert len(reader.pages) == 9
-    values = values_of(pdf)
+    values = values_of(fill.render_fields(build_xml(members=())))
     assert fm.SCHEDULE_1_HEADER["br_number"] in values, \
         "the Schedule 1 header page was dropped for having no member rows"
     assert values[fm.MEMBERS_AND_SIGNATURE["count_schedule_1"]] == ["1"]

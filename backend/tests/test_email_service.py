@@ -291,27 +291,28 @@ def test_the_message_carries_no_link_WHEN_NONE_IS_GIVEN():
     _, html = email_service.verification_email(CASE, ENTITY)
     assert "<a " not in html
     assert "http://" not in html and "https://" not in html
-    assert "Reply to this email" in html
+    assert "please reply to this email to confirm" in html
 
 
 def test_the_message_says_what_the_reader_has_to_do():
     _, html = email_service.verification_email(CASE, ENTITY)
-    assert "I enclose herewith the NAR1 for your review" in html
-    assert "Reply to this email" in html
+    assert "Your draft NAR1 is now available for review" in html
+    assert "please reply to this email to confirm" in html
 
 
-# --- the Confirmation NAR1 Notice wording (spec section 2) ------------------
+# --- the "Auto email - NAR1 Review" wording (Levi 2026-09-08) ---------------
 #
-# The letter GSHK already sends by hand, transcribed from
-# docs/Confirmation NAR1 Notice.pdf. A client who has had one before gets the
-# same message from the portal — an automated mail that reads differently from
-# the one they know is an automated mail they treat as suspicious.
+# The approved automated letter, transcribed from
+# docs/Auto email - NAR1 Review_v2.pdf. It REPLACES the hand-sent
+# "Confirmation NAR1 Notice" this message used to carry, and the assertions
+# below are what "verbatim" means for it: a wording change here is a change to
+# what a client is told about a statutory filing and a HK$1,000 charge, so it
+# has to be made deliberately rather than absorbed by a loose test.
 
 def _letter(**over):
     kwargs = {"attachment_name": "Explod Limited NAR1 2026.pdf",
               "approval_url": "https://api.example.com/public/nar1-approval/t0",
-              "deadline": "2026-08-28T00:00:00+00:00",
-              "recipient_name": "Dominique", "sender_name": "Karry"}
+              "deadline": "2026-08-28T00:00:00+00:00"}
     kwargs.update(over)
     return email_service.verification_email(
         {"case_no": "NAR-2026-0041", "ar_period_year": 2026},
@@ -321,87 +322,122 @@ def _letter(**over):
 
 def test_the_subject_is_the_samples_own_subject_line():
     subject, _ = _letter()
-    assert subject == "Compliance Reminder: Registration Due - Explod Limited"
+    assert subject == ("[Action Required] NAR1 Review & Confirmation - "
+                       "Explod Limited")
 
 
-def test_the_reader_is_greeted_by_name():
+def test_a_company_with_no_name_still_gets_a_usable_subject():
+    """Degenerate, but the bracketed prefix is what makes this findable in a
+    director's inbox and it must not decay into a trailing dash."""
+    subject, _ = email_service.verification_email({}, {})
+    assert subject == "[Action Required] NAR1 Review & Confirmation"
+
+
+def test_the_letter_addresses_the_client_generically():
+    """"Dear Client", NOT the director's own name (Levi 2026-09-08). This is
+    sent unattended, one message per director, and greeting each of them by
+    name would imply a human chose to write to them."""
     _, html = _letter()
-    assert "Hi Dominique," in html
-
-
-def test_a_reader_with_no_name_on_record_is_still_greeted():
-    """Plenty of ETL'd directors carry no usable name. "Hi ," is worse than a
-    generic greeting."""
-    _, html = _letter(recipient_name=None)
-    assert "Hi there," in html
+    assert "Dear Client," in html
 
 
 def test_the_opening_line_is_verbatim():
     _, html = _letter()
-    assert ("I enclose herewith the NAR1 for your review. Please carefully "
-            "check and confirm the following:") in html
+    assert "Your draft NAR1 is now available for review." in html
+    assert ("Please review the attached draft carefully, with particular "
+            "attention to the following:") in html
 
 
-def test_the_heading_says_no_signature_is_required():
+def test_the_letter_says_no_signature_is_required():
     """It is the first thing a director asks, and the sample answers it in the
-    heading rather than three paragraphs down."""
+    same breath as the ask rather than three paragraphs down."""
     _, html = _letter()
-    assert "1. NAR1 Form - Signature not required" in html
+    assert ("If the information is correct, please click "
+            "<strong>Confirm</strong> below. No signature is required.") in html
 
 
 @pytest.mark.parametrize("where,what", [
-    ("Page 2", "Share capital"),
-    ("Page 5", "Director&#x27;s details"),
-    ("Schedule 1", "Shareholder&#x27;s details"),
+    ("Page 2", "Share Capital"),
+    ("Page 5", "Director&#x27;s Details"),
+    ("Schedule 1", "Shareholder&#x27;s Details"),
+    ("Continuation Sheet C", "Additional Director&#x27;s Details"),
 ])
-def test_the_three_page_references_are_the_samples(where, what):
+def test_the_page_references_are_the_samples(where, what):
     """HARDCODED, and correct because CR's form is STATIC (spec section 1b): CR
     keeps a section's page whether or not it has content, so Page 5 is Page 5 on
     every NAR1 ever filed. If the renderer ever went back to dropping empty
-    pages, these three lines would quietly misdirect every client."""
+    pages, these lines would quietly misdirect every client."""
     _, html = _letter()
     assert where in html
     assert what in html
 
 
-def test_the_directors_duty_paragraph_is_verbatim():
+def test_continuation_sheet_C_says_when_it_applies():
+    """It is the ONE conditional entry: the sheet exists only where the board
+    runs past the space Page 5 gives it. A client without one must not be sent
+    hunting through their PDF for a page that was never printed."""
     _, html = _letter()
-    assert "the director has the duty to" in html
-    assert "ALL" in html
-    assert "information on NAR1 is correct before registration" in html
+    assert "if applicable, where there is more than one director" in html
 
 
 def test_the_deadline_is_stated_and_says_what_happens_after_it():
     _, html = _letter()
     assert "28 August 2026" in html
-    assert "we will assume you confirm the document and proceed with filing" in html
+    assert ("the draft will be deemed confirmed and we will proceed with the "
+            "NAR1 filing") in html
 
 
 def test_no_deadline_still_says_what_silence_means():
-    """A blank where a legal deadline should be is worse than no date at all."""
+    """A blank where a legal deadline should be is worse than no date at all —
+    but what silence MEANS does not depend on the date, so that half stays."""
     _, html = _letter(deadline=None)
-    assert "we will assume you confirm the document and proceed with filing" in html
+    assert ("the draft will be deemed confirmed and we will proceed with the "
+            "NAR1 filing") in html
     assert "hear from you by" not in html
 
 
-def test_the_amendment_charge_is_stated():
+def test_the_service_fee_is_stated_and_says_WHEN_it_applies():
+    """"After filing", not "later". They are different events, and the second
+    reads as a charge for changing your mind before anything has been sent."""
     _, html = _letter()
-    assert "Any amendments later will incur a HK$1000 service cost" in html
+    assert ("Any changes requested after filing will be subject to a "
+            "HK$1,000 service fee.") in html
 
 
-def test_the_case_worker_signs_it():
-    """The sample is signed by a named account manager. An automated mail signed
-    by nobody is the one a client ignores."""
+def test_changes_are_sent_to_the_renewal_mailbox_and_NOT_by_replying():
+    """The message is sent from no-reply@ and says replies are not monitored,
+    so the one mailbox it names has to be a mailbox somebody reads. A letter
+    that said "reply to us" here would be an instruction to do nothing."""
     _, html = _letter()
-    assert "Best regards" in html
-    assert "Karry" in html
-    assert "Account Manager" in html
+    assert ("If changes are required, please <strong>do not click "
+            "confirm</strong> and email renewal@getstarted.hk before the "
+            "deadline.") in html
 
 
-def test_an_unsigned_send_falls_back_to_the_company_rather_than_a_blank():
-    _, html = _letter(sender_name=None)
+def test_the_letter_says_it_is_automated_and_that_replies_are_not_read():
+    _, html = _letter()
+    assert ("This is an automatically generated email. Replies to this email "
+            "are not monitored.") in html
+
+
+def test_the_automated_notice_is_WITHHELD_when_there_is_no_button():
+    """The no-link fallback asks the reader to REPLY. Telling them in the next
+    paragraph that replies are not read would leave them with nothing they can
+    do at all."""
+    _, html = _letter(approval_url=None)
+    assert "Replies to this email are not monitored" not in html
+    assert "please reply to this email to confirm" in html
+
+
+def test_the_company_signs_it_and_no_person_does():
+    """"Kind regards, Get Started HK Limited" (Levi 2026-09-08). The letter goes
+    out unattended; a case worker's name on it would claim a human wrote it,
+    and there is no longer a `sender_name` argument to put one there."""
+    _, html = _letter()
+    assert "Kind regards," in html
     assert "Get Started HK Limited" in html
-    assert "Account Manager" in html
+    assert "Account Manager" not in html
+    assert "Best regards" not in html
 
 
 def test_the_footer_is_GSHKs_own_block_verbatim():
@@ -418,24 +454,26 @@ def test_the_confirm_button_is_a_table_cell_not_a_styled_anchor():
     """Outlook renders mail through Word, which drops padding on inline anchors
     and leaves a bare blue link where the call to action should be."""
     _, html = _letter()
-    assert "Confirm these particulars are correct" in html
+    assert ">Confirm NAR1</a>" in html
     assert 'bgcolor="#F36C32"' in html
     assert "nar1-approval/t0" in html
+
+
+def test_the_button_is_the_LAST_thing_in_the_letter():
+    """The sample places it under the sign-off. A confirm button ABOVE the
+    paragraph explaining the HK$1,000 charge invites a press before the charge
+    has been read."""
+    _, html = _letter()
+    assert html.index("Kind regards,") < html.index(">Confirm NAR1</a>")
+    assert html.index("service fee") < html.index(">Confirm NAR1</a>")
 
 
 def test_the_message_asks_for_ONE_answer_not_two():
     """"Reply to confirm" beside a Confirm button asks for the same thing twice,
     and a reader who does both produces two answers for one return."""
     _, html = _letter()
-    assert "Reply to this email to confirm it is correct" not in html
-    assert "press <strong>Confirm</strong> below" in html
-
-
-def test_the_reply_path_survives_alongside_the_button():
-    """Spec section 5 adds a "yes" path; it does not remove the human one. A
-    client who disagrees still replies, and staff still record it."""
-    _, html = _letter()
-    assert "reply to this email" in html.lower()
+    assert "please reply to this email to confirm" not in html
+    assert ("please click <strong>Confirm</strong> below") in html
 
 
 def test_an_approval_url_carrying_markup_is_escaped():
@@ -616,5 +654,246 @@ def test_an_unset_transport_sends_for_real(monkeypatch):
         result = email_service.send(to="a@example.com", subject="S", html="<p>H</p>")
     post.assert_called_once()
     assert result.get("transport", "resend") == "resend"
+
+
+# ---------------------------------------------------------------------------
+# undeliverable_reason — can this domain receive mail at all? (Levi 2026-09-08)
+#
+# Resend answers 200 for any syntactically valid address and bounces it out of
+# band, so a send to a made-up domain reported success and the operator learned
+# nothing. This is the half of "is it deliverable" that does not need a bounce.
+#
+# NOTHING HERE TOUCHES THE NETWORK. Each test drives the one library call the
+# probe makes; the real resolver is never used, so the suite neither slows down
+# nor depends on where it is run.
+# ---------------------------------------------------------------------------
+
+#: THE REAL FUNCTION, captured at import time.
+#:
+#: conftest's autouse `_no_dns_in_tests` replaces
+#: `email_service.undeliverable_reason` with a stub for every test in the
+#: suite, so that no unit test resolves a domain name. That is right
+#: everywhere except here — these are the tests OF that function, and calling
+#: it through the module attribute would assert on the stub and pass no matter
+#: what the real implementation did. Module import runs before any fixture, so
+#: this binding is the genuine article.
+_probe = email_service.undeliverable_reason
+
+
+def _validator(exc):
+    """Patch email_validator.validate_email to raise `exc` (or pass if None)."""
+    if exc is None:
+        return patch("email_validator.validate_email", return_value=MagicMock())
+    return patch("email_validator.validate_email", side_effect=exc)
+
+
+def test_a_domain_that_does_not_exist_is_reported_with_its_reason():
+    """The wording is the library's own and NAMES THE DOMAIN, which is the part
+    the operator has to fix — so it is passed through rather than replaced with
+    a generic phrase."""
+    from email_validator import EmailUndeliverableError
+    with _validator(EmailUndeliverableError(
+            "The domain name nosuch.invalid does not exist.")):
+        reason = _probe("a@nosuch.invalid")
+    assert reason == "The domain name nosuch.invalid does not exist."
+
+
+def test_a_domain_that_does_not_accept_email_is_reported():
+    """A Null MX (RFC 7505), or no MX and no A/AAAA fallback. The domain is
+    real; mail to it is not."""
+    from email_validator import EmailUndeliverableError
+    with _validator(EmailUndeliverableError(
+            "The domain name parked.example does not accept email.")):
+        assert _probe("a@parked.example")
+
+
+def test_a_deliverable_address_returns_None():
+    with _validator(None):
+        assert _probe("levi@zenexflow.com") is None
+
+
+def test_a_TIMEOUT_lets_the_address_through():
+    """SILENCE IS PERMISSION. A wrongly withheld verification email stalls a
+    statutory filing on a director who was never written to; a bounce merely
+    wastes a send. The library already returns rather than raises on a timeout,
+    and this pins that we depend on it."""
+    import dns.exception
+    with _validator(dns.exception.Timeout()):
+        assert _probe("a@slow.example") is None
+
+
+def test_AN_UNEXPECTED_ERROR_lets_the_address_through():
+    """No network at all, a resolver misconfiguration, a library upgrade that
+    raises something new. None of those are evidence against the address."""
+    with _validator(RuntimeError("resolver exploded")):
+        assert _probe("a@example.org") is None
+
+
+def test_a_SYNTAX_complaint_is_not_reported_here():
+    """The caller applies its own syntax gate and phrases its own refusal.
+    Re-reporting the same address in different words would put two entries in
+    the failure list for one mistake."""
+    from email_validator import EmailSyntaxError
+    with _validator(EmailSyntaxError("bad syntax")):
+        assert _probe("not-an-address") is None
+
+
+def test_the_probe_asks_for_deliverability_and_bounds_the_wait():
+    """It runs in front of an operator watching a spinner, so an unbounded DNS
+    wait would be theirs to sit through."""
+    with patch("email_validator.validate_email",
+               return_value=MagicMock()) as validate:
+        _probe("a@example.org")
+    kwargs = validate.call_args.kwargs
+    assert kwargs["check_deliverability"] is True
+    assert kwargs["timeout"] == email_service.DNS_TIMEOUT_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# CLIENT_CC — the fixed copy on every client-facing message
+# ---------------------------------------------------------------------------
+
+def test_the_client_copy_is_the_shared_renewals_mailbox():
+    """Levi 2026-09-08. Not the person who pressed Send: the client must not
+    see an individual's address on a letter about their statutory return, and
+    GSHK's record of it must not live in one person's mailbox."""
+    assert email_service.CLIENT_CC == "renewal@getstarted.hk"
+
+
+def test_client_cc_matches_the_screen():
+    """THE SCREEN PROMISES THIS ADDRESS BY NAME, before the send exists, so it
+    cannot read the value back off a response — it repeats the constant. This
+    reads the actual JSX and fails if the two ever drift, which is the only
+    thing stopping the note from telling an operator a copy went somewhere it
+    did not."""
+    from pathlib import Path
+    jsx = (Path(__file__).resolve().parents[2] / "frontend" / "src"
+           / "components" / "case" / "StageClientVerification.jsx")
+    assert jsx.exists(), f"the screen moved: {jsx}"
+    assert (f"export const CLIENT_CC = '{email_service.CLIENT_CC}'"
+            in jsx.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# delivery_status — did Resend actually deliver it? (Levi 2026-09-08)
+#
+# A 200 from send() means Resend ACCEPTED the message. `GET /emails/{id}`
+# reports its `last_event`, which is the same fact a bounce webhook would push
+# — asked for rather than waited for, so it needs no public endpoint, no
+# signing secret and no dashboard registration.
+# ---------------------------------------------------------------------------
+
+def _get(status=200, payload=None):
+    return patch("services.email_service.httpx.get",
+                 return_value=_response(status, payload))
+
+
+def test_a_delivered_message_reports_delivered():
+    with _get(payload={"last_event": "delivered"}):
+        assert email_service.delivery_status("m1")["status"] == "delivered"
+
+
+def test_a_bounced_message_reports_failed_with_a_reason():
+    with _get(payload={"last_event": "bounced"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "failed"
+    assert result["event"] == "bounced"
+    assert "rejected" in result["detail"]
+
+
+def test_a_SUPPRESSED_address_reports_failed():
+    """The quiet one this check earns its place on. An address that hard-bounced
+    for anyone on this Resend account is suppressed, and a later send to it
+    returns 200 with an id and is never actually attempted — indistinguishable
+    from a delivery without asking."""
+    with _get(payload={"last_event": "suppressed"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "failed"
+    assert "suppression list" in result["detail"]
+
+
+def test_an_ACCEPTED_but_unresolved_message_is_pending_not_delivered():
+    """`sent` is what send() already told us. Treating it as delivered would
+    make the whole check a no-op that always says yes."""
+    with _get(payload={"last_event": "sent"}):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_a_delayed_delivery_is_pending_not_failed():
+    """The receiving server is retrying — a full mailbox, a transient fault. It
+    may still arrive, and calling it a failure would have the operator re-send
+    a statutory notice to a client who is about to get the first one."""
+    with _get(payload={"last_event": "delivery_delayed"}):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_a_COMPLAINT_still_counts_as_arrived():
+    """It reached the mailbox and the reader pressed 'spam'. Worth saying, but
+    it is not a delivery failure and must not send anyone chasing a re-send."""
+    with _get(payload={"last_event": "complained"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "delivered"
+    assert "spam" in result["detail"]
+
+
+@pytest.mark.parametrize("event", ["opened", "clicked"])
+def test_events_that_imply_delivery_count_as_delivered(event):
+    with _get(payload={"last_event": event}):
+        assert email_service.delivery_status(event)["status"] == "delivered"
+
+
+def test_an_UNKNOWN_event_is_pending_never_failed():
+    """Resend can add events after this was written. A name we do not recognise
+    is not evidence that a director was not written to."""
+    with _get(payload={"last_event": "something_new"}):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "pending"
+    assert result["event"] == "something_new"
+
+
+def test_a_TRANSPORT_FAILURE_is_pending_and_never_leaks_the_key():
+    """Telling an operator a return bounced when it did not would have them
+    re-send to a client who already has it — and re-sending invalidates every
+    approval link the rest of the board is holding."""
+    import httpx
+    with patch("services.email_service.httpx.get",
+               side_effect=httpx.ConnectError("boom")):
+        result = email_service.delivery_status("m1")
+    assert result["status"] == "pending"
+    assert "re_test_key" not in str(result)
+
+
+def test_an_ERROR_RESPONSE_is_pending():
+    with _get(status=500, payload={"message": "server error"}):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_an_UNREADABLE_BODY_is_pending():
+    broken = MagicMock(status_code=200)
+    broken.json.side_effect = ValueError("no json")
+    with patch("services.email_service.httpx.get", return_value=broken):
+        assert email_service.delivery_status("m1")["status"] == "pending"
+
+
+def test_a_missing_message_id_is_pending_without_calling_resend():
+    with patch("services.email_service.httpx.get") as get:
+        assert email_service.delivery_status("")["status"] == "pending"
+    get.assert_not_called()
+
+
+def test_the_check_authenticates_and_is_bounded():
+    with _get(payload={"last_event": "delivered"}) as get:
+        email_service.delivery_status("abc-123")
+    assert get.call_args.args[0].endswith("/emails/abc-123")
+    assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer re_test_key"
+    assert get.call_args.kwargs["timeout"] == email_service.DELIVERY_TIMEOUT_SECONDS
+
+
+def test_the_client_copy_is_NOT_one_of_the_test_recipients():
+    """It is a real GSHK mailbox, so the non-production lock must DROP it
+    rather than treat it as already-covered. If it were ever added to
+    TEST_RECIPIENTS, a test deployment could mail the renewals team about a
+    case that does not exist."""
+    assert email_service.CLIENT_CC not in email_service.TEST_RECIPIENTS
 
 

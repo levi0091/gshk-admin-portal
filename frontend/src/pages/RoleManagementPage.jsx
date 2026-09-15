@@ -9,7 +9,9 @@ import { api } from '../lib/api.js'
 // differ where "Edit" reads better than the literal 'write'.
 const READ = { value: 'read', label: 'Read' }
 const EDIT = { value: 'write', label: 'Edit' }
-const DELETE = { value: 'delete', label: 'Delete' }
+// `delete` was only ever offered on the documents module, which is gone (see
+// MODULES below). Removed rather than left unused, so nobody wires it back onto
+// a module whose API has no delete level to answer it.
 const SUBMIT = { value: 'submit', label: 'File with CR' }
 
 /**
@@ -24,8 +26,20 @@ const SUBMIT = { value: 'submit', label: 'File with CR' }
  * statutory filing and driving it.
  */
 const MODULES = [
-  { id: 'companies', label: 'Companies', permissions: [READ, EDIT] },
-  { id: 'persons', label: 'Persons', permissions: [READ, EDIT] },
+  {
+    id: 'companies',
+    label: 'Companies',
+    permissions: [READ, EDIT],
+    hint: 'Covers the company\'s documents too: Read downloads them, '
+        + 'Edit uploads and removes them.',
+  },
+  {
+    id: 'persons',
+    label: 'Persons',
+    permissions: [READ, EDIT],
+    hint: 'Covers identity documents and the person\'s other papers: Read '
+        + 'downloads them, Edit uploads and removes them.',
+  },
   {
     id: 'nar1',
     label: 'NAR1 cases',
@@ -41,7 +55,18 @@ const MODULES = [
         + 'File with CR spends from the deposit account and cannot be undone — '
         + 'grant it deliberately.',
   },
-  { id: 'documents', label: 'Documents', permissions: [READ, EDIT, DELETE] },
+  // DOCUMENTS IS NOT A MODULE (Levi 2026-09-07). It was one, with its own
+  // read/write/delete, and being separate meant it could disagree with the
+  // record it describes in both directions — a role granted Companies (edit)
+  // could not upload the certificate for a company it was trusted to edit, and
+  // a role with documents:delete and no Companies grant could remove a
+  // company's papers without being able to open the company.
+  //
+  // A document is filed against a person, a company or a case, and now follows
+  // that record's grant: read downloads it, edit uploads and removes it. The
+  // hints on Companies and Persons say so, because a Super Admin looking at
+  // this screen for a way to grant "documents" needs to find the answer here
+  // rather than conclude the portal cannot do it. Migration 040 drops the rows.
   { id: 'audit_trail', label: 'Audit Trail', permissions: [READ] },
 ]
 

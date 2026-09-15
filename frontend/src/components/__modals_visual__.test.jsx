@@ -26,6 +26,7 @@ import IdentityDocumentModal from './IdentityDocumentModal.jsx'
 import UploadDocumentModal from './UploadDocumentModal.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 import CloseCaseModal from './case/CloseCaseModal.jsx'
+import CopyPartiesModal from './CopyPartiesModal.jsx'
 import { RemoveDocumentBody } from './DocumentSections.jsx'
 
 const get = vi.fn()
@@ -51,6 +52,17 @@ const LOOKUPS = {
     { code: 'GB', label: 'United Kingdom of Great Britain and Northern Ireland' },
     { code: 'BQ', label: 'Bonaire, Sint Eustatius and Saba' },
   ],
+  // s.653D verbatim, from services/cr_forms/control_nature.py. The second one
+  // is 99 characters — the longest <option> the portal renders anywhere, and
+  // therefore the widest min-content a dialog has to absorb.
+  bo_owner_type: [{ code: 'ubo', label: 'Ultimate Beneficial Owner' },
+                  { code: 'significant_controller', label: 'Significant Controller' }],
+  bo_nature_of_control: [
+    { code: 'over_25_percent',
+      label: 'Holds more than 25% of the issued shares of the company' },
+    { code: 'significant_influence',
+      label: 'Has the right to exercise, or actually exercises, significant '
+           + 'influence or control over the company' }],
 }
 
 const SECTIONS = {
@@ -220,5 +232,35 @@ describe.runIf(SHOOT)('modal visual harness', () => {
           document_types: { label: 'Utility Bill' }, file_name: 'clp-june.pdf',
         }} />
       </ConfirmDialog>)
+  })
+
+  it('copy beneficial owners — the longest option text in the app', async () => {
+    // THE CASE THIS HARNESS EXISTS FOR. `bo_nature_of_control` carries a
+    // 99-character option ("Has the right to exercise, or actually
+    // exercises, …"), and a <select> takes its min-content width from its
+    // longest OPTION — which is exactly how the country dropdown pushed itself
+    // out through the side of a 520px dialog with every test still green.
+    // Shot alongside a long company name and a right-hand percentage, because
+    // the picker rows are the other thing here that can run out of room.
+    await dump('m8-copy-beneficial-owners',
+      <CopyPartiesModal
+        companyId="e1"
+        officers={[]}
+        shareholders={[
+          { id: 'sh1', person_id: 'p1', shares_held: 3000, is_current: true,
+            persons: { full_name: 'Chan Tai Man' } },
+          { id: 'sh2', corporate_entity_id: 'c1', shares_held: 6500,
+            is_current: true,
+            corporate_entity: {
+              company_name: 'Sino Pacific Holdings (Hong Kong) Limited',
+            } },
+          { id: 'sh3', person_id: 'p3', shares_held: 500, is_current: true,
+            persons: { full_name: 'Wong Siu Ming' } },
+        ]}
+        shareClasses={[{ id: 'sc1', class_name: 'Ordinary', currency: 'HKD',
+                         total_issued: 10000 }]}
+        existing={[{ id: 'bo1', person_id: 'p3' }]}
+        onClose={noop} onSaved={noop} />,
+      () => waitFor(() => screen.getByLabelText(/Nature of Control/)))
   })
 })

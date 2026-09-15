@@ -4,6 +4,7 @@ import {
   DATE, ENUM, OWNER, RANGE, VALUELESS,
   draftFromFilters, filtersFromDraft, opsFor,
 } from '../lib/tableFilters.js'
+import { formatNumber } from '../lib/format.js'
 
 /**
  * The funnel in a column header, and the popover it opens.
@@ -239,7 +240,9 @@ function EnumEditor({ column, draft, setDraft }) {
                    checked={picked.includes(o.value)}
                    onChange={() => toggle(o.value)} />
             <span className="colf-opt-lbl">{o.label}</span>
-            {o.count != null && <span className="colf-opt-count">{o.count}</span>}
+            {o.count != null && (
+              <span className="colf-opt-count">{formatNumber(o.count)}</span>
+            )}
           </label>
         ))}
       </div>

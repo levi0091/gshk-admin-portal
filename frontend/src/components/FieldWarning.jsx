@@ -20,13 +20,30 @@ export default function FieldWarning({ warning }) {
   )
 }
 
-/** The count for a card header — "3" beside the title, so an operator can see
- *  there is something to fix without opening every section. */
+/**
+ * The count for a card header, so an operator can see there is something to fix
+ * without opening every section.
+ *
+ * IT READS "1 Missing Information", IN RED (Levi 2026-09-07). It used to read
+ * "1 to fix" in the same carrot as the field notes below it, which made the
+ * summary as quiet as the detail it was summarising — an operator scanning a
+ * profile went past it. This is the one mark on the card that has to survive
+ * being glanced at, so it is the one place the red is spent; the per-field
+ * `.fld-warn` notes stay carrot, because each of those is a single incomplete
+ * value and the save is still allowed to proceed.
+ *
+ * The wording is deliberately not pluralised. Levi asked for this string, and
+ * a header that reads "1 Missing Information" then "2 Missing Information" is
+ * one label with a number in front of it — which is what an operator is
+ * scanning for. The `title` still says what the count actually covers, because
+ * a value that is present but too long for CR is counted here too.
+ */
 export function WarningCount({ count }) {
   if (!count) return null
   return (
-    <span className="warn-pill" title="Fields the Companies Registry would refuse">
-      {count} to fix
+    <span className="warn-pill"
+          title="Fields the Companies Registry would refuse — missing, or too long">
+      {count} Missing Information
     </span>
   )
 }

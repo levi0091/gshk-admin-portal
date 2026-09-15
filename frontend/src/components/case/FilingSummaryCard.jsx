@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
 import { downloadFilingPdf } from '../../lib/download.js'
+import { formatNumber } from '../../lib/format.js'
 import { describeError } from './workflow.js'
 
 /**
@@ -86,8 +87,12 @@ export default function FilingSummaryCard({ filingId }) {
   }
   if (!data) return null
 
+  // Grouped. A share count is the one figure on this card that runs to seven
+  // digits, and "10000000 Ordinary" is not a number anybody reads correctly at
+  // a glance — least of all on the card that double-confirms an irreversible,
+  // chargeable submit.
   const shares = (data.share_classes || [])
-    .map(sc => `${sc.total_issued ?? '?'} ${sc.name || 'shares'}`)
+    .map(sc => `${formatNumber(sc.total_issued) ?? '?'} ${sc.name || 'shares'}`)
     .join(' · ')
 
   return (
@@ -139,7 +144,7 @@ export default function FilingSummaryCard({ filingId }) {
         </Row>
         <Row label="Members / shares">
           {data.member_count
-            ? `${data.member_count} member${data.member_count === 1 ? '' : 's'}${shares ? ` · ${shares}` : ''}`
+            ? `${formatNumber(data.member_count)} member${data.member_count === 1 ? '' : 's'}${shares ? ` · ${shares}` : ''}`
             : null}
         </Row>
         <Row label="Signature">

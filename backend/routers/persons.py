@@ -38,7 +38,57 @@ _EDITABLE_FIELDS = {
     # only ever read it off a corporate party, so a licensed person showed an
     # em dash and no screen in the portal could set it.
     "tcsp_licence_no", "tcsp_exemption_reason",
+    # The two STORED inputs to a client's VIP status (migration 041). The
+    # verdict itself is derived on read — see `vip_status`.
+    "is_affiliated_agent", "is_vip_marked",
 }
+
+#: "VIP clients are those who have more than three companies with us" (GSHK
+#: mock-up feedback, 16 July). More than, not at least: three is standard.
+VIP_COMPANY_THRESHOLD = 3
+
+
+def vip_status(person: dict, rollup: list[dict]) -> dict:
+    """Is this client a VIP, and why — the rule wireframe v11 draws.
+
+    VIP if an affiliated agent ("agents are considered VIP clients"), OR holding
+    roles in more than `VIP_COMPANY_THRESHOLD` companies with GSHK, OR marked
+    VIP by a colleague.
+
+    DERIVED, never stored (migration 041). The company count comes off the same
+    roll-up the profile header counts, so the bar and the role pills beside it
+    cannot disagree; a stored verdict would stay true after a client dropped to
+    two companies.
+
+    COMPANIES, not appointments: a director who is also a shareholder of the
+    same company holds two roles in ONE company. Only current roles count — a
+    resigned directorship is not business GSHK still has with them. An absent
+    `is_current` (beneficial owners carry none) reads as current.
+
+    `automatic` is what the screen locks the manual switch on: a client who is
+    VIP by rule cannot be switched off by hand, because the rule would only say
+    so again on the next read.
+    """
+    companies = {
+        r["entity_id"] for r in rollup
+        if r.get("entity_id") and r.get("is_current") is not False
+    }
+    reasons = []
+    if person.get("is_affiliated_agent") is True:
+        reasons.append("affiliated_agent")
+    if len(companies) > VIP_COMPANY_THRESHOLD:
+        reasons.append("companies")
+    automatic = bool(reasons)
+    marked = person.get("is_vip_marked") is True
+    if marked:
+        reasons.append("marked")
+    return {
+        "is_vip": automatic or marked,
+        "automatic": automatic,
+        "reasons": reasons,
+        "company_count": len(companies),
+        "threshold": VIP_COMPANY_THRESHOLD,
+    }
 
 
 class IdentityDocumentIn(BaseModel):
@@ -99,6 +149,10 @@ class CreatePersonRequest(BaseModel):
     # the New Person form could not send one at all.
     tcsp_licence_no: Optional[str] = None
     tcsp_exemption_reason: Optional[str] = None
+    # Declared for add/edit parity (migration 041): an agent is often known to
+    # be one on the day they are entered, and `extra = "forbid"` would 422 it.
+    is_affiliated_agent: Optional[bool] = None
+    is_vip_marked: Optional[bool] = None
 
 
 class UpdatePersonRequest(BaseModel):
@@ -127,6 +181,10 @@ class UpdatePersonRequest(BaseModel):
     residential_address_id: Optional[str] = None
     tcsp_licence_no: Optional[str] = None
     tcsp_exemption_reason: Optional[str] = None
+    # `False` is an answer, not an absence: update_person filters on `is not
+    # None`, so un-flagging an agent or un-marking a VIP reaches the database.
+    is_affiliated_agent: Optional[bool] = None
+    is_vip_marked: Optional[bool] = None
 
 
 def _person_subject(sb, person_id: str) -> dict:
@@ -329,11 +387,13 @@ async def get_person(
     documents = document_service.list_documents(
         owner_kind="person", owner_id=person_id, include_deleted=True)
 
+    rollup = _role_rollup(sb, person_id)
     return {
         **person,
         "identity_documents": identity_docs,
         "residential_address": address,
-        "role_rollup": _role_rollup(sb, person_id),
+        "role_rollup": rollup,
+        "vip": vip_status(person, rollup),
         "documents": documents,
     }
 
@@ -875,10 +935,19 @@ async def update_residential_address(
     }
 
 
+# --------------------------------------------------------------------------- #
+#  Person-scoped documents
+#
+#  GATED ON `persons`, NOT ON A `documents` MODULE (Levi 2026-09-07) — see the
+#  same note over the company routes. The identity documents below were always
+#  `persons:write`; this makes the ordinary documents agree with them, which is
+#  what an operator already assumed was true.
+# --------------------------------------------------------------------------- #
+
 @router.get("/{person_id}/documents")
 async def list_person_documents(
     person_id: str,
-    user=Depends(require_permission("documents", "read")),
+    user=Depends(require_permission("persons", "read")),
 ):
     return document_service.list_documents(owner_kind="person", owner_id=person_id)
 
@@ -889,7 +958,7 @@ async def upload_person_document(
     file: UploadFile = File(...),
     document_type_code: str = Form(...),
     title: Optional[str] = Form(None),
-    user=Depends(require_permission("documents", "write")),
+    user=Depends(require_permission("persons", "write")),
 ):
     content = await file.read()
     return await document_service.upload_document(

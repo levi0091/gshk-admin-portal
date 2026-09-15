@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../../lib/api.js'
-import { formatDate } from '../../lib/format.js'
+import { formatDate, formatNumber } from '../../lib/format.js'
 import { describeError } from './workflow.js'
 
 /**
@@ -97,8 +97,10 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
   }
   if (!data) return null
 
+  // Grouped — see the same line in FilingSummaryCard. This is the figure the
+  // operator checks against the company profile, which groups it too.
   const shares = (data.share_classes || [])
-    .map(sc => `${sc.total_issued ?? '?'} ${sc.name || 'shares'}`)
+    .map(sc => `${formatNumber(sc.total_issued) ?? '?'} ${sc.name || 'shares'}`)
     .join(' · ')
 
   return (
@@ -131,7 +133,7 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
         </Row>
         <Row label="Members (Sch. 1)">
           {data.member_count
-            ? `${data.member_count} member${data.member_count === 1 ? '' : 's'}${shares ? ` · ${shares}` : ''}`
+            ? `${formatNumber(data.member_count)} member${data.member_count === 1 ? '' : 's'}${shares ? ` · ${shares}` : ''}`
             : null}
         </Row>
         <Row label="Share classes">
@@ -165,6 +167,12 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
                   403 for it. Read-only shows the CHOSEN VALUE rather than
                   nothing, because which capacity was picked decides whether
                   CR will accept the signature. */}
+              {/* THE DEFAULT IS SHOWN SELECTED (Levi 2026-09-14). It used to
+                  render blank for a natural-person signatory while the backend
+                  filed "Company Secretary" anyway — so the screen said nothing
+                  was chosen and CR was sent something regardless. The API now
+                  answers with the value that WILL be filed, default included,
+                  and this just draws it. */}
               {canWrite ? (
                 <select
                   className="f-input"
@@ -173,7 +181,9 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
                   disabled={saving}
                   onChange={e => saveCapacity(e.target.value)}
                 >
-                  <option value="">Choose how the signatory signs…</option>
+                  {!data.signatory_capacity && (
+                    <option value="">Choose how the signatory signs…</option>
+                  )}
                   {(data.signatory_capacity_options || []).map(opt => (
                     <option key={opt} value={opt}>{opt}</option>
                   ))}
@@ -181,6 +191,14 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
               ) : (
                 data.signatory_capacity
                   || <span className="td-muted">Not chosen yet</span>
+              )}
+              {data.signatory_capacity_is_default && (
+                <div className="f-hint" data-testid="capacity-default-note"
+                     style={{ marginTop: 6 }}>
+                  The default. {canWrite
+                    ? 'Change it if the signatory signs in another capacity.'
+                    : 'Nobody has chosen another capacity for this case.'}
+                </div>
               )}
               {saveError && (
                 <div className="f-hint" style={{ color: 'var(--carrot)', marginTop: 6 }}>

@@ -168,16 +168,15 @@ const ROLES = {
   'persons:read only': ['persons:read'],
   'persons read+write': ['persons:read', 'persons:write'],
   'the tester role': ['companies:read', 'persons:read', 'persons:write'],
-  'documents reader': ['companies:read', 'persons:read', 'documents:read'],
-  'documents manager': ['companies:read', 'persons:read', 'documents:read',
-                        'documents:write'],
-  'documents manager who may delete': ['companies:read', 'persons:read',
-                                       'documents:read', 'documents:write',
-                                       'documents:delete'],
+  // THE THREE `documents` ROLES ARE GONE (Levi 2026-09-07, migration 040). The
+  // module no longer exists, so "documents manager" is not a shape a Super
+  // Admin can create any more — a document takes the grant of the record it is
+  // filed against. What those roles were testing (download without upload,
+  // upload without delete) is now the read/write split on the owner module,
+  // which the `:read only` and `read+write` rows above already walk.
   'case worker': ['companies:read', 'nar1:read', 'nar1:write'],
   'everything': ['companies:read', 'companies:write', 'persons:read',
-                 'persons:write', 'documents:read', 'documents:write',
-                 'documents:delete', 'nar1:read', 'nar1:write', 'tpsi:read',
+                 'persons:write', 'nar1:read', 'nar1:write', 'tpsi:read',
                  'tpsi:write', 'tpsi:submit', 'audit_trail:read'],
 }
 
@@ -203,14 +202,14 @@ const has = name => screen.queryAllByRole('button', { name }).length > 0
 describe('Company profile — controls present per role', () => {
   const cases = [
     // role,                            edit,  parties, shares, upload, download, remove, newCase
+    // Documents now follow the COMPANY (migration 040): `companies:read`
+    // downloads, `companies:write` uploads and removes. That is why the
+    // read-only row gained a Download and the read+write row gained all three.
     ['no permissions at all',           false, false,   false,  false,  false,    false,  false],
-    ['companies:read only',             false, false,   false,  false,  false,    false,  false],
-    ['companies read+write',            true,  true,    true,   false,  false,    false,  false],
-    ['the tester role',                 false, false,   false,  false,  false,    false,  false],
-    ['documents reader',                false, false,   false,  false,  true,     false,  false],
-    ['documents manager',               false, false,   false,  true,   true,     false,  false],
-    ['documents manager who may delete', false, false,  false,  true,   true,     true,   false],
-    ['case worker',                     false, false,   false,  false,  false,    false,  true],
+    ['companies:read only',             false, false,   false,  false,  true,     false,  false],
+    ['companies read+write',            true,  true,    true,   true,   true,     true,   false],
+    ['the tester role',                 false, false,   false,  false,  true,     false,  false],
+    ['case worker',                     false, false,   false,  false,  true,     false,  true],
     ['everything',                      true,  true,    true,   true,   true,     true,   true],
   ]
 
@@ -252,13 +251,12 @@ describe('Company profile — controls present per role', () => {
 describe('Person profile — controls present per role', () => {
   const cases = [
     // role,                             editPerson, addId, upload, download, remove
+    // Documents now follow the PERSON (migration 040) — the same grant the
+    // identity documents beside them always used.
     ['no permissions at all',            false,      false, false,  false,    false],
-    ['persons:read only',                false,      false, false,  false,    false],
-    ['persons read+write',               true,       true,  false,  false,    false],
-    ['the tester role',                  true,       true,  false,  false,    false],
-    ['documents reader',                 false,      false, false,  true,     false],
-    ['documents manager',                false,      false, true,   true,     false],
-    ['documents manager who may delete', false,      false, true,   true,     true],
+    ['persons:read only',                false,      false, false,  true,     false],
+    ['persons read+write',               true,       true,  true,   true,     true],
+    ['the tester role',                  true,       true,  true,   true,     true],
     ['everything',                       true,       true,  true,   true,     true],
   ]
 
@@ -273,8 +271,8 @@ describe('Person profile — controls present per role', () => {
     expect(has(/Upload Document/), 'Upload Document').toBe(upload)
     expect(has(/^Download$/), 'Download (filed document)').toBe(download)
     expect(has(/Download scan/), 'Download scan').toBe(download)
-    // `Remove` is on identity records (persons:write) and on filed documents
-    // (documents:delete) — either one puts a Remove on the screen.
+    // `Remove` is on identity records and on filed documents, and both are
+    // `persons:write` now — either one puts a Remove on the screen.
     expect(has(/^Remove$/), 'Remove').toBe(remove || editPerson)
     // "Make primary" only exists where there is a second document to promote.
     expect(has(/Make primary/), 'Make primary').toBe(editPerson)

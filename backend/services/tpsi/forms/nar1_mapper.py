@@ -53,6 +53,7 @@ from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_BODY_CORPORATE,
     CAPACITY_INDIVIDUAL,
     HKG,
+    default_capacity,
     resolve_country,
     resolve_district,
 )
@@ -67,12 +68,6 @@ _HKT = timezone(timedelta(hours=8))
 #: CR's date format, per signatoryDate in the example: 01/06/2022.
 _CR_DATE_FORMAT = "%d/%m/%Y"
 _CR_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-
-#: selectCapacityDesc for a natural person signing as the company secretary.
-#: This is a "Capacity (Individual)" value and it is valid for an INDIVIDUAL
-#: signatory only -- CR keeps a separate 15-value Body Corporate vocabulary, and
-#: no Individual value appears in it. See cr_vocabularies.py.
-_CAPACITY_COMPANY_SECRETARY = "Company Secretary"
 
 #: ctryRegion comes from CR's own "Country & Region" sheet — all 250 codes, with
 #: the alpha-2 form G-FlowDesk stores — see cr_vocabularies.py. Deliberately a
@@ -156,6 +151,16 @@ def _as_whole_number(amount: Decimal, value, problems: list[str],
 def _whole_number(value, problems: list[str], where: str) -> int:
     return _as_whole_number(_decimal(value, problems, where), value, problems,
                             where)
+
+
+def _issued_amount(share_class: dict):
+    """Section 11's "Total Amount": `issued_amount`, else `total_paid`.
+
+    `is None`, not falsiness: an issued amount of 0 is an answer, and falling
+    back past it to the paid figure would file a number nobody entered.
+    """
+    amount = share_class.get("issued_amount")
+    return share_class.get("total_paid") if amount is None else amount
 
 
 def _hk_today() -> date:
@@ -432,7 +437,11 @@ def _derive_signatory(graph: dict) -> dict | None:
         if person:
             return {
                 "name": person.get("full_name") or person.get("full_name_zh") or "",
-                "capacity": _CAPACITY_COMPANY_SECRETARY,
+                # The Individual default, from the ONE place every caller
+                # takes it (`default_capacity`). This was a hardcoded "Company
+                # Secretary" while the Data Verification picker showed blank —
+                # the filing and the screen disagreed (Levi 2026-09-14).
+                "capacity": default_capacity(is_corporate=False),
                 # The e-SERVICE USER ID, not an identity document number.
                 #
                 # CR proved this live on 2026-08-27: sending the signatory's
@@ -536,10 +545,12 @@ def _signatory_block(graph: dict, signatory: dict | None,
     name = str(resolved["name"]).strip()
     capacity = str(resolved.get("capacity") or "").strip()
     if not capacity and not is_corporate:
-        # A natural person signing for a GSHK-managed company signs as its
-        # company secretary (Q-030). There is no equivalent default for a body
-        # corporate -- see below.
-        capacity = _CAPACITY_COMPANY_SECRETARY
+        # A natural person with no capacity takes the Individual default --
+        # the same value the picker shows. A body corporate still gets none
+        # HERE: its default is applied by the callers that know the case
+        # (`prepare`, `drift`, `nar1_return_data`), and an unanswered
+        # body-corporate capacity reaching the mapper stays a refusal below.
+        capacity = default_capacity(is_corporate=False)
     _check_capacity(name, capacity, is_corporate, problems)
 
     block = {
@@ -952,44 +963,53 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None,
             # 5,000,000 paid, and one class paid 61,460.68, which no share
             # count is.
             #
-            # total_paid is the amount (Viewpoint PaidCap); total_issued is the
-            # count (Viewpoint Issued). nominal_value cannot bridge them -- it
-            # is 0 or 1 on all but 3 classes, because Hong Kong shares have had
-            # NO PAR VALUE since Cap. 622 (2014), so there is no per-share
-            # price to multiply by.
+            # total_issued is the count (Viewpoint Issued). nominal_value cannot
+            # turn it into an amount -- it is 0 or 1 on all but 3 classes,
+            # because Hong Kong shares have had NO PAR VALUE since Cap. 622
+            # (2014), so there is no per-share price to multiply by.
             #
-            # So the amount is total_paid, which is also what CR's own two NAR1
-            # examples show: issuedCapital equals paidUpCapital in both.
-            # LIMIT: for partly-paid shares the issued amount exceeds the paid
-            # amount, and Viewpoint carries no column for the difference. This
-            # files them as equal, which is right for fully-paid shares and the
-            # closest available otherwise.
+            # issuedCapital IS `share_classes.issued_amount` -- the profile's
+            # "Total Amount" box (migration 028, Viewpoint StatedCap), and the
+            # column the CR form contract maps this field to. It used to be
+            # filled from total_paid, from before that column existed, so an
+            # operator who typed Total Amount 200 against 100 paid up got a
+            # return -- and a PDF -- saying 100 (Levi 2026-09-14). The two
+            # differ exactly when shares are partly paid, which is the case
+            # section 11 has two columns for.
+            #
+            # total_paid stays the FALLBACK for a class with no issued_amount
+            # (1 of 5,746 on DEV): CR's own two NAR1 examples show the two
+            # equal, which is right for fully-paid shares, and blank is not an
+            # amount CR will take.
             "noOfShareIssuedOnThisCls": _whole_number(
                 sc.get("total_issued"), problems,
                 f"share class {sc.get('class_name')} total_issued"),
             "issuedCapital": _whole_number(
-                sc.get("total_paid"), problems,
-                f"share class {sc.get('class_name')} total_paid"),
+                _issued_amount(sc), problems,
+                f"share class {sc.get('class_name')} issued_amount"),
             "paidUpCapital": _whole_number(
                 sc.get("total_paid"), problems,
                 f"share class {sc.get('class_name')} total_paid"),
         }
         for sc in graph["share_classes"]
     ]
-    # A class with shares issued but nothing recorded as paid would now file
+    # A class with shares issued but no amount recorded for them would file
     # issuedCapital = 0, and zero issued capital against issued shares is not a
-    # credible statutory return -- it is missing data. Six classes on DEV look
-    # like this (10,000-20,000 shares, total_paid 0). Filing the share count
+    # credible statutory return -- it is missing data. Six classes on DEV looked
+    # like this (10,000-20,000 shares, nothing paid). Filing the share count
     # there, as this used to, was not better; it was just less obviously wrong.
     # Say it out loud instead, like every other gap in this mapper.
+    #
+    # Keyed on the ISSUED amount, not the paid one: an issued class paid up to
+    # nil is a partly-paid class CR's section 11 can state, not a gap.
     for sc in graph["share_classes"]:
         issued = _decimal(sc.get("total_issued"), [], "") or Decimal(0)
-        paid = _decimal(sc.get("total_paid"), [], "") or Decimal(0)
-        if issued > 0 and paid == 0:
+        amount = _decimal(_issued_amount(sc), [], "") or Decimal(0)
+        if issued > 0 and amount == 0:
             problems.append(
                 f"share class {sc.get('class_name')}: {issued} shares issued "
-                "but total_paid is 0, so the return would declare no issued "
-                "capital for them — record the amount before filing"
+                "but no Total Amount is recorded for them, so the return would "
+                "declare no issued capital — record the amount before filing"
             )
 
     if share_capitals:

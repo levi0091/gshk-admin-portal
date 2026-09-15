@@ -55,6 +55,11 @@ from fastapi.responses import HTMLResponse
 
 from services import audit_events as ev, nar1_approvals, nar1_cases
 from services.audit_service import log_event
+# ONE OWNER FOR THE ADDRESS. The verification email tells the client that
+# replies are not monitored and to write to this mailbox instead; a page that
+# named a different one — or that still said "reply to the email" — would send
+# a client somewhere nobody is reading.
+from services.email_service import RENEWAL_MAILBOX
 from services import audit_subject
 
 router = APIRouter()
@@ -186,9 +191,16 @@ _PAGE = """<!doctype html>
   dt {{ font-size:11px; letter-spacing:.07em; text-transform:uppercase;
        color:#7C80A3; margin-top:14px; }}
   dd {{ margin:2px 0 0; color:#1A2050; font-weight:600; }}
-  button {{ width:100%; padding:14px 18px; border:0; border-radius:8px;
+  button {{ padding:13px 24px; border:0; border-radius:8px;
            background:#F36C32; color:#fff; font-size:16px; font-weight:600;
            cursor:pointer; }}
+  .warn {{ border:1px solid #E2E4ED; border-radius:10px; overflow:hidden; }}
+  .warn-top {{ display:flex; gap:14px; padding:20px 22px 18px; }}
+  .warn-ico {{ flex:0 0 auto; line-height:0; padding-top:2px; }}
+  .warn-h {{ margin:0 0 8px; font-size:19px; font-weight:700; color:#1A2050; }}
+  .warn-t {{ margin:0; font-size:15px; color:#3A4060; }}
+  .warn-foot {{ display:flex; justify-content:flex-end; padding:14px 22px;
+               border-top:1px solid #E2E4ED; background:#FAFBFD; }}
   .note {{ margin-top:18px; font-size:13px; color:#7C80A3; }}
   .done {{ padding:14px 16px; border-radius:8px; background:#E6F1ED;
           color:#027248; font-weight:600; }}
@@ -230,7 +242,8 @@ def _unavailable() -> HTMLResponse:
         sub="It may have expired, or a newer request may have replaced it.",
         body='<p class="stop">Nothing has been changed.</p>'
              '<p class="note">If you still need to confirm this Annual Return, '
-             'please reply to the email you received and we will help.</p>',
+             f'please email {html.escape(RENEWAL_MAILBOX)} and we will '
+             'help.</p>',
     )
 
 
@@ -242,8 +255,8 @@ def _already(name: str, when: str) -> HTMLResponse:
         sub=f"Confirmed by {who}{f' on {when}' if when else ''}.",
         body='<p class="done">No further action is needed.</p>'
              '<p class="note">Only one confirmation is required for a return. '
-             'If something in it looks wrong, please reply to the email you '
-             'received.</p>',
+             'If something in it looks wrong, please email '
+             f'{html.escape(RENEWAL_MAILBOX)}.</p>',
     )
 
 
@@ -255,13 +268,41 @@ def _confirmed(company: str) -> HTMLResponse:
             else "We will file the Annual Return.",
         body='<p class="done">Confirmation recorded.</p>'
              '<p class="note">You do not need to do anything else. If you '
-             'later notice something wrong, reply to the email you received '
-             'as soon as you can.</p>',
+             'later notice something wrong, email '
+             f'{html.escape(RENEWAL_MAILBOX)} as soon as you can.</p>',
     )
+
+
+#: The warning triangle from the approved mock, drawn rather than fetched. An
+#: <img> would be a second request from a client's mail-restricted browser, and
+#: the one that fails silently leaves the panel looking unfinished.
+_WARNING_MARK = (
+    '<svg width="30" height="30" viewBox="0 0 24 24" aria-hidden="true" '
+    'focusable="false">'
+    '<path fill="#F36C32" stroke="#F36C32" stroke-width="2.4" '
+    'stroke-linejoin="round" d="M12 3.4 2.7 20h18.6z"/>'
+    '<path fill="#fff" d="M11 9.2h2v5.4h-2zm0 6.7h2v2.1h-2z"/>'
+    "</svg>"
+)
 
 
 def _ask(*, company: str, br_number: str, period: str, case_no: str,
          deadline: str) -> HTMLResponse:
+    """The confirmation page, carrying the approved warning panel.
+
+    THE WARNING IS SHOWN ON ARRIVAL, not behind a first press. The mock draws
+    it as a modal over the page (Levi 2026-09-08), but a modal needs script to
+    open and this route runs none — see `test_the_page_runs_no_script_at_all`:
+    it is an unauthenticated page reached from a link in a client's email, and
+    the smallest attack surface is no attack surface. Rendered inline it says
+    the same words at the same moment, before anything can be pressed, which is
+    the whole job of the warning.
+
+    There is CONSEQUENTLY no Cancel. In the mock it dismisses a dialog; here
+    there is no dialog to dismiss, and a button that did nothing would be a
+    worse answer to "something is wrong" than the note below, which names the
+    mailbox that reads it.
+    """
     rows = [("Company", company), ("Business Registration No.", br_number),
             ("Return period", period), ("Our reference", case_no)]
     ledger = "".join(
@@ -273,11 +314,19 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
     # attribute, not anywhere a "view source" or a copied page would carry it.
     body = (
         f"<dl>{ledger}</dl>"
-        '<form method="post"><button type="submit">'
-        'Confirm this Annual Return is correct</button></form>'
-        '<p class="note">Pressing Confirm tells us to file this return with '
-        'the Companies Registry. If anything is wrong, do not press it — '
-        'reply to the email instead and tell us what needs changing.'
+        '<form method="post"><div class="warn">'
+        f'<div class="warn-top"><div class="warn-ico">{_WARNING_MARK}</div>'
+        '<div><p class="warn-h">Warning</p>'
+        '<p class="warn-t">By clicking <strong>Confirm &amp; File</strong>, '
+        'you confirm that you have reviewed the draft and that the information '
+        'is correct. The NAR1 will then be arranged for submission without '
+        'further confirmation.</p></div></div>'
+        '<div class="warn-foot">'
+        '<button type="submit">Confirm &amp; File</button>'
+        "</div></div></form>"
+        '<p class="note">If anything is wrong, do not press Confirm &amp; File '
+        f"— email {html.escape(RENEWAL_MAILBOX)} instead and tell us what "
+        "needs changing."
         + (f' If we do not hear from you by {html.escape(deadline)}, we will '
            'proceed with filing.' if deadline else '')
         + '</p>'

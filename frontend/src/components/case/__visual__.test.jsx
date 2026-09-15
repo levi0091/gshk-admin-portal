@@ -6,7 +6,7 @@
  *
  * Skipped unless SHOOT=1, so it never runs in CI.
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, vi, beforeEach } from 'vitest'
 import fs from 'node:fs'
@@ -20,6 +20,7 @@ import StageConfirmation from './StageConfirmation.jsx'
 import RefusalDetail from './RefusalDetail.jsx'
 import { describeError } from './workflow.js'
 import { ClosedPanel } from '../../pages/CaseWorkflowPage.jsx'
+import VipBar from '../VipBar.jsx'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
 const blob = vi.fn(); const upload = vi.fn()
@@ -55,6 +56,24 @@ const CASE = {
   },
 }
 
+/** The CR-validated snapshot the Submission stage summarises. Hoisted out of
+ *  the default mock so a case that overrides `get` can still serve it. */
+const SUMMARY = {
+  form_code: 'Nar1', stage: 'signed', has_schedule_1: true,
+  company_name: 'Skyline Capital Management Limited', br_number: '76543210',
+  year: '2026', registered_office: 'Unit 2201, 22/F, Tower One, Admiralty Centre, HK',
+  directors: ['CHAN, TAI MAN', 'WONG, MEI LING'],
+  secretaries: ['Get Started HK Limited'],
+  // Seven digits, so the grouping added on 2026-09-07 is visible in the shot.
+  share_classes: [{ name: 'Ordinary', currency: 'HKD', total_issued: '1000000' }],
+  member_count: 2, members: ['CHAN, TAI MAN', 'WONG, MEI LING'],
+  signatory: {
+    name: 'Get Started HK Limited', date: '30/08/2026',
+    capacity: 'Authorized Representative of the Company Secretary (Body Corporate)',
+  },
+  signed_at: '2026-08-30T07:36:00Z',
+}
+
 beforeEach(() => {
   get.mockImplementation(url => {
     const u = String(url)
@@ -87,22 +106,7 @@ beforeEach(() => {
         max_recipients: 20,
       })
     }
-    if (u.includes('/summary')) {
-      return Promise.resolve({
-        form_code: 'Nar1', stage: 'signed', has_schedule_1: true,
-        company_name: 'Skyline Capital Management Limited', br_number: '76543210',
-        year: '2026', registered_office: 'Unit 2201, 22/F, Tower One, Admiralty Centre, HK',
-        directors: ['CHAN, TAI MAN', 'WONG, MEI LING'],
-        secretaries: ['Get Started HK Limited'],
-        share_classes: [{ name: 'Ordinary', currency: 'HKD', total_issued: '100' }],
-        member_count: 2, members: ['CHAN, TAI MAN', 'WONG, MEI LING'],
-        signatory: {
-          name: 'Get Started HK Limited', date: '30/08/2026',
-          capacity: 'Authorized Representative of the Company Secretary (Body Corporate)',
-        },
-        signed_at: '2026-08-30T07:36:00Z',
-      })
-    }
+    if (u.includes('/summary')) return Promise.resolve(SUMMARY)
     if (u.includes('/tpsi/credentials')) {
       return Promise.resolve({
         eservice_user_id: 'GSHKPN02', has_eservice_password: true,
@@ -164,11 +168,93 @@ describe.runIf(SHOOT)('visual harness', () => {
       () => waitFor(() => screen.getByText(/Choose the signed PDF/)))
   })
 
+  it('3c · Signing — manual, scan attached', async () => {
+    // Levi 2026-09-14: the upload no longer advances the page. What the
+    // operator sees instead: the attached version, Replace, and Continue.
+    await dump('3c-signing-manual-attached',
+      <StageSigning caseRow={{ ...CASE, signing_method: 'manual',
+                               manual_signed_document_id: 'd1',
+                               manual_signed_document_version: 2 }}
+                    canWrite onChanged={noop} onError={noop} onGo={noop} />,
+      () => waitFor(() => screen.getByText(/Continue to Submission/)))
+  })
+
+  it('4c · Submission — manual receipt', async () => {
+    get.mockImplementation(url => String(url).includes('/manual-receipt-prefill')
+      ? Promise.resolve({
+          fields: { brNo: '76543210',
+                    engCoyName: 'Skyline Capital Management Limited',
+                    accNo: 'N00577470008' },
+          deposit_payment_method: 'Deduct from Account',
+          vocabulary: {
+            pymtMtd: [{ code: 'Deduct from Account', label: 'Deduct from Account' },
+                      { code: 'Cheque', label: 'Cheque' }],
+            revCode: [{ code: '16', label: '16 — Registration of annual return (private company)' },
+                      { code: '118', label: '118 — Annual return fee' }],
+            docShtFrm: [{ code: 'NAR1', label: 'NAR1 — delivered on time' },
+                        { code: 'NAR1L', label: 'NAR1L — delivered late' }],
+          },
+        })
+      : Promise.resolve({}))
+    await dump('4c-submission-manual',
+      <StageSubmission caseRow={{ ...CASE, signing_method: 'manual', receipt: null,
+                                  manual_signed_document_id: 'd1',
+                                  manual_receipt_document_id: 'r1',
+                                  manual_receipt_document_version: 1 }}
+                       canSubmit onChanged={noop} onError={noop} onGo={noop} />,
+      async () => {
+        await waitFor(() => screen.getByRole('option', { name: 'Cheque' }))
+        fireEvent.change(screen.getByLabelText('Payment method'),
+                         { target: { value: 'Deduct from Account' } })
+        fireEvent.change(screen.getByLabelText('Revenue code'),
+                         { target: { value: '16' } })
+        fireEvent.change(screen.getByLabelText('Total amount'),
+                         { target: { value: '2610' } })
+        fireEvent.click(screen.getByRole('button', { name: /Add payment line/ }))
+      })
+  })
+
+  it('7 · VIP bar — VIP by rule', async () => {
+    await dump('7-vip-bar-on',
+      <VipBar vip={{ is_vip: true, automatic: true,
+                     reasons: ['affiliated_agent', 'companies'],
+                     company_count: 5, threshold: 3 }}
+              isAgent canWrite onSave={noop} />)
+  })
+
+  it('7b · VIP bar — standard client', async () => {
+    await dump('7b-vip-bar-off',
+      <VipBar vip={{ is_vip: false, automatic: false, reasons: [],
+                     company_count: 2, threshold: 3 }}
+              canWrite onSave={noop} />)
+  })
+
   it('4 · Submission', async () => {
     await dump('4-submission',
       <StageSubmission caseRow={{ ...CASE, form_status: { code: 'signed', label: 'Signed' } }}
                        canSubmit onChanged={noop} onError={noop} onGo={noop} />,
       () => waitFor(() => screen.getByText(/Irreversible action/)))
+  })
+
+  it('4b · Submission — the return is not due yet', async () => {
+    // Levi 2026-09-07. The fee panel and the deposit box are both withheld
+    // here: being early is not a money problem, and the arithmetic beside a
+    // refusal reads as an invitation to top up and press on.
+    get.mockImplementation(url => String(url).includes('/summary')
+      ? Promise.resolve(SUMMARY)
+      : Promise.resolve({
+          fee: '3480.00', max_fee: '3480.00', fee_is_certain: false,
+          on_time_fee: '105.00', balance: '12480', sufficient: true,
+          too_early: true, return_date: '2027-03-14',
+          days_until_return_date: 188,
+          fee_detail: { band: 'up to HK$3480.00', return_date: null,
+                        certain: false,
+                        reason: 'the return date (2027-03-14) is in the future' },
+        }))
+    await dump('4b-submission-too-early',
+      <StageSubmission caseRow={{ ...CASE, form_status: { code: 'signed', label: 'Signed' } }}
+                       canSubmit onChanged={noop} onError={noop} onGo={noop} />,
+      () => waitFor(() => screen.getByText(/not due yet/)))
   })
 
   it('5 · Confirmation', async () => {

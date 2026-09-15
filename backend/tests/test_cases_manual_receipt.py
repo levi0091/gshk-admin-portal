@@ -14,13 +14,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from tests.test_cases_manual import (H, REGULAR, SUPER, _no_filing, _super,
-                                     full_receipt)
+from tests.test_cases_manual import (H, PREFILL, REGULAR, SUPER, _no_filing,
+                                     _super, full_receipt)
 
 
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _prefill():
+    """manual-submit fills the case's own identifiers (Levi 2026-09-14) from the
+    registry view and the shared credential — through the real Supabase client
+    unless patched."""
+    with patch("routers.cases.nar1_cases.receipt_prefill",
+               return_value=dict(PREFILL)):
+        yield
 
 
 def _case(**over):

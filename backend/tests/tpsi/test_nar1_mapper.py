@@ -158,8 +158,11 @@ def test_the_signatory_block_is_emitted():
     `mandatory`, so an unsigned return passes every local gate and fails no
     earlier than CR's server, after the fee is taken.
 
-    An individual secretary signing as "Company Secretary" is the path CR's own
-    example shows, and it is derived with no help from the caller."""
+    An individual signatory with no capacity chosen signs as "Director" — the
+    Individual default the Data Verification picker shows (Levi 2026-09-14).
+    It used to be a hardcoded "Company Secretary" here while the picker showed
+    blank, so the screen and the filing disagreed. Derived with no help from
+    the caller."""
     g = graph(
         secretaries=[{"person_id": "p1", "is_gshk": False, "is_current": True}],
         persons={"p1": person()},
@@ -168,7 +171,7 @@ def test_the_signatory_block_is_emitted():
                                     "is_primary": True}]},
     )
     data = nar1_mapper.map_entity(g, year=2026)      # derived, not passed in
-    assert data["selectCapacityDesc"] == "Company Secretary"
+    assert data["selectCapacityDesc"] == "Director"
     assert data["selectPersonName"] == "CHAN TAI MAN"
     # Today in Hong Kong, not naive date.today(): the DB server runs UTC, which
     # is the wrong calendar day for eight hours out of every twenty-four.
@@ -976,6 +979,47 @@ def test_each_share_class_becomes_one_sharecapital_entry():
     }
 
 
+def _one_class(**sc):
+    """A single Ordinary class held in full by one person."""
+    share_class = {"id": "sc1", "class_name": "Ordinary", "currency": "HKD",
+                   "total_issued": 100, **sc}
+    return graph(share_classes=[share_class], shareholdings=[
+        {"share_class_id": "sc1", "person_id": "p1", "party_type": "individual",
+         "shares_held": share_class["total_issued"], "is_current": True},
+    ], persons={"p1": person()}, addresses={"a1": ADDR, "a2": ADDR})
+
+
+def test_issued_capital_is_the_profiles_total_amount_not_the_paid_up_amount():
+    """Levi 2026-09-14: Total Amount 200 against 100 paid up rendered 100 on the
+    NAR1, because issuedCapital was read off total_paid from before the
+    issued_amount column (migration 028) existed. Partly-paid shares are
+    exactly what section 11's two columns are for."""
+    cap = mapped(_one_class(issued_amount=200, total_paid=100))["shareCapitals"][0]
+    assert cap["issuedCapital"] == 200
+    assert cap["paidUpCapital"] == 100
+    assert cap["noOfShareIssuedOnThisCls"] == 100
+
+
+def test_a_class_with_no_issued_amount_falls_back_to_the_paid_amount():
+    """1 of 5,746 DEV classes has none; blank is not an amount CR takes."""
+    cap = mapped(_one_class(issued_amount=None, total_paid=100))["shareCapitals"][0]
+    assert cap["issuedCapital"] == 100
+
+
+def test_an_issued_amount_of_zero_is_an_answer_not_a_fallback():
+    """Falling back past 0 to the paid figure would file a number nobody
+    entered — and zero issued capital against issued shares is a gap the
+    mapper names."""
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(_one_class(issued_amount=0, total_paid=100))
+    assert any("no Total Amount" in p for p in exc.value.problems)
+
+
+def test_a_class_paid_up_to_nil_is_partly_paid_not_missing():
+    cap = mapped(_one_class(issued_amount=100, total_paid=0))["shareCapitals"][0]
+    assert (cap["issuedCapital"], cap["paidUpCapital"]) == (100, 0)
+
+
 def test_schedule_1_groups_shareholders_under_their_share_class():
     g = graph(
         share_classes=[{"id": "sc1", "class_name": "Ordinary", "currency": "HKD",
@@ -1367,11 +1411,11 @@ def test_issued_capital_is_the_amount_not_the_share_count():
 
 
 def test_shares_issued_with_nothing_paid_is_reported_not_filed_as_zero():
-    """issuedCapital reads total_paid, so a class with shares issued and
-    total_paid = 0 would declare NO issued capital for them. Zero issued
-    capital against issued shares is missing data, not a fact -- six DEV
-    classes look like this. Filing the share count there (what this used to do)
-    was not better, only less obviously wrong."""
+    """A class with shares issued and no Total Amount — no issued_amount, and
+    total_paid (its fallback) 0 — would declare NO issued capital for them.
+    Zero issued capital against issued shares is missing data, not a fact --
+    six DEV classes looked like this. Filing the share count there (what this
+    used to do) was not better, only less obviously wrong."""
     g = graph(
         share_classes=[{"id": "sc1", "class_name": "Ordinary", "currency": "HKD",
                         "total_issued": 10000, "total_paid": 0}],
@@ -1382,4 +1426,4 @@ def test_shares_issued_with_nothing_paid_is_reported_not_filed_as_zero():
     )
     with pytest.raises(nar1_mapper.MappingError) as exc:
         mapped(g)
-    assert any("total_paid is 0" in p for p in exc.value.problems)
+    assert any("no Total Amount" in p for p in exc.value.problems)

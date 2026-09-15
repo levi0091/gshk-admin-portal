@@ -591,3 +591,166 @@ def test_a_form_with_no_late_tariff_reports_a_flat_certain_fee():
         preview = filings.preview(_client(), "f1", deposit_account="ACC")
     assert preview["fee_is_certain"] is True
     assert preview["fee"] == "0"
+
+
+# ---- the return-date gate (Levi 2026-09-07) -------------------------------
+#
+# An annual return reports on the year ending at the company's return date, so
+# it cannot be delivered before that date arrives. Until this gate existed a
+# case opened a year early could be validated, signed and FILED: the fee quote
+# degraded to the HK$3,480 ceiling and the submit went ahead, so the first
+# thing to notice would have been CR, after the charge.
+
+
+def _next_years_return():
+    """A filing whose return year is NEXT year — due about 12 months from now.
+
+    Built by moving the return YEAR rather than by shifting the incorporation
+    date on purpose: `_TODAY + 30 days` lands in January when the suite runs in
+    December, and January's anniversary in THIS year is in the past. The year
+    is the field that actually decides the return date, so it is the one moved.
+    """
+    xml = (f"<cr:yearAnnualReturn>{_TODAY.year + 1}</cr:yearAnnualReturn>"
+           "<cr:shareCapitals><cr:shareCapital>"
+           "<cr:clsOfShares>Ordinary</cr:clsOfShares>"
+           "</cr:shareCapital></cr:shareCapitals>")
+    return _signed(validated_xml=f"<cr:submission>{xml}</cr:submission>",
+                   request_xml=xml)
+
+
+def test_refuses_a_return_whose_return_date_has_not_arrived():
+    with _entity(), patch.object(filings, "get_filing",
+                                 return_value=_next_years_return()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        with pytest.raises(filings.BeforeReturnDate) as caught:
+            filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+
+    # The DATE is in the message, not just "too early": the operator has to be
+    # able to tell "we are early" from "the return year on this filing is
+    # wrong", and only the date distinguishes those.
+    assert caught.value.return_date.year == _TODAY.year + 1
+    assert "return date" in str(caught.value)
+
+
+def test_the_early_refusal_is_a_submit_gate_error():
+    """So the router 409s and audits it through the branch every other gate
+    already goes through, rather than 500-ing on an unhandled exception."""
+    assert issubclass(filings.BeforeReturnDate, filings.SubmitGateError)
+
+
+def test_an_early_return_sends_nothing_to_cr_and_reads_no_balance():
+    """It must refuse BEFORE any CR traffic — including the free balance read,
+    which is where the drift and manual-completion interlocks also sit."""
+    client = _client()
+    balance = MagicMock(return_value=Decimal("999999"))
+    with _entity(), patch.object(filings, "get_filing",
+                                 return_value=_next_years_return()), \
+         patch("services.tpsi.reads.check_balance", balance):
+        with pytest.raises(filings.BeforeReturnDate):
+            filings.submit(client, "f1", confirm=True, deposit_account="ACC")
+
+    client.post_form.assert_not_called()
+    balance.assert_not_called()
+
+
+def test_a_return_due_TODAY_is_not_refused():
+    """The boundary, and it is inclusive. `_entity()` defaults the incorporation
+    date to today and `_XML` carries this year, so the return date IS today."""
+    with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
+         patch.object(filings, "_update"), \
+         patch.object(filings, "_write_back_receipt"), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    assert result["receipt"]["caseNo"] == "180256934"
+
+
+def test_fails_open_when_there_is_no_incorporation_date():
+    """A blank field is not evidence that a return is early. Refusing on it
+    would block a filing that is due today over missing data — and the fee
+    quote already degrades to the ceiling for exactly these filings, so nothing
+    is being spent optimistically. CR is the backstop."""
+    with _entity(incorporation_date=None), \
+         patch.object(filings, "get_filing", return_value=_signed()), \
+         patch.object(filings, "_update"), \
+         patch.object(filings, "_write_back_receipt"), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    assert result["receipt"]["caseNo"] == "180256934"
+
+
+def test_fails_open_when_the_return_year_cannot_be_read():
+    no_year = _signed(validated_xml="<cr:submission></cr:submission>",
+                      request_xml="")
+    with _entity(), patch.object(filings, "get_filing", return_value=no_year), \
+         patch.object(filings, "_update"), \
+         patch.object(filings, "_write_back_receipt"), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
+    assert result["receipt"]["caseNo"] == "180256934"
+
+
+def test_a_non_nar1_form_has_no_return_date_and_is_not_gated():
+    """Only an annual return has a return date. Nothing else may be dragged
+    through this arithmetic — see the same carve-out in `fee_quote_for`."""
+    with _entity():
+        assert filings.return_date_of(_signed(form_code="Nd2a")) is None
+
+
+def test_preview_reports_that_a_return_is_not_due_yet():
+    """The screen withholds the Submit button off this flag. Recomputing the
+    anniversary in the browser would be a second implementation of the rule
+    that decides whether money moves."""
+    with _entity(), patch.object(filings, "get_filing",
+                                 return_value=_next_years_return()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        preview = filings.preview(_client(), "f1", deposit_account="ACC")
+
+    assert preview["too_early"] is True
+    assert preview["return_date"].startswith(str(_TODAY.year + 1))
+    assert preview["days_until_return_date"] > 0
+
+
+def test_preview_says_a_due_return_is_not_early():
+    with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        preview = filings.preview(_client(), "f1", deposit_account="ACC")
+
+    assert preview["too_early"] is False
+    assert preview["return_date"] == _TODAY.isoformat()
+    assert preview["days_until_return_date"] is None
+
+
+def test_the_fee_and_the_gate_share_ONE_read_of_the_company():
+    """They answer different questions off the same two facts.
+
+    Two reads is two Supabase round trips on every preview and every submit —
+    and, the reason that actually matters, two readings of a record that could
+    in principle differ, so the gate could refuse against one anniversary while
+    the fee was measured from another.
+    """
+    reads = []
+
+    def counted(entity_id):
+        reads.append(entity_id)
+        return {"id": "e1", "incorporation_date": _TODAY.isoformat(),
+                "company_type": None}
+
+    with patch.object(filings, "_entity_for_fee", side_effect=counted):
+        quote, return_date = filings.assess(_signed())
+
+    assert reads == ["e1"]
+    assert quote.certain is True
+    assert return_date == _TODAY
+
+
+def test_preview_reports_an_unknown_return_date_as_unknown_not_as_early():
+    """None is not False dressed up: `too_early` stays False so the button is
+    still offered, and `return_date` is None so the screen does not print a
+    date it does not have."""
+    with _entity(incorporation_date=None), \
+         patch.object(filings, "get_filing", return_value=_signed()), \
+         patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
+        preview = filings.preview(_client(), "f1", deposit_account="ACC")
+
+    assert preview["return_date"] is None
+    assert preview["too_early"] is False

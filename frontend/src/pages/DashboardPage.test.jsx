@@ -255,8 +255,9 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     renderPage()
     await screen.findByText('NAR-2025-0028')
     const table = within(screen.getByRole('table'))
-    expect(table.getByText('12 days ago')).toBeInTheDocument()
-    expect(table.getByText('in 47 days')).toBeInTheDocument()
+    const overdue = table.getByText('12d overdue')
+    expect(overdue).toHaveClass('td-anniv-overdue')
+    expect(table.getByText('in 47 days')).not.toHaveClass('td-anniv-overdue')
   })
 
   it('warns about cases past the anniversary and can narrow to them', async () => {
