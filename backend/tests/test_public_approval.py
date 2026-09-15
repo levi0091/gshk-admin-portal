@@ -160,9 +160,18 @@ def test_the_page_tells_crawlers_and_caches_to_stay_away(client):
 
 
 def test_the_deadline_is_printed_so_it_is_not_discovered_by_missing_it(client):
-    with _Stack(*_world(approval=row(expires_at="2026-09-15T00:00:00+00:00"))):
+    """RELATIVE TO TODAY, not a literal date. This used a hardcoded
+    2026-09-15 expiry; the day it arrived the route served the expired page
+    instead, and CI went red on a calendar boundary rather than a code change
+    — the same trap `_RESPOND_BY` avoids in test_cases_verification.py.
+
+    Midnight UTC is 08:00 in Hong Kong, so the date cannot shift a day in the
+    conversion and the time proves the conversion happened."""
+    deadline = datetime.now(timezone.utc).date() + timedelta(days=30)
+    expires_at = f"{deadline.isoformat()}T00:00:00+00:00"
+    with _Stack(*_world(approval=row(expires_at=expires_at))):
         response = client.get(PATH)
-    assert "15 September 2026" in response.text
+    assert f"{deadline:%d %B %Y} at 08:00 HKT" in response.text
 
 
 # --------------------------------------------------------------------------- #
