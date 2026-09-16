@@ -30,6 +30,77 @@ from tests.test_nar1_form_fill import build_xml, values_of  # noqa: E402
 # Section 11 -- the share capital table
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("capacity, struck, kept", [
+    # A BODY-CORPORATE capacity reads "<office in the body corporate> of the
+    # <office the BODY CORPORATE holds in the filing company> (Body Corporate)".
+    # GSHK is the client's company secretary and a GSHK director signs for it,
+    # so the name on the line is GSHK and the word to keep is Company Secretary.
+    ("Director of the Company Secretary (Body Corporate)",
+     "strike_director", "strike_company_secretary"),
+    ("Authorized Person of the Company Secretary (Body Corporate)",
+     "strike_director", "strike_company_secretary"),
+    # The same body corporate sitting as a DIRECTOR instead.
+    ("Director of the Director (Body Corporate)",
+     "strike_company_secretary", "strike_director"),
+    # An INDIVIDUAL capacity simply IS the office held.
+    ("Director", "strike_company_secretary", "strike_director"),
+    ("Company Secretary", "strike_director", "strike_company_secretary"),
+])
+def test_the_signature_line_strikes_the_capacity_that_does_not_apply(
+        capacity, struck, kept):
+    """The printed line reads "董事 Director／公司秘書 Company Secretary *" over
+    "*請刪去不適用者 Delete whichever does not apply", and the renderer deleted
+    NEITHER — so every return the portal has produced claimed the signatory was
+    both, on the one line that says who is answerable for the return.
+
+    CR implements the deletion as two dropdowns whose only non-blank option is
+    a long rule; selecting it strikes the word through.
+    """
+    values = values_of(fill.render_fields(build_xml(capacity=capacity)))
+    assert values[fm.SIGNATURE_STRIKE[struck]] == [fm.STRIKE_THROUGH]
+    # The word that DOES apply keeps the template's blank option — the
+    # dropdowns are always present, so "not struck" is a value, not an absence.
+    assert values[fm.SIGNATURE_STRIKE[kept]] != [fm.STRIKE_THROUGH]
+
+
+@pytest.mark.parametrize("capacity", [
+    "Authorized Representative",
+    "Authorized Representative of the Authorized Representative (Body Corporate)",
+])
+def test_a_capacity_that_is_neither_strikes_neither(capacity):
+    """CR's vocabularies also carry Authorized Representative and Authorized
+    Person, which are neither of the two printed words. Striking one would
+    assert an office the signatory does not hold, so both are left standing —
+    the form is then no worse than it was, and not false."""
+    values = values_of(fill.render_fields(build_xml(capacity=capacity)))
+    assert values[fm.SIGNATURE_STRIKE["strike_director"]] != [fm.STRIKE_THROUGH]
+    assert values[fm.SIGNATURE_STRIKE["strike_company_secretary"]] \
+        != [fm.STRIKE_THROUGH]
+
+
+def test_a_return_with_no_capacity_recorded_still_renders():
+    """`tpsi_filings.validated_xml` rows frozen before the capacity picker
+    existed carry no selectCapacityDesc. Striking nothing is the old behaviour;
+    raising would make an already-validated filing unprintable."""
+    values = values_of(fill.render_fields(build_xml(capacity="")))
+    assert values[fm.SIGNATURE_STRIKE["strike_director"]] != [fm.STRIKE_THROUGH]
+    assert values[fm.SIGNATURE_STRIKE["strike_company_secretary"]] \
+        != [fm.STRIKE_THROUGH]
+
+
+def test_the_strike_survives_flattening():
+    """The shipped return is FLAT, and `bake()` refuses to flatten a value it
+    cannot draw rather than deleting it silently. A strike that vanished at
+    flattening would be the same defect wearing a tick."""
+    pdf = fill.render(build_xml(
+        capacity="Director of the Company Secretary (Body Corporate)"))
+    reader = PdfReader(io.BytesIO(pdf))
+    assert not (reader.pages[7].get("/Annots") or []), \
+        "page 8 still carries widgets; the shipped return must be flat"
+    # Drawn as page content: a rule across the struck word's box.
+    assert "Director" in reader.pages[7].extract_text()
+
+
 def test_one_corporate_secretary_fills_12b_and_attaches_no_continuation_sheet():
     """5,603 of 5,604 rendered returns carried a Continuation Sheet B naming
     "GETSTA", because the mapper emitted the one company secretary twice —

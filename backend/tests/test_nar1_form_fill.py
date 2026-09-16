@@ -94,7 +94,8 @@ def _member(surname, shares):
 
 def build_xml(*, directors=("CHAN",), corporate_directors=(),
               secretaries=1, corporate_secretaries=(), members=("WONG",),
-              date="01/02/2026", share_classes=1, issued_per_class=100):
+              date="01/02/2026", share_classes=1, issued_per_class=100,
+              capacity="Director of the Company Secretary (Body Corporate)"):
     """A validated return, in CR's own shape: a BARE fragment with undeclared
     `cr:` prefixes, exactly as `tpsi_filings.validated_xml` stores it.
 
@@ -146,6 +147,7 @@ def build_xml(*, directors=("CHAN",), corporate_directors=(),
           <cr:ctryRegion>HKG</cr:ctryRegion>
         </cr:roAddr>
         <cr:selectPersonName>Wong Mei Ling</cr:selectPersonName>
+        <cr:selectCapacityDesc>{capacity}</cr:selectCapacityDesc>
         <cr:shareCapitals>{capitals}</cr:shareCapitals>
         <cr:indSecList>{secs}</cr:indSecList>
         <cr:corpSecList>
