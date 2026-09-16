@@ -304,6 +304,40 @@ def _partial_hkid(digits: str) -> str | None:
     return f"{match.group(1)}{match.group(2)}" if match else None
 
 
+def _partial_passport(number: str) -> str:
+    """The PARTIAL passport number CR wants, per note 18(a) on the NAR1 itself.
+
+    Count the alphanumeric characters, ignoring spaces, punctuation marks and
+    symbols. An EVEN count gives the first half; an ODD count gives the part
+    beginning at the first character and ending at the one that falls at the
+    middle. Both are ceil(n/2) characters of the cleaned string, which is why
+    there is no branch here -- CR states the two cases separately because the
+    form is read by people, not because they compute differently.
+
+        ABCD1234567    -> ABCD12    (11 -> 6)
+        ABCD12345678   -> ABCD12    (12 -> 6)
+        ABCD123456789  -> ABCD123   (13 -> 7)
+        ABC-123-4      -> ABC1      (7 after dropping punctuation -> 4)
+        #A1234567H(*)  -> A1234     (9 after dropping symbols -> 5)
+
+    Every example above is CR's own. Applied to a HKID the same rule yields
+    "all the alphabets and the first three digits", which is what note 18(a)
+    says and what `_partial_hkid` produces by a different route.
+
+    WHY THIS EXISTS AT ALL. indvPptNo's remark in CR's worksheet is "Passport
+    Number (Partial ID)", and note 18(c) is explicit: "Please DO NOT fill in
+    the full identification number in the box provided. Information provided
+    in the box is available for public inspection." The HKID half was
+    implemented and verified live on 2026-08-21; the passport half was missed,
+    so every return produced before this carried a full passport number.
+
+    Returns "" when nothing alphanumeric survives -- the caller reports that
+    rather than filing an empty identity box.
+    """
+    cleaned = "".join(c for c in number if c.isalnum()).upper()
+    return cleaned[:(len(cleaned) + 1) // 2]
+
+
 def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
     """HKID if there is one, otherwise a passport. CR takes one or the other.
 
@@ -393,7 +427,19 @@ def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
             "refuses a passport number without its issuing country"
         )
         return {}
-    return {"indvPptNo": number, "indvPptIssCtry": code}
+    # PARTIAL, never the full number -- see _partial_passport. A number made
+    # entirely of punctuation masks to nothing, and an empty indvPptNo is the
+    # same as filing no identity number at all, so it is reported like every
+    # other gap here rather than sent.
+    partial = _partial_passport(number)
+    if not partial:
+        problems.append(
+            f"{where}: passport number {number!r} contains no letters or "
+            "digits, so it yields no partial number for CR — record the "
+            "passport number as it appears on the document"
+        )
+        return {}
+    return {"indvPptNo": partial, "indvPptIssCtry": code}
 
 
 def _identity_number(docs: list[dict]) -> str:

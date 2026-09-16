@@ -936,7 +936,7 @@ def test_a_china_id_alongside_a_passport_files_the_passport_quietly():
              "issuing_country": "China"},
         ]},
     )
-    assert mapped(g)["indDirList"][0]["indvPptNo"] == "E12345678"
+    assert mapped(g)["indDirList"][0]["indvPptNo"] == "E1234"
 
 
 def test_a_passport_row_with_no_number_does_not_crash_the_mapper():
@@ -986,9 +986,68 @@ def test_a_passport_holder_gets_a_number_and_an_issuing_country():
                                     "is_primary": True}]},
     )
     d = mapped(g)["indDirList"][0]
-    assert d["indvPptNo"] == "X1234567"
+    assert d["indvPptNo"] == "X123"
     assert d["indvPptIssCtry"] == "SGP"
     assert "indvHkidNo" not in d
+
+
+def test_passport_is_sent_as_the_partial_number_cr_asks_for():
+    """indvPptNo is "Passport Number (Partial ID)" in CR's own worksheet, and
+    note 18(c) on the form says in terms: "Please DO NOT fill in the full
+    identification number in the box provided. Information provided in the box
+    is available for public inspection."
+
+    The HKID half of this was implemented and verified live on 2026-08-21; the
+    passport half was not, so every return the portal has produced carries a
+    director's FULL passport number into a public register. All 6,137 passport
+    rows on DEV were affected.
+    """
+    g = graph(
+        officers=[{"person_id": "p1", "party_type": "individual",
+                   "role": "director", "is_current": True}],
+        persons={"p1": person()},
+        addresses={"a1": ADDR, "a2": ADDR},
+        identity_documents={"p1": [{"id_type": "passport",
+                                    "id_number": "P7751249A",
+                                    "issuing_country": "Singapore"}]},
+    )
+    assert mapped(g)["indDirList"][0]["indvPptNo"] == "P7751"
+
+
+@pytest.mark.parametrize("full, partial", [
+    # CR's OWN examples, transcribed from note 18(a) of the NAR1. The rule:
+    # count the alphanumeric characters, ignoring spaces, punctuation marks and
+    # symbols; an EVEN count gives the first half, an ODD count gives the part
+    # beginning at the first character and ending at the middle one.
+    ("ABCD1234567", "ABCD12"),     # 11 -> 6
+    ("ABCD12345678", "ABCD12"),    # 12 -> 6
+    ("ABCD123456789", "ABCD123"),  # 13 -> 7
+    ("ABC-123-4", "ABC1"),         # punctuation dropped: 7 -> 4
+    ("#A1234567H(*)", "A1234"),    # symbols dropped: 9 -> 5
+    # And the HKID examples from the same note, which the general rule must
+    # also satisfy -- "all the alphabets and the first three digits".
+    ("A123456(7)", "A123"),        # 8 -> 4
+    ("AA123456(7)", "AA123"),      # 9 -> 5
+])
+def test_cr_note_18a_partial_number_examples(full, partial):
+    assert nar1_mapper._partial_passport(full) == partial
+
+
+def test_a_passport_number_with_no_alphanumerics_is_a_problem_not_an_empty_box():
+    """"---" masks to the empty string. Filing that is filing no identity
+    number at all while reporting success, which is the failure mode this
+    mapper reports everywhere else."""
+    g = graph(
+        officers=[{"person_id": "p1", "party_type": "individual",
+                   "role": "director", "is_current": True}],
+        persons={"p1": person()},
+        addresses={"a1": ADDR, "a2": ADDR},
+        identity_documents={"p1": [{"id_type": "passport", "id_number": "---",
+                                    "issuing_country": "Singapore"}]},
+    )
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("passport" in p for p in exc.value.problems)
 
 
 # ---- share capital and Schedule 1 ------------------------------------------
