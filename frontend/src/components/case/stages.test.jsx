@@ -1850,9 +1850,11 @@ describe('CR Status', () => {
       cr_rejected: 'Rejected by CR', cr_unknown: 'Other CR status',
     }[code],
   })
+  const onRefresh = vi.fn()
   const renderIt = (over = {}) => renderRouted(
     <StageCrStatus caseRow={filed(over)} canRead onChanged={onChanged}
-                   onError={onError} onWarn={onWarn} onGo={vi.fn()} />)
+                   onRefresh={onRefresh} onError={onError} onWarn={onWarn}
+                   onGo={vi.fn()} />)
 
   it('says plainly that nobody has asked CR yet', () => {
     // The state every filed case is in until the scheduled job first runs, and
@@ -1940,8 +1942,13 @@ describe('CR Status', () => {
     await userEvent.click(screen.getByRole('button', { name: /Check with CR now/ }))
     await waitFor(() => expect(onWarn).toHaveBeenCalled())
     expect(onWarn.mock.calls.at(-1)[1]).toMatch(/Case no does not exist/)
-    // And the case is NOT re-read: nothing changed, and a refresh would redraw
-    // the whole stage for no reason under a banner the operator is reading.
+    // It must not claim CR was silent — CR answered, in words, and the title
+    // is what the operator reads first.
+    expect(onWarn.mock.calls.at(-1)[0]).not.toMatch(/did not answer/)
+    // It re-reads, because the time we last asked moved even though the status
+    // did not — otherwise the card goes on saying "Not yet checked with CR".
+    expect(onRefresh).toHaveBeenCalled()
+    // But it does NOT advance: nothing was unlocked.
     expect(onChanged).not.toHaveBeenCalled()
   })
 
