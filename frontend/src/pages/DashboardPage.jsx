@@ -42,20 +42,37 @@ import {
 const PAGE_SIZE = 50
 
 // "Action Required" vs "Pending" on the two stat cards: the split is who the
-// next move belongs to. Completed belongs to neither. Each tile IS the filter
-// for its own set, so the number and the rows can never disagree.
+// next move belongs to. Each tile IS the filter for its own set, so the number
+// and the rows can never disagree.
+//
+// `cr_rejected` IS ACTION REQUIRED, and it is the most urgent row on the
+// screen: CR refused a return the fee was already taken for, and a corrected
+// one has to be filed as a new case before the statutory window shuts.
 const ACTION_STATUSES = ['data_verification', 'client_verification', 'client_rejected',
-                         'signing', 'submission']
-const PENDING_STATUSES = ['awaiting_client']
+                         'signing', 'submission', 'cr_rejected']
 
-// LAST, after `completed`, and in neither stat tile. A closed case belongs to
-// nobody's queue: "Action Required" is work waiting on GSHK and "Pending" is
-// work waiting on a client, and a case the client stopped is neither. It stays
-// in the listing and stays filterable — closing ends the work, not the record —
-// so the badge column is how you include or exclude it.
+// Waiting on somebody who is not GSHK. The client, or the Companies Registry —
+// the three CR codes below are a queue at CR, which nobody here can shorten.
+// `cr_unknown` is NOT here: an answer nobody can read is something to look at,
+// not something to wait on, and putting it in a tile labelled Pending would
+// bury it. It stays filterable from the column like every other badge.
+const PENDING_STATUSES = ['awaiting_client', 'cr_not_checked', 'cr_pending',
+                          'cr_approved']
+
+// The order a case moves through them: our six stages, then CR's answer, then
+// closed. `completed` is gone (Levi 2026-09-16) — it was a word of ours
+// standing in for a decision only CR makes.
+//
+// `cr_registered` and `closed` are in NEITHER stat tile. A registered return
+// and an abandoned case are both finished, and "Action Required" is work
+// waiting on GSHK while "Pending" is work waiting on someone else. They stay in
+// the listing and stay filterable — finishing ends the work, not the record —
+// so the badge column is how you include or exclude them.
 const WORKFLOW_ORDER = [
   'data_verification', 'awaiting_client', 'client_verification',
-  'client_rejected', 'signing', 'submission', 'completed', 'closed',
+  'client_rejected', 'signing', 'submission',
+  'cr_not_checked', 'cr_pending', 'cr_approved', 'cr_registered',
+  'cr_rejected', 'cr_unknown', 'closed',
 ]
 
 const ANNIV_HINT =
@@ -301,7 +318,7 @@ export default function DashboardPage() {
                 onClick={() => toggleTile(ACTION_STATUSES, actionOn)}>
           <div className="stat-lbl">Action Required</div>
           <div className="stat-val stat-accent">{formatNumber(actionCount)}</div>
-          <div className="stat-sub">Data Verification · Client response · Signing · Submission</div>
+          <div className="stat-sub">Data Verification · Client response · Signing · Submission · CR rejection</div>
           <span className="stat-on-note">
             {actionOn ? 'Filtering — click to clear' : 'Click to filter'}
           </span>
@@ -311,7 +328,7 @@ export default function DashboardPage() {
                 onClick={() => toggleTile(PENDING_STATUSES, pendingOn)}>
           <div className="stat-lbl">Pending</div>
           <div className="stat-val" style={{ color: 'var(--indigo)' }}>{formatNumber(pendingCount)}</div>
-          <div className="stat-sub">Awaiting client response</div>
+          <div className="stat-sub">Awaiting the client, or the Companies Registry</div>
           <span className="stat-on-note">
             {pendingOn ? 'Filtering — click to clear' : 'Click to filter'}
           </span>

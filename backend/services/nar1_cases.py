@@ -3,6 +3,13 @@
 This module owns the client facts and the off-portal facts. It never writes a CR
 fact: tpsi_filings owns those, and nar1_case_status.derive() reads both to
 produce the badge.
+
+ONE EXCEPTION, and it is a deliberate one: the CR DOCUMENT STATUS (migration
+043) is stored on `nar1_cases`, not on `tpsi_filings`. A return filed on paper
+has a CR case number and no submitted filing row at all — writing "CR registered
+it" onto a row whose own stage says it was never sent would be a record that
+contradicts itself. `services/nar1_cr_status.py` is its only writer; this module
+only reads it back. `manual_receipt` — CR's own receipt — is the precedent.
 """
 import asyncio
 import re
@@ -11,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 
 from db.supabase import get_supabase
 from services import nar1_approvals, nar1_case_status, table_filters as tf
+from services.tpsi import doc_status
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.filings import form_status
 
@@ -546,7 +554,11 @@ _LIST_COLS = (
     "filing_id, filing_stage, verification_sent_at, client_response_at, "
     "client_approved, manual_receipt_present, manual_submitted_at, created_at, "
     "updated_at, days_to_anniversary, workflow_status, workflow_off_portal, "
-    "workflow_overdue, closed_at, closed_by_name, closed_reason"
+    "workflow_overdue, closed_at, closed_by_name, closed_reason, "
+    # CR's own words, for the one badge that cannot be labelled without them:
+    # `cr_unknown` renders what CR said, because that is the only informative
+    # thing there is about a status this portal does not recognise.
+    "cr_doc_status, cr_status_checked_at"
 )
 
 
@@ -751,6 +763,15 @@ def composite(case_id: str) -> dict:
         "client_approval": nar1_approvals.provenance(case),
         "workflow_status": nar1_case_status.derive(case, filing),
         "form_status": form_status(filing) if filing else None,
+        # THE THIRD VOCABULARY (Levi 2026-09-16), and it is not either of the
+        # other two: `workflow_status` is where the case is with GSHK,
+        # `form_status` is where the document got to in OUR chain, and this is
+        # what CR's own register says about a document it has already received.
+        # Stage 6 renders it; see services/tpsi/doc_status.
+        "cr_status": doc_status.describe(
+            case.get("cr_doc_status"), case.get("cr_doc_status_code")),
+        "cr_status_checked_at": case.get("cr_status_checked_at"),
+        "cr_document_ref_no": case.get("cr_document_ref_no"),
         "receipt": (filing or {}).get("receipt") or case.get("manual_receipt"),
     }
 

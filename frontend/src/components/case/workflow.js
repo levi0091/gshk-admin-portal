@@ -12,7 +12,74 @@ export const STAGE_LABELS = [
   'Signing',
   'Submission',
   'Confirmation',
+  // THE SIXTH STAGE (Levi 2026-09-16). The first five are OUR process and end
+  // at "we handed it over"; this one is CR's, and it begins there. A NAR1 that
+  // submitFormNar1 accepted and charged for is not yet on the register — CR
+  // vets it and can still refuse it.
+  'CR Status',
 ]
+
+/**
+ * The CR status the case is currently wearing.
+ *
+ * The backend sends `cr_status` as a composite object (see
+ * `services/tpsi/doc_status.describe`). A case read before migration 043, or
+ * one whose payload predates this field, gets the honest default rather than a
+ * blank: filed returns have always been in this state, nobody had asked CR.
+ */
+export function crStatus(c) {
+  const status = c?.cr_status
+  if (status && typeof status === 'object' && status.code) return status
+  return { code: 'cr_not_checked', label: 'Awaiting CR status',
+           cr_text: null, terminal: false }
+}
+
+/**
+ * The colour a CR answer is drawn in — one word, used by the stepper medallion
+ * and by the stage card's own rail so the two can never disagree.
+ *
+ * Five treatments over six codes: `cr_unknown` shares grey with
+ * `cr_not_checked` because neither tells you anything actionable, and the badge
+ * itself carries CR's own words to tell them apart. Adding a sixth colour for
+ * "CR said something we could not read" would spend a colour on a state whose
+ * whole content is the text beside it.
+ */
+export const CR_TONE = {
+  cr_not_checked: 'wait',
+  cr_pending: 'info',
+  cr_approved: 'warn',
+  cr_registered: 'ok',
+  cr_rejected: 'bad',
+  cr_unknown: 'wait',
+}
+
+/**
+ * What a CR answer MEANS for this case, in the operator's terms.
+ *
+ * The label says what CR called it; this says what to do about it. They are
+ * different jobs and a badge cannot do both.
+ */
+export const CR_MEANING = {
+  cr_not_checked:
+    'The return is with the Companies Registry. Nothing has asked CR what it '
+    + 'has done with it yet — the nightly check does that, or you can check now.',
+  cr_pending:
+    'CR has the return and has not decided. Nothing is needed from GSHK; the '
+    + 'nightly check will pick up the answer.',
+  cr_approved:
+    'CR has accepted the return and has not yet placed it on the register. '
+    + 'Nothing is needed from GSHK.',
+  cr_registered:
+    'The annual return is on the register. This case is finished.',
+  cr_rejected:
+    'CR will not register this return. The fee was already taken, so a '
+    + 'corrected return has to be filed as a new case — check what CR sent '
+    + 'before re-filing.',
+  cr_unknown:
+    'CR answered with a status this portal does not recognise. Its exact '
+    + 'wording is shown above; treat that as the answer and report it so the '
+    + 'status can be added.',
+}
 
 /** CR form stages that mean the snapshot exists and is usable. */
 const VALIDATED_STAGES = new Set([
@@ -70,13 +137,18 @@ export function reachedStage(c) {
   if (!c) return 1
   // A closed case has no reachable stage. `CaseWorkflowPage` renders the closed
   // panel instead of the stepper, so nothing asks — but this must not answer
-  // "5" to whatever does, because every button behind stage 5 writes.
+  // "6" to whatever does, because every button behind the later stages writes.
   if (isClosed(c)) return 0
   if (!isValidated(c)) return 1
   if (!(c.verification_sent_at && c.client_approved)) return 2
   if (!signedOff(c)) return 3
   if (!isSubmitted(c)) return 4
-  return 5
+  // Filing unlocks BOTH remaining stages at once, because they are two views of
+  // the same event: the receipt proves the return was delivered, and CR's
+  // status is what happened to it afterwards. There is no action between them
+  // to gate on, and locking stage 6 behind a "done" flag on stage 5 would hide
+  // a CR rejection behind a receipt nobody needs to read twice.
+  return 6
 }
 
 /**
@@ -124,9 +196,35 @@ export function stageDone(c, i) {
     case 2: return Boolean(c.client_approved)
     case 3: return signedOff(c)
     case 4: return isSubmitted(c)
-    case 5: return c.form_status?.code === 'registered'
+    // CONFIRMATION IS DONE WHEN THE RECEIPT EXISTS (Levi 2026-09-16: "when the
+    // workflow is completed and we get a receipt from CR portal, the progress
+    // bar is still indicating in-progress for confirmation stage").
+    //
+    // It used to read `form_status.code === 'registered'` — a stage NOTHING
+    // EVER WROTE, so step 5 was permanently orange on a case whose receipt was
+    // on screen above it. `registered` is now written (by the CR poller), but
+    // it belongs to stage 6: this stage's own work is that the return was
+    // delivered and the receipt recorded, and it was.
+    case 5: return isSubmitted(c)
+    // And this one is CR's. `cr_registered` is the single answer that means the
+    // statutory job is finished; every other CR answer, refusal included,
+    // leaves the stage un-ticked and coloured by `stageTone` below.
+    case 6: return crStatus(c).code === 'cr_registered'
     default: return false
   }
+}
+
+/**
+ * The colour of one stepper medallion, when the DATA decides it rather than our
+ * progress through the workflow. `null` everywhere but stage 6.
+ *
+ * This is the one place a step is not drawn from reached/done, and that is the
+ * point: the last step is not ours. An operator should be able to read the
+ * register's verdict off the progress bar without opening the stage.
+ */
+export function stageTone(c, i) {
+  if (i !== 6 || !c || !isSubmitted(c)) return null
+  return CR_TONE[crStatus(c).code] || 'wait'
 }
 
 /**

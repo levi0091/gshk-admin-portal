@@ -8,6 +8,7 @@ import StageClientVerification from './StageClientVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
+import StageCrStatus from './StageCrStatus.jsx'
 import { hongKongTodayISO } from '../../lib/anniversary.js'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn()
@@ -1754,26 +1755,47 @@ describe('Confirmation', () => {
   }
   // Inside a router: the stage no longer dead-ends — it offers a way back to
   // the company and to the case list, both of which navigate.
+  const onGo = vi.fn()
   const renderIt = (over = {}) => renderRouted(
-    <StageConfirmation caseRow={at({ receipt, ...over })} canRead onError={onError} />)
+    <StageConfirmation caseRow={at({ receipt, ...over })} onGo={onGo} />)
 
-  it('opens with a hero saying the statutory job is done', () => {
-    renderIt({ form_status: { code: 'registered', label: 'Registered' } })
-    expect(screen.getByText('NAR1 filed & confirmed by CR')).toBeInTheDocument()
-    expect(screen.getByText(/marked/)).toBeInTheDocument()
-  })
-
-  it('does not claim CR confirmed a filing CR has not confirmed', () => {
-    // Delivered is not registered. Saying "confirmed by CR" before CR has said
-    // so is the one claim this screen must not make.
-    renderIt({ form_status: { code: 'submitted', label: 'Submitted' } })
-    expect(screen.queryByText('NAR1 filed & confirmed by CR')).toBeNull()
+  it('opens with a hero saying the return was DELIVERED', () => {
+    renderIt({ form_status: { code: 'submitted', label: 'Filed with CR' } })
+    expect(screen.getByText('NAR1 filed with the Companies Registry')).toBeInTheDocument()
     expect(screen.getByText(/has been delivered/)).toBeInTheDocument()
   })
 
-  it('does not dead-end — it offers a way back to the work', () => {
+  it('NEVER claims CR registered a return, whatever the form stage says', () => {
+    // Delivered is not registered. This screen used to read
+    // `form_status.code === 'registered'` and print "filed & confirmed by CR"
+    // off it — a claim about the register made from our own filing ledger.
+    // Whether CR registered it is stage 6's answer and this stage does not make
+    // it on CR's behalf.
+    for (const code of ['submitted', 'registered']) {
+      const { unmount } = renderRouted(
+        <StageConfirmation caseRow={at({ receipt, form_status: { code } })} />)
+      expect(screen.queryByText(/confirmed by CR/)).toBeNull()
+      expect(screen.queryByText(/marked .*Completed/)).toBeNull()
+      unmount()
+    }
+  })
+
+  it('points at CR Status for what happened next', () => {
+    renderIt()
+    expect(screen.getByText(/What CR has done with it since/)).toBeInTheDocument()
+    expect(screen.getByText(/still has to register it/)).toBeInTheDocument()
+  })
+
+  it('does not dead-end — it offers the next stage and a way back', () => {
     renderIt()
     expect(screen.getByRole('button', { name: /View company profile/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Continue to CR Status/ })).toBeInTheDocument()
+  })
+
+  it('falls back to the case list when there is no stage to continue to', () => {
+    // `onGo` is the parent's; a caller that renders this stage on its own still
+    // needs a way out.
+    renderRouted(<StageConfirmation caseRow={at({ receipt })} />)
     expect(screen.getByRole('button', { name: /Back to Post-incorporation/ })).toBeInTheDocument()
   })
 
@@ -1789,29 +1811,153 @@ describe('Confirmation', () => {
     expect(screen.getByText(/Filed outside the portal/)).toBeInTheDocument()
   })
 
-  // The CR status check was REMOVED (Levi 2026-09-02). It could not do the job
-  // its own copy claimed: the result lived in useState and vanished on reload,
-  // nothing ever writes the `registered` stage it was looking for, and
-  // `_FINISHED` already counts `submitted`, so the case reads Completed from
-  // the moment the receipt exists. It also spent a CR AUTHENTICATION per press,
-  // and repeated CR auth failures lock the account.
+  // The CR status check was removed from THIS stage (Levi 2026-09-02) and it is
+  // not coming back here. It now lives on stage 6, where the answer has a
+  // column to persist into and a badge to change — the three reasons it was
+  // removed. This stage is the receipt, and it still makes no request.
   it('ends at the receipt and asks CR for nothing', async () => {
     renderIt()
-    expect(screen.queryByRole('button', { name: /Check CR status/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Check with CR now/ })).not.toBeInTheDocument()
     expect(screen.queryByText(/What CR holds now/)).not.toBeInTheDocument()
-    // The whole screen is now a read of the case. No request leaves it.
+    // The whole screen is a read of the case. No request leaves it.
     expect(get).not.toHaveBeenCalled()
-  })
-
-  it('says the case is Completed rather than sending the reader off to check', () => {
-    renderIt()
-    expect(screen.getByText(/issued the receipt below/)).toBeInTheDocument()
-    expect(screen.queryByText(/Check the CR document status/)).not.toBeInTheDocument()
   })
 
   it('still says plainly when there is no receipt to show', () => {
     renderIt({ receipt: null })
     expect(screen.getByText(/No receipt recorded/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6 · CR Status (Levi 2026-09-16)
+//
+// The first five stages are GSHK's process and end at "we handed it over".
+// This one is the Companies Registry's, and it begins there: a NAR1 that
+// submitFormNar1 accepted and charged for has been RECEIVED, not registered.
+// ---------------------------------------------------------------------------
+
+describe('CR Status', () => {
+  const filed = over => at({
+    form_status: { code: 'submitted', label: 'Filed with CR', failed: false, faults: [] },
+    ...over,
+  })
+  const status = (code, cr_text = null, terminal = false) => ({
+    code, cr_text, terminal,
+    label: {
+      cr_not_checked: 'Awaiting CR status', cr_pending: 'Pending at CR',
+      cr_approved: 'Approved by CR', cr_registered: 'Registered by CR',
+      cr_rejected: 'Rejected by CR', cr_unknown: 'Other CR status',
+    }[code],
+  })
+  const renderIt = (over = {}) => renderRouted(
+    <StageCrStatus caseRow={filed(over)} canRead
+                   onChanged={onChanged} onError={onError} onGo={vi.fn()} />)
+
+  it('says plainly that nobody has asked CR yet', () => {
+    // The state every filed case is in until the nightly job first runs, and
+    // the one Levi asked for as the pre-batch-job fallback. NOT "Pending" —
+    // CR has not said that, and nothing may report an answer it never received.
+    renderIt({ cr_status: status('cr_not_checked') })
+    expect(screen.getByText('Awaiting CR status')).toBeInTheDocument()
+    expect(screen.getByText('Not yet checked with CR')).toBeInTheDocument()
+  })
+
+  it('quotes CR\'s own words beside our reading of them', () => {
+    // An operator ringing CR quotes what CR said, not what we decided it meant.
+    renderIt({ cr_status: status('cr_pending', 'Pending') })
+    expect(screen.getByText('Pending at CR')).toBeInTheDocument()
+    expect(screen.getByText(/reports this document as/)).toBeInTheDocument()
+    expect(screen.getByText('“Pending”')).toBeInTheDocument()
+  })
+
+  it('shows CR\'s wording even when the status means nothing to us', () => {
+    // On `cr_unknown` that line is the only thing on screen that means
+    // anything.
+    renderIt({ cr_status: status('cr_unknown', 'Vetting/2') })
+    expect(screen.getByText('“Vetting/2”')).toBeInTheDocument()
+    expect(screen.getByText(/does not recognise/)).toBeInTheDocument()
+  })
+
+  it('says what a REJECTION means for the money and for the next step', () => {
+    // The fee was already taken. An operator must not read this as "re-file
+    // for free".
+    renderIt({ cr_status: status('cr_rejected', 'Rejected', true) })
+    expect(screen.getByText(/fee was already taken/)).toBeInTheDocument()
+    expect(screen.getByText(/new case/)).toBeInTheDocument()
+  })
+
+  it('stops offering the check once CR has finished with the return', () => {
+    renderIt({ cr_status: status('cr_registered', 'Registered', true) })
+    expect(screen.queryByRole('button', { name: /Check with CR now/ })).toBeNull()
+    expect(screen.getByText(/no longer checked/)).toBeInTheDocument()
+  })
+
+  it('offers the check while CR has not decided', () => {
+    renderIt({ cr_status: status('cr_pending', 'Pending') })
+    expect(screen.getByRole('button', { name: /Check with CR now/ })).toBeInTheDocument()
+    expect(screen.getByText(/Checked automatically each day/)).toBeInTheDocument()
+    // The press costs a CR authentication but no money, and an operator about
+    // to press a button on a CR screen has learnt to check.
+    expect(screen.getByText(/free of charge/)).toBeInTheDocument()
+  })
+
+  it('asks the backend and re-reads the case rather than patching local state', async () => {
+    // The answer changes the workflow badge in the header and the medallion in
+    // the stepper, and both are derived server-side.
+    post.mockResolvedValueOnce({ cr_status: status('cr_registered', 'Registered', true) })
+    renderIt({ cr_status: status('cr_pending', 'Pending') })
+    await userEvent.click(screen.getByRole('button', { name: /Check with CR now/ }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/tpsi/cases/c1/refresh-status', {}))
+    expect(onChanged).toHaveBeenCalled()
+  })
+
+  it('reports a refusal through the page banner, not beside the button', async () => {
+    post.mockRejectedValueOnce(Object.assign(new Error('CR did not answer'),
+                                             { status: 503, kind: 'unreachable' }))
+    renderIt({ cr_status: status('cr_pending', 'Pending') })
+    await userEvent.click(screen.getByRole('button', { name: /Check with CR now/ }))
+    await waitFor(() => expect(onError).toHaveBeenCalled())
+    const described = onError.mock.calls.at(-1)[0]
+    expect(described.message).toMatch(/CR did not answer/)
+  })
+
+  it('withholds the check from a role without tpsi:read', () => {
+    renderRouted(
+      <StageCrStatus caseRow={filed({ cr_status: status('cr_pending') })}
+                     canRead={false} onChanged={onChanged} onError={onError} />)
+    expect(screen.queryByRole('button', { name: /Check with CR now/ })).toBeNull()
+    expect(screen.getByText(/tpsi:read/)).toBeInTheDocument()
+  })
+
+  it('shows when CR last answered, because a badge has an age', () => {
+    // A green badge from three weeks ago and one from this morning are not the
+    // same claim.
+    renderIt({ cr_status: status('cr_registered', 'Registered', true),
+               cr_status_checked_at: '2026-09-16T02:13:00Z' })
+    expect(screen.getByText(/Last checked with CR/)).toBeInTheDocument()
+  })
+
+  it('shows CR\'s document reference when one has been learnt', () => {
+    renderIt({ cr_status: status('cr_pending', 'Pending'),
+               cr_document_ref_no: 'NAR1-2026-000123' })
+    expect(screen.getByText('NAR1-2026-000123')).toBeInTheDocument()
+  })
+
+  it('does not dead-end, and does not repeat the header\'s company link', () => {
+    // With the permission tag and the check button, a fourth control wrapped
+    // the bar at 1180px — and "Company profile" is already in the page header
+    // three inches above. This stage is about the register, not the company.
+    renderIt({ cr_status: status('cr_registered', 'Registered', true) })
+    expect(screen.getByRole('button', { name: /Back to Post-incorporation/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /View company profile/ })).toBeNull()
+  })
+
+  it('renders the honest default for a case payload with no CR status at all', () => {
+    // A case read before migration 043. "Nobody has asked" is true of it.
+    renderIt()
+    expect(screen.getByText('Awaiting CR status')).toBeInTheDocument()
   })
 })
 

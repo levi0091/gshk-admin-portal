@@ -12,6 +12,7 @@ import StageClientVerification from '../components/case/StageClientVerification.
 import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
+import StageCrStatus from '../components/case/StageCrStatus.jsx'
 import {
   STAGE_LABELS, reachedStage, isValidated, isSubmitted, isClosed, describeError,
   persistedFailure,
@@ -324,7 +325,16 @@ export default function CaseWorkflowPage() {
       </div>
 
       {/* Two vocabularies, never merged (D-6): where the case is with GSHK, and
-          what CR has done with the filing. */}
+          what CR has done with the filing.
+
+          The workflow badge now ENDS in CR's answer rather than in a word of
+          ours — `completed` is gone (Levi 2026-09-16) — so on a filed case the
+          two badges are close relatives and the header reads "Registered by CR
+          · Registered by CR". That is not a duplication to tidy away: the left
+          one is the CASE, which the manual path drives without a submitted
+          filing at all, and the right one is the DOCUMENT in our own chain. On
+          an off-portal filing they still differ, and that difference is the
+          whole reason D-6 keeps them apart. */}
       <div className="live-strip mb-16">
         <span className="ls-key">Workflow</span>
         <WorkflowBadge status={c.workflow_status} />
@@ -449,7 +459,10 @@ export default function CaseWorkflowPage() {
           <StageSubmission {...stageProps} canSubmit={canSubmit} />
         )}
         {current === 5 && (
-          <StageConfirmation caseRow={c} canRead={canReadTpsi} onError={setFailure} />
+          <StageConfirmation caseRow={c} onGo={goTo} />
+        )}
+        {current === 6 && (
+          <StageCrStatus {...stageProps} canRead={canReadTpsi} />
         )}
         </>
       )}

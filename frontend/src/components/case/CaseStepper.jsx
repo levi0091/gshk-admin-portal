@@ -1,4 +1,4 @@
-import { STAGE_LABELS, reachedStage, stageDone } from './workflow.js'
+import { STAGE_LABELS, crStatus, reachedStage, stageDone, stageTone } from './workflow.js'
 
 const Tick = () => (
   <svg width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2.5"
@@ -16,12 +16,18 @@ const Padlock = () => (
 )
 
 /**
- * The five-stage progress gate (wireframe_v11 s20).
+ * The six-stage progress gate (wireframe_v11 s20, plus CR Status).
  *
  * A locked stage is not merely unstyled — it is unreachable. The gate is what
  * stops a return being signed before the client approved it or filed before it
  * was signed, so it refuses the navigation rather than trusting the button to
  * be hidden.
+ *
+ * STAGE 6 IS COLOURED BY CR'S ANSWER, not by our progress. Every other
+ * medallion says where WE got to; this one says what the register decided, so
+ * the verdict is readable off the progress bar without opening the stage. It is
+ * the only place data drives the chrome here, and `workflow.stageTone` is the
+ * one function that decides it.
  */
 export default function CaseStepper({ caseRow, step, onGo, onLocked }) {
   const reached = reachedStage(caseRow)
@@ -33,6 +39,7 @@ export default function CaseStepper({ caseRow, step, onGo, onLocked }) {
         const done = stageDone(caseRow, n)
         const unlocked = n <= reached
         const active = n === step
+        const tone = stageTone(caseRow, n)
 
         let cls = 'step'
         if (done) cls += ' done'
@@ -40,10 +47,20 @@ export default function CaseStepper({ caseRow, step, onGo, onLocked }) {
         else if (unlocked) cls += ' avail'
         else cls += ' locked'
         if (unlocked) cls += ' clickable'
+        // AFTER the four above, so its colour wins over `avail`/`active` on a
+        // stage whose state is CR's to report. `done` still wins over it —
+        // `cr_registered` is the tone AND the tick, and drawing a green
+        // medallion without the tick would make the finished case the one
+        // state with no tick anywhere.
+        if (tone && !done) cls += ` tone-${tone}`
 
-        const state = done ? 'Done'
-          : active ? 'In progress'
-            : unlocked ? 'Available' : 'Locked'
+        // Stage 6 states what CR said, not where we are in it. "In progress" on
+        // a rejected return would be a screen contradicting its own badge.
+        const state = n === 6 && unlocked
+          ? crStatus(caseRow).label
+          : done ? 'Done'
+            : active ? 'In progress'
+              : unlocked ? 'Available' : 'Locked'
 
         return (
           <div

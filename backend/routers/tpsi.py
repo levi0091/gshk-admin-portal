@@ -17,12 +17,16 @@ from pydantic import BaseModel, ConfigDict
 from middleware.auth import require_permission, require_super_admin
 from db.supabase import get_supabase
 from services import audit_events as ev
-from services import nar1_cases
+from services import nar1_cases, nar1_cr_status
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services import audit_subject
 from services.tpsi import credentials, filings, reads, shared_credentials
+# ALIASED, because this router already has a route handler called `doc_status`
+# (GET /tpsi/doc-status) and the bare name would be shadowed by it at
+# definition time — silently, and only at the one call site below.
+from services.tpsi import doc_status as cr_doc_status
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
 from services.tpsi.forms.cr_vocabularies import default_capacity
 # Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
@@ -550,6 +554,78 @@ async def doc_status(
         metadata={"results": len(rows)},
     )
     return rows
+
+
+@router.post("/cases/{case_id}/refresh-status")
+async def refresh_cr_status(
+    case_id: str, user=Depends(require_permission("tpsi", "read")),
+):
+    """Ask CR what it has done with this case's return, and record the answer.
+
+    THE BUTTON THAT WAS REMOVED, PUT BACK BECAUSE ITS THREE OBJECTIONS ARE NOW
+    FALSE. `StageConfirmation` carried a "Check CR status" control until
+    2026-09-02, removed because (a) nothing persisted — the result lived in
+    `useState`; (b) nothing ever reached `registered`, since no code path wrote
+    it; and (c) the case already read Completed, so there was no state left to
+    advance. Migration 043 gives the answer a home, `filings.mark_registered`
+    writes the stage, and `completed` is gone — the case now sits on CR's own
+    answer, which starts at "not checked".
+
+    The fourth objection stands and is answered differently: this spends a CR
+    AUTHENTICATION, and repeated CR auth failures lock the account. So the
+    NORMAL path is `jobs/poll_cr_status`, which logs in once for the whole book;
+    this is the exception, for an operator who needs the answer now.
+
+    `tpsi:read`, exactly as `GET /tpsi/doc-status` and `GET /tpsi/balance` are:
+    the level reflects the effect on CR and on money, and this has neither.
+    Precedent for a case-subject route gated on a TPSI module is
+    `POST /cases/{id}/manual-submit`, which takes `tpsi:submit`.
+
+    POST, not GET, because it writes: a GET that changes a statutory record is
+    a GET a mail-security gateway or a browser prefetch would fire for you.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    filing = nar1_cases.current_filing(case_id)
+
+    # Refused BEFORE a CR session is opened, and named. "Nothing happened" on a
+    # case that was never filed is indistinguishable from a broken button.
+    blocked = nar1_cr_status.due_for_check(case, filing)
+    if blocked:
+        raise HTTPException(409, {
+            "message": f"this case cannot be checked with CR — {blocked}",
+            "reason": "not_checkable",
+        })
+
+    try:
+        client = client_for(user)
+        result = nar1_cr_status.refresh(client, case, filing)
+    except Exception as exc:
+        raise _handle(exc)
+
+    await audit_auth(user, client)
+    await nar1_cr_status.record(
+        result, case,
+        user_id=user["id"], user_display_name=user["display_name"],
+    )
+
+    return {
+        "cr_status": cr_doc_status.describe(result.get("cr_text"),
+                                            result.get("code")),
+        "checked": result.get("checked", False),
+        # Present when CR answered but the reply could not be attributed to THIS
+        # return — several documents under one case number. Not an error and not
+        # a status: nothing was written, and the screen says why rather than
+        # showing a badge nobody can act on.
+        "skipped": result.get("skipped"),
+        "changed": result.get("changed", False),
+        "previous": result.get("previous"),
+        "document_ref_no": result.get("document_ref_no"),
+        "checked_at": result.get("checked_at"),
+    }
 
 
 class PrepareIn(BaseModel):
