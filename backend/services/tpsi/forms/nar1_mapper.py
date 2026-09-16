@@ -863,7 +863,10 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
     persons = graph["persons"]
     addresses = graph["addresses"]
     ids = graph["identity_documents"]
-    ro = graph.get("registered_address")
+    # The filing company's registered office is deliberately NOT read here. It
+    # was, once, to stand in for the company secretary's own address, and that
+    # is the defect this function no longer has -- see the secretary loop.
+    # Deleted rather than left unused so nobody wires it back in.
 
     ind_dir, corp_dir, res_dir, ind_sec, corp_sec = [], [], [], [], []
 
