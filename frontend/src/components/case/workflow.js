@@ -153,6 +153,39 @@ const CR_REFUSAL_HINTS = {
 }
 
 /**
+ * What to do when CR could not be USED at all. Keyed by `_handle`'s `kind`,
+ * which the backend sets from `TpsiUnavailableError`.
+ *
+ * Only ONE of these is the test-service window, and it is not the one that
+ * looks like it. A timeout never means "outside the window": CR's test login
+ * and balance endpoints answer 24/7 and only the FORM APIs are windowed, so a
+ * call that never completed did not hit a closed one. Saying otherwise sent a
+ * PROD operator away to wait until Monday for a network fault.
+ */
+const CR_UNAVAILABLE_HINTS = {
+  test_window:
+    'This deployment files against the Companies Registry TEST service, which '
+    + 'answers Monday to Friday, 10:00–16:00 Hong Kong time. Try again inside '
+    + 'that window.',
+  unreachable:
+    'The request to the Companies Registry did not complete — nothing was '
+    + 'filed and nothing was charged. This is a connection fault, not a '
+    + 'closed service window, so retrying shortly is reasonable. If it keeps '
+    + 'happening, check CR Credentials and whether CR itself is up.',
+  service_error:
+    'The Companies Registry answered with an error of its own rather than a '
+    + 'refusal of this return. Nothing was filed and nothing was charged. Try '
+    + 'again shortly; if it persists it is CR-side.',
+  malformed:
+    'The Companies Registry answered with something this portal could not '
+    + 'read. Nothing was filed and nothing was charged. Do not keep retrying — '
+    + 'report it, because the reply needs looking at.',
+  default:
+    'The Companies Registry could not be used. Nothing was filed and nothing '
+    + 'was charged.',
+}
+
+/**
  * A CR refusal recorded on the case, in `describeError`'s shape — or null.
  *
  * ONE ERROR SURFACE, NOT TWO (Levi 2026-08-31). A rejection used to be drawn
@@ -354,11 +387,21 @@ export function describeError(err) {
         hint: 'The Companies Registry could not be reached. Nothing was filed and nothing was charged. If this repeats, stop — a repeated login failure is what locks a CR account.',
         retry: false,
       }
+    // CR WAS NOT USABLE. Which is not one situation, and the remedies differ.
+    //
+    // This used to offer the test-service window unconditionally, so a PROD
+    // operator whose call timed out was told to try again between 10:00 and
+    // 16:00 on a weekday — advice for a window their deployment does not have.
+    // The backend says which case this is (`TpsiUnavailableError.kind`),
+    // because nothing on this side can: TPSI_ENV overrides APP_ENV so that
+    // PROD may file against CR test during the pilot, and then the window DOES
+    // apply to a portal whose header says nothing about being a test one.
     case 503:
       return {
         message,
         problems,
-        hint: 'The CR test service answers Monday to Friday, 10:00–16:00 Hong Kong time. Try again inside that window.',
+        kind: err?.kind || null,
+        hint: CR_UNAVAILABLE_HINTS[err?.kind] || CR_UNAVAILABLE_HINTS.default,
         retry: true,
       }
     default:

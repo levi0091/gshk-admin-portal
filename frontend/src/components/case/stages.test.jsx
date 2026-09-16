@@ -244,7 +244,10 @@ describe('Data Verification', () => {
     // message now goes.
     const user = userEvent.setup()
     const onError = vi.fn()
-    post.mockRejectedValue(Object.assign(new Error('outside the window'), { status: 503 }))
+    // `kind` is what makes it a window rather than any other CR outage — the
+    // backend decides that, because TPSI_ENV can point PROD at CR test.
+    post.mockRejectedValue(Object.assign(
+      new Error('outside the window'), { status: 503, kind: 'test_window' }))
     renderIt({ form_status: { code: 'draft' }, filing_id: null }, { onError })
     await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
     await waitFor(() => expect(onError).toHaveBeenCalledWith(

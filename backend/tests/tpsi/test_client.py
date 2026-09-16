@@ -132,8 +132,37 @@ def test_network_failure_raises_unavailable():
 
     c = _client(handler)
     c._token_cache = "TOK"
-    with pytest.raises(errors.TpsiUnavailableError):
+    with pytest.raises(errors.TpsiUnavailableError) as exc:
         c.post_soap("/tpsi/enquireDepositAccount", "<x/>")
+    # NOT the service window, and it must not be reported as one. CR's test
+    # login and balance endpoints answer 24/7 -- only the FORM APIs are
+    # windowed -- so a call that never completed did not hit a closed window.
+    assert exc.value.kind == "unreachable"
+
+
+def test_a_5xx_with_no_fault_names_the_window_only_on_the_test_host(monkeypatch):
+    """`cfg.env`, not APP_ENV. The window belongs to CR's TEST service, and
+    TPSI_ENV deliberately lets a PROD deployment run against it."""
+    def handler(request):
+        return httpx.Response(500, content=b"<html>gateway</html>")
+
+    # The host has to move with the env: `_check_env_matches_host` refuses a
+    # crossed pair, which is the guard that stops a "test" deployment filing
+    # real returns.
+    hosts = {"test": "https://apitest.cr.gov.hk",
+             "prod": "https://e-services.cr.gov.hk"}
+    for env, expected in (("test", "test_window"), ("prod", "service_error")):
+        cfg.get_config.cache_clear()
+        monkeypatch.setenv("TPSI_ENV", env)
+        monkeypatch.setenv("TPSI_BASE_URL", hosts[env])
+        monkeypatch.setenv("APP_ENV", "prod" if env == "prod" else "dev")
+        c = _client(handler)
+        c._token_cache = "TOK"
+        with pytest.raises(errors.TpsiUnavailableError) as exc:
+            c.post_soap("/tpsi/validateFormNar1", "<x/>")
+        assert exc.value.kind == expected, env
+        assert ("10:00-16:00" in str(exc.value)) is (env == "test"), env
+    cfg.get_config.cache_clear()
 
 
 def test_tls_verify_follows_config(monkeypatch):

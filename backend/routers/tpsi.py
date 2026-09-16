@@ -296,7 +296,13 @@ def _handle(exc: Exception) -> HTTPException:
     if isinstance(exc, TpsiAuthError):
         return HTTPException(502, str(exc))
     if isinstance(exc, TpsiUnavailableError):
-        return HTTPException(503, str(exc))
+        # `kind` rather than a bare string: the screen must not offer "wait for
+        # the Mon-Fri window" to a PROD operator whose call simply timed out.
+        # See TpsiUnavailableError for why APP_ENV cannot answer this.
+        return HTTPException(503, {
+            "message": str(exc),
+            "kind": getattr(exc, "kind", "unreachable"),
+        })
     if isinstance(exc, (TpsiError, RuntimeError)):
         return HTTPException(502, str(exc))
     raise exc

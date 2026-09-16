@@ -1698,8 +1698,26 @@ def test_a_closed_account_is_treated_like_a_locked_one():
 def test_a_shut_service_window_stays_a_503_and_is_retryable():
     """Outside Mon-Fri 10:00-16:00 HKT nothing is wrong with the return. A 502
     would tell the operator to go and fix a form that is fine."""
-    http = _handle_for_test(TpsiUnavailableError("outside the service window"))
+    http = _handle_for_test(
+        TpsiUnavailableError("outside the service window", kind="test_window"))
     assert http.status_code == 503
+    assert http.detail["kind"] == "test_window"
+
+
+def test_a_503_carries_WHY_cr_was_unusable_not_just_that_it_was():
+    """The screen picks its remedy from this. It offered "wait for the Mon-Fri
+    window" to a PROD operator whose call had simply timed out -- advice for a
+    window their deployment does not have.
+
+    It cannot be worked out on the frontend: TPSI_ENV overrides APP_ENV so that
+    PROD may file against CR TEST during the pilot, and then a portal whose
+    header says nothing about being a test one IS behind the window.
+    """
+    http = _handle_for_test(
+        TpsiUnavailableError("cannot reach TPSI: The read operation timed out"))
+    assert http.status_code == 503
+    assert http.detail["kind"] == "unreachable"
+    assert set(http.detail) == {"message", "kind"}
 
 
 def test_faults_never_leak_a_credential():

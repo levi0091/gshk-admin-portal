@@ -182,11 +182,41 @@ describe('describeError — four failures, four different actions', () => {
     expect(d.hint).toMatch(/do not simply retry/i)
   })
 
-  it('explains the CR TEST window on a 503, and allows a later retry', () => {
-    const d = describeError(err(503))
+  it('explains the CR TEST window only when the backend says that is the cause', () => {
+    const d = describeError(
+      Object.assign(new Error('boom'), { status: 503, kind: 'test_window' }))
     expect(d.retry).toBe(true)
     expect(d.hint).toMatch(/10:00–16:00/)
     expect(d.hint).toMatch(/Monday to Friday/)
+  })
+
+  it('does NOT offer the test window for a timeout', () => {
+    // The defect this guards: a PROD operator whose signing call timed out was
+    // told to try again between 10:00 and 16:00 on a weekday — advice for a
+    // window their deployment does not have. A timeout is never the window
+    // anyway: CR's test login and balance answer 24/7, only the FORM APIs are
+    // windowed, so a call that never completed did not hit a closed one.
+    const d = describeError(Object.assign(
+      new Error('cannot reach TPSI: The read operation timed out'),
+      { status: 503, kind: 'unreachable' }))
+    expect(d.retry).toBe(true)
+    expect(d.hint).not.toMatch(/Monday to Friday/)
+    expect(d.hint).not.toMatch(/10:00/)
+    expect(d.hint).toMatch(/nothing was filed and nothing was charged/i)
+  })
+
+  it('does not invent a window for a 503 whose kind is unknown', () => {
+    const d = describeError(err(503))
+    expect(d.retry).toBe(true)
+    expect(d.hint).not.toMatch(/Monday to Friday/)
+    expect(d.hint).toMatch(/nothing was filed and nothing was charged/i)
+  })
+
+  it('tells the operator NOT to retry a reply CR sent that we could not read', () => {
+    const d = describeError(
+      Object.assign(new Error('malformed response from TPSI'),
+        { status: 503, kind: 'malformed' }))
+    expect(d.hint).toMatch(/Do not keep retrying/i)
   })
 
   it('says something useful for an error with no status at all', () => {
@@ -339,7 +369,11 @@ describe('describeError — CR refusals', () => {
   })
 
   it('still explains a shut CR window as a window, not a bad return', () => {
-    const d = describeError(Object.assign(new Error('unavailable'), { status: 503 }))
+    // The window is still named — but only when the BACKEND says the window is
+    // what happened. It is the one thing this side cannot work out: TPSI_ENV
+    // overrides APP_ENV so PROD can file against CR test during the pilot.
+    const d = describeError(Object.assign(
+      new Error('unavailable'), { status: 503, kind: 'test_window' }))
     expect(d.hint).toMatch(/10:00–16:00/)
     expect(d.retry).toBe(true)
   })
