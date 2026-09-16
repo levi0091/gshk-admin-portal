@@ -47,14 +47,31 @@ BODY_CORPORATE_SIGNATORY = {
     "name": "Get Started HK Limited",
     "capacity": "Director of the Company Secretary (Body Corporate)",
     "person_id": None,
+    # selectAssoBrNo — the body corporate's own BR. Stated here rather than
+    # derived from the graph so that a test overriding `officers` (which
+    # graph() replaces wholesale) does not lose it and fail on a signatory
+    # refusal it was never about.
+    "br_no": "T0001139",
     "date": None,
     "is_corporate": True,
+}
+
+
+#: The human who signs FOR that body corporate. CR requires one and checks it
+#: (verified against the test register 2026-09-16): a body-corporate return
+#: carries associatedPersonId / associatedPersonName naming a real e-Service
+#: account, and refuses the return without them. Tests that are not about the
+#: signatory state one explicitly, exactly as they do the signatory itself.
+SIGNING_IDENTITY = {
+    "eservice_user_id": "T260727100116D",
+    "person_name": "DIRECTOR, CGAHCHBAABBG",
 }
 
 
 def mapped(g, *, year=2026, **kw):
     """map_entity() with the signatory stated, for tests about anything else."""
     kw.setdefault("signatory", BODY_CORPORATE_SIGNATORY)
+    kw.setdefault("signing_identity", SIGNING_IDENTITY)
     return nar1_mapper.map_entity(g, year=year, **kw)
 
 
@@ -273,16 +290,30 @@ def test_an_explicit_signatory_of_unstated_kind_still_needs_selectpersonid():
 
 def test_an_explicit_body_corporate_signatory_needs_no_selectpersonid():
     """Worksheet remark: "Signatory User ID (Empty if sign by Body Corporate)".
-    Saying so explicitly is the only way to omit the id without a problem."""
+
+    Correct, and INCOMPLETE — which is what a live PROD filing cost us on
+    2026-09-16. Verified against CR's test register the same day: selectPersonId
+    stays absent AND the human signing for the body corporate is named in
+    selectAssoBrNo / associatedPersonId / associatedPersonName /
+    associatedCapacityDesc. Emitting the name and capacity alone is refused with
+    "Please check selectPersonId field." — a message about the one element that
+    must stay empty.
+    """
     data = nar1_mapper.map_entity(
         graph(), year=2026,
         signatory={"name": "HOLDCO LIMITED",
                    "capacity": "Director of the Company Secretary "
                                "(Body Corporate)",
-                   "person_id": None, "date": None, "is_corporate": True},
+                   "person_id": None, "br_no": "12345678",
+                   "date": None, "is_corporate": True},
+        signing_identity=SIGNING_IDENTITY,
     )
     assert data["selectPersonName"] == "HOLDCO LIMITED"
     assert "selectPersonId" not in data
+    assert data["selectAssoBrNo"] == "12345678"
+    assert data["associatedPersonId"] == SIGNING_IDENTITY["eservice_user_id"]
+    assert data["associatedPersonName"] == SIGNING_IDENTITY["person_name"]
+    assert data["associatedCapacityDesc"] == "Director"
 
 
 def test_the_committed_capacity_vocabularies_are_crs_worksheet():
@@ -367,11 +398,18 @@ def test_a_body_corporate_signing_with_a_body_corporate_capacity_is_accepted():
         signatory={"name": "Get Started HK Limited",
                    "capacity": "Company Secretary of the Company Secretary "
                                "(Body Corporate)",
-                   "person_id": None, "date": None, "is_corporate": True},
+                   "person_id": None, "br_no": "67169839",
+                   "date": None, "is_corporate": True},
+        signing_identity=SIGNING_IDENTITY,
     )
     assert data["selectCapacityDesc"] == ("Company Secretary of the Company "
                                           "Secretary (Body Corporate)")
     assert "selectPersonId" not in data
+    # The signing human's OWN capacity is the half before " of the ", and CR
+    # checks the pair: sending "Director" against a "Company Secretary of the
+    # ..." selection is refused with "Capcity is not matched between associate
+    # and selected" (CR's spelling).
+    assert data["associatedCapacityDesc"] == "Company Secretary"
 
 
 def test_a_return_with_nobody_to_sign_it_is_a_mapping_error():

@@ -280,6 +280,12 @@ def _prepare_patches(**overrides):
         # Default: the case has no filing yet, so prepare opens one.
         "current": MagicMock(return_value=None),
         "rebuild": MagicMock(return_value={"id": "f9", "stage": "draft"}),
+        # The signing user's own CR identity, filed as associatedPersonId /
+        # associatedPersonName on a body-corporate return. Mocked at the
+        # boundary like every other collaborator so no test here reaches
+        # Supabase — without it every prepare test hits the credential store.
+        "identity": MagicMock(return_value={"eservice_user_id": "EUSER",
+                                            "person_name": "CHAN, TAI MAN"}),
     }
     defaults.update(overrides)
     return defaults
@@ -304,6 +310,9 @@ def _with_prepare(p):
         patch("routers.tpsi.nar1_cases.current_filing", new=p["current"]))
     stack.enter_context(
         patch("routers.tpsi.filings.rebuild_draft", new=p["rebuild"]))
+    stack.enter_context(
+        patch("routers.tpsi.credentials.load_signatory_identity",
+              new=p["identity"]))
     return stack
 
 
@@ -547,6 +556,14 @@ def test_prepare_survives_an_audit_failure(client):
             patch("routers.tpsi.nar1_cases.blocking_filing", new=p["blocking"]))
         stack.enter_context(
             patch("routers.tpsi.nar1_cases.get_case", new=p["case"]))
+        # This test builds its own stack rather than using _with_prepare, so it
+        # must mock the credential store itself. Unmocked, prepare's read of the
+        # signing identity hits db.supabase and raises for want of a .env, and
+        # _handle turns that into a 502 — which would make this test report an
+        # audit-swallow failure that never happened.
+        stack.enter_context(
+            patch("routers.tpsi.credentials.load_signatory_identity",
+                  new=p["identity"]))
         stack.enter_context(patch("services.audit_service.get_supabase",
                                   side_effect=RuntimeError("audit down")))
         response = client.post("/tpsi/filings/prepare", headers=H,
@@ -617,6 +634,13 @@ def test_prepare_drives_the_real_mapper_not_just_a_mock(client):
             patch("routers.tpsi.nar1_cases.blocking_filing", new=p["blocking"]))
         stack.enter_context(
             patch("routers.tpsi.nar1_cases.get_case", new=p["case"]))
+        # Mocked at the boundary, like every other collaborator here: the point
+        # of this test is that the REAL mapper's problem list reaches the
+        # response, and an unmocked credential read would 502 before the mapper
+        # ever ran — hiding exactly what this test exists to prove.
+        stack.enter_context(
+            patch("routers.tpsi.credentials.load_signatory_identity",
+                  new=p["identity"]))
         response = client.post("/tpsi/filings/prepare", headers=H,
                                json={"entity_id": "e1", "nar1_case_id": "c1"})
     assert response.status_code == 400

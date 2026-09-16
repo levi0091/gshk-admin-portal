@@ -66,7 +66,8 @@ def _party_name(row: dict, persons: dict, entities: dict) -> str | None:
 
 
 def summarise(graph: dict, *, year: int | None = None,
-              signatory_capacity: str | None = None) -> dict:
+              signatory_capacity: str | None = None,
+              signing_identity: dict | None = None) -> dict:
     """The card's rows, plus whether this company can be filed at all.
 
     `signatory_capacity` is the operator's stored choice on the case. It is fed
@@ -126,8 +127,15 @@ def summarise(graph: dict, *, year: int | None = None,
 
     problems: list[str] = []
     try:
+        # `signing_identity` is the VIEWER's own CR identity, for the same
+        # reason `signatory_capacity` is the case's stored choice: the verdict
+        # must describe the return as it would actually be prepared. A body
+        # corporate signs through a named human, so without it every
+        # GSHK-managed company would report "no e-Service account stored"
+        # forever — including for the operators who have one.
         nar1_mapper.map_entity(graph, year=year,
-                               signatory_capacity=signatory_capacity)
+                               signatory_capacity=signatory_capacity,
+                               signing_identity=signing_identity)
     except nar1_mapper.MappingError as exc:
         problems = list(exc.problems)
     except Exception as exc:  # noqa: BLE001

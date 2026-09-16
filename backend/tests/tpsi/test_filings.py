@@ -327,6 +327,36 @@ def test_declared_signatory_id_is_none_when_no_person_is_named(xml):
     assert filings.declared_signatory_id(xml) is None
 
 
+_ASSOCIATED = VALIDATED_XML.replace(
+    "<cr:formCode>NAR1</cr:formCode>",
+    "<cr:formCode>NAR1</cr:formCode>"
+    "<cr:associatedPersonId>EUSER-THEM</cr:associatedPersonId>",
+)
+
+
+def test_declared_signatory_id_reads_the_associated_person_too():
+    """The BODY-CORPORATE path names the signer here, not in selectPersonId.
+
+    Until 2026-09-16 this read selectPersonId alone, and the comment above was
+    right that the guard "never fires" for a GSHK client — because the
+    body-corporate block named nobody at all, which is also why CR refused every
+    such return. Now that it names the signing human, a guard still reading only
+    the old element would be blind on the one path every real client uses.
+    """
+    assert filings.declared_signatory_id(_ASSOCIATED) == "EUSER-THEM"
+
+
+def test_sign_refuses_an_associated_signatory_that_is_someone_else():
+    """The same false-declaration guard, on the path that now carries a name."""
+    client = MagicMock()
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED,
+                                        validated_xml=_ASSOCIATED)), \
+         patch.object(filings, "_update"):
+        with pytest.raises(filings.SignatoryMismatch):
+            filings.sign(client, "f1", "SOMEONE-ELSE", "pw")
+
+
 def test_sign_refuses_when_the_return_names_a_different_person():
     client = MagicMock()
     with patch.object(filings, "get_filing",

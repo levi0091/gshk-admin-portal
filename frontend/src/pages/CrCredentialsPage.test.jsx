@@ -18,6 +18,9 @@ vi.mock('../context/AuthContext.jsx', () => ({ useAuth: () => auth }))
 const MINE = {
   presentor_account_id: 'T260727100116D',
   eservice_user_id: 'GSHKPN02',
+  // The name CR holds for that account, filed as associatedPersonName when
+  // signing for a body corporate. CR checks it against the account.
+  eservice_person_name: 'CHAN, TAI MAN',
   has_eservice_password: true,
   eservice_password_hint: '••••••••9021',
   is_test: true,
@@ -312,6 +315,34 @@ describe('CrCredentialsPage — my e-Service signing', () => {
     expect(body.eservice_user_id).toBe('GSHKPN09')
     expect('presentor_account_id' in body).toBe(false)
     expect('tpsi_password' in body).toBe(false)
+  })
+
+  it('sends the CR-registered name alongside the e-Service id', async () => {
+    // Filed as associatedPersonName when signing for a body corporate — which
+    // is every real GSHK client. CR checks it against the account named in
+    // associatedPersonId and refuses a mismatch as "the signatory is not
+    // authorized to sign the document", which reads as a permissions problem
+    // rather than a wrong name. So it is ENTERED, never derived from the
+    // display name a colleague typed when the account was created.
+    const user = userEvent.setup()
+    routeGet({ mine: {} })
+    await renderPage()
+    await user.type(
+      await screen.findByLabelText('e-Service (e-Reg) user ID'), 'GSHKPN09')
+    await user.type(
+      screen.getByLabelText('Name on that e-Service account'), 'YIU, RYAN')
+    await user.click(screen.getByRole('button', { name: /Save credentials/ }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post.mock.calls[0][1].eservice_person_name).toBe('YIU, RYAN')
+  })
+
+  it('shows the stored CR name back, so its owner can check it', async () => {
+    // An identifier, not a secret — and the only way to tell WHICH name is
+    // stored is to see it. Storing a wrong one is invisible until CR refuses a
+    // filing, so the screen has to let the person who owns the account read it.
+    await renderPage()
+    expect(await screen.findByLabelText('Name on that e-Service account'))
+      .toHaveValue('CHAN, TAI MAN')
   })
 
   it('never asks an ordinary user for a TPSI password at all', async () => {

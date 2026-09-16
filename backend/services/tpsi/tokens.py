@@ -7,10 +7,12 @@ and A gets a 401 — possibly mid-submit on a chargeable call. So the token live
 in Postgres behind an advisory lock.
 """
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
+from urllib.parse import urlsplit
 
 import psycopg2
 
@@ -20,6 +22,60 @@ from services.tpsi.secrets import decrypt, encrypt
 
 # Never hand out a token that could expire mid-request.
 REFRESH_MARGIN_SECONDS = 60
+
+#: Supabase's per-project DIRECT host. It publishes AAAA records and no A
+#: record, so a deployment with no IPv6 route cannot open a socket to it at all.
+#: The session-mode pooler is the reachable alternative, and the one every other
+#: psycopg2 caller in this repo (alembic, the ETL) is already pointed at by hand.
+_DIRECT_HOST = re.compile(r"^db\.[a-z0-9]+\.supabase\.co$", re.IGNORECASE)
+
+
+def _host_of(dsn: str) -> str:
+    """The host in a DSN, and never anything else in it.
+
+    Parsing can fail on an awkward password; the caller is already reporting a
+    failure and must not be turned into a second, different one.
+    """
+    try:
+        return urlsplit(dsn).hostname or "the configured database host"
+    except ValueError:
+        return "the configured database host"
+
+
+def _connect_for_lock(dsn: str):
+    """Open the lock's connection, or refuse in a sentence an operator can act on.
+
+    PROD, 2026-09-16, on the first live filing against the real CR portal:
+    DATABASE_URL held the direct Supabase host, Railway has no IPv6 route, and
+    psycopg2's OperationalError travelled all the way out. `routers.tpsi._handle`
+    classifies TpsiError and RuntimeError and re-raises anything else, so this
+    surfaced as a bare 500 whose body was the generic "The server could not
+    complete this request. Nothing was saved." -- which reads as a problem with
+    the return being filed. It was not: CR was never contacted, and the return
+    was fine. The operator had no way to tell those two apart.
+
+    A RuntimeError instead, because _handle already maps that to a 502 CARRYING
+    ITS MESSAGE. The driver's own text is kept as the __cause__, so the Railway
+    log still has every detail; it is deliberately NOT interpolated into the
+    message, which is rendered in a browser and must never carry a DSN.
+    """
+    try:
+        return psycopg2.connect(dsn)
+    except psycopg2.OperationalError as exc:
+        host = _host_of(dsn)
+        detail = (
+            "The Postgres advisory lock that serialises TPSI token acquisition "
+            f"could not be taken: opening a connection to {host} failed. No "
+            "token was acquired, and nothing was sent to the Companies Registry."
+        )
+        if _DIRECT_HOST.match(host):
+            detail += (
+                f" {host} is Supabase's direct host, which publishes IPv6"
+                " addresses only -- a Railway deployment has no route to it."
+                " Point DATABASE_URL at the session-mode pooler instead:"
+                " postgres.<project-ref>@aws-<n>-<region>.pooler.supabase.com:5432."
+            )
+        raise RuntimeError(detail) from exc
 
 
 @dataclass(frozen=True)
@@ -104,7 +160,7 @@ def _with_lock(account_id: str, fn: Callable):
             file=sys.stderr,
         )
         return fn()
-    conn = psycopg2.connect(dsn)
+    conn = _connect_for_lock(dsn)
     try:
         with conn, conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (account_id,))

@@ -114,6 +114,12 @@ def _to_metadata(row: dict) -> dict:
         # of `tpsi:read` through a per-user endpoint. Nothing reads it: the
         # signatory fallback in load_eservice() reads the ROW, not this payload.
         "eservice_user_id": row.get("eservice_user_id"),
+        # The name CR holds for that e-Service account. An identifier, not a
+        # secret — and the screen cannot ask the owner to confirm it without
+        # showing what is stored. CR VALIDATES it against the account when a
+        # return is signed for a body corporate (migration 042), so a blank one
+        # here is the difference between a filing and a refusal.
+        "eservice_person_name": row.get("eservice_person_name"),
         "has_eservice_password": row.get("eservice_password_enc") is not None,
         "tpsi_password_hint": _hint(row.get("tpsi_password_enc")),
         "eservice_password_hint": _hint(row.get("eservice_password_enc")),
@@ -178,6 +184,7 @@ def _payload(
     presentor_account_id,
     tpsi_password,
     eservice_user_id,
+    eservice_person_name,
     eservice_password,
     deposit_account_no,
     rotated: bool,
@@ -209,6 +216,13 @@ def _payload(
     # the routine case, and it must not wipe a stored signing password.
     if eservice_user_id is not _UNSET:
         payload["eservice_user_id"] = eservice_user_id
+    # Same _UNSET discipline, and it matters as much as the password's: the
+    # routine edit is the signing password, and collapsing "not mentioned" into
+    # None here would clear the CR-registered name on every rotation -- which
+    # does not fail at save time, but at CR, as "the signatory is not
+    # authorized to sign the document" on the next body-corporate filing.
+    if eservice_person_name is not _UNSET:
+        payload["eservice_person_name"] = eservice_person_name
     if eservice_password is not _UNSET:
         payload["eservice_password_enc"] = (
             encrypt(eservice_password) if eservice_password else None
@@ -228,13 +242,15 @@ def set_credential(
     presentor_account_id: str | None = _UNSET,
     tpsi_password: str | None = _UNSET,
     eservice_user_id: str | None = _UNSET,
+    eservice_person_name: str | None = _UNSET,
     eservice_password: str | None = _UNSET,
     deposit_account_no: str | None = _UNSET,
 ) -> dict:
     row = _upsert(
         _payload(
             user_id, presentor_account_id, tpsi_password,
-            eservice_user_id, eservice_password, deposit_account_no,
+            eservice_user_id, eservice_person_name, eservice_password,
+            deposit_account_no,
             rotated=False,
         )
     )
@@ -247,17 +263,41 @@ def rotate_credential(
     presentor_account_id: str | None = _UNSET,
     tpsi_password: str | None = _UNSET,
     eservice_user_id: str | None = _UNSET,
+    eservice_person_name: str | None = _UNSET,
     eservice_password: str | None = _UNSET,
     deposit_account_no: str | None = _UNSET,
 ) -> dict:
     row = _upsert(
         _payload(
             user_id, presentor_account_id, tpsi_password,
-            eservice_user_id, eservice_password, deposit_account_no,
+            eservice_user_id, eservice_person_name, eservice_password,
+            deposit_account_no,
             rotated=True,
         )
     )
     return _to_metadata(row)
+
+
+def load_signatory_identity(user_id: str) -> dict | None:
+    """Who this user is at CR, for the associated-person block on a filing.
+
+    Deliberately NOT part of load_eservice(): that one decrypts a password for
+    an actual signature and is called at signing time, while this is read at
+    PREPARE time to put a name and an id on the form. Keeping them apart means
+    building a return never decrypts a signing password it has no use for.
+
+    Returns None when nothing is stored, so the mapper reports the gap as a
+    filing problem naming CR Credentials rather than filing a blank CR checks.
+    """
+    row = _read(user_id)
+    if not row:
+        return None
+    user = str(row.get("eservice_user_id") or row.get("presentor_account_id")
+               or "").strip()
+    name = str(row.get("eservice_person_name") or "").strip()
+    if not user and not name:
+        return None
+    return {"eservice_user_id": user, "person_name": name}
 
 
 def record_password_expiry(user_id: str, expires_at: str | None) -> None:

@@ -25,12 +25,17 @@ PHASE 2 - VALIDATE (live CR, needs --validate)
     and CR answers ERR_ES_FORM_COY_NOT_EXIST. Three identifiers therefore have
     to be moved into the test namespace, and it is three, not one:
 
-        brNo            the filing company
-        corpBrNo        every corporate OFFICER's BRN  <-- the one everyone
-                        misses; its absence also reads as
-                        ERR_ES_FORM_COY_NOT_EXIST, which sends you hunting the
-                        wrong identifier
-        selectPersonId  the signatory's e-Service account
+        brNo               the filing company
+        corpBrNo           every corporate OFFICER's BRN  <-- the one everyone
+                           misses; its absence also reads as
+                           ERR_ES_FORM_COY_NOT_EXIST, which sends you hunting
+                           the wrong identifier
+        selectPersonId     the signatory's e-Service account, on the
+                           natural-person path
+        associatedPersonId the signing human's e-Service account, on the
+                           BODY-CORPORATE path — which is every real GSHK
+                           client, and which carries no selectPersonId at all
+        selectAssoBrNo     the BR of the body corporate being signed for
 
     Everything else -- names, addresses, share capital, officer particulars,
     dates -- stays REAL, which is the point: CR validates the actual data.
@@ -82,6 +87,17 @@ TEST_CORP_OFFICER_BRN = "T0001139"
 #: above. Not a secret — it is an account identifier, and the password is not
 #: in this file or anywhere near it.
 TEST_ESERVICE_ID = "T260727100116S"
+
+#: The signing human a BODY-CORPORATE return names, as CR requires since the
+#: 2026-09-16 finding: associatedPersonId / associatedPersonName, checked by CR
+#: against each other. Stated here for the same reason the capacities are — the
+#: regression measures COMPANY DATA, and without it every GSHK-managed company
+#: would report "the signed-in user has no e-Service account stored", which is a
+#: fact about a credential rather than about the register.
+ASSUMED_SIGNING_IDENTITY = {
+    "eservice_user_id": TEST_ESERVICE_ID,
+    "person_name": "SECRETARY, CGAHCHBAABBG",
+}
 
 #: The capacities phase 1 maps with — one per kind of signatory, because the
 #: two vocabularies do not overlap and picking from the wrong one is a problem
@@ -197,6 +213,7 @@ async def phase1_map(limit: int | None) -> dict:
             data = nar1_mapper.map_entity(
                 graph, year=datetime.now(timezone.utc).year,
                 signatory_capacity=_assumed_capacity(graph),
+                signing_identity=ASSUMED_SIGNING_IDENTITY,
             )
             nar1.build_nar1_xml(data)
             ok.append(company)
@@ -245,6 +262,16 @@ def _rewrite_for_test_register(data: dict) -> dict:
                 node["corpBrNo"] = TEST_CORP_OFFICER_BRN
             if "selectPersonId" in node:
                 node["selectPersonId"] = TEST_ESERVICE_ID
+            # The body-corporate signatory block (2026-09-16). A GSHK client's
+            # return carries NO selectPersonId at all — CR refuses one there —
+            # and names the signer in these instead. Left unrewritten they would
+            # carry GSHK's real e-Service account and Get Started HK Limited's
+            # real BR into the test register, where CR knows neither, and every
+            # refusal would read as an authorisation failure.
+            if "associatedPersonId" in node:
+                node["associatedPersonId"] = TEST_ESERVICE_ID
+            if "selectAssoBrNo" in node:
+                node["selectAssoBrNo"] = TEST_CORP_OFFICER_BRN
             for value in node.values():
                 walk(value)
         elif isinstance(node, list):
@@ -272,6 +299,7 @@ async def phase2_validate(mapped_ok: list[dict], limit: int) -> None:
         data = nar1_mapper.map_entity(
             graph, year=datetime.now(timezone.utc).year,
             signatory_capacity=ASSUMED_CAPACITY,
+            signing_identity=ASSUMED_SIGNING_IDENTITY,
         )
         xml = nar1.build_nar1_xml(_rewrite_for_test_register(data))
         try:
