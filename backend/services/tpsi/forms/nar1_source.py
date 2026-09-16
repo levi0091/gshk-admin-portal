@@ -22,6 +22,73 @@ import asyncio
 from db.supabase import get_supabase
 
 
+def _normalise_name(value) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _index_by_name(entities) -> dict[str, list]:
+    index: dict[str, list] = {}
+    for entity in entities:
+        index.setdefault(_normalise_name(entity.get("company_name")), []) \
+             .append(entity)
+    return index
+
+
+async def _resolve_secretary_entities(q, sb, secretaries: list[dict],
+                                      corporate_entities: dict) -> None:
+    """Attach the corporate secretary's own entity to each register row.
+
+    Sets `corporate_entity_id` and `corporate_entity_resolution` -- "ok",
+    "not_found" or "ambiguous". The mapper turns the latter two into a
+    MappingError: a secretary we cannot place blocks the filing rather than
+    borrowing an address that belongs to somebody else.
+
+    Matched on NAME, because a name is all the register holds. Entities already
+    loaded for the corporate officers and shareholders are tried first and cost
+    nothing -- the GSHK secretary is normally among them, since it is usually
+    also an entity_officers row. The extra query runs only for a name that
+    those did not cover, which on DEV is the 796 companies whose officer
+    register names a different firm from their secretary register.
+
+    A name matching TWO companies is never resolved to the first one found. The
+    two have different addresses and different BR numbers, and picking one
+    would put a plausible, unverifiable, possibly wrong company on a statutory
+    return -- the same class of mistake as the fallback this replaces.
+    """
+    by_name = _index_by_name(corporate_entities.values())
+    unmatched = set()
+    for sec in secretaries:
+        matches = by_name.get(_normalise_name(sec.get("secretary_name")), [])
+        if len(matches) == 1:
+            sec["corporate_entity_id"] = matches[0]["id"]
+            sec["corporate_entity_resolution"] = "ok"
+        elif matches:
+            sec["corporate_entity_resolution"] = "ambiguous"
+        elif sec.get("secretary_name"):
+            unmatched.add(sec["secretary_name"])
+        else:
+            sec["corporate_entity_resolution"] = "not_found"
+
+    if not unmatched:
+        return
+
+    rows = await q(lambda: sb.table("entities").select("*")
+                   .in_("company_name", sorted(unmatched)).execute().data)
+    for entity in rows or []:
+        corporate_entities.setdefault(entity["id"], entity)
+    found = _index_by_name(rows or [])
+    for sec in secretaries:
+        if sec.get("corporate_entity_resolution"):
+            continue
+        matches = found.get(_normalise_name(sec.get("secretary_name")), [])
+        if len(matches) == 1:
+            sec["corporate_entity_id"] = matches[0]["id"]
+            sec["corporate_entity_resolution"] = "ok"
+        else:
+            sec["corporate_entity_resolution"] = (
+                "ambiguous" if matches else "not_found")
+
+
 async def load_entity_graph(entity_id: str) -> dict:
     sb = get_supabase()
 
@@ -69,6 +136,19 @@ async def load_entity_graph(entity_id: str) -> dict:
     persons = {p["id"]: p for p in (persons_rows or [])}
     corporate_entities = {c["id"]: c for c in (corporate_rows_data or [])}
 
+    # A corporate company secretary's own entity. `company_secretaries` has no
+    # corporate_entity_id -- migration 007 put that FK on entity_officers /
+    # shareholdings / beneficial_owners only -- so the register holds a NAME
+    # and nothing else: no address, no BR number, no Chinese name. The mapper
+    # used to fill the gap with the FILING COMPANY's registered office, which
+    # is wrong for 1,043 of 5,604 companies on DEV. Resolving it here keeps
+    # nar1_mapper pure and gives that block the same shape as an officer's.
+    corporate_secretaries = [s for s in (secretaries or [])
+                             if not s.get("person_id")]
+    if corporate_secretaries:
+        await _resolve_secretary_entities(q, sb, corporate_secretaries,
+                                          corporate_entities)
+
     address_ids = {
         aid for aid in
         [entity.get("registered_address_id")]
@@ -97,8 +177,27 @@ async def load_entity_graph(entity_id: str) -> dict:
         row["corporate_address"] = addresses.get(party.get("registered_address_id"))
         row["corporate_br_no"] = party.get("br_number")
         row["corporate_name_zh"] = party.get("company_name_zh")
-        if not row.get("corporate_name"):
-            row["corporate_name"] = party.get("company_name")
+        # THE LINKED ENTITY'S NAME WINS. `corporate_name` on the officer and
+        # shareholding rows holds Viewpoint's entity CODE, not a company name --
+        # "GETSTA", "CHEAPI", "57THST", "BLACKANDWH" -- for 5,604 of 5,606
+        # current corporate officers and all 213 corporate shareholdings on DEV.
+        # This used to be preferred over the entity whenever it was non-empty,
+        # so a rendered NAR1 named a body corporate by its Viewpoint code: a
+        # reserve director as "GETSTA", a Schedule 1 member as "57THST".
+        # The code is kept only when the linked entity has no name to give.
+        if party.get("company_name"):
+            row["corporate_name"] = party["company_name"]
+
+    # The same attachment for the secretary register, whose entity was resolved
+    # by name above rather than through a FK it does not have.
+    for sec in corporate_secretaries:
+        party = corporate_entities.get(sec.get("corporate_entity_id"))
+        sec["corporate_address"] = (
+            addresses.get(party.get("registered_address_id")) if party else None
+        )
+        if party:
+            sec["corporate_br_no"] = party.get("br_number")
+            sec["corporate_name_zh"] = party.get("company_name_zh")
 
     identity_documents: dict[str, list] = {}
     for doc in identity_rows or []:
@@ -114,4 +213,10 @@ async def load_entity_graph(entity_id: str) -> dict:
         "persons": persons,
         "addresses": addresses,
         "identity_documents": identity_documents,
+        # The corporate parties, keyed by id. nar1_return_data._party_name has
+        # always looked for this to name a body corporate, and never found it --
+        # the key was simply never returned -- so the card fell through to
+        # `corporate_name` and showed Viewpoint's code ("GETSTA") as the
+        # company secretary on the Data Verification screen.
+        "entities": corporate_entities,
     }

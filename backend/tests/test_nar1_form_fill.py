@@ -58,6 +58,18 @@ def _corp_dir(name):
       </cr:corpDir>"""
 
 
+def _corp_sec(name):
+    """A body-corporate company secretary — section 12B, and Continuation
+    Sheet B once there is more than one."""
+    return f"""
+      <cr:corpSec>
+        <cr:corpEngName>{name}</cr:corpEngName>
+        {_address()}
+        <cr:corpBrNo>67169839</cr:corpBrNo>
+        <cr:corpTcspNo>TC000807</cr:corpTcspNo>
+      </cr:corpSec>"""
+
+
 def _member(surname, shares):
     return f"""
         <cr:shareHolderGrp>
@@ -81,8 +93,8 @@ def _member(surname, shares):
 
 
 def build_xml(*, directors=("CHAN",), corporate_directors=(),
-              secretaries=1, members=("WONG",), date="01/02/2026",
-              share_classes=1):
+              secretaries=1, corporate_secretaries=(), members=("WONG",),
+              date="01/02/2026", share_classes=1):
     """A validated return, in CR's own shape: a BARE fragment with undeclared
     `cr:` prefixes, exactly as `tpsi_filings.validated_xml` stores it."""
     capitals = "".join(f"""
@@ -121,6 +133,9 @@ def build_xml(*, directors=("CHAN",), corporate_directors=(),
         <cr:selectPersonName>Wong Mei Ling</cr:selectPersonName>
         <cr:shareCapitals>{capitals}</cr:shareCapitals>
         <cr:indSecList>{secs}</cr:indSecList>
+        <cr:corpSecList>
+          {"".join(_corp_sec(s) for s in corporate_secretaries)}
+        </cr:corpSecList>
         <cr:indDirList>{"".join(_ind_dir(d) for d in directors)}</cr:indDirList>
         <cr:corpDirList>
           {"".join(_corp_dir(c) for c in corporate_directors)}

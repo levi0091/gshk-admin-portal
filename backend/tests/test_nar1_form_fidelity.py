@@ -30,6 +30,35 @@ from tests.test_nar1_form_fill import build_xml, values_of  # noqa: E402
 # Section 11 -- the share capital table
 # ---------------------------------------------------------------------------
 
+def test_one_corporate_secretary_fills_12b_and_attaches_no_continuation_sheet():
+    """5,603 of 5,604 rendered returns carried a Continuation Sheet B naming
+    "GETSTA", because the mapper emitted the one company secretary twice —
+    once from `company_secretaries` and once from `entity_officers`, whose
+    `corporate_name` holds Viewpoint's entity code. Page 8 then declared
+    "Continuation Sheet B: 1" for a sheet that should not exist.
+
+    Asserted on the RENDERED form: one corpSec fills section 12B and the sheet
+    count stays 0.
+    """
+    values = values_of(fill.render_fields(
+        build_xml(secretaries=0,
+                  corporate_secretaries=("Get Started HK Limited",))))
+    assert values[fm.SECRETARY_CORPORATE["name_en"]] == ["Get Started HK Limited"]
+    # Field 19 — blank on every return before this, because the secretary
+    # register has no BR column and nothing resolved the party's entity.
+    assert values[fm.SECRETARY_CORPORATE["own_br_number"]] == ["67169839"]
+    assert values[fm.MEMBERS_AND_SIGNATURE["count_sheet_b"]] == ["0"]
+
+
+def test_two_corporate_secretaries_still_fill_continuation_sheet_b():
+    """The duplicate was removed, not the capability."""
+    values = values_of(fill.render_fields(
+        build_xml(secretaries=0,
+                  corporate_secretaries=("First Secretary Limited",
+                                         "Second Secretary Limited"))))
+    assert values[fm.MEMBERS_AND_SIGNATURE["count_sheet_b"]] == ["1"]
+
+
 def test_the_share_capital_total_row_is_filled():
     """It was BLANK on every return ever generated.
     `field_map.SHARE_CAPITAL_TOTALS` existed from the day the map was written
