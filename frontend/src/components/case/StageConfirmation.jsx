@@ -41,32 +41,23 @@ const MONEY_FIELDS = new Set(['totalAmount'])
  * updates").
  *
  * There used to be a "What CR holds now" card here with a Check CR status
- * button. It was removed because it could not do the job its own copy claimed:
+ * button. It was removed because it could not do the job its own copy claimed —
+ * nothing persisted, nothing ever reached `registered`, and the case already
+ * read Completed. Since 2026-09-16 all three are false again, and the answer is
+ * NOT to put the card back here: what CR did with the return is stage 6's
+ * subject, and this stage is the receipt. Two stages, two questions.
  *
- *   * NOTHING PERSISTED. The result lived in `useState` and was gone on the
- *     next reload, so it answered a question and then forgot the answer.
- *   * NOTHING EVER REACHES `registered`. No code path writes that stage — it
- *     is in the vocabulary and unreachable — so the reply could never change
- *     what this screen showed.
- *   * THE CASE IS ALREADY DONE. `nar1_case_status._FINISHED` counts
- *     `submitted` as finished, so the case reads Completed from the moment the
- *     receipt exists. There was no state left to advance.
- *
- * And it was not free of consequence: it spent a CR AUTHENTICATION on every
- * press, and repeated CR auth failures lock the account.
+ * WHAT CHANGED HERE. This screen used to read `form_status.code ===
+ * 'registered'` to decide its own headline, and that stage was written by
+ * nothing — so the "filed & confirmed by CR" wording was unreachable and the
+ * Confirmation step sat permanently at IN PROGRESS beneath a receipt. The
+ * headline is now about DELIVERY, which is the thing the receipt actually
+ * proves, and the register's verdict is one click away.
  */
-// `canRead` and `onError` are gone with the CR status check — this screen
-// makes no request now, so it has nothing to be permitted for and nothing to
-// report. The parent still passes them; extra props are harmless and leaving
-// the call sites alone keeps this change to one file.
 export default function StageConfirmation({ caseRow, onGo }) {
   const navigate = useNavigate()
 
   const receipt = caseRow.receipt || null
-  // `registered` is still read, and still never true today: no code path writes
-  // that stage. Kept because it is CR's own vocabulary and a future docStatus
-  // poller would set it — but nothing on this screen waits for it any more.
-  const registered = caseRow.form_status?.code === 'registered'
 
   return (
     <>
@@ -78,21 +69,20 @@ export default function StageConfirmation({ caseRow, onGo }) {
           <div className="confirm-hero">
             <div className="confirm-ring" aria-hidden="true">✓</div>
             <div className="confirm-h1">
-              {registered
-                ? 'NAR1 filed & confirmed by CR'
-                : caseRow.manual_submitted_at
-                  ? 'NAR1 filed off-portal & recorded'
-                  : 'NAR1 filed with the Companies Registry'}
+              {caseRow.manual_submitted_at
+                ? 'NAR1 filed off-portal & recorded'
+                : 'NAR1 filed with the Companies Registry'}
             </div>
+            {/* DELIVERED, not registered. The receipt proves CR received the
+                return and took the fee; whether CR puts it on the register is
+                a separate answer, and this screen must not make it on CR's
+                behalf. That is what "Completed" used to do. */}
             <div className="confirm-p">
-              {registered
-                ? <>The Companies Registry accepted the Annual Return
-                    {caseRow.company_name ? <> for <b>{caseRow.company_name}</b></> : null}.
-                    The case is now marked <b>Completed</b>.</>
-                : <>The return
-                    {caseRow.company_name ? <> for <b>{caseRow.company_name}</b></> : null}
-                    {' '}has been delivered and the Companies Registry issued the
-                    receipt below. The case is now marked <b>Completed</b>.</>}
+              The return
+              {caseRow.company_name ? <> for <b>{caseRow.company_name}</b></> : null}
+              {' '}has been delivered and the Companies Registry issued the
+              receipt below. What CR has done with it since is on{' '}
+              <b>CR Status</b>.
             </div>
           </div>
         </div>
@@ -166,12 +156,13 @@ export default function StageConfirmation({ caseRow, onGo }) {
         )}
       </div>
 
-      {/* The last stage must not dead-end. v11 sends the operator back to the
-          work rather than leaving them on a finished case with nowhere to go. */}
+      {/* Every v11 panel offers the next stage. This one no longer dead-ends
+          in "Back to Post-incorporation": CR's own answer is the next thing to
+          read, and it is now a stage rather than a card bolted onto this one. */}
       <div className="action-bar">
         <div className="ab-note">
           Case {caseRow.case_no || '—'}
-          {registered ? ' · Completed' : ''}
+          {' · '}The Companies Registry still has to register it.
         </div>
         <div className="ab-actions">
           {caseRow.entity_id && (
@@ -180,9 +171,15 @@ export default function StageConfirmation({ caseRow, onGo }) {
               View company profile
             </button>
           )}
-          <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>
-            Back to Post-incorporation
-          </button>
+          {onGo ? (
+            <button className="btn btn-primary" onClick={() => onGo(6)}>
+              Continue to CR Status →
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>
+              Back to Post-incorporation
+            </button>
+          )}
         </div>
       </div>
     </>

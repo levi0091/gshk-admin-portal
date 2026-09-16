@@ -17,6 +17,8 @@ import StageClientVerification from './StageClientVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
+import StageCrStatus from './StageCrStatus.jsx'
+import CaseStepper from './CaseStepper.jsx'
 import RefusalDetail from './RefusalDetail.jsx'
 import { describeError } from './workflow.js'
 import { ClosedPanel } from '../../pages/CaseWorkflowPage.jsx'
@@ -259,9 +261,66 @@ describe.runIf(SHOOT)('visual harness', () => {
 
   it('5 · Confirmation', async () => {
     await dump('5-confirmation',
-      <StageConfirmation caseRow={{ ...CASE, form_status: { code: 'registered', label: 'Registered' } }}
-                         canRead onError={noop} />,
-      () => waitFor(() => screen.getByText(/filed & confirmed by CR/)))
+      <StageConfirmation caseRow={{ ...CASE, form_status: { code: 'submitted', label: 'Filed with CR' } }}
+                         onGo={noop} />,
+      () => waitFor(() => screen.getByText(/has been delivered/)))
+  })
+
+  // ---- Stage 6 · CR Status (Levi 2026-09-16) ------------------------------
+  //
+  // Five states and a stepper. Shot as a set on purpose: the point of the whole
+  // change is that the five colours are distinguishable AT A GLANCE, and that
+  // is a claim about them side by side, not about any one of them.
+
+  const filed = extra => ({
+    ...CASE,
+    form_status: { code: 'submitted', label: 'Filed with CR', failed: false, faults: [] },
+    cr_status_checked_at: '2026-09-16T02:13:00Z',
+    cr_document_ref_no: 'NAR1-2026-0009123',
+    ...extra,
+  })
+  const crStatus = (code, label, cr_text, terminal = false) =>
+    ({ code, label, cr_text, terminal })
+
+  const CR_STATES = [
+    ['6a-cr-not-checked', crStatus('cr_not_checked', 'Awaiting CR status', null),
+     { cr_status_checked_at: null, cr_document_ref_no: null }],
+    ['6b-cr-pending', crStatus('cr_pending', 'Pending at CR', 'Pending')],
+    ['6c-cr-approved', crStatus('cr_approved', 'Approved by CR', 'Approved')],
+    ['6d-cr-registered', crStatus('cr_registered', 'Registered by CR', 'Registered', true)],
+    ['6e-cr-rejected', crStatus('cr_rejected', 'Rejected by CR', 'Rejected', true)],
+    // A status CR's own specification does not enumerate. The badge says
+    // nothing useful; the quoted line is the whole point of the screen.
+    ['6f-cr-unknown', crStatus('cr_unknown', 'Other CR status', 'Vetting/2')],
+  ]
+
+  for (const [name, status, extra] of CR_STATES) {
+    it(`${name}`, async () => {
+      await dump(name,
+        <StageCrStatus caseRow={filed({ cr_status: status, ...extra })} canRead
+                       onChanged={noop} onError={noop} onGo={noop} />,
+        () => waitFor(() => screen.getByText(status.label)))
+    })
+  }
+
+  // THE STEPPER ITSELF, in every CR state. Six columns where there were five,
+  // and a sixth medallion coloured by CR's answer rather than by our progress —
+  // the one place data drives the chrome. Whether that reads at a glance is a
+  // question a picture answers and an assertion does not.
+  for (const [name, status] of CR_STATES) {
+    it(`stepper · ${name}`, async () => {
+      await dump(`stepper-${name.slice(3)}`,
+        <CaseStepper caseRow={filed({ cr_status: status })} step={6}
+                     onGo={noop} onLocked={noop} />)
+    })
+  }
+
+  it('stepper · mid-workflow, nothing filed', async () => {
+    // The five-stage layout at six columns: locked padlocks, a filled rail up
+    // to the stage in hand, and the labels that have to wrap at 400px.
+    await dump('stepper-mid',
+      <CaseStepper caseRow={{ ...CASE, form_status: { code: 'validated' } }}
+                   step={2} onGo={noop} onLocked={noop} />)
   })
 
   it('6 · Closed — what replaces all five stages', async () => {

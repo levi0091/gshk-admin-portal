@@ -20,10 +20,13 @@
 //: nothing has been validated, so there is nothing to disagree with. Mirrors
 //: services/nar1_case_status.py — a case is past data verification exactly
 //: when its filing reached a live stage.
-//: The five middle badges of nar1_case_status.WORKFLOW_STATUSES. The two that
-//: are absent are absent deliberately: `data_verification` has no snapshot to
-//: disagree with, and `completed` is filed and closed — warning about it would
-//: train people to click through the warning.
+//: The five middle badges of nar1_case_status.WORKFLOW_STATUSES. What is absent
+//: is absent deliberately: `data_verification` has no snapshot to disagree
+//: with, and every `cr_*` code means the return is already with CR — warning
+//: about a filing that has gone would train people to click through the
+//: warning. (`completed` used to be the single code for that; it was replaced
+//: by CR's own answers on 2026-09-16. This is an INCLUSION list, so it needed
+//: no change — which is why it is one.)
 const FROZEN = new Set([
   'client_verification',
   'awaiting_client',
@@ -40,8 +43,9 @@ function codeOf(status) {
 
 /**
  * The cases that would disagree with an edit made now.
- * `completed` is excluded on purpose: that return is filed and closed, and
- * warning about it would train people to click through the warning.
+ * A filed case is excluded on purpose, whatever CR has since said about it:
+ * that return has gone, and warning about it would train people to click
+ * through the warning.
  */
 export function liveCases(company) {
   return (company?.cases?.nar1 || []).filter(c => FROZEN.has(codeOf(c.workflow_status)))

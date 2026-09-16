@@ -12,7 +12,79 @@ export const STAGE_LABELS = [
   'Signing',
   'Submission',
   'Confirmation',
+  // THE SIXTH STAGE (Levi 2026-09-16). The first five are OUR process and end
+  // at "we handed it over"; this one is CR's, and it begins there. A NAR1 that
+  // submitFormNar1 accepted and charged for is not yet on the register — CR
+  // vets it and can still refuse it.
+  'CR Status',
 ]
+
+/**
+ * The CR status the case is currently wearing.
+ *
+ * The backend sends `cr_status` as a composite object (see
+ * `services/tpsi/doc_status.describe`). A case read before migration 043, or
+ * one whose payload predates this field, gets the honest default rather than a
+ * blank: filed returns have always been in this state, nobody had asked CR.
+ */
+export function crStatus(c) {
+  const status = c?.cr_status
+  if (status && typeof status === 'object' && status.code) return status
+  return { code: 'cr_not_checked', label: 'Awaiting CR status',
+           cr_text: null, terminal: false }
+}
+
+/**
+ * The colour a CR answer is drawn in — one word, used by the stepper medallion
+ * and by the stage card's own rail so the two can never disagree.
+ *
+ * Five treatments over six codes: `cr_unknown` shares grey with
+ * `cr_not_checked` because neither tells you anything actionable, and the badge
+ * itself carries CR's own words to tell them apart. Adding a sixth colour for
+ * "CR said something we could not read" would spend a colour on a state whose
+ * whole content is the text beside it.
+ */
+export const CR_TONE = {
+  cr_not_checked: 'wait',
+  cr_pending: 'info',
+  cr_approved: 'warn',
+  cr_registered: 'ok',
+  cr_rejected: 'bad',
+  cr_unknown: 'wait',
+}
+
+/**
+ * What a CR answer MEANS for this case, in the operator's terms.
+ *
+ * The label says what CR called it; this says what to do about it. They are
+ * different jobs and a badge cannot do both.
+ */
+export const CR_MEANING = {
+  // NO CADENCE IN THIS TEXT. These sentences say what the STATUS means; how
+  // often the portal asks is one fact, it lives in the action bar, and it
+  // differs between deployments — DEV only polls inside CR's test window. Said
+  // in both places it would drift, and "the nightly check" was already wrong
+  // the day the schedule became every 15 minutes.
+  cr_not_checked:
+    'The return is with the Companies Registry. Nothing has asked CR what it '
+    + 'has done with it yet — the scheduled check does that, or you can check now.',
+  cr_pending:
+    'CR has the return and has not decided. Nothing is needed from GSHK; the '
+    + 'scheduled check will pick up the answer.',
+  cr_approved:
+    'CR has accepted the return and has not yet placed it on the register. '
+    + 'Nothing is needed from GSHK.',
+  cr_registered:
+    'The annual return is on the register. This case is finished.',
+  cr_rejected:
+    'CR will not register this return. The fee was already taken, so a '
+    + 'corrected return has to be filed as a new case — check what CR sent '
+    + 'before re-filing.',
+  cr_unknown:
+    'CR answered with a status this portal does not recognise. Its exact '
+    + 'wording is shown above; treat that as the answer and report it so the '
+    + 'status can be added.',
+}
 
 /** CR form stages that mean the snapshot exists and is usable. */
 const VALIDATED_STAGES = new Set([
@@ -70,13 +142,18 @@ export function reachedStage(c) {
   if (!c) return 1
   // A closed case has no reachable stage. `CaseWorkflowPage` renders the closed
   // panel instead of the stepper, so nothing asks — but this must not answer
-  // "5" to whatever does, because every button behind stage 5 writes.
+  // "6" to whatever does, because every button behind the later stages writes.
   if (isClosed(c)) return 0
   if (!isValidated(c)) return 1
   if (!(c.verification_sent_at && c.client_approved)) return 2
   if (!signedOff(c)) return 3
   if (!isSubmitted(c)) return 4
-  return 5
+  // Filing unlocks BOTH remaining stages at once, because they are two views of
+  // the same event: the receipt proves the return was delivered, and CR's
+  // status is what happened to it afterwards. There is no action between them
+  // to gate on, and locking stage 6 behind a "done" flag on stage 5 would hide
+  // a CR rejection behind a receipt nobody needs to read twice.
+  return 6
 }
 
 /**
@@ -124,9 +201,35 @@ export function stageDone(c, i) {
     case 2: return Boolean(c.client_approved)
     case 3: return signedOff(c)
     case 4: return isSubmitted(c)
-    case 5: return c.form_status?.code === 'registered'
+    // CONFIRMATION IS DONE WHEN THE RECEIPT EXISTS (Levi 2026-09-16: "when the
+    // workflow is completed and we get a receipt from CR portal, the progress
+    // bar is still indicating in-progress for confirmation stage").
+    //
+    // It used to read `form_status.code === 'registered'` — a stage NOTHING
+    // EVER WROTE, so step 5 was permanently orange on a case whose receipt was
+    // on screen above it. `registered` is now written (by the CR poller), but
+    // it belongs to stage 6: this stage's own work is that the return was
+    // delivered and the receipt recorded, and it was.
+    case 5: return isSubmitted(c)
+    // And this one is CR's. `cr_registered` is the single answer that means the
+    // statutory job is finished; every other CR answer, refusal included,
+    // leaves the stage un-ticked and coloured by `stageTone` below.
+    case 6: return crStatus(c).code === 'cr_registered'
     default: return false
   }
+}
+
+/**
+ * The colour of one stepper medallion, when the DATA decides it rather than our
+ * progress through the workflow. `null` everywhere but stage 6.
+ *
+ * This is the one place a step is not drawn from reached/done, and that is the
+ * point: the last step is not ours. An operator should be able to read the
+ * register's verdict off the progress bar without opening the stage.
+ */
+export function stageTone(c, i) {
+  if (i !== 6 || !c || !isSubmitted(c)) return null
+  return CR_TONE[crStatus(c).code] || 'wait'
 }
 
 /**
@@ -148,8 +251,51 @@ const CR_REFUSAL_HINTS = {
   validation:
     'CR checked the return and rejected it. Fix the details it lists on the '
     + 'company profile, then validate again — validation is free.',
+  // A refusal from CR's SOAP STACK rather than from its business rules: the
+  // request did not match what CR publishes, so nothing about the case is
+  // wrong and nothing on this screen can fix it. Saying "fix what it reported"
+  // here would send an operator hunting through a company profile for a fault
+  // that is in our own XML — which is what happened on 2026-09-16, when the
+  // message naming the bug did not survive the edge either.
+  fault:
+    'The Companies Registry rejected the REQUEST, not the return. Nothing was '
+    + 'filed and nothing was charged, and nothing on the case needs changing. '
+    + 'Quote the message above — this one is ours to fix.',
   default:
     'The Companies Registry refused this. Fix what it reported — do not simply retry.',
+}
+
+/**
+ * What to do when CR could not be USED at all. Keyed by `_handle`'s `kind`,
+ * which the backend sets from `TpsiUnavailableError`.
+ *
+ * Only ONE of these is the test-service window, and it is not the one that
+ * looks like it. A timeout never means "outside the window": CR's test login
+ * and balance endpoints answer 24/7 and only the FORM APIs are windowed, so a
+ * call that never completed did not hit a closed one. Saying otherwise sent a
+ * PROD operator away to wait until Monday for a network fault.
+ */
+const CR_UNAVAILABLE_HINTS = {
+  test_window:
+    'This deployment files against the Companies Registry TEST service, which '
+    + 'answers Monday to Friday, 10:00–16:00 Hong Kong time. Try again inside '
+    + 'that window.',
+  unreachable:
+    'The request to the Companies Registry did not complete — nothing was '
+    + 'filed and nothing was charged. This is a connection fault, not a '
+    + 'closed service window, so retrying shortly is reasonable. If it keeps '
+    + 'happening, check CR Credentials and whether CR itself is up.',
+  service_error:
+    'The Companies Registry answered with an error of its own rather than a '
+    + 'refusal of this return. Nothing was filed and nothing was charged. Try '
+    + 'again shortly; if it persists it is CR-side.',
+  malformed:
+    'The Companies Registry answered with something this portal could not '
+    + 'read. Nothing was filed and nothing was charged. Do not keep retrying — '
+    + 'report it, because the reply needs looking at.',
+  default:
+    'The Companies Registry could not be used. Nothing was filed and nothing '
+    + 'was charged.',
 }
 
 /**
@@ -354,11 +500,21 @@ export function describeError(err) {
         hint: 'The Companies Registry could not be reached. Nothing was filed and nothing was charged. If this repeats, stop — a repeated login failure is what locks a CR account.',
         retry: false,
       }
+    // CR WAS NOT USABLE. Which is not one situation, and the remedies differ.
+    //
+    // This used to offer the test-service window unconditionally, so a PROD
+    // operator whose call timed out was told to try again between 10:00 and
+    // 16:00 on a weekday — advice for a window their deployment does not have.
+    // The backend says which case this is (`TpsiUnavailableError.kind`),
+    // because nothing on this side can: TPSI_ENV overrides APP_ENV so that
+    // PROD may file against CR test during the pilot, and then the window DOES
+    // apply to a portal whose header says nothing about being a test one.
     case 503:
       return {
         message,
         problems,
-        hint: 'The CR test service answers Monday to Friday, 10:00–16:00 Hong Kong time. Try again inside that window.',
+        kind: err?.kind || null,
+        hint: CR_UNAVAILABLE_HINTS[err?.kind] || CR_UNAVAILABLE_HINTS.default,
         retry: true,
       }
     default:

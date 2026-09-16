@@ -36,7 +36,32 @@ class TpsiPasswordExpiredError(TpsiAuthError):
 
 
 class TpsiUnavailableError(TpsiError):
-    """Transport failure, or a call made outside the TEST service window."""
+    """CR could not be used: a transport failure, or a service-level refusal.
+
+    `kind` says WHICH, because the two have different remedies and only one of
+    them is ever explained by CR's test-service window:
+
+      "unreachable"  -- the HTTP call did not complete. A timeout, a DNS or TLS
+                        failure, a dropped connection. This is NEVER the test
+                        window: CR's test login and balance endpoints answer
+                        24/7, and only the FORM APIs are windowed, so a call
+                        that never completed did not hit a closed window.
+      "test_window"  -- a 5xx with no SOAP fault, on a deployment configured
+                        against CR's TEST host. Waiting for the window is then
+                        real advice.
+      "service_error"-- the same 5xx against the PRODUCTION host, where no such
+                        window exists.
+      "malformed"    -- CR answered with something that is not a SOAP envelope.
+
+    The frontend picks its remedy from this rather than from the deployment's
+    APP_ENV, which cannot answer it: TPSI_ENV deliberately overrides APP_ENV so
+    that PROD can run against CR test during the pilot (see tpsi/config.py), and
+    during that pilot a production-badged portal DOES sit behind the window.
+    """
+
+    def __init__(self, message: str, *, kind: str = "unreachable"):
+        self.kind = kind
+        super().__init__(message)
 
 
 class _FaultError(TpsiError):
@@ -90,7 +115,8 @@ def raise_for_fault(xml_bytes: bytes) -> None:
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as exc:
-        raise TpsiUnavailableError(f"malformed response from TPSI: {exc}") from exc
+        raise TpsiUnavailableError(f"malformed response from TPSI: {exc}",
+                                   kind="malformed") from exc
 
     fault = _find_fault(root)
     if fault is None:

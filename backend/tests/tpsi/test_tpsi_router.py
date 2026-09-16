@@ -1698,8 +1698,26 @@ def test_a_closed_account_is_treated_like_a_locked_one():
 def test_a_shut_service_window_stays_a_503_and_is_retryable():
     """Outside Mon-Fri 10:00-16:00 HKT nothing is wrong with the return. A 502
     would tell the operator to go and fix a form that is fine."""
-    http = _handle_for_test(TpsiUnavailableError("outside the service window"))
+    http = _handle_for_test(
+        TpsiUnavailableError("outside the service window", kind="test_window"))
     assert http.status_code == 503
+    assert http.detail["kind"] == "test_window"
+
+
+def test_a_503_carries_WHY_cr_was_unusable_not_just_that_it_was():
+    """The screen picks its remedy from this. It offered "wait for the Mon-Fri
+    window" to a PROD operator whose call had simply timed out -- advice for a
+    window their deployment does not have.
+
+    It cannot be worked out on the frontend: TPSI_ENV overrides APP_ENV so that
+    PROD may file against CR TEST during the pilot, and then a portal whose
+    header says nothing about being a test one IS behind the window.
+    """
+    http = _handle_for_test(
+        TpsiUnavailableError("cannot reach TPSI: The read operation timed out"))
+    assert http.status_code == 503
+    assert http.detail["kind"] == "unreachable"
+    assert set(http.detail) == {"message", "kind"}
 
 
 def test_faults_never_leak_a_credential():
@@ -1847,13 +1865,49 @@ def test_a_signature_refusal_is_also_not_a_5xx(client):
     assert response.json()["detail"]["kind"] == "signature"
 
 
-def test_a_transport_failure_is_still_a_502(client):
-    """The distinction being drawn: CR refusing is not CR being unreachable."""
-    from services.tpsi.errors import TpsiError
+def test_a_transport_failure_is_a_503_and_says_it_could_not_reach_cr(client):
+    """The distinction being drawn: CR refusing is not CR being unreachable.
+
+    A REAL transport failure is `TpsiUnavailableError` and always has been —
+    `client.post_soap` and `client.authenticate` both convert every
+    `httpx.HTTPError` into one. This test used to make its point with a bare
+    `TpsiError("connection reset by peer")`, a shape no transport failure has
+    ever taken, and asserted the 502 that stood in for it.
+    """
+    from services.tpsi.errors import TpsiUnavailableError
 
     with _super(), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
          patch("routers.tpsi.filings.validate",
-               side_effect=TpsiError("connection reset by peer")):
+               side_effect=TpsiUnavailableError("cannot reach TPSI: "
+                                                "connection reset by peer")):
         response = client.post("/tpsi/filings/f1/validate", headers=H)
-    assert response.status_code == 502
+    assert response.status_code == 503
+    assert response.json()["detail"]["kind"] == "unreachable"
+
+
+def test_a_soap_stack_refusal_is_a_422_so_its_message_survives_the_edge(client):
+    """An unlabelled CR fault carries the most useful sentence in the app.
+
+    `raise_for_fault` raises a bare `TpsiError` for a SOAP Fault with no
+    `webServiceFaultBeans` — a refusal from CR's SOAP stack rather than its
+    business rules. On 502 that sentence never reached anybody: Cloudflare
+    replaces a 502 body with its own page, which carries no CORS header, so the
+    browser rejected the response outright and the screen read "Could not reach
+    the server". That is what every *Check with CR now* did on 2026-09-16 while
+    CR was answering, in words, that our request named an operation it does not
+    publish.
+    """
+    from services.tpsi.errors import TpsiError
+
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock()), \
+         patch("routers.tpsi.filings.validate", side_effect=TpsiError(
+             "Message part {…}docStatusEnquiry was not recognized.")):
+        response = client.post("/tpsi/filings/f1/validate", headers=H)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "was not recognized" in detail["message"]
+    # `kind` steers the hint, and this one is NOT "fix what CR reported": there
+    # is nothing wrong with the case.
+    assert detail["kind"] == "fault"

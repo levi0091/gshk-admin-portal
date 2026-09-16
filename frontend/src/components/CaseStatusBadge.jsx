@@ -1,7 +1,7 @@
 /**
  * The two NAR1 case status vocabularies — kept apart on purpose.
  *
- * `WorkflowBadge` answers "where is this case in GSHK's process" (8 values).
+ * `WorkflowBadge` answers "where is this case in GSHK's process" (13 values).
  * `FormBadge` answers "what has the Companies Registry done with the filing"
  * (10 stages). wireframe_v11 shows them side by side on the same row, and the
  * backend derives them from two different records (D-6, the single-writer
@@ -17,6 +17,15 @@
  * derived code; these maps only turn a code into wording and a colour.
  */
 
+/**
+ * `completed` IS GONE (Levi 2026-09-16: "completed should not be there.. it
+ * should be the steps throughout the workflow plus the final CR statuses").
+ *
+ * It said nothing CR had agreed to: a case went green the instant
+ * `submitFormNar1` returned a receipt, while CR had only RECEIVED the return
+ * and could still refuse it. The five `cr_*` codes are what the register
+ * actually says, starting at `cr_not_checked` — filed, and nobody has asked.
+ */
 export const WORKFLOW_LABEL = {
   data_verification: 'Data Verification',
   client_verification: 'Client Verification',
@@ -24,17 +33,29 @@ export const WORKFLOW_LABEL = {
   client_rejected: 'Client Rejected',
   signing: 'Signing',
   submission: 'Submission',
-  completed: 'Completed',
+  cr_not_checked: 'Awaiting CR status',
+  cr_pending: 'Pending at CR',
+  cr_approved: 'Approved by CR',
+  cr_registered: 'Registered by CR',
+  cr_rejected: 'Rejected by CR',
+  cr_unknown: 'Other CR status',
   closed: 'Closed',
 }
 
 // Carrot = act on me · Indigo = waiting on someone else · Green = done
-// · Red = refused · Grey = over. Same semantics as the dashboard filter tabs.
+// · Red = refused · Grey = over. Same semantics as the dashboard stat tiles.
 //
-// `closed` is deliberately the ONLY grey one, and deliberately not the green
-// `completed` wears: a return that was filed and a case the client abandoned
-// are both finished, and reading them as the same thing at a glance is the one
-// mistake this badge must not invite.
+// The CR codes reuse those semantics rather than inventing a sixth language:
+// `cr_pending` is indigo because the wait belongs to CR exactly as
+// `awaiting_client`'s belongs to the client; `cr_registered` takes the green
+// `completed` used to wear, and now earns it. `cr_approved` is the one new
+// colour — CR has decided yes and the return is not on the register yet, which
+// is neither waiting nor finished, and peridot is the palette's held-breath.
+//
+// TWO GREYS, ON PURPOSE. `closed` is a case that ended; `cr_not_checked` and
+// `cr_unknown` are answers nobody has, which is a different kind of nothing.
+// They are told apart by their wording and, for `cr_unknown`, by a hollow
+// marker — see `.badge.bc-unknown::before` in index.css.
 export const WORKFLOW_CLASS = {
   data_verification: 'bw-data',
   client_verification: 'bw-verify',
@@ -42,7 +63,12 @@ export const WORKFLOW_CLASS = {
   client_rejected: 'bw-rejected',
   signing: 'bw-sign',
   submission: 'bw-submit',
-  completed: 'bw-done',
+  cr_not_checked: 'bc-not_checked',
+  cr_pending: 'bc-pending',
+  cr_approved: 'bc-approved',
+  cr_registered: 'bc-registered',
+  cr_rejected: 'bc-rejected',
+  cr_unknown: 'bc-unknown',
   closed: 'bw-closed',
 }
 
@@ -107,12 +133,24 @@ export function WorkflowBadge({ status }) {
   const label = (typeof status === 'string' ? null : status.label)
     || WORKFLOW_LABEL[code] || code
   const offPortal = typeof status === 'string' ? false : Boolean(status.off_portal)
+  // CR's own words for the status, when the backend sent them. On `cr_unknown`
+  // the label is "Other CR status", which is true and useless on its own —
+  // what CR actually said is the only informative thing there is.
+  const crText = typeof status === 'string' ? null : status.cr_text
 
   if (!code) return <span className="td-muted">—</span>
 
   return (
     <>
-      <span className={`badge ${WORKFLOW_CLASS[code] || 'bw-data'}`}>{label}</span>
+      <span
+        className={`badge ${WORKFLOW_CLASS[code] || 'bw-data'}`}
+        // A TITLE, not a second line of text. The dashboard's Workflow column
+        // is scanned, and CR's wording matters when you stop on one row — not
+        // on every row at once.
+        title={crText ? `The Companies Registry reports: ${crText}` : undefined}
+      >
+        {code === 'cr_unknown' && crText ? crText : label}
+      </span>
       {offPortal && (
         <span className="badge bf-superseded" title="Filed through CR's e-Drive, outside G-FlowDesk">
           Off-portal

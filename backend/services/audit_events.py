@@ -66,6 +66,33 @@ TPSI_CRED_ROTATE = "TPSI_CRED_ROTATE"
 TPSI_PW_CHANGE = "TPSI_PW_CHANGE"
 TPSI_CRED_CONFIG = "TPSI_CRED_CONFIG"
 
+# ---- What CR did with the return AFTER it was filed (Levi 2026-09-16) -------
+#   Seeded by migration 043. TWO codes for one check, and the split is the
+#   whole point.
+#
+#   TPSI_DOC_STATUS_CHECKED is the HEARTBEAT, and its absence is the only way
+#   anybody finds out the cron service stopped running.
+#
+#   ONE ROW PER RUN FROM THE POLLER, ONE ROW PER CASE FROM THE BUTTON (revised
+#   2026-09-16 when the schedule became every 15 minutes). Per-case heartbeats
+#   were affordable at one run a night; at 96 runs a day they are not — DEV's
+#   ten filed cases alone would have written ~350,000 rows a year, more than the
+#   entire Viewpoint import, onto a table whose search already needed trigram
+#   indexes to stay under a second. The run summary keeps the evidence that the
+#   job is alive at 96 rows a day and keeps the case trail readable; a check an
+#   OPERATOR asked for is still that case's own event, because somebody did it
+#   to that case and the trail should say so.
+#
+#   NAR1_CR_STATUS_CHANGED fires ONLY when CR's answer actually moved. The
+#   question an operator asks is "when did CR register this", and with one code
+#   it is answerable by filtering rather than by reading a month of heartbeats.
+#
+#   NOT TPSI_STATUS, which already exists and stays where it is: that is the
+#   ad-hoc `GET /tpsi/doc-status` lookup — a read of CR that records nothing
+#   against a case. These two write a status onto a statutory record.
+TPSI_DOC_STATUS_CHECKED = "TPSI_DOC_STATUS_CHECKED"
+NAR1_CR_STATUS_CHANGED = "NAR1_CR_STATUS_CHANGED"
+
 # ---- NAR1 case-workflow codes (BE-4) ---------------------------------------
 #   Named, not invented: CASE_STATUS_CHANGED, CASE_FIELD_UPDATED and
 #   AML_STATUS_CHANGED are the action_type values CLAUDE.md's PBI-11 audit

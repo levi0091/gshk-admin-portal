@@ -62,7 +62,11 @@ class TpsiClient:
                     headers={"Authorization": self._basic_header()},
                 )
         except httpx.HTTPError as exc:
-            raise TpsiUnavailableError(f"cannot reach TPSI: {exc}") from exc
+            # NOT the test window, on either environment: CR's test login and
+            # balance endpoints answer 24/7 and only the FORM APIs are windowed,
+            # so a call that never completed did not hit a closed window.
+            raise TpsiUnavailableError(f"cannot reach TPSI: {exc}",
+                                       kind="unreachable") from exc
 
         if response.status_code == 401:
             body = response.text or ""
@@ -129,7 +133,8 @@ class TpsiClient:
                     },
                 )
         except httpx.HTTPError as exc:
-            raise TpsiUnavailableError(f"cannot reach TPSI: {exc}") from exc
+            raise TpsiUnavailableError(f"cannot reach TPSI: {exc}",
+                                       kind="unreachable") from exc
 
         if response.status_code == 401:
             if _retrying:
@@ -167,9 +172,20 @@ class TpsiClient:
                 raise_for_fault(response.content)
             except TpsiUnavailableError:
                 pass  # unparseable body — the generic message below is right
+            # The window is named ONLY when this deployment actually files
+            # against CR's test host. TPSI_ENV overrides APP_ENV so that PROD
+            # can run against CR test during the pilot, so neither the badge in
+            # the header nor APP_ENV can answer this -- `cfg.env` can.
+            # Asserting a cause that is false is the mistake recorded above.
+            if get_config().env == "test":
+                raise TpsiUnavailableError(
+                    f"TPSI returned {response.status_code} with no SOAP fault; "
+                    "the TEST form APIs run Mon-Fri 10:00-16:00 HKT only",
+                    kind="test_window",
+                )
             raise TpsiUnavailableError(
-                f"TPSI returned {response.status_code} with no SOAP fault; the "
-                "TEST form APIs run Mon-Fri 10:00-16:00 HKT only"
+                f"TPSI returned {response.status_code} with no SOAP fault",
+                kind="service_error",
             )
         if response.status_code >= 400:
             raise TpsiError(f"TPSI returned {response.status_code}")

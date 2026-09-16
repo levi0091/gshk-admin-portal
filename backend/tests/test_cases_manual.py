@@ -747,14 +747,19 @@ def test_manual_endpoints_require_authentication(client):
 
 # ---- the real thing, mocked only at the Supabase boundary ------------------
 
-def test_a_manual_submit_really_drives_the_case_to_completed(client):
+def test_a_manual_submit_really_drives_the_case_to_cr(client):
     """The one test here that mocks nothing between the route and the database.
 
     Everything above patches nar1_cases wholesale, which proves the router calls
     it but nothing about what it does. This drives the REAL validate_receipt,
     update_case, blocking_filing, composite and nar1_case_status.derive against a
     Supabase double, so it would catch a manual receipt written to the wrong
-    column or a badge that never reaches Completed.
+    column or a badge that never leaves the signing stages.
+
+    THE BADGE IS `cr_not_checked`, NOT `completed` (migration 043). The return
+    is with CR and the receipt proves it; what CR has DONE with it is a separate
+    question nobody has asked yet, and `completed` used to answer it green
+    without asking.
     """
     stored: dict = {"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
                     "manual_receipt": None, "client_approved": None}
@@ -789,9 +794,12 @@ def test_a_manual_submit_really_drives_the_case_to_completed(client):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["workflow_status"]["code"] == "completed"
-    assert body["workflow_status"]["label"] == "Completed"
+    assert body["workflow_status"]["code"] == "cr_not_checked"
+    assert body["workflow_status"]["label"] == "Awaiting CR status"
     assert body["workflow_status"]["overdue"] is False
+    # The third vocabulary rides along, so stage 6 has something to render the
+    # moment the receipt lands.
+    assert body["cr_status"]["code"] == "cr_not_checked"
     # The unified receipt (D-6): one key, whichever path produced it.
     assert body["receipt"]["caseNo"] == "180256934"
     assert body["form_status"] is None

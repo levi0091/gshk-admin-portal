@@ -15,6 +15,12 @@
   --carrot-10:  #FEF0EB;
   --peridot:    #FEE000;
   --peridot-10: #FFFCE6;
+  /* The one token the brand palette did not carry. `--peridot` is a warning
+     FILL — as TEXT on its own 10% tint it is illegible (contrast ~1.1:1), and
+     the "Approved by CR" badge needs peridot's meaning with type on it. Darkened
+     to 7.4:1 on --peridot-10, which is the same footing every other badge in
+     the system stands on. Not a new colour: the same hue, made readable. */
+  --peridot-ink:#7A5E00;
   --bang:       #027248;
   --bang-10:    #E6F1ED;
   --white:      #FFFFFF;
@@ -1204,10 +1210,47 @@ tbody tr.clickable { cursor: pointer; }
 .badge.bw-submit::before    { background: var(--carrot); }
 .badge.bw-done      { background: var(--bang-10);   color: var(--bang); }
 .badge.bw-done::before      { background: var(--bang); }
-/* Grey, and the only grey badge here. A closed case is finished but NOT done:
-   green would read as "filed", which is the one thing it must never say. */
+/* Grey. A closed case is finished but NOT done: green would read as "filed",
+   which is the one thing it must never say. */
 .badge.bw-closed    { background: #EDEEF4;          color: var(--t-muted); }
 .badge.bw-closed::before    { background: var(--t-muted); }
+
+/* `bc-*` — WHAT CR DID WITH THE RETURN AFTER IT WAS FILED (migration 043).
+   A third family, because it is a third question: `bw-*` is where the case is
+   with GSHK, `bf-*` is where the document got to in our own CR chain, and these
+   are the register's own verdict. They replace the single green `bw-done` the
+   word "Completed" used to wear — a colour the portal awarded itself the moment
+   a receipt came back, while CR had only RECEIVED the return.
+
+   The semantics are the same ones the other two families use — indigo waits,
+   green is done, red is refused — so an operator learns one language, not
+   three. Only `bc-approved` is new: CR has decided yes and the return is not on
+   the register yet, which is neither waiting nor finished. Peridot is the
+   palette's held breath and had no other job.
+
+   TWO GREYS, AND THEY MEAN DIFFERENT THINGS. `bw-closed` is a case that ended.
+   `bc-not_checked` and `bc-unknown` are answers nobody has. The hollow dot on
+   `bc-unknown` is the difference between "we have not asked" and "CR replied
+   and we could not read it" — the badge for the latter carries CR's own words
+   instead of a label, so the marker is what says it is a quote. */
+.badge.bc-not_checked { background: #EDEEF4;        color: var(--t-muted); }
+.badge.bc-not_checked::before { background: var(--indigo-20); }
+.badge.bc-pending   { background: var(--indigo-10); color: var(--indigo); }
+.badge.bc-pending::before   { background: var(--indigo); }
+/* --peridot (#FEE000) is unreadable as TEXT on its own 10% tint — the token is
+   a warning FILL and has never been used for type. `--peridot-ink` is the one
+   value the palette was missing; shipping an illegible badge to keep the token
+   list at its original length would be the wrong economy. */
+.badge.bc-approved  { background: var(--peridot-10); color: var(--peridot-ink); }
+.badge.bc-approved::before  { background: var(--peridot-ink); }
+.badge.bc-registered { background: var(--bang-10);  color: var(--bang); }
+.badge.bc-registered::before { background: var(--bang); }
+.badge.bc-rejected  { background: #FEE2E2;          color: #C53030; }
+.badge.bc-rejected::before  { background: #C53030; }
+.badge.bc-unknown   { background: #EDEEF4;          color: var(--t-body); }
+.badge.bc-unknown::before {
+  background: transparent; box-shadow: inset 0 0 0 1.5px var(--t-muted);
+}
 
 .badge.bf-draft      { background: var(--indigo-10); color: var(--indigo); }
 .badge.bf-validated  { background: var(--bang-10);   color: var(--bang); }
@@ -1292,8 +1335,11 @@ tbody tr.clickable { cursor: pointer; }
    live only inside components/case/, which is the same boundary.
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/* SIX, not five (2026-09-16). CR Status is the sixth stage: the first five are
+   GSHK's process and end at "we handed it over", and that one is the
+   register's, which begins there. */
 .stepper {
-  display: grid; grid-template-columns: repeat(5, 1fr); background: var(--bg-card);
+  display: grid; grid-template-columns: repeat(6, 1fr); background: var(--bg-card);
   border: 1px solid var(--border); border-radius: 12px; padding: 20px 12px 16px;
   margin-bottom: 22px; box-shadow: var(--sh-sm);
 }
@@ -1335,6 +1381,60 @@ tbody tr.clickable { cursor: pointer; }
 .step.locked { cursor: not-allowed; }
 .step.locked .step-num { background: var(--indigo-5); border-color: var(--border); color: var(--indigo-20); }
 .step.locked .step-lbl { color: var(--indigo-20); }
+
+/* `tone-*` — THE ONE PLACE A MEDALLION IS COLOURED BY DATA RATHER THAN BY OUR
+   PROGRESS. Every other step says where WE got to; stage 6 says what the
+   Companies Registry decided, so the verdict is readable off the progress bar
+   without opening the stage. That is deliberate: the last step is not ours.
+
+   Written after `.done`/`.active`/`.avail`/`.locked` so it wins on equal
+   specificity — and `workflow.stageTone` withholds the tone entirely when the
+   step is `done`, because `cr_registered` is the tone AND the tick, and a green
+   medallion without a tick would make the finished case the one state with no
+   tick anywhere. */
+.step.tone-wait .step-num { background: #EDEEF4; border-color: var(--indigo-20); color: var(--t-muted); }
+.step.tone-wait .step-lbl { color: var(--t-muted); }
+.step.tone-wait .step-state { color: var(--t-muted); }
+.step.tone-info .step-num { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+.step.tone-info .step-lbl { color: var(--indigo); }
+.step.tone-info .step-state { color: var(--indigo); }
+.step.tone-warn .step-num { background: var(--peridot); border-color: var(--peridot-ink); color: var(--peridot-ink); }
+.step.tone-warn .step-lbl { color: var(--peridot-ink); }
+.step.tone-warn .step-state { color: var(--peridot-ink); }
+.step.tone-ok   .step-num { background: var(--bang); border-color: var(--bang); color: #fff; }
+.step.tone-ok   .step-lbl { color: var(--t-head); }
+.step.tone-ok   .step-state { color: var(--bang); }
+.step.tone-bad  .step-num { background: #C53030; border-color: #C53030; color: #fff; }
+.step.tone-bad  .step-lbl { color: #C53030; }
+.step.tone-bad  .step-state { color: #C53030; }
+
+/* ---- Stage 6 · CR Status --------------------------------------------------
+   One card, and its left rail carries the same tone as the medallion above it.
+   The rail rather than a tinted panel: the card holds CR's own wording and a
+   paragraph of plain English about what to do, and a coloured ground would make
+   that text the second most legible thing on a screen whose whole job is to say
+   what the register decided. */
+.cr-card { display: flex; gap: 0; padding: 0; overflow: hidden; }
+.cr-rail { flex: 0 0 5px; background: var(--indigo-20); }
+.cr-body { flex: 1 1 auto; min-width: 0; padding: 18px 20px; }
+.cr-wait .cr-rail { background: var(--indigo-20); }
+.cr-info .cr-rail { background: var(--indigo); }
+.cr-warn .cr-rail { background: var(--peridot); }
+.cr-ok   .cr-rail { background: var(--bang); }
+.cr-bad  .cr-rail { background: #C53030; }
+
+.cr-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.cr-checked { font-size: 11.5px; color: var(--t-muted); }
+/* CR's own words, quoted and unedited. On an unrecognised status this line is
+   the only thing on screen that means anything, so it is set larger than the
+   explanation beneath it, not smaller. */
+.cr-quote {
+  font-size: 14px; color: var(--t-head); line-height: 1.5; margin-bottom: 10px;
+}
+.cr-meaning { font-size: 13px; color: var(--t-body); line-height: 1.6; }
 
 .check-row {
   display: flex; align-items: flex-start; gap: 12px; background: var(--indigo-5);
@@ -1484,8 +1584,15 @@ tbody tr.clickable { cursor: pointer; }
 .delivery-row.dr-failed .dr-status { color: #B03A00; }
 
 @media (max-width: 720px) {
-  .stepper { grid-template-columns: repeat(5, 1fr); padding: 14px 6px 12px; }
-  .step-lbl { font-size: 10px; }
+  /* Six across ~400px is ~66px a column. The medallion was 38px and written for
+     five, which left 14px of gutter and labels that collided; 30px gives the
+     two-word labels ("Data Verification", "Client Verification", "CR Status")
+     room to wrap instead. */
+  .stepper { grid-template-columns: repeat(6, 1fr); padding: 14px 4px 12px; }
+  .step { padding: 0 3px; gap: 7px; }
+  .step-num { width: 30px; height: 30px; font-size: 13px; }
+  .step-line { top: 14px; }
+  .step-lbl { font-size: 9.5px; }
   .step-state { display: none; }
 }
 

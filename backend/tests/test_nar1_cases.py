@@ -391,14 +391,20 @@ async def test_list_dashboard_returns_the_badge_in_derives_shape():
     """The dashboard and the case detail must not disagree on the key names of
     the badge, let alone on its value."""
     sb = _FakeSupabase(
-        rows=[_registry_row(workflow_status="completed", workflow_off_portal=True)],
+        rows=[_registry_row(workflow_status="cr_registered",
+                            workflow_off_portal=True,
+                            cr_doc_status="Registered")],
         count=1,
     )
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         result = await nar1_cases.list_dashboard()
     assert result["rows"][0]["workflow_status"] == {
-        "code": "completed", "label": "Completed",
+        "code": "cr_registered", "label": "Registered by CR",
         "off_portal": True, "overdue": False,
+        # CR's own words travel with the badge: on `cr_unknown` they are the
+        # only informative thing there is, and the listing must not have to open
+        # each case to find them.
+        "cr_text": "Registered",
     }
 
 
@@ -665,7 +671,7 @@ def test_composite_workflow_status_stays_the_derived_OBJECT():
     """
     sb = _sb_with_registry(
         {"id": "c1", "manual_receipt": None}, [],
-        {"company_name": "Harbour Tech Ltd.", "workflow_status": "completed"},
+        {"company_name": "Harbour Tech Ltd.", "workflow_status": "cr_registered"},
     )
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         result = nar1_cases.composite("c1")
