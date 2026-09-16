@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import psycopg2
 import pytest
 from cryptography.fernet import Fernet
 
@@ -147,3 +148,88 @@ def test_with_lock_falls_back_and_warns_in_non_prod_without_database_url(
     assert tokens._with_lock("ACCT", lambda: "ran") == "ran"
 
     assert "DATABASE_URL" in capsys.readouterr().err
+
+
+# The DSN in these tests carries a password on purpose: the refusal must name
+# the host and never echo the connection string. A driver error quoted verbatim
+# into an HTTP body would put the database password on the operator's screen
+# and in Railway's logs.
+_UNREACHABLE_DSN = (
+    "postgresql://postgres:C0RRECTH0RSE@"
+    "db.tztrnnthgrtkicciufig.supabase.co:5432/postgres"
+)
+
+
+def _refuse_to_connect(message):
+    def boom(dsn, **kwargs):
+        raise psycopg2.OperationalError(message)
+
+    return boom
+
+
+def test_unreachable_lock_dsn_is_refused_by_name_not_as_a_driver_error(monkeypatch):
+    """PROD, 2026-09-16, first live CR filing.
+
+    DATABASE_URL held the DIRECT Supabase host, `db.<ref>.supabase.co`, which
+    publishes AAAA records only. Railway has no IPv6 route, so psycopg2 raised
+    `OperationalError: Network is unreachable` here -- and `routers.tpsi._handle`
+    classifies TpsiError/RuntimeError and re-raises anything else, so it escaped
+    as a bare 500 with a stack trace. The operator saw "The server could not
+    complete this request", which points at the return data; nothing had gone
+    wrong with the return, and CR was never reached at all.
+
+    The remedy belongs IN the message, because the person who reads it is
+    looking at a filing screen, not at this file.
+    """
+    monkeypatch.setenv("DATABASE_URL", _UNREACHABLE_DSN)
+    monkeypatch.setattr(
+        tokens.psycopg2,
+        "connect",
+        _refuse_to_connect(
+            'connection to server at "db.tztrnnthgrtkicciufig.supabase.co" '
+            "(2406:da14:1d4f:7400:6193:1590:c153:8716), port 5432 failed: "
+            "Network is unreachable\n"
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        tokens._with_lock("ACCT", lambda: pytest.fail("must not run unlocked"))
+
+    message = str(caught.value)
+    # Names the host that could not be reached...
+    assert "db.tztrnnthgrtkicciufig.supabase.co" in message
+    # ...says what to do about it, in the words the fix is spelled in...
+    assert "pooler" in message.lower()
+    # ...and still says WHY the call stopped, so it is not read as a CR fault.
+    assert "advisory lock" in message.lower()
+
+
+def test_an_unreachable_lock_dsn_never_echoes_the_password(monkeypatch):
+    """The refusal travels to the browser as a 502 body and to Railway's logs."""
+    monkeypatch.setenv("DATABASE_URL", _UNREACHABLE_DSN)
+    monkeypatch.setattr(
+        tokens.psycopg2,
+        "connect",
+        _refuse_to_connect("Network is unreachable"),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        tokens._with_lock("ACCT", lambda: None)
+
+    assert "C0RRECTH0RSE" not in str(caught.value)
+    assert _UNREACHABLE_DSN not in str(caught.value)
+
+
+def test_an_unreachable_lock_dsn_does_not_run_the_work_unlocked(monkeypatch):
+    """Refusing is the whole point: one token per CR account. A fallback that
+    logged in anyway would invalidate another worker's token mid-submit."""
+    monkeypatch.setenv("DATABASE_URL", _UNREACHABLE_DSN)
+    monkeypatch.setattr(
+        tokens.psycopg2, "connect", _refuse_to_connect("Network is unreachable")
+    )
+
+    ran = []
+    with pytest.raises(RuntimeError):
+        tokens._with_lock("ACCT", lambda: ran.append(1))
+
+    assert ran == []
