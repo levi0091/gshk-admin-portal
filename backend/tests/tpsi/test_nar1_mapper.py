@@ -95,9 +95,19 @@ def graph(**over):
         # secretary is who signs the return (Q-030). Without one there is no
         # signatory and map_entity() rightly refuses to build an unsigned
         # statutory declaration -- see test_a_return_with_nobody_to_sign_it_*.
+        # `corporate_address` / `corporate_br_no` / `corporate_entity_id` are
+        # attached by nar1_source from the secretary's OWN entity -- the
+        # register itself holds none of them (it has no FK to the party). The
+        # mapper consumes them exactly as it does for a corporate officer, and
+        # refuses to file a secretary whose entity did not resolve rather than
+        # substituting the filing company's registered office.
         "secretaries": [{"is_gshk": True,
                          "secretary_name": "Get Started HK Limited",
-                         "tcsp_number": "TC000807", "is_current": True}],
+                         "tcsp_number": "TC000807", "is_current": True,
+                         "corporate_entity_id": "gshk",
+                         "corporate_entity_resolution": "ok",
+                         "corporate_address": SEC_ADDR,
+                         "corporate_br_no": "99999999"}],
         "share_classes": [],
         "shareholdings": [],
         "persons": {},
@@ -146,6 +156,16 @@ CORP_ADDR = {
     "line1": "Suite 1", "line2": "Corp Tower", "line3": "3 Corp Street",
     "city": "WAN CHAI", "state_region": None, "postal_code": None,
     "country": "Hong Kong", "is_hk_address": True,
+}
+
+#: The company SECRETARY's own registered office. Different again from
+#: CORP_ADDR and from the filing company's, because the defect this guards
+#: against was the secretary's block carrying the FILING COMPANY's address —
+#: a test whose fixtures share an address cannot see that happen.
+SEC_ADDR = {
+    "line1": "Suite C, Level 7", "line2": "World Trust Tower",
+    "line3": "50 Stanley Street", "city": "CENTRAL", "state_region": None,
+    "postal_code": None, "country": "Hong Kong", "is_hk_address": True,
 }
 
 
@@ -822,7 +842,11 @@ def test_a_resigned_officer_is_excluded():
 def test_the_gshk_secretary_is_a_corporate_secretary_with_its_tcsp_number():
     g = graph(
         secretaries=[{"is_gshk": True, "secretary_name": "Get Started HK Limited",
-                      "tcsp_number": "TC000807", "is_current": True}],
+                      "tcsp_number": "TC000807", "is_current": True,
+                      "corporate_entity_id": "gshk",
+                      "corporate_entity_resolution": "ok",
+                      "corporate_address": SEC_ADDR,
+                      "corporate_br_no": "99999999"}],
         addresses={"a1": ADDR},
     )
     sec = mapped(g)["corpSecList"][0]
@@ -830,29 +854,38 @@ def test_the_gshk_secretary_is_a_corporate_secretary_with_its_tcsp_number():
     assert sec["corpTcspNo"] == "TC000807"
 
 
-def test_a_gshk_corporate_secretary_falls_back_to_the_registered_office():
-    """`company_secretaries` has no corporate_entity_id (migration 007 put that
-    FK on entity_officers / shareholdings / beneficial_owners only), so a
-    corporate secretary has no address of its own to file. For the GSHK
-    secretary the filing company's registered office IS GSHK's own address, by
-    construction — GSHK provides it. That is the ONE place the filer's address
-    may stand in for a corporate party's, and it must not widen."""
-    sec = mapped(graph())["corpSecList"][0]
-    assert sec["corpEngName"] == "Get Started HK Limited"
-    assert sec["stdAddress"]["bldg"] == "Test Tower"       # the filer's RO
+def test_the_filers_registered_office_is_never_a_corporate_secretarys_address():
+    """REVERSES an earlier decision, which read:
+
+        For the GSHK secretary the filing company's registered office IS
+        GSHK's own address, by construction — GSHK provides it. That is the
+        ONE place the filer's address may stand in for a corporate party's.
+
+    It is not true by construction; it was true of 4,326 of 5,604 companies on
+    DEV and false of 1,043, and the 1,043 filed a statutory return giving the
+    company's OWN address as its secretary's. The secretary's entity is now
+    resolved by nar1_source and the fallback is gone -- so an unresolvable
+    secretary blocks the filing, which is the outcome the fallback was hiding.
+    """
+    g = graph(secretaries=[{"is_gshk": True,
+                            "secretary_name": "Get Started HK Limited",
+                            "tcsp_number": "TC000807", "is_current": True,
+                            "corporate_entity_resolution": "not_found",
+                            "corporate_address": None}],
+              addresses={"a1": ADDR})
+    with pytest.raises(nar1_mapper.MappingError):
+        mapped(g)
 
 
 def test_a_non_gshk_corporate_secretary_with_no_address_is_a_mapping_error():
-    """A client that keeps its own registered office would be misfiled if the
-    fallback applied to any body corporate — Critical 3's rule holds everywhere
-    except the GSHK secretary."""
+    """The rule no longer has a GSHK exception, but it still has to hold for
+    everybody else."""
     g = graph(secretaries=[{"secretary_name": "OTHER SEC LIMITED",
                             "is_gshk": False, "is_current": True}],
               addresses={"a1": ADDR})
     with pytest.raises(nar1_mapper.MappingError) as exc:
         mapped(g)
-    assert any("OTHER SEC LIMITED" in p and "no address" in p
-               for p in exc.value.problems)
+    assert any("OTHER SEC LIMITED" in p for p in exc.value.problems)
 
 
 def test_a_secretary_recorded_in_both_tables_is_emitted_once():
@@ -872,19 +905,81 @@ def test_a_secretary_recorded_in_both_tables_is_emitted_once():
 
 
 def test_a_corporate_secretary_in_both_tables_is_emitted_once_with_its_tcsp():
-    """Dedup falls back to a normalised name for rows with no person_id, and
-    the company_secretaries row -- the one carrying the TCSP number -- wins."""
+    """One appointment recorded in two tables is ONE corpSec, carrying the
+    register's TCSP number and the entity's address and BR number.
+
+    This is the defect that put a Continuation Sheet B on 5,603 of 5,604
+    rendered returns: dedup keyed on a normalised NAME, and the two tables
+    spell the same secretary differently -- `entity_officers.corporate_name`
+    holds Viewpoint's entity code ("GETSTA"), `company_secretaries` holds the
+    real name. The keys never matched, so one secretary became two blocks,
+    page 4 carrying the right name with the wrong address and page 10 the
+    wrong name with the right address.
+    """
     g = graph(
-        officers=[{"corporate_name": "Get Started HK  Limited",
+        officers=[{"corporate_name": "GETSTA", "corporate_entity_id": "gshk",
                    "party_type": "corporate", "role": "company_secretary",
-                   "is_current": True, "corporate_address": CORP_ADDR}],
-        secretaries=[{"is_gshk": True, "secretary_name": "GET STARTED HK LIMITED",
-                      "tcsp_number": "TC000807", "is_current": True}],
+                   "is_current": True, "corporate_address": SEC_ADDR}],
         addresses={"a1": ADDR},
     )
     secs = mapped(g)["corpSecList"]
     assert len(secs) == 1
+    assert secs[0]["corpEngName"] == "Get Started HK Limited"
     assert secs[0]["corpTcspNo"] == "TC000807"
+    assert secs[0]["corpBrNo"] == "99999999"
+    assert secs[0]["stdAddress"]["bldg"] == "World Trust Tower"
+
+
+def test_the_corporate_secretary_files_its_own_address_not_the_clients():
+    """`company_secretaries` has no FK to the party, so the mapper used to file
+    the FILING COMPANY's registered office in the secretary's block -- wrong
+    for 1,043 of 5,604 companies on DEV, and invisible on the other 4,326
+    because they use GSHK's address as their own registered office."""
+    g = graph(addresses={"a1": ADDR})
+    sec = mapped(g)["corpSecList"][0]
+    assert sec["stdAddress"]["flatFlrBlk"] == "Suite C, Level 7"
+    # The filing company's own registered office, which must NOT appear here.
+    assert sec["stdAddress"]["bldg"] != "Test Tower"
+
+
+def test_the_corporate_secretary_carries_its_br_number():
+    """Field 19 of section 12B. `company_secretaries` has no BR column, so the
+    block rendered with the box empty on every return."""
+    assert mapped(graph())["corpSecList"][0]["corpBrNo"] == "99999999"
+
+
+@pytest.mark.parametrize("resolution", ["not_found", "ambiguous"])
+def test_a_secretary_whose_entity_did_not_resolve_is_a_mapping_error(resolution):
+    """Never a fallback address. A secretary we cannot place is a case that
+    must be fixed before filing, not a block filled in with somebody else's
+    registered office -- that is exactly how the defect above shipped."""
+    g = graph(secretaries=[{"is_gshk": True,
+                            "secretary_name": "Get Started HK Limited",
+                            "tcsp_number": "TC000807", "is_current": True,
+                            "corporate_entity_resolution": resolution,
+                            "corporate_address": None}])
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("Get Started HK Limited" in p for p in exc.value.problems)
+
+
+def test_a_company_with_two_corporate_secretaries_still_files_both():
+    """The fix collapses a DUPLICATE, not the capability. A company that
+    genuinely has two body-corporate secretaries still fills Continuation
+    Sheet B."""
+    g = graph(secretaries=[
+        {"is_gshk": True, "secretary_name": "Get Started HK Limited",
+         "tcsp_number": "TC000807", "is_current": True,
+         "corporate_entity_id": "gshk", "corporate_entity_resolution": "ok",
+         "corporate_address": SEC_ADDR, "corporate_br_no": "99999999"},
+        {"is_gshk": False, "secretary_name": "Second Secretary Limited",
+         "tcsp_number": "TC000999", "is_current": True,
+         "corporate_entity_id": "sec2", "corporate_entity_resolution": "ok",
+         "corporate_address": CORP_ADDR, "corporate_br_no": "88888888"},
+    ])
+    secs = mapped(g)["corpSecList"]
+    assert [s["corpEngName"] for s in secs] == [
+        "Get Started HK Limited", "Second Secretary Limited"]
 
 
 def test_hkid_is_sent_as_the_partial_number_cr_asks_for():
@@ -936,7 +1031,7 @@ def test_a_china_id_alongside_a_passport_files_the_passport_quietly():
              "issuing_country": "China"},
         ]},
     )
-    assert mapped(g)["indDirList"][0]["indvPptNo"] == "E12345678"
+    assert mapped(g)["indDirList"][0]["indvPptNo"] == "E1234"
 
 
 def test_a_passport_row_with_no_number_does_not_crash_the_mapper():
@@ -986,9 +1081,68 @@ def test_a_passport_holder_gets_a_number_and_an_issuing_country():
                                     "is_primary": True}]},
     )
     d = mapped(g)["indDirList"][0]
-    assert d["indvPptNo"] == "X1234567"
+    assert d["indvPptNo"] == "X123"
     assert d["indvPptIssCtry"] == "SGP"
     assert "indvHkidNo" not in d
+
+
+def test_passport_is_sent_as_the_partial_number_cr_asks_for():
+    """indvPptNo is "Passport Number (Partial ID)" in CR's own worksheet, and
+    note 18(c) on the form says in terms: "Please DO NOT fill in the full
+    identification number in the box provided. Information provided in the box
+    is available for public inspection."
+
+    The HKID half of this was implemented and verified live on 2026-08-21; the
+    passport half was not, so every return the portal has produced carries a
+    director's FULL passport number into a public register. All 6,137 passport
+    rows on DEV were affected.
+    """
+    g = graph(
+        officers=[{"person_id": "p1", "party_type": "individual",
+                   "role": "director", "is_current": True}],
+        persons={"p1": person()},
+        addresses={"a1": ADDR, "a2": ADDR},
+        identity_documents={"p1": [{"id_type": "passport",
+                                    "id_number": "P7751249A",
+                                    "issuing_country": "Singapore"}]},
+    )
+    assert mapped(g)["indDirList"][0]["indvPptNo"] == "P7751"
+
+
+@pytest.mark.parametrize("full, partial", [
+    # CR's OWN examples, transcribed from note 18(a) of the NAR1. The rule:
+    # count the alphanumeric characters, ignoring spaces, punctuation marks and
+    # symbols; an EVEN count gives the first half, an ODD count gives the part
+    # beginning at the first character and ending at the middle one.
+    ("ABCD1234567", "ABCD12"),     # 11 -> 6
+    ("ABCD12345678", "ABCD12"),    # 12 -> 6
+    ("ABCD123456789", "ABCD123"),  # 13 -> 7
+    ("ABC-123-4", "ABC1"),         # punctuation dropped: 7 -> 4
+    ("#A1234567H(*)", "A1234"),    # symbols dropped: 9 -> 5
+    # And the HKID examples from the same note, which the general rule must
+    # also satisfy -- "all the alphabets and the first three digits".
+    ("A123456(7)", "A123"),        # 8 -> 4
+    ("AA123456(7)", "AA123"),      # 9 -> 5
+])
+def test_cr_note_18a_partial_number_examples(full, partial):
+    assert nar1_mapper._partial_passport(full) == partial
+
+
+def test_a_passport_number_with_no_alphanumerics_is_a_problem_not_an_empty_box():
+    """"---" masks to the empty string. Filing that is filing no identity
+    number at all while reporting success, which is the failure mode this
+    mapper reports everywhere else."""
+    g = graph(
+        officers=[{"person_id": "p1", "party_type": "individual",
+                   "role": "director", "is_current": True}],
+        persons={"p1": person()},
+        addresses={"a1": ADDR, "a2": ADDR},
+        identity_documents={"p1": [{"id_type": "passport", "id_number": "---",
+                                    "issuing_country": "Singapore"}]},
+    )
+    with pytest.raises(nar1_mapper.MappingError) as exc:
+        mapped(g)
+    assert any("passport" in p for p in exc.value.problems)
 
 
 # ---- share capital and Schedule 1 ------------------------------------------
@@ -1302,7 +1456,11 @@ def test_the_mapped_dict_builds_without_a_validation_error():
         officers=[{"person_id": "p1", "party_type": "individual",
                    "role": "director", "is_current": True}],
         secretaries=[{"is_gshk": True, "secretary_name": "Get Started HK Limited",
-                      "tcsp_number": "TC000807", "is_current": True}],
+                      "tcsp_number": "TC000807", "is_current": True,
+                      "corporate_entity_id": "gshk",
+                      "corporate_entity_resolution": "ok",
+                      "corporate_address": SEC_ADDR,
+                      "corporate_br_no": "99999999"}],
         share_classes=[{"id": "sc1", "class_name": "Ordinary", "currency": "HKD",
                         "total_issued": 1000, "total_paid": 1000}],
         shareholdings=[{"share_class_id": "sc1", "person_id": "p1",
@@ -1334,7 +1492,11 @@ def test_round_trip_cardinality_matches_crs_own_example():
              "role": "company_secretary", "is_current": True},
         ],
         secretaries=[{"is_gshk": True, "secretary_name": "TEST COMPANY LIMITED",
-                      "tcsp_number": "TC000807", "is_current": True}],
+                      "tcsp_number": "TC000807", "is_current": True,
+                      "corporate_entity_id": "gshk",
+                      "corporate_entity_resolution": "ok",
+                      "corporate_address": SEC_ADDR,
+                      "corporate_br_no": "99999999"}],
         share_classes=[
             {"id": "sc1", "class_name": "Ordinary", "currency": "HKD",
              "total_issued": 1000, "total_paid": 1000},

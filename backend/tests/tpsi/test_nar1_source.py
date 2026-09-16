@@ -209,6 +209,183 @@ async def test_a_corporate_party_with_no_address_row_gets_none_not_the_filers():
     assert graph["officers"][0]["corporate_address"] is None
 
 
+# ---- the corporate company secretary's own entity --------------------------
+
+#: GSHK, as a body corporate in its own right. `company_secretaries` names it
+#: and holds nothing else about it, so everything below has to be reached
+#: through the entities table.
+GSHK = {"id": "g1", "company_name": "Get Started HK Limited",
+        "company_name_zh": "", "br_number": "67169839",
+        "registered_address_id": "a4"}
+GSHK_ADDR = {"id": "a4", "line1": "Suite C, Level 7", "country": "Hong Kong"}
+
+
+def _secretary(**over):
+    row = {"id": "s1", "entity_id": "e1", "is_gshk": True,
+           "secretary_name": "Get Started HK Limited",
+           "tcsp_number": "TC000807", "is_current": True}
+    row.update(over)
+    return row
+
+
+async def test_a_corporate_secretary_carries_its_own_address_and_br_number():
+    """The register has no FK to the party, so the secretary's address, BR
+    number and Chinese name are reached by resolving its NAME to an entity.
+    Before this the mapper filed the FILING COMPANY's registered office --
+    wrong for 1,043 of 5,604 companies on DEV."""
+    sb = _Supabase({
+        "entities": [ENTITY, GSHK],
+        "company_secretaries": [_secretary()],
+        "addresses": [FILER_ADDR, GSHK_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    sec = graph["secretaries"][0]
+    assert sec["corporate_entity_resolution"] == "ok"
+    assert sec["corporate_entity_id"] == "g1"
+    assert sec["corporate_address"] == GSHK_ADDR
+    assert sec["corporate_address"] != graph["registered_address"]
+    assert sec["corporate_br_no"] == "67169839"
+
+
+async def test_a_secretary_already_loaded_as_an_officer_costs_no_extra_query():
+    """The GSHK secretary is usually ALSO an entity_officers row, so its entity
+    is already in hand. Resolving by name must not issue a third `entities`
+    query for a company already loaded -- each Supabase round trip is ~200ms in
+    front of every filing."""
+    sb = _Supabase({
+        "entities": [ENTITY, GSHK],
+        "entity_officers": [{"id": "o1", "entity_id": "e1",
+                             "role": "company_secretary",
+                             "party_type": "corporate",
+                             "corporate_name": "GETSTA",
+                             "corporate_entity_id": "g1", "is_current": True}],
+        "company_secretaries": [_secretary()],
+        "addresses": [FILER_ADDR, GSHK_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["secretaries"][0]["corporate_entity_id"] == "g1"
+    assert sb.queried.count("entities") == 2      # the filer, then the parties
+
+
+async def test_a_secretary_the_officer_register_does_not_cover_is_looked_up():
+    """The 796 companies whose officer register names a DIFFERENT firm from
+    their secretary register. The officer's entity cannot answer for the
+    secretary, so the name is resolved against `entities` directly."""
+    other = {"id": "c9", "company_name": "Cheap Incorporation Limited",
+             "registered_address_id": "a3"}
+    sb = _Supabase({
+        "entities": [ENTITY, GSHK, other],
+        "entity_officers": [{"id": "o1", "entity_id": "e1",
+                             "role": "company_secretary",
+                             "party_type": "corporate",
+                             "corporate_entity_id": "c9", "is_current": True}],
+        "company_secretaries": [_secretary()],
+        "addresses": [FILER_ADDR, CORP_ADDR, GSHK_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    sec = graph["secretaries"][0]
+    assert sec["corporate_entity_id"] == "g1"
+    assert sec["corporate_address"] == GSHK_ADDR
+    assert sb.queried.count("entities") == 3      # filer, parties, by name
+
+
+async def test_a_secretary_naming_no_company_on_record_resolves_to_not_found():
+    sb = _Supabase({
+        "entities": [ENTITY],
+        "company_secretaries": [_secretary(secretary_name="Nobody Limited")],
+        "addresses": [FILER_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    sec = graph["secretaries"][0]
+    assert sec["corporate_entity_resolution"] == "not_found"
+    assert sec["corporate_address"] is None
+
+
+async def test_two_companies_of_the_same_name_resolve_to_ambiguous():
+    """They have different addresses and different BR numbers. Picking the
+    first would put a plausible, unverifiable, possibly wrong company on a
+    statutory return."""
+    twin = {"id": "g2", "company_name": "Get Started HK Limited",
+            "br_number": "99999999", "registered_address_id": "a3"}
+    sb = _Supabase({
+        "entities": [ENTITY, GSHK, twin],
+        "company_secretaries": [_secretary()],
+        "addresses": [FILER_ADDR, GSHK_ADDR, CORP_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    sec = graph["secretaries"][0]
+    assert sec["corporate_entity_resolution"] == "ambiguous"
+    assert "corporate_entity_id" not in sec
+    assert sec["corporate_address"] is None
+
+
+async def test_an_individual_secretary_is_not_resolved_as_a_body_corporate():
+    """A register row with a person_id is a natural-person secretary; it has no
+    entity to resolve and must not acquire one."""
+    sb = _Supabase({
+        "entities": [ENTITY, GSHK],
+        "company_secretaries": [_secretary(person_id="p1", secretary_name=None)],
+        "persons": [PERSON],
+        "addresses": [FILER_ADDR, RES_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert "corporate_entity_resolution" not in graph["secretaries"][0]
+
+
+async def test_the_linked_entitys_name_beats_the_stored_viewpoint_code():
+    """`corporate_name` holds Viewpoint's entity CODE, not a company name --
+    "GETSTA", "57THST", "BLACKANDWH" -- on 5,604 of 5,606 current corporate
+    officers and all 213 corporate shareholdings on DEV. Preferring it over the
+    linked entity is what named a reserve director "GETSTA" on a rendered
+    return and a Schedule 1 member "57THST"."""
+    sb = _Supabase({
+        "entities": [ENTITY, HOLDCO],
+        "entity_officers": [{"id": "o1", "entity_id": "e1", "role": "director",
+                             "party_type": "corporate",
+                             "corporate_name": "HOLDCO",
+                             "corporate_entity_id": "c1", "is_current": True}],
+        "shareholdings": [{"id": "sh1", "entity_id": "e1", "share_class_id": "sc1",
+                           "party_type": "corporate",
+                           "corporate_name": "57THST",
+                           "corporate_entity_id": "c1", "is_current": True}],
+        "addresses": [FILER_ADDR, CORP_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["officers"][0]["corporate_name"] == "HOLDCO LIMITED"
+    assert graph["shareholdings"][0]["corporate_name"] == "HOLDCO LIMITED"
+
+
+async def test_the_corporate_parties_are_returned_for_the_return_data_card():
+    """nar1_return_data._party_name has always looked for graph["entities"] to
+    name a body corporate and never found it -- the key was not returned -- so
+    the Data Verification card showed "GETSTA" as the company secretary."""
+    sb = _Supabase({
+        "entities": [ENTITY, HOLDCO],
+        "entity_officers": [{"id": "o1", "entity_id": "e1", "role": "director",
+                             "party_type": "corporate",
+                             "corporate_entity_id": "c1", "is_current": True}],
+        "addresses": [FILER_ADDR, CORP_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["entities"]["c1"]["company_name"] == "HOLDCO LIMITED"
+
+
 async def test_no_corporate_parties_means_no_second_entities_query():
     sb = _Supabase({
         "entities": [ENTITY],

@@ -56,6 +56,36 @@ def test_reports_the_rows_the_card_renders():
     ]
 
 
+def test_the_card_names_a_body_corporate_not_its_viewpoint_code():
+    """The Data Verification screen showed "GETSTA" as the company secretary.
+
+    `_party_name` has always preferred graph["entities"][corporate_entity_id],
+    but load_entity_graph never RETURNED an "entities" key, so every corporate
+    party fell through to `corporate_name` -- which holds Viewpoint's entity
+    code, not a company name. The loader now returns the corporate parties, and
+    the card must use them.
+    """
+    graph = _graph(
+        officers=[{"role": "company_secretary", "corporate_entity_id": "g1",
+                   "corporate_name": "GETSTA", "is_current": True}],
+        entities={"g1": {"id": "g1", "company_name": "Get Started HK Limited"}},
+    )
+    out = nar1_return_data.summarise(graph, year=2026)
+    assert out["secretaries"] == ["Get Started HK Limited"]
+
+
+def test_the_card_falls_back_to_the_stored_name_when_there_is_no_link():
+    """A corporate party with no corporate_entity_id has nothing better to
+    show than what the row says."""
+    graph = _graph(
+        officers=[{"role": "company_secretary",
+                   "corporate_name": "Some Secretary Limited",
+                   "is_current": True}],
+    )
+    out = nar1_return_data.summarise(graph, year=2026)
+    assert out["secretaries"] == ["Some Secretary Limited"]
+
+
 def test_names_corporate_officers_as_well_as_people():
     # An officer row is a person OR a body corporate. Reading only person_id
     # would silently drop a corporate director from a card whose whole job is

@@ -155,12 +155,17 @@ def test_a_changed_registered_office_is_reported_with_both_values():
     assert office["current"] == "New Tower"
     # The label is what the operator reads. A path is not a field name.
     assert office["field"] == "Registered office · Building"
-    # The company secretary is GSHK and GSHK's address IS this company's
-    # registered office (a TCSP files its clients at its own address — 4,446
-    # DEV companies share one address row, and that is correct). So the same
-    # edit legitimately moves two blocks of the return, and the gate reports
-    # both rather than pretending one field changed.
-    assert set(by_path) == {"roAddr/bldg", "corpSecList/corpSec/stdAddress/bldg"}
+    # ONE block moves, not two. This assertion used to read:
+    #
+    #     The company secretary is GSHK and GSHK's address IS this company's
+    #     registered office ... the same edit legitimately moves two blocks.
+    #
+    # That was the old fallback showing through the gate: the secretary's block
+    # had no address of its own, so it echoed the filer's and moved whenever
+    # the filer moved. The secretary's address now comes from the secretary's
+    # own entity, so moving a client does not move its secretary — which is
+    # the point, and is what 1,043 companies on DEV needed.
+    assert set(by_path) == {"roAddr/bldg"}
 
 
 def test_a_changed_company_name_is_reported():

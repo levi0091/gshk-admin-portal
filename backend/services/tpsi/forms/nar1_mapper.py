@@ -304,6 +304,40 @@ def _partial_hkid(digits: str) -> str | None:
     return f"{match.group(1)}{match.group(2)}" if match else None
 
 
+def _partial_passport(number: str) -> str:
+    """The PARTIAL passport number CR wants, per note 18(a) on the NAR1 itself.
+
+    Count the alphanumeric characters, ignoring spaces, punctuation marks and
+    symbols. An EVEN count gives the first half; an ODD count gives the part
+    beginning at the first character and ending at the one that falls at the
+    middle. Both are ceil(n/2) characters of the cleaned string, which is why
+    there is no branch here -- CR states the two cases separately because the
+    form is read by people, not because they compute differently.
+
+        ABCD1234567    -> ABCD12    (11 -> 6)
+        ABCD12345678   -> ABCD12    (12 -> 6)
+        ABCD123456789  -> ABCD123   (13 -> 7)
+        ABC-123-4      -> ABC1      (7 after dropping punctuation -> 4)
+        #A1234567H(*)  -> A1234     (9 after dropping symbols -> 5)
+
+    Every example above is CR's own. Applied to a HKID the same rule yields
+    "all the alphabets and the first three digits", which is what note 18(a)
+    says and what `_partial_hkid` produces by a different route.
+
+    WHY THIS EXISTS AT ALL. indvPptNo's remark in CR's worksheet is "Passport
+    Number (Partial ID)", and note 18(c) is explicit: "Please DO NOT fill in
+    the full identification number in the box provided. Information provided
+    in the box is available for public inspection." The HKID half was
+    implemented and verified live on 2026-08-21; the passport half was missed,
+    so every return produced before this carried a full passport number.
+
+    Returns "" when nothing alphanumeric survives -- the caller reports that
+    rather than filing an empty identity box.
+    """
+    cleaned = "".join(c for c in number if c.isalnum()).upper()
+    return cleaned[:(len(cleaned) + 1) // 2]
+
+
 def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
     """HKID if there is one, otherwise a passport. CR takes one or the other.
 
@@ -393,7 +427,19 @@ def _identity(docs: list[dict], problems: list[str], where: str) -> dict:
             "refuses a passport number without its issuing country"
         )
         return {}
-    return {"indvPptNo": number, "indvPptIssCtry": code}
+    # PARTIAL, never the full number -- see _partial_passport. A number made
+    # entirely of punctuation masks to nothing, and an empty indvPptNo is the
+    # same as filing no identity number at all, so it is reported like every
+    # other gap here rather than sent.
+    partial = _partial_passport(number)
+    if not partial:
+        problems.append(
+            f"{where}: passport number {number!r} contains no letters or "
+            "digits, so it yields no partial number for CR — record the "
+            "passport number as it appears on the document"
+        )
+        return {}
+    return {"indvPptNo": partial, "indvPptIssCtry": code}
 
 
 def _identity_number(docs: list[dict]) -> str:
@@ -786,11 +832,41 @@ def _corporate(name: str, addr: dict | None, problems: list[str],
     return {k: v for k, v in block.items() if v not in ("", None, {})}
 
 
+def _check_secretary_resolved(sec: dict, name: str, problems: list[str]) -> None:
+    """Say WHY a corporate secretary has no details, when nar1_source knows.
+
+    `_address(None)` already refuses a secretary with no address, but its
+    message ("has no address on record") sends an operator to look for an
+    address on a record that does not have a field for one. The register holds
+    a NAME; everything else comes from the entity that name points at, so the
+    actionable fault is almost always that the name matches no company, or
+    matches more than one.
+    """
+    resolution = sec.get("corporate_entity_resolution")
+    if resolution == "not_found":
+        problems.append(
+            f"company secretary {name!r}: no company of that name is on record, "
+            "so the return has no address or BR number to give for it — add the "
+            "secretary to the Body Corporate Registry, or correct the name on "
+            "the company's secretary record"
+        )
+    elif resolution == "ambiguous":
+        problems.append(
+            f"company secretary {name!r}: more than one company on record has "
+            "that name, so which one is the secretary cannot be decided here — "
+            "the return would state an address and BR number that may belong to "
+            "the wrong company"
+        )
+
+
 def _officer_lists(graph: dict, problems: list[str]) -> dict:
     persons = graph["persons"]
     addresses = graph["addresses"]
     ids = graph["identity_documents"]
-    ro = graph.get("registered_address")
+    # The filing company's registered office is deliberately NOT read here. It
+    # was, once, to stand in for the company secretary's own address, and that
+    # is the defect this function no longer has -- see the secretary loop.
+    # Deleted rather than left unused so nobody wires it back in.
 
     ind_dir, corp_dir, res_dir, ind_sec, corp_sec = [], [], [], [], []
 
@@ -800,9 +876,18 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
     # the rows (corporate secretaries) that have none.
     seen_secretaries: set = set()
 
-    def _sec_key(person_id=None, name=None) -> tuple:
+    def _sec_key(person_id=None, entity_id=None, name=None) -> tuple:
         if person_id:
             return ("person", str(person_id))
+        # The corporate party's ENTITY, when nar1_source resolved one. Keying
+        # on a normalised name is what let the same secretary through twice:
+        # `entity_officers.corporate_name` holds Viewpoint's entity CODE
+        # ("GETSTA") and `company_secretaries.secretary_name` holds the real
+        # name, so the two keys never matched and one appointment became two
+        # corpSec blocks -- a second body-corporate secretary the company does
+        # not have, spilling onto Continuation Sheet B.
+        if entity_id:
+            return ("entity", str(entity_id))
         return ("name", " ".join(str(name or "").split()).casefold())
 
     def _first_secretary(key: tuple) -> bool:
@@ -824,26 +909,35 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
                                            hkg_only=True))
             continue
         name = sec.get("secretary_name") or ""
-        if not _first_secretary(_sec_key(name=name)):
+        if not _first_secretary(_sec_key(entity_id=sec.get("corporate_entity_id"),
+                                         name=name)):
             continue
-        # `company_secretaries` has no corporate_entity_id -- migration 007 put
-        # that FK on entity_officers / shareholdings / beneficial_owners only --
-        # so a corporate secretary has no address of its own to file. For the
-        # GSHK secretary the filing company's registered office IS GSHK's own
-        # address by construction (GSHK provides the registered office), so `ro`
-        # is defensible there and nowhere else: any other body corporate falls
-        # through to _address(None) and becomes a problem rather than a guess.
-        # ASSUMPTION, load-bearing: this holds only while GSHK provides the
-        # registered office. A client keeping its own would be misfiled here,
-        # and the real fix is a corporate_entity_id on company_secretaries —
-        # logged as a follow-up migration, deliberately not written here.
-        corp_addr = sec.get("corporate_address")
-        if corp_addr is None and sec.get("is_gshk"):
-            corp_addr = ro
+        # THE FILING COMPANY'S REGISTERED OFFICE IS NOT THE SECRETARY'S ADDRESS.
+        # It used to be substituted here whenever the secretary was GSHK, on the
+        # reasoning that GSHK provides its clients' registered office so the two
+        # coincide "by construction". They coincide for 4,326 of 5,604 companies
+        # on DEV and differ for 1,043, each of which filed a return stating the
+        # company's own address as its secretary's.
+        #
+        # `company_secretaries` still has no FK to the party (migration 007 put
+        # corporate_entity_id on entity_officers / shareholdings /
+        # beneficial_owners only), so nar1_source resolves the secretary's own
+        # entity and attaches its address, BR number and Chinese name here, the
+        # same shape it attaches to a corporate officer row. When it cannot,
+        # `corporate_address` is None and this becomes a problem -- never a
+        # substitution.
+        _check_secretary_resolved(sec, name, problems)
         corp_sec.append(
-            _corporate(name, corp_addr, problems, tcsp_no=sec.get("tcsp_number"),
+            _corporate(name, sec.get("corporate_address"), problems,
+                       br_no=sec.get("corporate_br_no"),
+                       tcsp_no=sec.get("tcsp_number"),
+                       name_zh=sec.get("corporate_name_zh"),
                        hkg_only=True)
         )
+
+    #: Whether the secretary REGISTER named a body corporate at all. Read by
+    #: the officer loop below, which must not add a second one.
+    register_named_a_body_corporate = bool(corp_sec)
 
     # Roles the NAR1 schema has a place for. `authorised_rep` (a valid
     # entity_officers.role) is NOT one of these -- the annual return has no
@@ -864,8 +958,24 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
             name = officer.get("corporate_name") or ""
             # Dedup BEFORE building the block: a duplicate that happens to be
             # missing its address would otherwise raise on data we discard.
-            if role == "company_secretary" and not _first_secretary(_sec_key(name=name)):
-                continue
+            #
+            # THE SECRETARY REGISTER WINS OUTRIGHT. Not merely "is deduped
+            # against": where `company_secretaries` named any body corporate,
+            # an entity_officers row for the same company is the SAME
+            # appointment recorded twice, even when the two disagree about who
+            # it is -- which they do for 796 companies on DEV, where the ETL
+            # stamped a GSHK secretary onto every company while the officer
+            # register names another firm (see the PRD of 2026-09-16, §2).
+            # Keying on the entity alone would emit both and file a company
+            # with two company secretaries, which no Hong Kong company has.
+            # Two rows in the REGISTER still produce two blocks.
+            if role == "company_secretary":
+                if register_named_a_body_corporate:
+                    continue
+                if not _first_secretary(
+                        _sec_key(entity_id=officer.get("corporate_entity_id"),
+                                 name=name)):
+                    continue
             # The corporate party's OWN address, attached by nar1_source via
             # entity_officers.corporate_entity_id (migration 007). Never `ro`.
             block = _corporate(
