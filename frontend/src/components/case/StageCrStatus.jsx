@@ -1,9 +1,30 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api.js'
+import { useAuth } from '../../context/AuthContext.jsx'
 import { formatDateTime } from '../../lib/format.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
 import { CR_MEANING, CR_TONE, crStatus, describeError, isSubmitted } from './workflow.js'
+
+/**
+ * How often the portal asks CR, in this deployment's words.
+ *
+ * THE TWO SCHEDULES ARE GENUINELY DIFFERENT and the difference is not cosmetic
+ * (Levi 2026-09-16). Production polls every 15 minutes around the clock; a test
+ * deployment polls every 15 minutes on weekdays only, because CR's TEST service
+ * answers the form APIs between 10:00 and 16:00 Hong Kong and a run outside
+ * that window is a login spent on a refusal.
+ *
+ * `isTestEnv` is the same strict `=== true` the header's TEST badge uses, so a
+ * profile that has not loaded — or a backend too old to report it — gets the
+ * PRODUCTION sentence. That is the safe direction here as well: the general
+ * rule stated plainly beats naming a window the operator may not have.
+ */
+function cadence(isTestEnv) {
+  return isTestEnv
+    ? 'Checked automatically every 15 minutes on weekdays, 8am–5pm, free of charge.'
+    : 'Checked automatically every 15 minutes, free of charge.'
+}
 
 /**
  * Stage 6 — CR Status.
@@ -26,8 +47,10 @@ import { CR_MEANING, CR_TONE, crStatus, describeError, isSubmitted } from './wor
  * unrecognised status, that line is the only thing on screen that means
  * anything.
  */
-export default function StageCrStatus({ caseRow, canRead, onChanged, onError, onGo }) {
+export default function StageCrStatus({ caseRow, canRead, onChanged, onError,
+                                        onWarn, onGo }) {
   const navigate = useNavigate()
+  const { isTestEnv } = useAuth()
   const [busy, setBusy] = useState(false)
 
   const status = crStatus(caseRow)
@@ -42,7 +65,25 @@ export default function StageCrStatus({ caseRow, canRead, onChanged, onError, on
       // `{}`, not nothing: `api.post` JSON-stringifies whatever it is given,
       // and `undefined` stringifies to `undefined` — a body FastAPI reads as
       // malformed rather than as absent.
-      await api.post(`/tpsi/cases/${caseRow.id}/refresh-status`, {})
+      const out = await api.post(`/tpsi/cases/${caseRow.id}/refresh-status`, {})
+      // A PRESS THAT CHANGED NOTHING HAS TO SAY SO. CR can answer without
+      // identifying this return — a case number it does not hold, or several
+      // documents under one number and none of them recognisable as this
+      // annual return. Nothing is written then, which is correct, and until
+      // 2026-09-16 was also completely silent: the badge came back unchanged
+      // and the button read as broken. That is the same reasoning the route
+      // already applies to its 409, one step earlier.
+      if (out?.skipped) {
+        // Never nothing: a caller that provides no `onWarn` gets it through
+        // the banner instead, which is the same place and the same scroll.
+        if (onWarn) {
+          onWarn('The Companies Registry did not answer about this return',
+                 out.skipped)
+        } else {
+          onError({ message: out.skipped })
+        }
+        return
+      }
       // Re-read rather than patch local state: the answer changes the workflow
       // badge in the header and the medallion in the stepper, and both are
       // derived server-side. Guessing at them here is how a screen starts
@@ -96,14 +137,14 @@ export default function StageCrStatus({ caseRow, canRead, onChanged, onError, on
 
       <div className="action-bar">
         <div className="ab-note">
-          {/* The nightly job is the normal path and this button is the
+          {/* The scheduled job is the normal path and this button is the
               exception, so the note says so. A press costs a CR
               authentication, and repeated CR auth failures lock the account —
               which is the one objection to this button that did NOT go away. */}
           {status.terminal
             ? 'The Companies Registry has finished with this return, so it is no '
               + 'longer checked.'
-            : 'Checked automatically each day, free of charge.'}
+            : cadence(isTestEnv)}
         </div>
         <div className="ab-actions">
           {!status.terminal && filed && (

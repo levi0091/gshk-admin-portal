@@ -307,7 +307,42 @@ def _handle(exc: Exception) -> HTTPException:
             "message": str(exc),
             "kind": getattr(exc, "kind", "unreachable"),
         })
-    if isinstance(exc, (TpsiError, RuntimeError)):
+    # A CR FAULT WITH NO FAULT BEANS — still CR answering, so still a 422.
+    #
+    # `raise_for_fault` produces a bare `TpsiError` when the SOAP Fault carries
+    # no `webServiceFaultBeans` — which is what a refusal from CR's SOAP STACK
+    # looks like, as opposed to one from its business rules. That put the most
+    # useful error text in the app on the one status code whose body does not
+    # survive the edge: on 2026-09-16 every *Check with CR now* returned
+    #
+    #     Message part {…}docStatusEnquiry was not recognized.
+    #     (Does it exist in service WSDL?)
+    #
+    # — the exact sentence naming the bug — and the operator read "Could not
+    # reach the server", because Cloudflare replaced the 502 body with its own
+    # page, which carries no `Access-Control-Allow-Origin`, so `fetch` rejected
+    # before `api.js` could read anything at all. The same reasoning that moved
+    # validation and signature faults off 502 on 2026-08-31 applies here and was
+    # simply not carried to the unlabelled case.
+    #
+    # 502 IS KEPT FOR `TpsiAuthError` ABOVE, deliberately: there the meaning is
+    # carried by the frontend's static hint ("could not be reached, or refused
+    # our login — stop, a repeated login failure is what locks a CR account"),
+    # which needs no body to survive.
+    if isinstance(exc, TpsiError):
+        return HTTPException(422, {
+            "message": str(exc) or "The Companies Registry refused this request.",
+            "problems": [],
+            "kind": "fault",
+        })
+    # A `RuntimeError` IS STILL A 502, and deliberately not a 500: it is what
+    # this router's own collaborators raise when a write fails (a Postgrest FK
+    # violation out of `filings.create_filing`, the advisory lock refusing in
+    # `tokens._connect_for_lock`), and those are HANDLED failures —
+    # `test_create_filing_other_failures_are_handled_not_a_500` is the rule.
+    # Its message may not survive the edge, which is a real and separate
+    # problem; turning every one of them into "the server broke" is not the fix.
+    if isinstance(exc, RuntimeError):
         return HTTPException(502, str(exc))
     raise exc
 

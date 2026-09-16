@@ -16,9 +16,12 @@ knows which.
 THE VOCABULARY IS OPEN, AND THAT IS A MEASUREMENT, NOT A HEDGE.
 `TPSI API Interface v1.0.14.docx` §6.5.4 declares `documentStatus` as
 `String(20)` with the remark "Document Status" and enumerates NO values;
-`TPSIT User Guideline v1.0.5.docx` does not contain the word "status". The only
-two CR has ever put in front of this codebase are `Registered` and `Pending`
-(tests/tpsi/test_reads.py). So CR's exact words are stored and shown verbatim,
+`TPSIT User Guideline v1.0.5.docx` does not contain the word "status". Three
+values have ever been seen: `Registered` and `Pending`, and — found on
+2026-09-16 in the response example embedded in §6.5.5 of that same docx —
+`Lodged`, which none of the guessed-at phrases here had covered. The list below
+is therefore three attestations and a quantity of reasonable guessing, and it is
+important to know which is which. So CR's exact words are stored and shown verbatim,
 a TREATMENT is derived from them here, and anything unanticipated lands on
 `UNKNOWN` — grey, with CR's own wording on the badge — rather than on a wrong
 colour or on nothing at all. `nar1_cases.RECEIPT_VOCABULARY` takes the same
@@ -90,9 +93,16 @@ _RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (REJECTED, ("reject", "rejected", "refuse", "refused", "returned",
                 "withdraw", "withdrawn", "cancel", "cancelled", "canceled",
                 "not accepted", "declined")),
+    # "lodged" IS ATTESTED, unlike most of this list: it is the documentStatus
+    # in CR's own §6.5.5 response example, which makes it the third value CR
+    # has ever been seen to send (after Registered and Pending) and the only one
+    # that arrived from the specification rather than from a live reply. A
+    # document is lodged when the registry has it and has not yet ruled on it,
+    # so it belongs here and not under REGISTERED — "lodged" is the receipt,
+    # "registered" is the decision.
     (PENDING, ("pending", "in progress", "in-progress", "progress",
                "processing", "under process", "received", "submitted",
-               "awaiting", "queued", "vetting")),
+               "lodged", "lodgement", "awaiting", "queued", "vetting")),
     (APPROVED, ("approve", "approved", "accepted", "vetted", "passed")),
     (REGISTERED, ("register", "registered", "registration", "completed",
                   "filed")),

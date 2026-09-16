@@ -9,12 +9,24 @@ import pytest
 from services.tpsi import doc_status as ds
 
 
-# ── the two CR has actually sent ─────────────────────────────────────────────
-# test_reads.py's fixture is the only recorded evidence of CR's own wording.
+# ── the three CR has actually been seen to send ──────────────────────────────
+# Two came off live replies; `Lodged` came off CR's own response example in
+# §6.5.5 of TPSI API Interface v1.0.14 (found 2026-09-16, while fixing the
+# request shape in the same section). Everything else this module recognises is
+# reasonable guessing, and the line between the two is worth keeping visible.
 
-def test_the_two_strings_cr_has_actually_sent():
+def test_the_three_strings_cr_has_actually_been_seen_to_send():
     assert ds.normalise("Registered") == ds.REGISTERED
     assert ds.normalise("Pending") == ds.PENDING
+    assert ds.normalise("Lodged") == ds.PENDING
+
+
+def test_lodged_is_pending_and_not_registered():
+    """The receipt, not the decision. A lodged document is in CR's hands and
+    undecided; calling it registered would put a green tick and a finished case
+    on a return the registry may still refuse."""
+    assert ds.normalise("Lodged") == ds.PENDING
+    assert ds.normalise("Lodged for registration") == ds.PENDING
 
 
 # ── nothing said is not "something unrecognisable" ───────────────────────────

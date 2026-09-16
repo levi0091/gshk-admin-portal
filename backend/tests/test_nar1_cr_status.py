@@ -274,6 +274,35 @@ def test_an_ambiguous_cr_answer_leaves_the_previous_one_standing():
     assert "none could be identified" in report["skipped"]
 
 
+def test_a_case_number_cr_does_not_hold_is_a_SKIP_carrying_crs_words():
+    """Seen live on 2026-09-16: CR answers an unknown case number with the
+    fault `Case no does not exist.`
+
+    A fault on THIS call can only be about the criteria we sent — there is no
+    return in a status enquiry for CR to find fault with — so nothing can be
+    written from it, the previous answer stands, and one bad case number must
+    not abandon the rest of a 400-case run. CR's own words are carried because
+    the fix is the number typed on the Confirmation stage, and "CR refused it"
+    would send an operator to the company profile instead.
+    """
+    from services.tpsi.errors import TpsiValidationError
+
+    store = MagicMock()
+    fault = TpsiValidationError([("", "Case no does not exist.")])
+    with _Stack(*_world(store=store)) as _, \
+         patch("services.nar1_cr_status.reads.case_status", side_effect=fault):
+        report = crs.refresh(MagicMock(), case(), filing())
+
+    store.assert_not_called()
+    assert report["checked"] is False
+    assert "does not recognise the case number" in report["skipped"]
+    assert "Case no does not exist." in report["skipped"]
+    # NOT "CR says: : Case no does not exist." — CR sends this fault with an
+    # EMPTY code, and `_FaultError.__str__` renders "code: message", so the
+    # default string puts a stray colon in the middle of the sentence.
+    assert ": :" not in report["skipped"]
+
+
 def test_a_blank_status_is_recorded_as_not_checked_not_unknown():
     """CR naming no status is indistinguishable from not having been asked."""
     with _Stack(*_world(rows=cr_rows(status=""))):
@@ -353,6 +382,33 @@ async def test_a_move_writes_both():
     # audit_log.case_id holds the ENTITY id — routers/cases.py::_audit_target.
     assert change["case_id"] == "e1"
     assert change["entity_id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_false_drops_only_the_heartbeat_never_the_move():
+    """The poller suppresses the per-case heartbeat because it writes one per
+    RUN instead — 96 runs a day made per-case rows unaffordable. What it must
+    never suppress is the row somebody actually goes looking for: the move.
+    """
+    log = AsyncMock()
+    with patch("services.nar1_cr_status.log_event", new=log):
+        await crs.record({"checked": True, "changed": True, "code": ds.REGISTERED,
+                          "previous": ds.PENDING, "cr_text": "Registered"},
+                         case(), user_id=None, user_display_name="job",
+                         heartbeat=False)
+    codes = [c.kwargs["action_type"] for c in log.await_args_list]
+    assert codes == ["NAR1_CR_STATUS_CHANGED"]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_false_on_an_unchanged_case_writes_nothing():
+    log = AsyncMock()
+    with patch("services.nar1_cr_status.log_event", new=log):
+        await crs.record({"checked": True, "changed": False, "code": ds.PENDING,
+                          "previous": ds.PENDING, "cr_text": "Pending"},
+                         case(), user_id=None, user_display_name="job",
+                         heartbeat=False)
+    log.assert_not_awaited()
 
 
 @pytest.mark.asyncio

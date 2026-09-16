@@ -1,4 +1,4 @@
-"""jobs/poll_cr_status.py — the nightly CR status poll.
+"""jobs/poll_cr_status.py — the scheduled CR status poll.
 
 Two things are load-bearing here and neither is the happy path: the SELECTION
 (the job must not spend CR round trips on cases CR has finished with, and must
@@ -32,7 +32,7 @@ def result(**over):
     return base
 
 
-def _world(cases=None, refresh=None, record=None, client=None):
+def _world(cases=None, refresh=None, record=None, client=None, log=None):
     return (
         patch("jobs.poll_cr_status.open_cases",
               return_value=cases if cases is not None else [case()]),
@@ -44,6 +44,11 @@ def _world(cases=None, refresh=None, record=None, client=None):
               new=record or AsyncMock()),
         patch("jobs.poll_cr_status.build_client",
               return_value=client or MagicMock()),
+        # The run-summary heartbeat. Patched for every test, not just the ones
+        # that assert on it: unpatched it reaches the real `log_event`, which
+        # swallows its own failures and would therefore hide a run quietly
+        # trying to write to Supabase from a unit test.
+        patch("jobs.poll_cr_status.log_event", new=log or AsyncMock()),
     )
 
 
@@ -139,6 +144,76 @@ async def test_a_changed_case_is_counted_and_named():
     record.assert_awaited_once()
     # Nobody did this. The trail must not name whoever last logged in.
     assert record.await_args.kwargs["user_id"] is None
+    # ONE HEARTBEAT PER RUN, NOT PER CASE (Levi 2026-09-16, when the schedule
+    # became every 15 minutes). Per-case heartbeats at 96 runs a day would
+    # write more rows a year than the whole Viewpoint import.
+    assert record.await_args.kwargs["heartbeat"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_asked_cr_something_writes_exactly_one_heartbeat():
+    """Its absence is how anybody finds out the cron service stopped — so it
+    has to be written, and once, carrying the run's counts rather than
+    repeating the per-case detail that NAR1_CR_STATUS_CHANGED already holds."""
+    log = AsyncMock()
+    with _Stack(*_world(cases=[case("a"), case("b")], log=log)):
+        await job.run()
+
+    log.assert_awaited_once()
+    meta = log.await_args.kwargs["metadata"]
+    assert meta["job"] == "poll_cr_status"
+    assert (meta["looked_at"], meta["checked"], meta["changed"]) == (2, 2, 2)
+    assert log.await_args.kwargs["user_display_name"] == job.ACTOR
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_nothing_outstanding_writes_no_heartbeat_at_all():
+    """96 rows a day saying "there was nothing to poll" is not a heartbeat, it
+    is the noise that makes an audit trail unsearchable. Railway's cron log
+    answers "did it run?" for the quiet case."""
+    log = AsyncMock()
+    with _Stack(*_world(cases=[], log=log)):
+        report = await job.run()
+    assert report["looked_at"] == 0
+    log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_run_where_every_case_was_skipped_writes_no_heartbeat():
+    """Nothing was asked of CR, so there is nothing to attest to."""
+    log = AsyncMock()
+    with _Stack(*_world(refresh=lambda *a, **k: result(checked=False,
+                                                       skipped="not filed"),
+                        log=log)):
+        await job.run()
+    log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_credential_still_writes_the_heartbeat():
+    """The run happened and could not proceed — which is exactly the night
+    somebody needs to find in the trail."""
+    log = AsyncMock()
+    patches = list(_world(log=log))
+    patches[4] = patch("jobs.poll_cr_status.build_client",
+                       side_effect=RuntimeError("bad key"))
+    with _Stack(*patches):
+        report = await job.run()
+
+    assert "could not be used" in report["unavailable"]
+    log.assert_awaited_once()
+    assert "bad key" in log.await_args.kwargs["metadata"]["unavailable"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_heartbeat_never_fails_the_run():
+    """The work is already written by the time this runs. A Supabase hiccup on
+    the trail must not turn a successful poll into a failed one."""
+    log = AsyncMock(side_effect=RuntimeError("audit down"))
+    with _Stack(*_world(log=log)):
+        report = await job.run()
+    assert report["checked"] == 1
+    assert report["failed"] == []
 
 
 @pytest.mark.asyncio

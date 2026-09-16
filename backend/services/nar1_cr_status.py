@@ -1,7 +1,7 @@
 """Ask CR what it did with a filed return, and record the answer.
 
 THE ONLY WRITER of `nar1_cases.cr_doc_status*`. The Check-now button and the
-nightly poller both come through `refresh()`, so a hand-check and a cron run
+scheduled poller both come through `refresh()`, so a hand-check and a cron run
 cannot produce two different answers for one case — which is the divergence
 `badge_from_row` exists to prevent one step earlier in the same pipeline.
 
@@ -36,6 +36,7 @@ from services.audit_service import log_event
 from services.tpsi import doc_status as ds
 from services.tpsi import filings as tpsi_filings
 from services.tpsi import reads
+from services.tpsi.errors import TpsiValidationError
 
 _TABLE = "nar1_cases"
 
@@ -158,6 +159,17 @@ def pick_document(rows: list[dict], known_ref: str | None) -> tuple[dict | None,
     )
 
 
+def _fault_text(exc: TpsiValidationError) -> str:
+    """CR's fault messages, without the empty code prefix `str(exc)` produces.
+
+    `_FaultError.__str__` renders "code: message" pairs, and CR sends this
+    particular fault with an EMPTY code — so the default is ": Case no does not
+    exist.", a leading colon in the middle of a sentence on screen.
+    """
+    messages = [m.strip() for _, m in (exc.faults or []) if (m or "").strip()]
+    return " ".join(messages) or str(exc).strip(": ") or "no reason given"
+
+
 def _store(case_id: str, patch: dict) -> None:
     get_supabase().table(_TABLE).update(patch).eq("id", case_id).execute()
 
@@ -195,7 +207,36 @@ def refresh(client, case: dict, filing: dict | None = None) -> dict:
         report["skipped"] = reason
         return report
 
-    rows = reads.case_status(client, case_no=report["cr_case_no"])
+    try:
+        rows = reads.case_status(client, case_no=report["cr_case_no"])
+    except TpsiValidationError as exc:
+        # "CR COULD NOT IDENTIFY THIS CASE" IS A SKIP, NOT A FAILURE, and this
+        # is the commonest real one: CR answers a case number it does not hold
+        # with the fault `Case no does not exist.` — seen live on 2026-09-16
+        # against a manual receipt whose caseNo had been typed as test data.
+        #
+        # Every validation fault on this call means the same thing, which is why
+        # the whole class is caught rather than its wording matched.
+        # `docStatusEnquiry` submits no return for CR to check: the only thing
+        # it can find fault with is the criteria we sent. So nothing can be
+        # written from it, the previous answer — including "never checked" — is
+        # still the truthful one, and the rest of the book must not be abandoned
+        # over one bad case number.
+        #
+        # CR'S OWN WORDS ARE CARRIED, because the fix is in the number somebody
+        # typed on the Confirmation stage and "CR refused" would send them
+        # looking at the company profile instead.
+        # A PLAIN HYPHEN, NOT AN EM DASH. This sentence is printed by the cron
+        # job as well as shown on screen, and `main()` is run by hand from
+        # PowerShell, whose console is cp1252 — an em dash arrives there as a
+        # replacement character in the middle of the one line that is supposed
+        # to tell somebody what to fix.
+        report["skipped"] = (
+            f"CR does not recognise the case number {report['cr_case_no']!r} - "
+            f"CR says: {_fault_text(exc)}"
+        )
+        return report
+
     row, refusal = pick_document(rows, case.get("cr_document_ref_no"))
     if refusal:
         # NOT an error and NOT a status. Nothing is written: the previous answer
@@ -217,8 +258,8 @@ def refresh(client, case: dict, filing: dict | None = None) -> dict:
     }
     # `updated_at` ONLY WHEN CR'S ANSWER ACTUALLY MOVED. The dashboard's Last
     # Updated column is sortable and is how an operator finds the case that
-    # changed; a nightly heartbeat that touched it would reset every filed case
-    # in the book to "today" each morning and make the column say nothing. When
+    # changed; a heartbeat that touched it would reset every filed case in the
+    # book to "just now" every 15 minutes and make the column say nothing. When
     # it was last CHECKED is its own column (`cr_status_checked_at`), which is
     # what the CR Status stage shows.
     if changed:
@@ -254,16 +295,23 @@ def refresh(client, case: dict, filing: dict | None = None) -> dict:
     return report
 
 
-async def record(report: dict, case: dict, *, user_id, user_display_name) -> None:
+async def record(report: dict, case: dict, *, user_id, user_display_name,
+                 heartbeat: bool = True) -> None:
     """Put the check in the trail.
 
-    TWO CODES, and the split is deliberate. Every check writes
-    `TPSI_DOC_STATUS_CHECKED` — a nightly poller over a few hundred cases is a
-    lot of rows, but "we asked CR and it said the same thing" is the evidence
-    that the job is running at all, and its absence is how you find out it
-    stopped. `NAR1_CR_STATUS_CHANGED` fires ONLY on a move, so the question an
-    operator actually asks — when did CR register this — is answerable by
-    filtering to one code rather than by reading a month of heartbeats.
+    TWO CODES, and the split is deliberate. `NAR1_CR_STATUS_CHANGED` fires ONLY
+    on a move, so the question an operator actually asks — when did CR register
+    this — is answerable by filtering to one code rather than by reading a month
+    of heartbeats. `TPSI_DOC_STATUS_CHECKED` says the check happened at all.
+
+    `heartbeat=False` SUPPRESSES ONLY THE LATTER, and only the poller passes it.
+    Since 2026-09-16 the schedule is every 15 minutes rather than nightly, and a
+    per-case heartbeat 96 times a day would write more rows a year than the
+    whole Viewpoint import — so the job writes ONE summary row per run instead
+    (`jobs.poll_cr_status.record_run`) and the evidence that it is alive is kept
+    without burying the case's own trail. A check an OPERATOR asked for keeps
+    its per-case row: somebody did that to that case, which is the kind of thing
+    an audit trail is for.
     """
     if not report.get("checked"):
         return
@@ -277,23 +325,24 @@ async def record(report: dict, case: dict, *, user_id, user_display_name) -> Non
         user_display_name=user_display_name,
     )
 
-    await log_event(
-        action_type=ev.TPSI_DOC_STATUS_CHECKED,
-        event_code=ev.TPSI_DOC_STATUS_CHECKED,
-        metadata={
-            # TWO DIFFERENT NUMBERS, never interchangeable: `case_no` is the
-            # portal's NAR-2026-…, `cr_case_no` is what CR prints on its own
-            # receipt and the only key docStatusEnquiry matches on.
-            "case_no": case.get("case_no"),
-            "cr_case_no": report.get("cr_case_no"),
-            # CR's own words, not our code: the trail should be readable
-            # against what CR's own screen says.
-            "document_status": report.get("cr_text"),
-            "document_ref_no": report.get("document_ref_no"),
-            "code": report.get("code"),
-        },
-        **common,
-    )
+    if heartbeat:
+        await log_event(
+            action_type=ev.TPSI_DOC_STATUS_CHECKED,
+            event_code=ev.TPSI_DOC_STATUS_CHECKED,
+            metadata={
+                # TWO DIFFERENT NUMBERS, never interchangeable: `case_no` is
+                # the portal's NAR-2026-…, `cr_case_no` is what CR prints on
+                # its own receipt and the only key docStatusEnquiry matches on.
+                "case_no": case.get("case_no"),
+                "cr_case_no": report.get("cr_case_no"),
+                # CR's own words, not our code: the trail should be readable
+                # against what CR's own screen says.
+                "document_status": report.get("cr_text"),
+                "document_ref_no": report.get("document_ref_no"),
+                "code": report.get("code"),
+            },
+            **common,
+        )
 
     if report.get("changed"):
         await log_event(

@@ -3,9 +3,24 @@
 Levi 2026-09-16: "we should only check for things after submission and not yet
 confirmed or rejected with CR."
 
-    python -m jobs.poll_cr_status        at  0 3,7,11 * * *   (11:00, 15:00,
-                                             19:00 Hong Kong — inside CR's
-                                             10:00–16:00 test window twice)
+    python -m jobs.poll_cr_status
+
+    PROD   */15 * * * *        every 15 minutes, around the clock
+    DEV    */15 0-8 * * 1-5    every 15 minutes, 08:00–16:45 Hong Kong,
+                               weekdays (Levi 2026-09-16)
+
+EVERY 15 MINUTES IS AFFORDABLE, AND THAT IS A PROPERTY OF THIS JOB, NOT A
+GUESS. `docStatusEnquiry` is free (§6.5.1, "No Charge required"); the query
+below returns nothing once the book has settled, and a run with nothing to do
+costs no CR login at all; and `services/tpsi/tokens.py` keeps one token for 30
+minutes in Postgres, so the runs that DO have work share a login rather than
+making 96 a day. What it is NOT affordable in is audit rows — see `record_run`.
+
+DEV STOPS AT WEEKENDS AND EVENINGS because CR's TEST service answers the form
+APIs only between 10:00 and 16:00 Hong Kong. A run outside that window is a
+login spent to be refused. The requested window is 08:00–17:00 and cron cannot
+express "up to and including 17:00" in one expression, so the last run is at
+16:45; the useful part of it on DEV is 10:00–15:45 regardless.
 
 WHY A CRON SERVICE AND NOT AN IN-PROCESS SCHEDULER — the same reason
 `auto_approve_nar1` gives, plus one of its own. An in-process timer fires once
@@ -31,7 +46,7 @@ be expressed in SQL, and the service re-checks all of them per case.
   no CR case number  there is no key `docStatusEnquiry` will match on
 
 IDEMPOTENT. A second run the same hour re-asks CR and writes the same answer;
-the only new rows are the heartbeat audit entries, which is what they are for.
+the only new row is the run's own heartbeat, which is what it is for.
 
 PER-CASE ISOLATION. One case that fails does not abandon the rest — each is
 asked on its own and the run reports how many were checked, changed, skipped and
@@ -50,7 +65,9 @@ import traceback
 from datetime import datetime, timezone
 
 from db.supabase import get_supabase
+from services import audit_events as ev
 from services import nar1_cases, nar1_cr_status
+from services.audit_service import log_event
 from services.tpsi import doc_status as ds
 from services.tpsi import shared_credentials
 from services.tpsi.client import TpsiClient
@@ -159,6 +176,7 @@ async def run(limit: int = CASE_LIMIT, client: TpsiClient | None = None) -> dict
         client = client or build_client()
     except Exception as exc:  # noqa: BLE001 — no credential is not a per-case fault
         report["unavailable"] = f"the shared CR credential could not be used: {exc}"
+        await record_run(report)
         return report
 
     for case in cases:
@@ -193,12 +211,72 @@ async def run(limit: int = CASE_LIMIT, client: TpsiClient | None = None) -> dict
             ))
 
         try:
+            # `heartbeat=False`: the run writes ONE of those, at the end. See
+            # `record_run`.
             await nar1_cr_status.record(result, case, user_id=None,
-                                        user_display_name=ACTOR)
+                                        user_display_name=ACTOR, heartbeat=False)
         except Exception:  # noqa: BLE001 — the trail must not undo the work
             traceback.print_exc(file=sys.stderr)
 
+    await record_run(report)
     return report
+
+
+async def record_run(report: dict) -> None:
+    """One `TPSI_DOC_STATUS_CHECKED` row for the whole run.
+
+    THE HEARTBEAT MOVED FROM THE CASE TO THE RUN when the schedule became every
+    15 minutes (Levi 2026-09-16). A row per case per run is 96 times a day
+    multiplied by the filed book: DEV's ten cases alone come to ~350,000 rows a
+    year, more than the entire Viewpoint import, on a table whose search needed
+    trigram indexes to answer at all. What the heartbeat is FOR survives the
+    move intact — it exists so that its absence is noticed, and one row every 15
+    minutes is a far clearer pulse than a thousand.
+
+    What is NOT lost: `NAR1_CR_STATUS_CHANGED` still fires per case on every
+    move, which is the row anybody actually goes looking for, and the Check-now
+    button still writes a per-case heartbeat because a person did that to that
+    case.
+
+    A RUN THAT ASKED CR NOTHING WRITES NOTHING. Once the book has settled most
+    runs have no outstanding case at all, and 96 rows a day saying "there was
+    nothing to poll" is not a heartbeat, it is the noise that makes an audit
+    trail unsearchable — and CLAUDE.md already keeps read-only no-ops out of it.
+    Liveness for the quiet case is Railway's own cron log, which is where
+    anybody asking "did it run?" looks first. The moment there IS something
+    outstanding, every run says so.
+
+    Never raises. The work is already done and committed by the time this runs;
+    a Supabase hiccup writing the trail must not make a successful run report
+    failure — the same discipline `log_event` itself keeps.
+    """
+    if not (report.get("checked") or report.get("failed")
+            or report.get("unavailable")):
+        return
+    try:
+        await log_event(
+            action_type=ev.TPSI_DOC_STATUS_CHECKED,
+            event_code=ev.TPSI_DOC_STATUS_CHECKED,
+            entity_type="tpsi",
+            entity_id="poll_cr_status",
+            user_id=None,
+            user_display_name=ACTOR,
+            metadata={
+                "job": "poll_cr_status",
+                "looked_at": report.get("looked_at"),
+                "checked": report.get("checked"),
+                # The COUNTS here and the case numbers in the per-case
+                # NAR1_CR_STATUS_CHANGED rows — a summary that repeated the
+                # detail would be the volume problem again in one row.
+                "changed": len(report.get("changed") or []),
+                "skipped": len(report.get("skipped") or []),
+                "failed": len(report.get("failed") or []),
+                "truncated": bool(report.get("truncated")),
+                "unavailable": report.get("unavailable"),
+            },
+        )
+    except Exception:  # noqa: BLE001 — the trail must not undo the work
+        traceback.print_exc(file=sys.stderr)
 
 
 def main() -> int:

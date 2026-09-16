@@ -60,12 +60,17 @@ export const CR_TONE = {
  * different jobs and a badge cannot do both.
  */
 export const CR_MEANING = {
+  // NO CADENCE IN THIS TEXT. These sentences say what the STATUS means; how
+  // often the portal asks is one fact, it lives in the action bar, and it
+  // differs between deployments — DEV only polls inside CR's test window. Said
+  // in both places it would drift, and "the nightly check" was already wrong
+  // the day the schedule became every 15 minutes.
   cr_not_checked:
     'The return is with the Companies Registry. Nothing has asked CR what it '
-    + 'has done with it yet — the nightly check does that, or you can check now.',
+    + 'has done with it yet — the scheduled check does that, or you can check now.',
   cr_pending:
     'CR has the return and has not decided. Nothing is needed from GSHK; the '
-    + 'nightly check will pick up the answer.',
+    + 'scheduled check will pick up the answer.',
   cr_approved:
     'CR has accepted the return and has not yet placed it on the register. '
     + 'Nothing is needed from GSHK.',
@@ -246,6 +251,16 @@ const CR_REFUSAL_HINTS = {
   validation:
     'CR checked the return and rejected it. Fix the details it lists on the '
     + 'company profile, then validate again — validation is free.',
+  // A refusal from CR's SOAP STACK rather than from its business rules: the
+  // request did not match what CR publishes, so nothing about the case is
+  // wrong and nothing on this screen can fix it. Saying "fix what it reported"
+  // here would send an operator hunting through a company profile for a fault
+  // that is in our own XML — which is what happened on 2026-09-16, when the
+  // message naming the bug did not survive the edge either.
+  fault:
+    'The Companies Registry rejected the REQUEST, not the return. Nothing was '
+    + 'filed and nothing was charged, and nothing on the case needs changing. '
+    + 'Quote the message above — this one is ours to fix.',
   default:
     'The Companies Registry refused this. Fix what it reported — do not simply retry.',
 }

@@ -6,7 +6,7 @@ setup is about fifteen minutes each.
 | Job | What it does | When |
 |---|---|---|
 | `jobs.auto_approve_nar1` | Approves a NAR1 the client never answered, 14 days after the verification email went out. | Daily, midnight Hong Kong |
-| `jobs.poll_cr_status` | Asks CR (`docStatusEnquiry`) what it has done with every return that is filed and not yet registered or rejected. | Daily; twice on DEV, inside CR's test window |
+| `jobs.poll_cr_status` | Asks CR (`docStatusEnquiry`) what it has done with every return that is filed and not yet registered or rejected. | Every 15 minutes on PROD; every 15 minutes on weekday daytimes on DEV |
 
 Both are entered with `python -m jobs.<name>`, both print a one-line summary to
 stdout, and both exit non-zero **only on a real failure** — a run with nothing
@@ -117,8 +117,19 @@ Settings → **Deploy → Cron Schedule**:
 | Job | Environment | Cron (UTC) | Hong Kong time |
 |---|---|---|---|
 | `auto_approve_nar1` | DEV and PROD | `0 16 * * *` | 00:00 daily |
-| `poll_cr_status` | PROD | `13 1 * * *` | 09:13 daily |
-| `poll_cr_status` | DEV | `9 3 * * 1-5` | 11:09, weekdays |
+| `poll_cr_status` | PROD | `*/15 * * * *` | every 15 min, always |
+| `poll_cr_status` | DEV | `*/15 0-8 * * 1-5` | every 15 min, 08:00–16:45, Mon–Fri |
+
+**Railway's scheduler is UTC and Hong Kong is UTC+8 with no daylight saving**,
+so the DEV window is written as hours `0-8` and comes out as 08:00–16:45 Hong
+Kong. The weekday field needs no shifting: 00:00–09:00 UTC Monday is still
+Monday in Hong Kong, so `1-5` means the same days at both ends.
+
+**Why the last DEV run is 16:45 and not 17:00.** Cron cannot say "every 15
+minutes up to and including 17:00" in one expression, and Railway takes one
+expression per service. `0-9` would run on to 17:45, past the window; `0-8`
+stops at 16:45. On DEV it makes no practical difference — see the window note
+below.
 
 **Why `auto_approve_nar1` is at exactly midnight.** The 14-day window is
 counted in whole days from the day the verification email went out, and the job
@@ -126,15 +137,31 @@ approves on the client's *silence*. Running it at the start of the Hong Kong day
 means a client who replies during business hours on day 14 is always the one
 recorded, never the job.
 
-**Why `poll_cr_status` is at 09:13 and not 09:00.** Every cron job everybody
-writes lands on the hour. Nothing here needs the hour, and a quieter minute is
-free.
+**Why every 15 minutes is affordable.** `docStatusEnquiry` is free — CR's spec
+§6.5.1 says "No Charge required" — and three things keep the cost of the
+schedule near zero rather than 96× a daily one:
 
-**Why DEV is weekdays only, inside 10:00–16:00.** That is CR's **test** service
-window. Login and balance answer 24/7 there, and `docStatusEnquiry` may well too
-— CR does not document it — so DEV stays inside the window rather than
-discovering the answer through a week of red runs. PROD files against CR's live
-service and has no window.
+* A run with no outstanding case **never opens a CR session at all**: the client
+  is built after the query, and once the book has settled that is most runs.
+* The TPSI token lives in Postgres for 30 minutes (`services/tpsi/tokens.py`),
+  so consecutive runs **share one login**. This matters beyond politeness —
+  repeated CR auth failures lock the account, and the fewer logins, the smaller
+  the blast radius when the shared password expires mid-day.
+* The audit heartbeat moved from **per case** to **per run** the day this
+  schedule was set, and a run that asked CR nothing writes no row at all. Left
+  as it was, DEV's ten filed cases alone would have written about 350,000 rows a
+  year — more than the entire Viewpoint import — onto a table whose search
+  needed trigram indexes to answer in under a second. `NAR1_CR_STATUS_CHANGED`
+  is unaffected: it is still one row per case per actual move, and it is the row
+  anybody goes looking for.
+
+**Why DEV is weekdays only, inside office hours.** CR's **test** service answers
+the form APIs between 10:00 and 16:00 Hong Kong, weekdays. Login and balance
+answer there 24/7, and `docStatusEnquiry` may well too — CR does not document
+it — so the requested 08:00–17:00 window is kept rather than narrowed to CR's,
+and the runs outside 10:00–16:00 cost a query that usually returns nothing. PROD
+files against CR's live service, which has no window, so it runs around the
+clock.
 
 ### 5. Give it the environment
 
@@ -159,7 +186,7 @@ Replace `admin-api` with the actual name of the API service in that project.
 **`TPSI_CRED_KEY` is the one that must match exactly.** It is the Fernet key the
 shared presenter password is encrypted with. A cron service with a different key
 cannot decrypt the credential, so `poll_cr_status` reports "the shared CR
-credential could not be used" every night and never polls anything.
+credential could not be used" on every run and never polls anything.
 
 **`APP_ENV` decides which CR the job talks to.** Referencing the API's value is
 what keeps them in step. A DEV cron service that inherited `APP_ENV=prod` would
@@ -199,12 +226,29 @@ Zero approved is the normal night. When it does something:
 ### A healthy `poll_cr_status`
 
 ```
-[poll_cr_status] 2026-09-17T01:13:02+00:00: looked at 6, checked 6, changed 1, skipped 0, failed 0
+[poll_cr_status] 2026-09-17T01:15:02+00:00: looked at 6, checked 6, changed 1, skipped 0, failed 0
   CHANGED NAR-2026-0001: cr_not_checked -> cr_registered (CR said 'Registered')
 ```
 
 `looked at 6, checked 0, skipped 6` is also fine — it means the six open cases
-were not filed yet, which is what it says next to each one.
+were not filed yet, which is what it says next to each one. At a 15-minute
+cadence most runs read `looked at 0` once the book has settled; that is the job
+working, and it costs no CR login.
+
+**What a broken one looked like, so it is recognisable next time.** On
+2026-09-16 every case came back:
+
+```
+  FAILED  1f60636c-…: Message part {http://interfaces.service.webservice
+                      .icris3e.cr.gov.hk/}docStatusEnquiry was not recognized.
+                      (Does it exist in service WSDL?)
+```
+
+That is CR's SOAP stack, not CR's business rules: the request named an operation
+CR does not publish. The URL segment is `docStatusEnquiry` and the operation is
+`enquireDocStatus` — different words for one call, which `services/tpsi/reads.py`
+now says out loud. Per-case isolation is why the run reported it once per case
+and finished rather than stopping at the first.
 
 ### Run one by hand
 
@@ -217,14 +261,18 @@ cd backend
 ```
 
 Both are idempotent: running one twice in an hour changes nothing the second
-time. `poll_cr_status` re-asks CR and writes the same answer; the only new rows
-are the `TPSI_DOC_STATUS_CHECKED` audit entries, which is what they are for.
+time. `poll_cr_status` re-asks CR and writes the same answer; the only new row
+is the run's own `TPSI_DOC_STATUS_CHECKED` entry, which is what it is for.
 
 ### Check it from the portal
 
 * **Audit Log**, filtered to `TPSI_DOC_STATUS_CHECKED`, should gain rows dated
-  today under **G-FlowDesk (automatic)**. Their absence is how you find out the
-  cron service stopped — nothing else will tell you.
+  today under **G-FlowDesk (automatic)** — **one per run that actually asked CR
+  something**, carrying that run's counts. A run with nothing outstanding writes
+  none, on purpose: 96 rows a day saying "there was nothing to poll" is not a
+  heartbeat, and for that case Railway's own cron log is the place to look.
+* **Audit Log**, filtered to `NAR1_CR_STATUS_CHANGED`, is the one to actually
+  watch: one row per case, only when CR's answer moved.
 * **A filed case's CR Status stage** should stop saying "Not yet checked with
   CR".
 

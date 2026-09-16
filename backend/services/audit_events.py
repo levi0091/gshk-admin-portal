@@ -70,10 +70,18 @@ TPSI_CRED_CONFIG = "TPSI_CRED_CONFIG"
 #   Seeded by migration 043. TWO codes for one check, and the split is the
 #   whole point.
 #
-#   TPSI_DOC_STATUS_CHECKED is the HEARTBEAT: every docStatusEnquiry writes one,
-#   including the great majority that find nothing changed. A nightly poller
-#   over a few hundred filed cases is a lot of rows — and their absence is the
-#   only way anybody finds out the cron service stopped running.
+#   TPSI_DOC_STATUS_CHECKED is the HEARTBEAT, and its absence is the only way
+#   anybody finds out the cron service stopped running.
+#
+#   ONE ROW PER RUN FROM THE POLLER, ONE ROW PER CASE FROM THE BUTTON (revised
+#   2026-09-16 when the schedule became every 15 minutes). Per-case heartbeats
+#   were affordable at one run a night; at 96 runs a day they are not — DEV's
+#   ten filed cases alone would have written ~350,000 rows a year, more than the
+#   entire Viewpoint import, onto a table whose search already needed trigram
+#   indexes to stay under a second. The run summary keeps the evidence that the
+#   job is alive at 96 rows a day and keeps the case trail readable; a check an
+#   OPERATOR asked for is still that case's own event, because somebody did it
+#   to that case and the trail should say so.
 #
 #   NAR1_CR_STATUS_CHANGED fires ONLY when CR's answer actually moved. The
 #   question an operator asks is "when did CR register this", and with one code

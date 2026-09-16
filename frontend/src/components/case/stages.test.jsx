@@ -1851,11 +1851,11 @@ describe('CR Status', () => {
     }[code],
   })
   const renderIt = (over = {}) => renderRouted(
-    <StageCrStatus caseRow={filed(over)} canRead
-                   onChanged={onChanged} onError={onError} onGo={vi.fn()} />)
+    <StageCrStatus caseRow={filed(over)} canRead onChanged={onChanged}
+                   onError={onError} onWarn={onWarn} onGo={vi.fn()} />)
 
   it('says plainly that nobody has asked CR yet', () => {
-    // The state every filed case is in until the nightly job first runs, and
+    // The state every filed case is in until the scheduled job first runs, and
     // the one Levi asked for as the pre-batch-job fallback. NOT "Pending" —
     // CR has not said that, and nothing may report an answer it never received.
     renderIt({ cr_status: status('cr_not_checked') })
@@ -1896,10 +1896,23 @@ describe('CR Status', () => {
   it('offers the check while CR has not decided', () => {
     renderIt({ cr_status: status('cr_pending', 'Pending') })
     expect(screen.getByRole('button', { name: /Check with CR now/ })).toBeInTheDocument()
-    expect(screen.getByText(/Checked automatically each day/)).toBeInTheDocument()
+    expect(screen.getByText(/every 15 minutes/)).toBeInTheDocument()
     // The press costs a CR authentication but no money, and an operator about
     // to press a button on a CR screen has learnt to check.
     expect(screen.getByText(/free of charge/)).toBeInTheDocument()
+  })
+
+  it('names the weekday window on a TEST deployment and not on production', () => {
+    // The two schedules really differ: PROD polls around the clock, a test
+    // deployment only on weekdays, because CR's test service answers the form
+    // APIs 10:00-16:00 Hong Kong. A production operator told about a window
+    // their deployment does not have would wait for nothing.
+    renderIt({ cr_status: status('cr_pending', 'Pending') })
+    expect(screen.queryByText(/weekdays/)).toBeNull()
+
+    auth = { isTestEnv: true }
+    renderIt({ cr_status: status('cr_pending', 'Pending') })
+    expect(screen.getAllByText(/weekdays, 8am–5pm/).length).toBeGreaterThan(0)
   })
 
   it('asks the backend and re-reads the case rather than patching local state', async () => {
@@ -1911,6 +1924,25 @@ describe('CR Status', () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/tpsi/cases/c1/refresh-status', {}))
     expect(onChanged).toHaveBeenCalled()
+  })
+
+  it('says so when CR answered but named no document for this return', async () => {
+    // A press that wrote nothing used to look exactly like a broken button:
+    // the badge came back unchanged and nothing was said. CR does this
+    // routinely — a case number it does not hold answers "Case no does not
+    // exist.", which is a fact about the number somebody typed, not about
+    // the return.
+    post.mockResolvedValueOnce({
+      skipped: "CR does not recognise the case number 'wddw' — "
+               + 'CR says: Case no does not exist.',
+    })
+    renderIt({ cr_status: status('cr_not_checked') })
+    await userEvent.click(screen.getByRole('button', { name: /Check with CR now/ }))
+    await waitFor(() => expect(onWarn).toHaveBeenCalled())
+    expect(onWarn.mock.calls.at(-1)[1]).toMatch(/Case no does not exist/)
+    // And the case is NOT re-read: nothing changed, and a refresh would redraw
+    // the whole stage for no reason under a banner the operator is reading.
+    expect(onChanged).not.toHaveBeenCalled()
   })
 
   it('reports a refusal through the page banner, not beside the button', async () => {
