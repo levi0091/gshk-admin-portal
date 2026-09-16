@@ -133,9 +133,23 @@ def pick_document(rows: list[dict], known_ref: str | None) -> tuple[dict | None,
     writing a statutory status, so an ambiguous answer refuses rather than
     picks. Attributing another form's rejection to this NAR1 would be a wrong
     red badge on a return that is perfectly fine.
+
+    AN EMPTY LIST MEANS CR KNOWS THE CASE AND HAS LISTED NOTHING ON IT — it does
+    NOT mean the case number is wrong, and the old wording ("CR returned no
+    documents for this case number") read as though it did. Measured against
+    both CR environments on 2026-09-17: a case number CR does not hold comes back
+    as a FAULT (`Case no does not exist.` — verified with `999999999` and `wddw`
+    on production and on test), never as an empty list. So if we are here with no
+    rows, CR matched the key and simply has nothing listed against it yet. Two
+    real PROD returns filed at 16:21 and 17:29 HK were still unlisted at 00:31
+    the same night, by case number, by document reference AND by BR number over
+    a twelve-month window.
     """
     if not rows:
-        return None, "CR returned no documents for this case number"
+        return None, ("CR holds this case but has not yet listed any document "
+                      "against it — the case number is not in question. A "
+                      "return filed today is normally listed later; the next "
+                      "check will pick it up")
 
     if known_ref:
         for row in rows:
@@ -231,6 +245,12 @@ def refresh(client, case: dict, filing: dict | None = None) -> dict:
         # PowerShell, whose console is cp1252 — an em dash arrives there as a
         # replacement character in the middle of the one line that is supposed
         # to tell somebody what to fix.
+        # Recorded as a check for the same reason the empty answer below is: we
+        # asked, and CR answered. A case number CR will never hold must not sit
+        # at the head of every run's queue for the rest of its life.
+        checked_at = _now()
+        _store(case["id"], {"cr_status_checked_at": checked_at})
+        report["checked_at"] = checked_at
         report["skipped"] = (
             f"CR does not recognise the case number {report['cr_case_no']!r} - "
             f"CR says: {_fault_text(exc)}"
@@ -239,10 +259,30 @@ def refresh(client, case: dict, filing: dict | None = None) -> dict:
 
     row, refusal = pick_document(rows, case.get("cr_document_ref_no"))
     if refusal:
-        # NOT an error and NOT a status. Nothing is written: the previous answer
-        # — including "never checked" — is still the truthful one, and
+        # NOT an error and NOT a status. No status is written: the previous
+        # answer — including "never checked" — is still the truthful one, and
         # overwriting it with a guess is the failure this branch exists for.
+        #
+        # BUT THE CHECK ITSELF IS RECORDED, because it happened. CR was asked
+        # and CR answered; only the answer was "nothing listed". Leaving
+        # `cr_status_checked_at` NULL here was wrong in three ways at once, all
+        # of them visible on PROD on 2026-09-17 after some twenty real checks:
+        #
+        #   * the CR Status stage still read "Not yet checked with CR", which
+        #     is a false statement about work the portal had genuinely done;
+        #   * `jobs.poll_cr_status` orders by `cr_status_checked_at NULLS
+        #     FIRST`, so a case CR has nothing to say about sorts to the front
+        #     of every run FOREVER — at two cases that is invisible, at a full
+        #     book it starves the cases that would have moved;
+        #   * an operator had no way to tell "nobody has asked" from "we ask
+        #     every fifteen minutes and CR has not listed it yet".
+        #
+        # `updated_at` is deliberately NOT touched — see the note below. Nothing
+        # about the case changed; only the time we last asked.
+        checked_at = _now()
+        _store(case["id"], {"cr_status_checked_at": checked_at})
         report["skipped"] = refusal
+        report["checked_at"] = checked_at
         return report
 
     raw = (row.get("documentStatus") or "").strip() or None

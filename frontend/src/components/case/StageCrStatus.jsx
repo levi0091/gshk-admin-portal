@@ -47,8 +47,8 @@ function cadence(isTestEnv) {
  * unrecognised status, that line is the only thing on screen that means
  * anything.
  */
-export default function StageCrStatus({ caseRow, canRead, onChanged, onError,
-                                        onWarn, onGo }) {
+export default function StageCrStatus({ caseRow, canRead, onChanged, onRefresh,
+                                        onError, onWarn, onGo }) {
   const navigate = useNavigate()
   const { isTestEnv } = useAuth()
   const [busy, setBusy] = useState(false)
@@ -74,14 +74,25 @@ export default function StageCrStatus({ caseRow, canRead, onChanged, onError,
       // and the button read as broken. That is the same reasoning the route
       // already applies to its 409, one step earlier.
       if (out?.skipped) {
+        // NOT "CR did not answer" — CR usually did. The commonest skip is CR
+        // confirming the case and listing no document against it yet, which is
+        // an answer, just not a status. Saying it did not answer sent an
+        // operator looking for a fault that was not there.
+        //
         // Never nothing: a caller that provides no `onWarn` gets it through
         // the banner instead, which is the same place and the same scroll.
         if (onWarn) {
-          onWarn('The Companies Registry did not answer about this return',
+          onWarn('The Companies Registry has not given a status for this return yet',
                  out.skipped)
         } else {
           onError({ message: out.skipped })
         }
+        // RE-READ ANYWAY. The status did not move, but the time we last asked
+        // did, and the card above goes on saying "Not yet checked with CR"
+        // until it is re-read — which is exactly the false statement this whole
+        // fix is about. `onRefresh`, not `onChanged`: nothing was unlocked, so
+        // the operator must not be moved to another stage.
+        onRefresh?.()
         return
       }
       // Re-read rather than patch local state: the answer changes the workflow

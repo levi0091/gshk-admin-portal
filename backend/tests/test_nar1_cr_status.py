@@ -139,8 +139,16 @@ def test_one_row_is_unambiguous():
 
 
 def test_no_rows_refuses_rather_than_writing_nothing_silently():
+    """And says what an empty list actually means.
+
+    Not "no documents for this case number", which reads as a bad number —
+    CR faults on a number it does not hold, so an empty list is evidence the
+    number was RIGHT and nothing is listed against it yet.
+    """
     row, refusal = crs.pick_document([], None)
-    assert row is None and "no documents" in refusal
+    assert row is None
+    assert "has not yet listed any document" in refusal
+    assert "not in question" in refusal
 
 
 def test_a_known_reference_wins_over_everything():
@@ -259,9 +267,9 @@ def test_a_skipped_case_writes_nothing_and_says_why():
 
 
 def test_an_ambiguous_cr_answer_leaves_the_previous_one_standing():
-    """Nothing is written: the previous answer — including "never checked" — is
-    still the truthful one, and overwriting it with a guess is the failure this
-    branch exists for."""
+    """No STATUS is written: the previous answer — including "never checked" —
+    is still the truthful one, and overwriting it with a guess is the failure
+    this branch exists for. The CHECK is still recorded; see the test below."""
     rows = [
         {"documentRefNo": "A", "documentStatus": "Rejected", "documentName": "ND2A"},
         {"documentRefNo": "B", "documentStatus": "Registered", "documentName": "NSC1"},
@@ -269,9 +277,69 @@ def test_an_ambiguous_cr_answer_leaves_the_previous_one_standing():
     store = MagicMock()
     with _Stack(*_world(rows=rows, store=store)):
         report = crs.refresh(MagicMock(), case(), filing())
-    store.assert_not_called()
     assert report["checked"] is False
     assert "none could be identified" in report["skipped"]
+    written = store.call_args[0][1]
+    assert set(written) == {"cr_status_checked_at"}     # the time, and nothing else
+
+
+def test_an_empty_answer_does_not_blame_the_case_number():
+    """CR recognising the case and listing nothing is NOT a bad case number.
+
+    Measured against both CR environments on 2026-09-17: a number CR does not
+    hold comes back as a FAULT (`Case no does not exist.`), never as an empty
+    list. So an empty list is positive evidence that the key was right — and the
+    old wording, "CR returned no documents for this case number", sent an
+    operator hunting a number CR had just confirmed.
+    """
+    with _Stack(*_world(rows=[])):
+        report = crs.refresh(MagicMock(), case(), filing())
+    assert report["checked"] is False
+    assert "not in question" in report["skipped"]
+    assert "has not yet listed any document" in report["skipped"]
+
+
+def test_an_unanswered_case_still_records_THAT_we_asked():
+    """Three things went wrong on PROD for want of this one write.
+
+    Twenty real checks ran against two filed returns and `cr_status_checked_at`
+    stayed NULL, so: the stage said "Not yet checked with CR" about work that
+    had genuinely happened; `poll_cr_status` orders `NULLS FIRST`, so those two
+    sorted to the head of every run forever; and nobody could tell "nobody has
+    asked" from "we ask every 15 minutes and CR has not listed it".
+    """
+    store = MagicMock()
+    with _Stack(*_world(rows=[], store=store)):
+        report = crs.refresh(MagicMock(), case(), filing())
+
+    store.assert_called_once()
+    case_id, patch = store.call_args[0]
+    assert case_id == "c1"
+    assert list(patch) == ["cr_status_checked_at"]
+    assert report["checked_at"] == patch["cr_status_checked_at"]
+
+    # NOT `updated_at`: nothing about the case changed, and the dashboard's
+    # sortable Last Updated column must not be reset every 15 minutes by a
+    # check that found nothing.
+    assert "updated_at" not in patch
+    # And no status is invented for it.
+    assert "cr_doc_status" not in patch
+    assert "cr_doc_status_code" not in patch
+
+
+def test_a_case_number_cr_rejects_also_records_that_we_asked():
+    """Same reasoning: a number CR will never hold must not head the queue for
+    the rest of its life."""
+    from services.tpsi.errors import TpsiValidationError
+
+    store = MagicMock()
+    fault = TpsiValidationError([("", "Case no does not exist.")])
+    with _Stack(*_world(store=store)), \
+         patch("services.nar1_cr_status.reads.case_status", side_effect=fault):
+        report = crs.refresh(MagicMock(), case(), filing())
+
+    assert list(store.call_args[0][1]) == ["cr_status_checked_at"]
+    assert report["checked_at"] is not None
 
 
 def test_a_case_number_cr_does_not_hold_is_a_SKIP_carrying_crs_words():
@@ -293,7 +361,9 @@ def test_a_case_number_cr_does_not_hold_is_a_SKIP_carrying_crs_words():
          patch("services.nar1_cr_status.reads.case_status", side_effect=fault):
         report = crs.refresh(MagicMock(), case(), filing())
 
-    store.assert_not_called()
+    # The TIME is written — see test_a_case_number_cr_rejects_also_records_that
+    # _we_asked — but never a status.
+    assert list(store.call_args[0][1]) == ["cr_status_checked_at"]
     assert report["checked"] is False
     assert "does not recognise the case number" in report["skipped"]
     assert "Case no does not exist." in report["skipped"]
