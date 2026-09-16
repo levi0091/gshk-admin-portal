@@ -1067,10 +1067,37 @@ def _compose(model: dict, *, company_type: str, presenter: dict,
     schedule_head = fm.SCHEDULE_2_HEADER if listed else fm.SCHEDULE_1_HEADER
     schedule_paging = fm.SCHEDULE_2_PAGING if listed else fm.SCHEDULE_1_PAGING
 
+    # THE SCHEDULE'S CLASS TOTAL COMES FROM SECTION 11, because that is the
+    # only place CR puts it. `schedule1/shares/share` carries `clsOfShares` and
+    # nothing else about the class -- there is no noOfShareIssuedOnThisCls node
+    # under it in nar1_schema.json -- and CR's remark on clsOfShares says the
+    # relationship in terms: "The total number of issued shares for each Class
+    # must match with the total number of issued shares for that class in the
+    # Share Capital section."
+    #
+    # This used to read the element off the schedule node, where it never
+    # exists, so "Total Number of Issued Shares in this Class" printed EMPTY on
+    # every return the portal has produced -- while section 11 three pages
+    # earlier printed the number correctly.
+    issued_by_class = {
+        _get(capital, "clsOfShares"): _get(capital, "noOfShareIssuedOnThisCls")
+        for capital in capitals
+    }
+
     rows = []
     for share in _as_list(_node(model, "schedule1").get("shares")):
         share_class = _get(share, "clsOfShares")
-        total = _get(share, "noOfShareIssuedOnThisCls")
+        if share_class not in issued_by_class:
+            # A class whose members are listed but whose issued total is not
+            # declared. CR would refuse the pair, and printing a blank box is
+            # how this went unnoticed for so long -- say it instead.
+            raise FormFillError(
+                f"Schedule 1 lists members of share class {share_class!r}, but "
+                "the Share Capital section declares no such class, so the "
+                "schedule's 'Total Number of Issued Shares in this Class' "
+                "cannot be stated"
+            )
+        total = issued_by_class[share_class]
         for group in _as_list(share.get("shareHolderGrps")):
             for allottee in _as_list(group.get("allotteeRec")):
                 rows.append((share_class, total, group, allottee))

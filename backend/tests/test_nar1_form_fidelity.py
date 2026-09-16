@@ -120,9 +120,43 @@ def test_an_unparseable_figure_is_printed_as_it_stands():
 
 
 def test_a_share_count_reaches_the_schedule_grouped_too():
-    values = values_of(fill.render_fields(build_xml()))
+    """The member's own holding, and the class total above it. `issued_per_class`
+    is deliberately NOT the holding, so a total copied from the wrong place
+    cannot pass by coinciding with it."""
+    values = values_of(fill.render_fields(build_xml(issued_per_class=5000)))
     assert values[fm.SCHEDULE_1[0]["shares_held"]] == ["100"]
-    assert values[fm.SCHEDULE_1_HEADER["class_total_issued"]] == ["1,000"]
+    assert values[fm.SCHEDULE_1_HEADER["class_total_issued"]] == ["5,000"]
+
+
+def test_the_schedule_class_total_is_section_11s_figure_for_that_class():
+    """Schedule 1's "Total Number of Issued Shares in this Class" printed EMPTY
+    on every return the portal has produced, while section 11 three pages
+    earlier printed the number correctly.
+
+    The renderer read `noOfShareIssuedOnThisCls` off the schedule node, where
+    CR's schema has no such element: `schedule1/shares/share` carries
+    `clsOfShares` and nothing else about the class, and CR's remark on it says
+    the total "must match with the total number of issued shares for that class
+    in the Share Capital section". So the schedule refers to section 11, and
+    the renderer has to follow the reference.
+    """
+    values = values_of(fill.render_fields(build_xml(issued_per_class=12345)))
+    assert values[fm.SCHEDULE_1_HEADER["share_class"]] == ["Class0"]
+    assert values[fm.SCHEDULE_1_HEADER["class_total_issued"]] == ["12,345"]
+    # The same figure section 11 states for that class — one number, one source.
+    assert values[fm.share_capital(0, "total_number")] == ["12,345"]
+
+
+def test_a_schedule_class_missing_from_section_11_refuses_rather_than_printing_blank():
+    """Members listed under a class the Share Capital section does not declare.
+    CR would refuse the pair, and a blank box is how the defect above survived
+    a green suite for so long."""
+    xml = build_xml().replace(
+        "<cr:clsOfShares>Class0</cr:clsOfShares>\n          <cr:shareHolderGrps>",
+        "<cr:clsOfShares>Nonesuch</cr:clsOfShares>\n          <cr:shareHolderGrps>")
+    with pytest.raises(fill.FormFillError) as exc:
+        fill.render_fields(xml)
+    assert "Nonesuch" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

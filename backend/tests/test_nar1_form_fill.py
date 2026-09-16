@@ -94,14 +94,29 @@ def _member(surname, shares):
 
 def build_xml(*, directors=("CHAN",), corporate_directors=(),
               secretaries=1, corporate_secretaries=(), members=("WONG",),
-              date="01/02/2026", share_classes=1):
+              date="01/02/2026", share_classes=1, issued_per_class=100):
     """A validated return, in CR's own shape: a BARE fragment with undeclared
-    `cr:` prefixes, exactly as `tpsi_filings.validated_xml` stores it."""
+    `cr:` prefixes, exactly as `tpsi_filings.validated_xml` stores it.
+
+    IN CR'S SHAPE MEANS CR'S SCHEMA, INCLUDING WHAT IT LEAVES OUT. `schedule1/
+    shares/share` carries `clsOfShares` and NOTHING ELSE about the class --
+    there is no `noOfShareIssuedOnThisCls` node there, and CR's remark on
+    `clsOfShares` says why: "The total number of issued shares for each Class
+    must match with the total number of issued shares for that class in the
+    Share Capital section." The total lives in section 11 and the schedule
+    refers to it.
+
+    This fixture used to invent that node, and name the schedule's class
+    "Ordinary" while the share capitals were "Class0" -- so it asserted a
+    number the mapper never emits, against a class that did not exist. That is
+    why Schedule 1's "Total Number of Issued Shares in this Class" box printed
+    EMPTY on every rendered return with a green test suite above it.
+    """
     capitals = "".join(f"""
         <cr:shareCapital>
           <cr:clsOfShares>Class{i}</cr:clsOfShares>
           <cr:currency>HKD</cr:currency>
-          <cr:noOfShareIssuedOnThisCls>100</cr:noOfShareIssuedOnThisCls>
+          <cr:noOfShareIssuedOnThisCls>{issued_per_class}</cr:noOfShareIssuedOnThisCls>
           <cr:issuedCapital>100</cr:issuedCapital>
           <cr:paidUpCapital>100</cr:paidUpCapital>
         </cr:shareCapital>""" for i in range(share_classes))
@@ -141,8 +156,7 @@ def build_xml(*, directors=("CHAN",), corporate_directors=(),
           {"".join(_corp_dir(c) for c in corporate_directors)}
         </cr:corpDirList>
         <cr:schedule1><cr:shares><cr:share>
-          <cr:clsOfShares>Ordinary</cr:clsOfShares>
-          <cr:noOfShareIssuedOnThisCls>1000</cr:noOfShareIssuedOnThisCls>
+          <cr:clsOfShares>Class0</cr:clsOfShares>
           <cr:shareHolderGrps>
             {"".join(_member(m, 100) for m in members)}
           </cr:shareHolderGrps>
