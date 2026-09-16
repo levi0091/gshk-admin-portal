@@ -583,6 +583,62 @@ def _presenter_reference(model: dict, year: str) -> str:
 # "10000" and made the count and the amount indistinguishable at a glance --
 # which is exactly the pair a director is being asked to check.
 
+#: CR's body-corporate capacities read "<office in the body corporate> of the
+#: <office the BODY CORPORATE holds in the filing company> (Body Corporate)".
+#: It is the SECOND office the signature line is about: the name printed on
+#: that line is the body corporate's, so "Director of the Company Secretary
+#: (Body Corporate)" is a director of the body corporate that is the filing
+#: company's COMPANY SECRETARY.
+_OF_THE = " of the "
+_BODY_CORPORATE = " (Body Corporate)"
+
+#: Which printed word each office keeps. A Reserve Director is a director --
+#: Cap. 622 s.455 has them act in the sole director's place -- so the word that
+#: applies to them is Director.
+#:
+#: Authorized Representative and Authorized Person are in CR's vocabularies and
+#: are NEITHER of the two printed words. They strike nothing: striking one
+#: would assert an office the signatory does not hold, and on this line that is
+#: a misstatement about who is answerable for the return.
+_OFFICE_KEEPS = {
+    "company secretary": "strike_director",
+    "director": "strike_company_secretary",
+    "reserve director": "strike_company_secretary",
+}
+
+
+def signature_capacity_office(capacity: str) -> str:
+    """The office the signatory holds IN THE FILING COMPANY, lowercased.
+
+    An INDIVIDUAL capacity simply is that office ("Director", "Company
+    Secretary"). A body-corporate one names it after "of the".
+    """
+    text = " ".join(str(capacity or "").split())
+    if text.endswith(_BODY_CORPORATE):
+        text = text[: -len(_BODY_CORPORATE)]
+        if _OF_THE in text:
+            text = text.rsplit(_OF_THE, 1)[1]
+    return text.casefold()
+
+
+def signature_strike(capacity: str) -> dict:
+    """The strike-through values for the signature line, keyed by field name.
+
+    The printed line reads "董事 Director／公司秘書 Company Secretary *" over
+    "*請刪去不適用者 Delete whichever does not apply", so the capacity is
+    expressed by striking out the word that does NOT apply -- the opposite of
+    what a reader expects, which is why `field_map.SIGNATURE_STRIKE` spells it
+    out too.
+
+    The renderer struck NEITHER until 2026-09-16, so every return it produced
+    claimed its signatory was both a director and the company secretary.
+
+    Returns {} when the capacity is neither -- see `_OFFICE_KEEPS`.
+    """
+    key = _OFFICE_KEEPS.get(signature_capacity_office(capacity))
+    return {fm.SIGNATURE_STRIKE[key]: fm.STRIKE_THROUGH} if key else {}
+
+
 def _decimal(value: str):
     """`value` as a Decimal, or None if it is not a plain number.
 
@@ -1148,6 +1204,8 @@ def _compose(model: dict, *, company_type: str, presenter: dict,
         ms["records_description"]: NOT_APPLICABLE,
         ms["records_address"]: NOT_APPLICABLE,
     }
+    # "Delete whichever does not apply", which the renderer never did.
+    page8.update(signature_strike(_get(model, "selectCapacityDesc")))
     if company_type == "private":
         page8[ms["statement_private"]] = fm.CHECKBOX_ON
     # ZERO IS AN ANSWER HERE. "This Return includes the following Continuation
@@ -1385,7 +1443,8 @@ def _bake(filled: bytes) -> bytes:
     try:
         return appearance.bake(filled, sizes=FIELD_SIZES,
                                regular=REGULAR_WEIGHT_FIELDS,
-                               centred=CENTRED_FIELDS, faces=FIELD_FACES)
+                               centred=CENTRED_FIELDS, faces=FIELD_FACES,
+                               strike=fm.STRIKE_THROUGH)
     except appearance.AppearanceError as exc:
         # Translated rather than left to propagate: every caller of
         # `render()` already catches `FormFillError` (routers/cases.py,

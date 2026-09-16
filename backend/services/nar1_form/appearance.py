@@ -469,6 +469,37 @@ def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,
 _TICK = ((0.18, 0.46), (0.42, 0.20), (0.86, 0.78))
 
 
+def draw_strike(canvas, rect) -> None:
+    """Draw the deletion rule through a word on the signature line.
+
+    CR's template expresses "delete whichever does not apply" as a dropdown
+    whose only non-blank option is a long run of em-dashes: choosing it fills
+    the box that sits over the word, so the word reads as struck out. The box
+    IS the word's extent -- 62.7pt over "董事 Director", 133.7pt over "公司秘書
+    Company Secretary" -- so the rule spans the whole rect.
+
+    Stroked as a line rather than typeset as those em-dashes. The option string
+    is 93 dashes wide and the box is not; handing it to `layout()` would shrink
+    it toward the 4pt floor chasing a fit, and what CR actually shows is a rule.
+
+    Drawn for the same reason `draw_tick` is: the widget is about to be deleted
+    (see `bake`), and a viewer that does not render form widgets would show an
+    unstruck line -- the same bytes reading as a different declaration of who
+    is answerable for the return.
+    """
+    x0, y0, x1, y1 = (float(v) for v in rect)
+    canvas.saveState()
+    canvas.setStrokeColorRGB(0, 0, 0)
+    # Proportional to the box height, floored, exactly as the tick is: these
+    # boxes are ~10.6pt tall, which puts the rule at 0.85pt -- a strike-through
+    # weight beside 10pt text, not a redaction bar.
+    canvas.setLineWidth(max(0.7, (y1 - y0) * 0.08))
+    canvas.setLineCap(0)
+    middle = y0 + (y1 - y0) / 2
+    canvas.line(x0, middle, x1, middle)
+    canvas.restoreState()
+
+
 def draw_tick(canvas, rect) -> None:
     """Draw a checkmark inside a checkbox widget's rectangle.
 
@@ -515,7 +546,8 @@ def _is_ticked(obj) -> bool:
 def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
          regular: frozenset[str] | set[str] | None = None,
          centred: frozenset[str] | set[str] | None = None,
-         faces: dict[str, str] | None = None) -> bytes:
+         faces: dict[str, str] | None = None,
+         strike: str | None = None) -> bytes:
     """Draw every field value as page content, then remove the form itself.
 
     Every one of these four is keyed on a field's ORIGINAL template name, and
@@ -537,6 +569,10 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
     `faces`   -- a non-default Latin face, for the one group CR does not set in
                  the return's Times: a schedule's page numbers, which belong to
                  the page footer and are set in its sans face.
+    `strike`  -- the one dropdown value that means "delete this word": CR's
+                 own option string on the signature line. Passed in rather than
+                 imported so this module keeps knowing nothing about the field
+                 map, and so an UNRECOGNISED dropdown value still raises.
     """
     register_fonts()
     sizes = sizes or {}
@@ -577,15 +613,21 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
             value = obj.get("/V")
             if value is None or not str(value).strip():
                 continue
+            if kind == "/Ch" and strike is not None and str(value) == strike:
+                # The signature line's deletion rule. Its widget is about to go
+                # like every other, so the rule has to become page content.
+                draw_strike(layer, obj["/Rect"])
+                drew = True
+                continue
             if kind != "/Tx":
-                # The widget is about to be deleted, and this draws text boxes
-                # and ticks only. Anything else with a value -- the signature
-                # line's strike-through dropdown, if a caller ever fills it --
-                # would leave the return without a word.
+                # The widget is about to be deleted, and this draws text boxes,
+                # ticks and the one dropdown rule above. Anything else with a
+                # value would leave the return without a word.
                 raise AppearanceError(
                     f"field {name!r} is a {kind} carrying {str(value)!r}, and "
-                    f"only text boxes and ticks are drawn. Flattening would "
-                    f"delete the value from the return."
+                    f"only text boxes, ticks and the signature line's deletion "
+                    f"rule are drawn. Flattening would delete the value from "
+                    f"the return."
                 )
             draw_value(layer, str(value), obj["/Rect"],
                        size=sizes.get(name, DEFAULT_SIZE),

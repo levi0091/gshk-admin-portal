@@ -206,11 +206,36 @@ def test_every_value_the_form_carried_is_drawn_on_the_page():
     assert checked > 100, f"only {checked} values checked; discovery broke"
 
 
+def test_an_unrecognised_dropdown_value_is_refused_even_when_strikes_are_drawn():
+    """`bake(strike=...)` draws ONE dropdown value: CR's deletion rule. Any
+    other choice value is still a thing it cannot draw, and would be removed
+    with its widget and vanish from the return without a word.
+
+    The point of passing the rule in rather than importing it: if CR's option
+    string ever changes, this raises instead of silently striking nothing.
+    """
+    from pypdf import PdfWriter
+    from pypdf.generic import NameObject, TextStringObject
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    writer = PdfWriter(clone_from=PdfReader(
+        io.BytesIO(fill.render_fields(build_xml()))))
+    choice = next(annot.get_object()
+                  for page in writer.pages
+                  for annot in (page.get("/Annots") or [])
+                  if annot.get_object().get("/FT") == "/Ch")
+    choice[NameObject("/V")] = TextStringObject("something else entirely")
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    with pytest.raises(ap.AppearanceError, match="/Ch"):
+        ap.bake(buffer.getvalue(), strike=fm.STRIKE_THROUGH)
+
+
 def test_a_value_bake_cannot_draw_is_refused_not_deleted():
-    """`bake()` draws text boxes and ticks. Anything else carrying a value --
-    the signature line's strike-through dropdown, if a caller ever fills it --
-    would be removed with its widget and vanish from the return without a
-    word. That has to be loud."""
+    """`bake()` draws text boxes and ticks, and the signature line's deletion
+    rule only when told what that rule is. Anything else carrying a value would
+    be removed with its widget and vanish from the return without a word. That
+    has to be loud."""
     from pypdf import PdfWriter
     from pypdf.generic import NameObject, TextStringObject
     from tests.test_nar1_form_fill import build_xml
