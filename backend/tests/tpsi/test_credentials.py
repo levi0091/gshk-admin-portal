@@ -256,20 +256,25 @@ def test_password_only_rotation_preserves_signing_password_and_deposit_account()
     None means "clear it" to PostgREST."""
     payload = creds._payload(
         "u1", "T1", "newpw",
-        creds.UNSET, creds.UNSET, creds.UNSET,
+        creds.UNSET, creds.UNSET, creds.UNSET, creds.UNSET,
         rotated=True,
     )
     assert "eservice_password_enc" not in payload
     assert "eservice_user_id" not in payload
+    # The CR-registered name must survive a password rotation too. Clearing it
+    # would not fail here; it would fail at CR, on the next body-corporate
+    # filing, as "the signatory is not authorized to sign the document".
+    assert "eservice_person_name" not in payload
     assert "deposit_account_no" not in payload
     assert payload["last_rotated_at"]
 
 
 def test_explicit_null_still_clears():
     payload = creds._payload(
-        "u1", "T1", "pw", None, None, None, rotated=False,
+        "u1", "T1", "pw", None, None, None, None, rotated=False,
     )
     assert payload["eservice_password_enc"] is None
+    assert payload["eservice_person_name"] is None
     assert payload["deposit_account_no"] is None
 
 
@@ -277,7 +282,8 @@ def test_rotation_can_change_one_field_without_resupplying_the_password():
     """Changing the deposit account must not force the user to retype their TPSI
     password from memory — against an API that locks accounts on failed auth."""
     payload = creds._payload(
-        "u1", "T1", creds.UNSET, creds.UNSET, creds.UNSET, "N999", rotated=True,
+        "u1", "T1", creds.UNSET, creds.UNSET, creds.UNSET, creds.UNSET, "N999",
+        rotated=True,
     )
     assert "tpsi_password_enc" not in payload   # untouched -> not written
     assert payload["deposit_account_no"] == "N999"
@@ -302,6 +308,45 @@ def test_load_eservice_returns_none_when_the_row_has_no_signing_password():
     row = {"eservice_user_id": "EUSER", "eservice_password_enc": None}
     with patch.object(credentials, "_read", return_value=row):
         assert credentials.load_eservice("u1") is None
+
+
+# ── load_signatory_identity — who the FORM names (migration 042) ────────────
+
+
+def test_load_signatory_identity_returns_the_id_and_the_cr_name():
+    """Both halves, because CR checks them against each other: a right id with
+    a wrong name is refused as "the signatory is not authorized to sign"."""
+    from services.tpsi import credentials
+
+    row = {"eservice_user_id": "EUSER", "eservice_person_name": "CHAN, TAI MAN"}
+    with patch.object(credentials, "_read", return_value=row):
+        assert credentials.load_signatory_identity("u1") == {
+            "eservice_user_id": "EUSER",
+            "person_name": "CHAN, TAI MAN",
+        }
+
+
+def test_load_signatory_identity_does_not_require_a_signing_password():
+    """Deliberately not load_eservice(). This is read at PREPARE time to put a
+    name on the form; requiring the signing password would refuse to BUILD a
+    return for someone who simply has not stored one yet, and decrypt a secret
+    the form has no use for."""
+    from services.tpsi import credentials
+
+    row = {"eservice_user_id": "EUSER", "eservice_person_name": "CHAN, TAI MAN",
+           "eservice_password_enc": None}
+    with patch.object(credentials, "_read", return_value=row):
+        identity = credentials.load_signatory_identity("u1")
+    assert identity["eservice_user_id"] == "EUSER"
+
+
+def test_load_signatory_identity_is_none_when_nothing_is_stored():
+    """None, not a half-filled dict: the mapper turns it into a filing problem
+    naming CR Credentials, which is the only actionable thing to say."""
+    from services.tpsi import credentials
+
+    with patch.object(credentials, "_read", return_value=None):
+        assert credentials.load_signatory_identity("u1") is None
 
 
 def test_load_eservice_returns_the_pair_and_falls_back_to_the_user_id():

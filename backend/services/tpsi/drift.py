@@ -338,9 +338,32 @@ def current_xml_for(filing: dict) -> str:
 
     capacity = _capacity_for(filing, graph, default_capacity, nar1_mapper)
 
+    # THE SAME SIGNER THE STORED FILING NAMES, not whoever is looking now.
+    #
+    # A body-corporate return carries the signing human in associatedPersonId /
+    # associatedPersonName, and this rebuild is compared field-for-field against
+    # request_xml. Resolving the identity from anyone else -- or from nobody --
+    # would report a difference on the signatory block for every GSHK client and
+    # block the submit over a change that never happened. The filing records who
+    # prepared it, so that is who it is rebuilt as.
+    #
+    # Imported here rather than at module scope: this module is otherwise pure
+    # enough to exercise without the credential store, and the import is only
+    # needed on the rebuild path.
+    from services.tpsi import credentials as _credentials
+
+    signing_identity = None
+    if filing.get("presenter_user_id"):
+        try:
+            signing_identity = _credentials.load_signatory_identity(
+                filing["presenter_user_id"])
+        except Exception:  # noqa: BLE001 — a credential read failure is not
+            signing_identity = None  # drift; the mapper reports what is missing.
+
     try:
         data = nar1_mapper.map_entity(graph, year=year,
-                                      signatory_capacity=capacity)
+                                      signatory_capacity=capacity,
+                                      signing_identity=signing_identity)
         return nar1.build_nar1_xml(data)
     except nar1_mapper.MappingError as exc:
         # The company can no longer be mapped at all — which is itself a change

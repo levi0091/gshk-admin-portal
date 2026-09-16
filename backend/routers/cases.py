@@ -253,8 +253,21 @@ async def get_return_data(
     except LookupError as exc:
         raise HTTPException(404, str(exc))
 
+    # The viewer's own CR identity. A body-corporate return names the human
+    # signing for the secretary, so the card's verdict is only truthful about
+    # THIS operator's ability to file it. Imported locally: this router has no
+    # other business with the credential store.
+    from services.tpsi import credentials as _credentials
+
+    try:
+        signing_identity = _credentials.load_signatory_identity(user["id"])
+    except Exception:  # noqa: BLE001 — a credential read failure must not blank
+        signing_identity = None  # a read-only card; the mapper names the gap.
+
     return nar1_return_data.summarise(
-        graph, signatory_capacity=case.get("signatory_capacity")
+        graph,
+        signatory_capacity=case.get("signatory_capacity"),
+        signing_identity=signing_identity,
     )
 
 

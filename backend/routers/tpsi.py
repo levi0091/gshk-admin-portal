@@ -62,6 +62,12 @@ class CredentialIn(BaseModel):
     presentor_account_id: str | None = None
     tpsi_password: str | None = None
     eservice_user_id: str | None = None
+    #: The name CR holds for that e-Service account, filed as
+    #: associatedPersonName when a return is signed for a body corporate. CR
+    #: checks it against the account and refuses a mismatch as an
+    #: authorisation failure, so it is entered, never derived from
+    #: users.display_name.
+    eservice_person_name: str | None = None
     eservice_password: str | None = None
     deposit_account_no: str | None = None
 
@@ -73,6 +79,7 @@ class CredentialUpdateIn(BaseModel):
     presentor_account_id: str | None = None
     tpsi_password: str | None = None
     eservice_user_id: str | None = None
+    eservice_person_name: str | None = None
     eservice_password: str | None = None
     deposit_account_no: str | None = None
 
@@ -310,6 +317,7 @@ async def set_credentials(
         presentor_account_id=_opt(body, "presentor_account_id"),
         tpsi_password=_opt(body, "tpsi_password"),
         eservice_user_id=_opt(body, "eservice_user_id"),
+        eservice_person_name=_opt(body, "eservice_person_name"),
         eservice_password=_opt(body, "eservice_password"),
         deposit_account_no=_opt(body, "deposit_account_no"),
     )
@@ -334,6 +342,7 @@ async def rotate_credentials(
         presentor_account_id=_opt(body, "presentor_account_id"),
         tpsi_password=_opt(body, "tpsi_password"),
         eservice_user_id=_opt(body, "eservice_user_id"),
+        eservice_person_name=_opt(body, "eservice_person_name"),
         eservice_password=_opt(body, "eservice_password"),
         deposit_account_no=_opt(body, "deposit_account_no"),
     )
@@ -692,11 +701,29 @@ async def prepare_filing(
             capacity = default_capacity(
                 is_corporate=resolved.get("is_corporate") is True)
 
+    # WHO SIGNS FOR THE BODY CORPORATE, from the signed-in user's own CR
+    # credential. A GSHK client's secretary is a company, and CR will not take a
+    # company as a signatory: it wants the human acting for it, named in
+    # associatedPersonId / associatedPersonName (see nar1_mapper.
+    # _associated_signatory). Read here rather than accepted as a request field,
+    # for the same reason the capacity is read from the case: the value filed
+    # must be one this user actually holds, not one the caller could assert.
+    #
+    # It is the PREPARING user, who is normally the signing user. When they are
+    # not the same person, filings.sign() refuses the mismatch rather than
+    # signing a return naming someone else — declared_signatory_id() now reads
+    # associatedPersonId precisely so that guard can still see it.
     try:
+        # Read INSIDE the try: a credential-store failure is operational, like
+        # the loader's, and _handle turns it into a named 502 rather than the
+        # bare 500 an unguarded call would put on the screen mid-filing.
+        signing_identity = credentials.load_signatory_identity(user["id"])
+
         # `signatory` is still passed straight through: an explicit override
         # replaces the whole signer, capacity included.
         data = nar1_mapper.map_entity(graph, year=year, signatory=body.signatory,
-                                      signatory_capacity=capacity)
+                                      signatory_capacity=capacity,
+                                      signing_identity=signing_identity)
         form_xml = nar1.build_nar1_xml(data)
     except nar1_mapper.MappingError as exc:
         # The whole list, in a structured field the UI can render as CR's own

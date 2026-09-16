@@ -574,22 +574,43 @@ class SignatoryMismatch(Exception):
     """
 
 
+#: The two elements that can name the human who signs, in the order they are
+#: consulted. A return signed for a BODY CORPORATE carries no selectPersonId at
+#: all -- CR refuses one there ("the signatory is not an individual user",
+#: verified 2026-09-16) -- and names the signer in associatedPersonId instead.
+#: Reading only the first would make this function return None for every real
+#: GSHK client, and the mismatch guard below is only as good as what it reads.
+_SIGNATORY_ELEMENTS = ("selectPersonId", "associatedPersonId")
+
+
 def declared_signatory_id(validated_xml: str | None) -> str | None:
-    """selectPersonId as CR holds it, or None if the return names none.
+    """The e-Service account this return names as its signer, or None.
 
     Read by regex rather than parsed: validated_xml is a bare fragment with
     undeclared prefixes (see _extract_eform), so an XML parser needs it wrapped
-    first, and this is one optional leaf value.
+    first, and these are optional leaf values.
+
+    WIDENED to associatedPersonId (2026-09-16). It used to read selectPersonId
+    only, on the reasoning that a body-corporate return "names no person and
+    these guards never fire". That was true while the body-corporate path
+    emitted nothing identifying a human -- which is also why CR rejected every
+    such return. Now that the path names the signer, a guard that still looked
+    only at selectPersonId would go blind on the ONE path every real GSHK
+    client uses, and a NAR1 declaring that A signed it while carrying B's
+    signature is a false statutory declaration whether or not CR notices.
     """
     import re as _re
 
     if not validated_xml:
         return None
-    found = _re.search(
-        r"<(?:\w+:)?selectPersonId>([^<]*)</(?:\w+:)?selectPersonId>", validated_xml
-    )
-    value = (found.group(1) if found else "").strip()
-    return value or None
+    for element in _SIGNATORY_ELEMENTS:
+        found = _re.search(
+            rf"<(?:\w+:)?{element}>([^<]*)</(?:\w+:)?{element}>", validated_xml
+        )
+        value = (found.group(1) if found else "").strip()
+        if value:
+            return value
+    return None
 
 
 def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str) -> dict:

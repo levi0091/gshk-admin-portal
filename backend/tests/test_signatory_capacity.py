@@ -26,7 +26,11 @@ from services.tpsi.forms import nar1_mapper
 from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL,
 )
-from tests.tpsi.test_nar1_mapper import graph as _mapper_graph, person as _person
+from tests.tpsi.test_nar1_mapper import (
+    graph as _mapper_graph,
+    person as _person,
+    SIGNING_IDENTITY,
+)
 
 client = TestClient(app)
 
@@ -45,8 +49,22 @@ def _graph_with_corporate_secretary():
     hand-rolled dict. A thin graph makes `map_entity` raise KeyError, which
     `summarise` catches and reports as "could not check this company" -- so
     these tests would pass against a crash rather than against the verdict.
+
+    The same secretary also appears on the OFFICER register carrying its own BR.
+    That is not decoration: selectAssoBrNo is read from there, because
+    `company_secretaries` has no corporate_entity_id to resolve and the two rows
+    cannot be matched by name (on the live register the same secretary is 'Get
+    Started HK Limited' in one and 'GETSTA' in the other). It is also PROD's
+    actual shape -- 5,970 of the 5,971 companies holding a secretary row have
+    exactly this pair.
     """
-    return _mapper_graph()
+    return _mapper_graph(officers=[{
+        "role": "company_secretary",
+        "party_type": "corporate",
+        "corporate_name": "Get Started HK Limited",
+        "corporate_br_no": "67169839",
+        "is_current": True,
+    }])
 
 
 def _graph_with_individual_secretary():
@@ -78,10 +96,17 @@ def test_without_a_capacity_the_mapper_still_refuses():
 def test_the_chosen_capacity_reaches_the_form_and_clears_the_refusal():
     problems = []
     block = nar1_mapper._signatory_block(
-        _graph_with_corporate_secretary(), None, problems, CORPORATE_CAPACITY
+        _graph_with_corporate_secretary(), None, problems, CORPORATE_CAPACITY,
+        SIGNING_IDENTITY,
     )
     assert block["selectCapacityDesc"] == CORPORATE_CAPACITY
     assert block["selectPersonName"] == "Get Started HK Limited"
+    # The capacity is no longer the only thing CR needs from a body corporate:
+    # the signing human and the secretary's BR are filed alongside it. The
+    # refusal is only cleared when all of them are present.
+    assert block["selectAssoBrNo"] == "67169839"
+    assert block["associatedPersonId"] == SIGNING_IDENTITY["eservice_user_id"]
+    assert block["associatedCapacityDesc"] == "Director"
     assert problems == []
 
 

@@ -269,6 +269,7 @@ function MinePane({ canWrite, onNotice, onError }) {
   const [meta, setMeta] = useState(undefined)
   const [saving, setSaving] = useState(false)
   const [eserviceUserId, setEserviceUserId] = useState('')
+  const [eservicePersonName, setEservicePersonName] = useState('')
   const [password, setPassword] = useState(null)
 
   const load = useCallback(async () => {
@@ -276,6 +277,7 @@ function MinePane({ canWrite, onNotice, onError }) {
       const data = await api.get('/tpsi/credentials')
       setMeta(data || {})
       setEserviceUserId(data?.eservice_user_id || '')
+      setEservicePersonName(data?.eservice_person_name || '')
       setPassword(null)
     } catch (e) {
       onError(e.message)
@@ -314,6 +316,7 @@ function MinePane({ canWrite, onNotice, onError }) {
      */
     const payload = {
       eservice_user_id: eserviceUserId.trim() || null,
+      eservice_person_name: eservicePersonName.trim() || null,
     }
     // Untouched secrets are OMITTED, not sent as null: the backend reads a
     // present-but-null field as "clear this column".
@@ -385,6 +388,19 @@ function MinePane({ canWrite, onNotice, onError }) {
                     </span>
                   </div>
 
+                  <div className="f-group">
+                    <label className="f-label" htmlFor="cr-eservice-name">Name on that e-Service account</label>
+                    <input
+                      id="cr-eservice-name" className="f-input" value={eservicePersonName}
+                      onChange={(e) => setEservicePersonName(e.target.value)}
+                    />
+                    <span className="f-hint">
+                      Exactly as CR holds it for the account above. Filed when you sign
+                      for a body corporate, and CR checks the two match — a near miss is
+                      refused as an unauthorised signatory, not as a wrong name.
+                    </span>
+                  </div>
+
                   <SecretField
                     id="cr-eservice-password"
                     label="e-Service signing password"
@@ -444,6 +460,9 @@ function MinePane({ canWrite, onNotice, onError }) {
             </Meta>
             <Meta label="e-Service user ID">
               {meta.eservice_user_id || <span className="td-muted">Not set</span>}
+            </Meta>
+            <Meta label="Name on the account">
+              {meta.eservice_person_name || <span className="td-muted">Not set</span>}
             </Meta>
             <Meta label="Last rotated">
               {meta.last_rotated_at

@@ -466,6 +466,13 @@ def _derive_signatory(graph: dict) -> dict | None:
                 # refuses rather than guesses. See _signatory_block().
                 "capacity": None,
                 "person_id": None,
+                # The body corporate's OWN BR, filed as selectAssoBrNo. Carried
+                # on the signatory rather than looked up later so an explicit
+                # signatory= override can state it — the same completeness
+                # `person_id` has for a natural person. Derived here from the
+                # officer register, because the `company_secretaries` row this
+                # signatory comes from has no corporate_entity_id to resolve.
+                "br_no": _corporate_secretary_br(graph),
                 "date": None,
                 "is_corporate": True,
             }
@@ -504,9 +511,61 @@ def _check_capacity(name: str, capacity: str, is_corporate: bool,
     )
 
 
+#: CR's 15 Body Corporate capacities are "<individual role> of the <corporate
+#: role> (Body Corporate)" -- the 5 Individual roles times the 3 corporate ones,
+#: exactly. The half BEFORE " of the " is the capacity the signing human holds
+#: in the body corporate, and CR requires associatedCapacityDesc to be that
+#: value and no other: sending "Company Secretary" against "Director of the
+#: Company Secretary (Body Corporate)" is refused with
+#:
+#:     Capcity is not matched between associate and selected.
+#:
+#: (CR's spelling). Verified against CR's test register 2026-09-16, so the
+#: operator's capacity choice DERIVES this field -- a second picker for it could
+#: only ever disagree with the first and produce that error.
+_BODY_CORPORATE_JOIN = " of the "
+
+
+def _associated_capacity(capacity: str) -> str:
+    """The signing human's own capacity, from the body-corporate capacity."""
+    head = capacity.split(_BODY_CORPORATE_JOIN, 1)[0].strip()
+    return head if head in CAPACITY_INDIVIDUAL else ""
+
+
+def _corporate_secretary_br(graph: dict) -> str:
+    """The BR number of the body corporate acting as company secretary.
+
+    CR requires it as selectAssoBrNo and CHECKS it -- a wrong one is refused
+    with "The signatory <id> is not authorized to sign the document" (verified
+    2026-09-16), so a guess here costs a round trip and reads as an
+    authorisation problem rather than a wrong number.
+
+    Read from entity_officers, NOT from the `company_secretaries` row the
+    signatory itself comes from: migration 007 put `corporate_entity_id` on
+    entity_officers only, and nar1_source resolves it to `corporate_br_no`
+    there. THE TWO ROWS CANNOT BE MATCHED BY NAME -- on the live register the
+    same secretary is 'Get Started HK Limited' in company_secretaries and
+    'GETSTA' in entity_officers -- so the officer register is asked on its own
+    terms. More than one distinct BR is an ambiguity for a human to resolve,
+    never a coin toss: 5,970 of the 5,971 companies holding a secretary row
+    have exactly one, and the one that does not should stop rather than file a
+    guess.
+    """
+    numbers = {
+        str(officer.get("corporate_br_no") or "").strip()
+        for officer in (graph.get("officers") or [])
+        if officer.get("is_current", True)
+        and officer.get("role") == "company_secretary"
+        and officer.get("party_type") == "corporate"
+        and str(officer.get("corporate_br_no") or "").strip()
+    }
+    return numbers.pop() if len(numbers) == 1 else ""
+
+
 def _signatory_block(graph: dict, signatory: dict | None,
                      problems: list[str],
-                     capacity_override: str | None = None) -> dict:
+                     capacity_override: str | None = None,
+                     signing_identity: dict | None = None) -> dict:
     """The statutory declaration: who signed, in what capacity, when.
 
     An absent block is not a smaller filing, it is an UNSIGNED filing -- and
@@ -561,17 +620,46 @@ def _signatory_block(graph: dict, signatory: dict | None,
         ),
     }
     person_id = str(resolved.get("person_id") or "").strip()
-    if person_id:
+    if is_corporate:
+        # THE BODY-CORPORATE SCHEME, verified against CR's test register
+        # 2026-09-16 after the live register refused every return GSHK sent.
+        #
+        # CR's worksheet remark "Signatory User ID (Empty if sign by Body
+        # Corporate)" is correct but incomplete, and reading it alone is what
+        # broke this. selectPersonId is empty AND the signer is named in a
+        # parallel block: selectAssoBrNo (the body corporate's own BR) plus
+        # associatedPersonId / associatedPersonName / associatedCapacityDesc
+        # (the human signing for it). All four are mandatory and all four are
+        # CHECKED. Emitting none of them -- which is what this branch used to do
+        # -- is refused with "Please check selectPersonId field.", a message
+        # about the one element that must stay EMPTY, which is why this took a
+        # live filing to find.
+        #
+        # Putting the signer's id in selectPersonId instead is NOT the fix and
+        # was tried: CR answers "the signatory is not an individual user",
+        # because selectPersonName is the company. So a person_id offered here
+        # is deliberately dropped rather than filed.
+        block.update(
+            _associated_signatory(
+                block["selectPersonName"],
+                capacity,
+                # Stated on the signatory when the caller knows it (an explicit
+                # override, or _derive_signatory having resolved it); the
+                # officer register is the fallback for a caller that does not.
+                str(resolved.get("br_no") or "").strip()
+                or _corporate_secretary_br(graph),
+                signing_identity,
+                problems,
+            )
+        )
+    elif person_id:
         block["selectPersonId"] = person_id
-    elif resolved.get("is_corporate") is not True:
-        # Worksheet remark: "Signatory User ID (Empty if sign by Body
-        # Corporate)". Empty is CORRECT for a corporate secretary and MISSING
-        # for a natural person, so only the latter is a problem.
-        # `is not True`, not `is False`: an explicit signatory= override need
-        # not carry `is_corporate` at all, and an absent key must NOT read as
-        # "body corporate" -- that would let the caller drop a mandatory
+    else:
+        # MISSING for a natural person, who must supply one. `is_corporate` is
+        # tested as `is True` above, never `is False`: an explicit signatory=
+        # override need not carry the key at all, and an absent key must NOT
+        # read as "body corporate" -- that would let a caller drop a mandatory
         # statutory field by omission, which nar1.validate() would wave through.
-        # An unstated kind is a natural person and must supply an id.
         problems.append(
             f"signatory {block['selectPersonName']}: signs as a natural person "
             "but has no e-Service (e-Filing) user ID on record, and "
@@ -579,6 +667,75 @@ def _signatory_block(graph: dict, signatory: dict | None,
             "mandatory for a signatory who is not a body corporate"
         )
     return {k: v for k, v in block.items() if v}
+
+
+def _associated_signatory(corporate_name: str, capacity: str, br_no: str,
+                          signing_identity: dict | None,
+                          problems: list[str]) -> dict:
+    """Who signs FOR the body corporate — CR's four mandatory elements.
+
+    Every one of them is validated by CR, so every one of them is a refusal
+    here rather than a guess:
+
+      selectAssoBrNo          a wrong BR reads as "not authorized to sign"
+      associatedPersonId      absent -> "Please check selectPersonId field."
+      associatedPersonName    absent -> "Please input the associatedPersonName";
+                              WRONG -> "not authorized to sign", so it cannot be
+                              taken from users.display_name and hoped for
+      associatedCapacityDesc  must match the first half of selectCapacityDesc,
+                              or "Capcity is not matched between associate and
+                              selected" (CR's spelling)
+    """
+    block: dict = {}
+
+    if br_no:
+        block["selectAssoBrNo"] = br_no
+    else:
+        problems.append(
+            f"signatory {corporate_name}: signs as a body corporate, and CR "
+            "requires that company's own BR number (selectAssoBrNo) — no "
+            "current corporate company secretary on the officer register "
+            "carries one, or more than one does and they disagree. Record the "
+            "secretary as a corporate officer linked to its own company record"
+        )
+
+    identity = signing_identity or {}
+    user_id = str(identity.get("eservice_user_id") or "").strip()
+    person_name = str(identity.get("person_name") or "").strip()
+    if user_id:
+        block["associatedPersonId"] = user_id
+    else:
+        problems.append(
+            f"signatory {corporate_name}: signs as a body corporate, so CR "
+            "requires the e-Service account of the person signing for it "
+            "(associatedPersonId). The signed-in user has none stored — add it "
+            "under CR Credentials"
+        )
+    if person_name:
+        block["associatedPersonName"] = person_name
+    else:
+        problems.append(
+            f"signatory {corporate_name}: CR requires the name held on the "
+            "signing person's e-Service account (associatedPersonName) and "
+            "checks it against that account. It is not stored for the "
+            "signed-in user — add it under CR Credentials. It cannot be taken "
+            "from their display name, which CR would reject as an "
+            "unauthorised signatory"
+        )
+
+    associated = _associated_capacity(capacity)
+    if associated:
+        block["associatedCapacityDesc"] = associated
+    elif capacity:
+        problems.append(
+            f"signatory {corporate_name}: selectCapacityDesc {capacity!r} does "
+            "not name the capacity the signing person holds in the body "
+            "corporate, so associatedCapacityDesc cannot be derived and CR "
+            "refuses the pair as mismatched. Choose one of CR's Body Corporate "
+            "capacities, e.g. 'Director of the Company Secretary (Body "
+            "Corporate)'"
+        )
+    return block
 
 
 def _individual(person: dict, addresses: dict, identity_documents: dict,
@@ -897,7 +1054,8 @@ def _schedule_1(graph: dict, problems: list[str]) -> dict:
 
 
 def map_entity(graph: dict, *, year: int, signatory: dict | None = None,
-               signatory_capacity: str | None = None) -> dict:
+               signatory_capacity: str | None = None,
+               signing_identity: dict | None = None) -> dict:
     """The CR-schema dict for one entity's annual return.
 
     `graph` is what nar1_source.load_entity_graph() returns.
@@ -1022,7 +1180,8 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None,
     data["shareholderListedInSch2"] = "N"
     data["shareholderListedInCdrom"] = "N"
     data["schedule1"] = _schedule_1(graph, problems)
-    data.update(_signatory_block(graph, signatory, problems, signatory_capacity))
+    data.update(_signatory_block(graph, signatory, problems, signatory_capacity,
+                                 signing_identity))
 
     if problems:
         raise MappingError(problems)
