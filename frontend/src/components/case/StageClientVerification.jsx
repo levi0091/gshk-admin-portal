@@ -3,11 +3,11 @@ import { api } from '../../lib/api.js'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { formatDateTime } from '../../lib/format.js'
 import { hongKongTodayISO } from '../../lib/anniversary.js'
-import { downloadFilingPdf } from '../../lib/download.js'
+import { downloadCasePdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
 import VerificationDeliveryModal from './VerificationDeliveryModal.jsx'
-import { describeError, verificationBlock, isSubmitted } from './workflow.js'
+import { describeError, verificationBlock, isSubmitted, isValidated } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
 
 // Zoom bounds for the embedded preview. 60% still shows a full A4 page on a
@@ -210,13 +210,20 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   const blocked = verificationBlock(caseRow)
   // Filed by EITHER road: CR holds it, or it was filed off-portal on paper.
   const filed = isSubmitted(caseRow)
+  // Whether CR has actually seen this return. Stage 1 is normally reached
+  // BEFORE it has, so the copy on this screen must not claim otherwise — see
+  // the banner below.
+  const validated = isValidated(caseRow)
   const pdfName =
     `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}.pdf`
 
   async function download() {
     setSaving(true)
     try {
-      await downloadFilingPdf(filingId, pdfName)
+      // The same document the preview shows, by the same route — a download
+      // that needed a filing id would fail on exactly the cases the preview
+      // now handles.
+      await downloadCasePdf(caseId, pdfName)
     } catch (e) {
       onError(describeError(e))
     } finally {
@@ -246,11 +253,23 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
   // The PDF is fetched as a blob so the bearer token is not put in a URL. The
   // object URL is revoked on unmount; leaving it leaks the whole document.
+  //
+  // CASE-SCOPED, NOT FILING-SCOPED (2026-09-17). This used to be
+  // `/tpsi/filings/${filingId}/pdf` behind `if (!filingId) return` — and at
+  // stage 1 a case usually has NO FILING AT ALL, so the effect returned
+  // immediately, neither `pdfUrl` nor `pdfError` was ever set, and the panel
+  // sat on "Rendering the preview…" for ever. It was reported on two cases and
+  // was true of 13 of DEV's 44 open ones.
+  //
+  // The case endpoint builds the return in memory when there is no filing, so
+  // there is always either a document or a stated reason — never silence.
+  // Keyed on `filingId` AND `updated_at` so that validating, or restarting
+  // verification, re-fetches rather than leaving yesterday's document on screen.
   useEffect(() => {
-    if (!filingId) return undefined
     let url = null
     let cancelled = false
-    api.blob(`/tpsi/filings/${filingId}/pdf`)
+    setPdfError(null)
+    api.blob(`/cases/${caseId}/verification/preview`)
       .then(b => {
         if (cancelled) return
         url = URL.createObjectURL(b)
@@ -261,7 +280,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
       cancelled = true
       if (url) URL.revokeObjectURL(url)
     }
-  }, [filingId])
+  }, [caseId, filingId, caseRow.updated_at])
 
   async function send() {
     onError(null); onWarn?.(null, null); setBusy('send')
@@ -362,31 +381,48 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           onClose={() => { setConfirming(null); onChanged() }}
         />
       )}
-      {/* v11 leads this stage with the snapshot, because everything on it —
-          the PDF, the email, and eventually the filing — reads the frozen copy
-          rather than the company profile. Without this, a profile edited after
-          validation looks like a bug in the preview. */}
-      <div className="alert al-success" role="note" style={{ marginBottom: 16 }}>
-        <span className="al-icon">🔒</span>
-        <div className="al-body">
-          <b>Snapshot frozen at validation.</b> The PDF below is generated from
-          the CR-validated XML. It, the client email, and the CR submission all
-          read <b>this snapshot</b> — not the live profile.
+      {/* WHAT THIS DOCUMENT IS, and it is not the same claim before and after
+          CR has seen it (2026-09-17). While Client Verification was the second
+          stage this always read "Snapshot frozen at validation … generated from
+          the CR-validated XML", which on stage 1 of the new order is simply
+          untrue: CR has not seen the return yet. Saying so anyway would tell an
+          operator the Registry had accepted something it had never been sent. */}
+      {validated ? (
+        <div className="alert al-success" role="note" style={{ marginBottom: 16 }}>
+          <span className="al-icon">🔒</span>
+          <div className="al-body">
+            <b>Snapshot frozen at validation.</b> The PDF below is generated from
+            the CR-validated XML. It, the client email, and the CR submission all
+            read <b>this snapshot</b> — not the live profile.
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="alert al-info" role="note" style={{ marginBottom: 16 }}>
+          <span className="al-icon">ℹ</span>
+          <div className="al-body">
+            <b>Built from the company profile as it reads now.</b> This is CR's
+            own Form NAR1 and it is what will be filed, but the Companies
+            Registry has not checked it yet — that happens at Data Verification,
+            after the client approves.
+          </div>
+        </div>
+      )}
 
       <div className="card mb-16">
         <div className="card-hdr">
           <div>
             <div className="card-title">The return the client will see</div>
             <div className="card-sub">
-              Rendered from the CR-validated snapshot — the same document that
-              will be filed.
+              {validated
+                ? 'Rendered from the CR-validated snapshot — the same document '
+                  + 'that will be filed.'
+                : 'Rendered from the return as prepared — the same document '
+                  + 'that will be sent to the client and filed.'}
             </div>
           </div>
           <div className="row gap-8">
             <button type="button" className="btn btn-outline btn-sm"
-                    disabled={!pdfUrl || saving} onClick={download}>
+                    disabled={saving} onClick={download}>
               {saving ? 'Preparing…' : 'Download PDF'}
             </button>
             {/* A tab, not a modal: the operator is checking this against the
@@ -416,7 +452,10 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             <div className="pdf-toolbar">
               <span className="pdf-fname">{pdfName}</span>
               <span className="pdf-pill">Form NAR1 + Schedule 1</span>
-              <span className="pdf-pill ok">Rendered from the CR-validated XML</span>
+              <span className={`pdf-pill${validated ? ' ok' : ''}`}>
+                {validated ? 'Rendered from the CR-validated XML'
+                           : 'Not yet checked by CR'}
+              </span>
               <span className="pdf-tb-spacer" />
               <span className="pdf-zoom">
                 <button type="button" aria-label="Zoom out" disabled={zoom <= ZOOM_MIN}

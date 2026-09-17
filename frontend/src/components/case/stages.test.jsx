@@ -570,7 +570,7 @@ describe('Client Verification', () => {
     await user.click(await screen.findByRole('button', { name: /Download PDF/ }))
     // Two reads of the same endpoint: one for the embed, one for the save.
     await waitFor(() => expect(blob).toHaveBeenCalledTimes(2))
-    expect(blob.mock.calls[1][0]).toBe('/tpsi/filings/f1/pdf')
+    expect(blob.mock.calls[1][0]).toBe('/cases/c1/verification/preview')
   })
 
   it('leaves room below the preview for the controls that act on it', async () => {
@@ -598,9 +598,35 @@ describe('Client Verification', () => {
     expect(screen.getByText(/nar1:write/)).toBeInTheDocument()
   })
 
-  it('renders the PDF from the CR-validated snapshot', async () => {
+  // CASE-SCOPED, NOT FILING-SCOPED (2026-09-17). The old URL needed a filing
+  // id, and at stage 1 a case usually has none — the effect returned early,
+  // nothing was ever fetched, and the panel sat on "Rendering the preview…"
+  // for ever. That was 13 of DEV's 44 open cases and was reported from PROD.
+  it('fetches the preview by CASE, so a case with no filing still renders', async () => {
     renderIt()
-    await waitFor(() => expect(blob).toHaveBeenCalledWith('/tpsi/filings/f1/pdf'))
+    await waitFor(() =>
+      expect(blob).toHaveBeenCalledWith('/cases/c1/verification/preview'))
+  })
+
+  it('fetches the preview even when the case has NO filing at all', async () => {
+    renderIt({ filing_id: null, form_status: null })
+    await waitFor(() =>
+      expect(blob).toHaveBeenCalledWith('/cases/c1/verification/preview'))
+    // ...and never leaves the panel on the loading line with nothing in flight.
+    await waitFor(() =>
+      expect(screen.queryByText(/Rendering the preview/)).toBeNull())
+  })
+
+  it('does not claim CR validated a return it has not seen', async () => {
+    renderIt({ filing_id: null, form_status: null })
+    expect(await screen.findByText(/has not checked it yet/)).toBeInTheDocument()
+    expect(screen.queryByText(/Snapshot frozen at validation/)).toBeNull()
+  })
+
+  it('still says the snapshot is frozen once CR HAS validated it', async () => {
+    renderIt()   // the default fixture is `validated`
+    expect(await screen.findByText(/Snapshot frozen at validation/))
+      .toBeInTheDocument()
   })
 
   // Levi 2026-08-30. The interlock itself is enforced in the backend
