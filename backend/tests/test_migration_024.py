@@ -359,7 +359,11 @@ def test_superseded_filings_are_ignored():
             )
             stage, status = cur.fetchone()
         assert stage is None
-        assert status == st.DATA_VERIFICATION
+        # The stage a case with no live filing sits at — CLIENT Verification
+        # since migration 046, because nobody has mailed the client either.
+        # What this test is about is `filing_stage IS NULL`, above: the
+        # superseded row must not be joined.
+        assert status == st.CLIENT_VERIFICATION
     finally:
         conn.rollback()
         conn.close()
