@@ -29,6 +29,12 @@ import { caseWorkflowCaps } from '../lib/screenCapabilities.js'
  * signed. The gate is derived from the case record every time it renders, so it
  * cannot drift out of step with what the backend actually knows.
  *
+ * THE CLIENT IS FIRST since 2026-09-17 — the approval unlocks the CR
+ * validation, not the other way round. The two components below simply swapped
+ * slots; the rule lives in `workflow.reachedStage`, and in
+ * `nar1_case_status._code` and migration 046's view, which say it again in
+ * Python and in SQL because the dashboard cannot sort on an expression.
+ *
  * Two status badges in the header, never merged (D-6): the WORKFLOW status is
  * where the case is with GSHK, the FORM status is what the Companies Registry
  * has done with the filing. See components/CaseStatusBadge.jsx.
@@ -446,11 +452,13 @@ export default function CaseWorkflowPage() {
           onLocked={inform}
         />
 
+        {/* CLIENT FIRST since 2026-09-17 — see workflow.STAGE_LABELS. The two
+            components are unchanged; only which slot they occupy is. */}
         {current === 1 && (
-          <StageDataVerification {...stageProps} canWrite={canWrite} canValidate={canValidate} />
+          <StageClientVerification {...stageProps} canWrite={canWrite} />
         )}
         {current === 2 && (
-          <StageClientVerification {...stageProps} canWrite={canWrite} />
+          <StageDataVerification {...stageProps} canWrite={canWrite} canValidate={canValidate} />
         )}
         {current === 3 && (
           <StageSigning {...stageProps} canWrite={canWrite && canValidate} />
@@ -489,10 +497,10 @@ export default function CaseWorkflowPage() {
               Restart verification for {c.case_no || 'this case'}?
             </div>
             <div className="modal-confirm-text">
-              The case goes back to Data Verification. The CR-signed snapshot is
-              discarded, and the client verification and any signature recorded
-              against it are cleared. The client will have to approve the return
-              again.
+              The case goes back to Client Verification. The CR-signed snapshot
+              is discarded, and the client verification and any signature
+              recorded against it are cleared. The client will have to approve
+              the return again.
             </div>
             <div className="modal-confirm-actions">
               <button className="btn btn-outline"
@@ -500,7 +508,7 @@ export default function CaseWorkflowPage() {
                 Cancel
               </button>
               <button className="btn btn-danger" onClick={restart}>
-                Restart — back to Data Verification
+                Restart — back to Client Verification
               </button>
             </div>
           </div>

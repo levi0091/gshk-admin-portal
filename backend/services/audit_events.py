@@ -176,6 +176,12 @@ _COMPANY_FIELD_CODES = {
     # NAR1 s6 `telNo`. Statutory rather than general for the same reason as the
     # figures above: this number is printed on the return CR receives.
     "company_phone": VP_STATUTORY,
+    # NAR1 s7 `emailAddr`, and `corpEmailAddr` on every return where this
+    # company is an officer of another (migration 045). Statutory for the same
+    # reason as the phone beside it: CR holds its own copy, prints it on the
+    # return, and raises a discrepancy notice when the two disagree — which is
+    # the event that created this column.
+    "email": VP_STATUTORY,
     # General folder
     "case_notes": VP_GENERAL,
     "assigned_to": VP_GENERAL,

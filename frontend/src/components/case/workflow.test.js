@@ -16,34 +16,41 @@ const withStage = (stage, over = {}) =>
   fresh({ form_status: { code: stage }, ...over })
 
 describe('the stage gate', () => {
-  it('has six stages — the fifth is ours, the sixth is CR\'s', () => {
+  it('has six stages — the client first, the fifth ours, the sixth CR\'s', () => {
+    // THE REORDER (Levi 2026-09-17). The first two swapped: the email goes out
+    // before the return is validated with CR, so the client's corrections
+    // arrive before the filing is prepared rather than after it.
     expect(STAGE_LABELS).toHaveLength(6)
-    expect(STAGE_LABELS[0]).toBe('Data Verification')
+    expect(STAGE_LABELS[0]).toBe('Client Verification')
+    expect(STAGE_LABELS[1]).toBe('Data Verification')
     expect(STAGE_LABELS[4]).toBe('Confirmation')
     expect(STAGE_LABELS[5]).toBe('CR Status')
   })
 
-  it('holds a brand-new case at Data Verification', () => {
+  it('holds a brand-new case at Client Verification', () => {
     expect(reachedStage(fresh())).toBe(1)
   })
 
-  it('will not let an unvalidated case reach Client Verification', () => {
-    // Everything else is in place — only the CR snapshot is missing.
+  it('opens Data Verification once the CLIENT has approved', () => {
+    // No CR involvement at all — an unvalidated case with an approval reaches
+    // stage 2, which is the whole point of the reorder.
     const c = fresh({ verification_sent_at: '2026-08-01', client_approved: true })
-    expect(reachedStage(c)).toBe(1)
+    expect(reachedStage(c)).toBe(2)
   })
 
-  it('opens Client Verification once CR has validated the return', () => {
-    expect(reachedStage(withStage('validated'))).toBe(2)
+  it('does NOT open Data Verification on CR validation alone', () => {
+    // The reverse of the old rule. A validated return whose client has not
+    // been asked is still waiting on the email.
+    expect(reachedStage(withStage('validated'))).toBe(1)
   })
 
-  it('will not let a case reach Signing until the CLIENT has approved', () => {
+  it('holds a case at Client Verification until the client answers', () => {
     // Sent but unanswered.
-    expect(reachedStage(withStage('validated', { verification_sent_at: '2026-08-01' }))).toBe(2)
+    expect(reachedStage(withStage('validated', { verification_sent_at: '2026-08-01' }))).toBe(1)
     // Answered NO.
     expect(reachedStage(withStage('validated', {
       verification_sent_at: '2026-08-01', client_approved: false,
-    }))).toBe(2)
+    }))).toBe(1)
   })
 
   it('does NOT let the manual route bypass client approval (OQ-4)', () => {
@@ -55,7 +62,7 @@ describe('the stage gate', () => {
       client_approved: false,
       verification_sent_at: '2026-08-01',
     })
-    expect(reachedStage(c)).toBe(2)
+    expect(reachedStage(c)).toBe(1)
   })
 
   const approved = over => withStage('validated', {
@@ -152,7 +159,10 @@ describe('stageDone — the green ticks', () => {
     const c = withStage('validated', {
       verification_sent_at: '2026-08-01', client_approved: false,
     })
-    expect(stageDone(c, 2)).toBe(false)
+    // Stage 1 since the reorder, and the tick follows the stage.
+    expect(stageDone(c, 1)).toBe(false)
+    // ...while Data Verification, stage 2, is ticked by CR's validation.
+    expect(stageDone(c, 2)).toBe(true)
   })
 
   it('TICKS CONFIRMATION WHEN THE RECEIPT EXISTS, not when CR registers', () => {
@@ -507,14 +517,21 @@ describe('verificationBlock', () => {
       .toBeNull()
   })
 
-  it('refuses after a failed validation rather than mailing a stale snapshot', () => {
+  // TWO REFUSALS WERE REMOVED HERE (2026-09-17), mirroring the backend gate.
+  // They refused a return CR had not validated, and one whose last validation
+  // had failed — both correct while this was the SECOND stage, and both now
+  // assertions that the portal refuses the normal case.
+  it('no longer refuses after a failed validation', () => {
+    // The send rebuilds the return from the company record, so what goes out
+    // is not the bytes CR rejected.
     expect(verificationBlock(validated({ form_status: { code: 'validation_failed' } })))
-      .toMatch(/Re-validate/)
+      .toBeNull()
   })
 
-  it('refuses a case with no filing prepared', () => {
+  it('no longer refuses a case with no filing prepared', () => {
+    // Which is EVERY case at stage 1. `send_verification` builds one.
     expect(verificationBlock(validated({ filing_id: null, form_status: null })))
-      .toMatch(/has not been validated/)
+      .toBeNull()
   })
 
   it('says nothing about a case it was given nothing for', () => {

@@ -7,7 +7,13 @@ import { describeError, isValidated, rebuildBeforeValidate } from './workflow.js
 import { ActionWithheld } from '../RequirePermission.jsx'
 
 /**
- * Stage 1 — Data Verification (FE-3).
+ * Stage 2 — Data Verification (FE-3).
+ *
+ * THE SECOND STAGE SINCE 2026-09-17, not the first: the client has already
+ * approved the return by the time this is reachable. That is what makes the
+ * divergence notice below necessary — a CR rejection here is fixed by editing
+ * the company record and re-validating, and the approval stands, so the
+ * document that gets filed can move away from the one the director saw.
  *
  * Two manual pre-checks the portal cannot do for itself, then the CR
  * validation that produces the immutable snapshot everything downstream is
@@ -23,6 +29,12 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
 
   const validated = isValidated(caseRow)
   const faults = caseRow.form_status?.failed ? caseRow.form_status.faults : null
+  // Fields that have moved since the client approved. `?? []` rather than a
+  // truthiness test: the backend sends an empty list for "nothing changed" AND
+  // for "no snapshot kept" (a case sent before migration 046), and neither is
+  // something to warn about — `approval_snapshot_kept` tells them apart, and
+  // nothing on this screen needs to.
+  const divergence = caseRow.approval_divergence ?? []
 
   // "CR validation stays locked until they are ticked" (wireframe_v11 s20).
   // The two checks are assertions about work done OUTSIDE the portal — AML
@@ -89,6 +101,44 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
             Validation calls TPSI <code>validateFormNar1</code> and{' '}
             <b>freezes an immutable snapshot</b> — from here the case reads its
             own snapshot, not the live profile.
+          </div>
+        </div>
+      )}
+
+      {/* WHAT MOVED SINCE THE CLIENT APPROVED IT (migration 046).
+
+          This is the cost of sending the client first, made visible. A CR
+          rejection is fixed by editing the company record and re-validating,
+          and the approval deliberately stands — so without this the return
+          filed could differ from the one a director said yes to and nothing on
+          screen would say so.
+
+          A WARNING, NEVER A REFUSAL. It blocks nothing and offers no button:
+          the operator decides whether the change is worth mailing a director
+          over, and does that by hand (Levi 2026-09-17). Restart verification,
+          in the header, is how a case goes back to the client properly. */}
+      {divergence.length > 0 && (
+        <div className="alert al-warn" role="status" style={{ marginBottom: 16 }}>
+          <span className="al-icon">⚠</span>
+          <div className="al-body">
+            <b>
+              {divergence.length === 1
+                ? 'One field has changed'
+                : `${divergence.length} fields have changed`}
+              {' '}since the client approved this return.
+            </b>{' '}
+            They approved the version emailed to them; this is what would be
+            filed. If the difference matters to them, email them and use{' '}
+            <b>Restart verification</b> to send the corrected return.
+            <ul className="mt-8">
+              {divergence.map(d => (
+                <li key={d.path}>
+                  <b>{d.field}</b>: {d.validated ?? <i>(absent)</i>}
+                  {' → '}
+                  {d.current ?? <i>(absent)</i>}
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
       )}
@@ -221,12 +271,16 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
 
       {validated && onGo && (
         <div className="action-bar">
+          {/* The client has already approved by the time this stage is
+              reachable (2026-09-17) — they are stage 1 now — so what comes
+              next is the signature, not the email. */}
           <div className="ab-note">
-            The client sees this return next, as a PDF built from the snapshot.
+            The Companies Registry has accepted this return for filing. It is
+            signed next.
           </div>
           <div className="ab-actions">
-            <button className="btn btn-primary" onClick={() => onGo(2)}>
-              Continue to Client Verification →
+            <button className="btn btn-primary" onClick={() => onGo(3)}>
+              Continue to Signing →
             </button>
           </div>
         </div>

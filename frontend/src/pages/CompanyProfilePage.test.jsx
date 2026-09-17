@@ -261,6 +261,34 @@ describe('CompanyProfilePage', () => {
     })
   })
 
+  // THE BODY CORPORATE'S OWN EMAIL (migration 045). CR holds one for every
+  // body corporate and diffs the filed return against it — a blank element
+  // raised a discrepancy notice against GET STARTED HK LIMITED as company
+  // secretary. There was no field anywhere in the portal to put it in.
+  it('edits the company email address', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const infoCard = (await screen.findByText('Company Information')).closest('.card')
+    await user.click(within(infoCard).getByRole('button', { name: 'Edit' }))
+
+    await user.type(screen.getByLabelText('Email Address'),
+                    'dataresources@getstarted.hk')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/companies/e1',
+        { email: 'dataresources@getstarted.hk' })
+    })
+  })
+
+  it('shows the stored email address without opening the editor', async () => {
+    mockGet({ ...CLIENT, email: 'dataresources@getstarted.hk' })
+    renderPage()
+    const infoCard = (await screen.findByText('Company Information')).closest('.card')
+    expect(within(infoCard).getByText('dataresources@getstarted.hk'))
+      .toBeInTheDocument()
+  })
+
   it('names the document TYPE, not just the uploaded file name', async () => {
     renderPage()
     // the file name alone ("brand-guideline-v3.pdf") does not say what the

@@ -178,10 +178,11 @@ describe('CaseWorkflowPage — the stage gate is enforced, not just drawn', () =
                       client_approved: null, signing_method: null }))
     await renderPage()
     await user.click(screen.getByRole('tab', { name: /Submission/ }))
-    // Still on stage 1, and told why.
-    expect(screen.getByRole('tab', { name: /Data Verification/ }))
+    // Still on stage 1 — which is CLIENT Verification since 2026-09-17 — and
+    // told why.
+    expect(screen.getByRole('tab', { name: /Client Verification/ }))
       .toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByText(/Complete "Data Verification" to unlock/))
+    expect(await screen.findByText(/Complete "Client Verification" to unlock/))
       .toBeInTheDocument()
   })
 
@@ -295,7 +296,9 @@ describe('CaseWorkflowPage — CR Status', () => {
     await user.click(screen.getByRole('tab', { name: /Signing/ }))
     expect(await screen.findByText(/to unlock/)).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: /Data Verification/ }))
+    // Stage 1, which is CLIENT Verification since 2026-09-17 — a case whose
+    // client has not been asked has not reached Data Verification either.
+    await user.click(screen.getByRole('tab', { name: /Client Verification/ }))
     expect(screen.queryByText(/to unlock/)).not.toBeInTheDocument()
   })
 })
@@ -408,14 +411,16 @@ describe('CaseWorkflowPage — restart verification', () => {
     const user = userEvent.setup()
     await renderPage()
     await user.click(screen.getByRole('button', { name: /Restart verification/ }))
-    await user.click(screen.getByRole('button', { name: /Restart — back to Data Verification/ }))
+    await user.click(screen.getByRole('button', { name: /Restart — back to Client Verification/ }))
 
     await waitFor(() =>
       expect(patch).toHaveBeenCalledWith('/cases/c1', { restart_verification: true }))
     // onChanged only ever moves FORWARD, so without an explicit step reset the
     // operator is left on Submission looking at a case with nothing to submit.
+    // Stage 1 is Client Verification since 2026-09-17, and that is where a
+    // restarted case belongs: the client has to approve the return again.
     await waitFor(() =>
-      expect(screen.getByText('Data Verification', { selector: '.pg-title' }))
+      expect(screen.getByText('Client Verification', { selector: '.pg-title' }))
         .toBeInTheDocument())
   })
 

@@ -48,7 +48,7 @@ const PAGE_SIZE = 50
 // `cr_rejected` IS ACTION REQUIRED, and it is the most urgent row on the
 // screen: CR refused a return the fee was already taken for, and a corrected
 // one has to be filed as a new case before the statutory window shuts.
-const ACTION_STATUSES = ['data_verification', 'client_verification', 'client_rejected',
+const ACTION_STATUSES = ['client_verification', 'data_verification', 'client_rejected',
                          'signing', 'submission', 'cr_rejected']
 
 // Waiting on somebody who is not GSHK. The client, or the Companies Registry —
@@ -68,9 +68,13 @@ const PENDING_STATUSES = ['awaiting_client', 'cr_not_checked', 'cr_pending',
 // waiting on GSHK while "Pending" is work waiting on someone else. They stay in
 // the listing and stay filterable — finishing ends the work, not the record —
 // so the badge column is how you include or exclude them.
+//
+// CLIENT VERIFICATION LEADS since 2026-09-17, because the case does: the email
+// goes out before the return is validated with CR. Kept in step with
+// `nar1_case_status.GSHK_STATUSES`, which is the same order in the backend.
 const WORKFLOW_ORDER = [
-  'data_verification', 'awaiting_client', 'client_verification',
-  'client_rejected', 'signing', 'submission',
+  'client_verification', 'awaiting_client', 'client_rejected',
+  'data_verification', 'signing', 'submission',
   'cr_not_checked', 'cr_pending', 'cr_approved', 'cr_registered',
   'cr_rejected', 'cr_unknown', 'closed',
 ]

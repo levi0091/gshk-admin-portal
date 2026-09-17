@@ -808,7 +808,8 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
 
 def _corporate(name: str, addr: dict | None, problems: list[str],
                *, br_no: str | None = None, tcsp_no: str | None = None,
-               name_zh: str | None = None, hkg_only: bool = False) -> dict:
+               name_zh: str | None = None, email: str | None = None,
+               hkg_only: bool = False) -> dict:
     """A corporate officer/secretary block.
 
     `addr` is the corporate party's OWN registered office. It is never the
@@ -818,6 +819,17 @@ def _corporate(name: str, addr: dict | None, problems: list[str],
 
     `hkg_only` is set for a corporate COMPANY SECRETARY and nobody else:
     corpSec/stdAddress carries "Region. Must be HKG", corpDir does not.
+
+    `email` is the body corporate's OWN address, from `entities.email`
+    (migration 045) — never the filing company's and never a person's. CR keeps
+    one for each body corporate in its own database and DIFFS the filed return
+    against it: an empty element is not a neutral omission, it is a mismatch,
+    and it produced a discrepancy notice against GSHK as company secretary.
+
+    Absent stays ABSENT. CR marks corpEmailAddr `Mandatory = N`, and the final
+    comprehension drops an empty one rather than sending `<corpEmailAddr/>` —
+    an empty element is a positive claim that the party has no email, which is a
+    different (and wrong) statement from saying nothing.
     """
     block = {
         "corpChiName": name_zh or "",
@@ -825,6 +837,8 @@ def _corporate(name: str, addr: dict | None, problems: list[str],
         "stdAddress": _address(addr, problems, f"corporate party {name}",
                                hkg_only=hkg_only),
     }
+    if email:
+        block["corpEmailAddr"] = str(email).strip()
     if br_no:
         block["corpBrNo"] = br_no
     if tcsp_no:
@@ -932,6 +946,7 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
                        br_no=sec.get("corporate_br_no"),
                        tcsp_no=sec.get("tcsp_number"),
                        name_zh=sec.get("corporate_name_zh"),
+                       email=sec.get("corporate_email"),
                        hkg_only=True)
         )
 
@@ -984,6 +999,11 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
                 problems,
                 br_no=officer.get("corporate_br_no"),
                 name_zh=officer.get("corporate_name_zh"),
+                # Directors as well as secretaries (Levi 2026-09-17). Both
+                # carry corpEmailAddr, both are diffed by CR against its own
+                # record, and sourcing only the secretary would leave the same
+                # discrepancy notice waiting for the first corporate director.
+                email=officer.get("corporate_email"),
                 hkg_only=role == "company_secretary",
             )
             if role == "director":
@@ -1212,6 +1232,14 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None,
         data["compNameE"] = entity["company_name"]
     if entity.get("company_name_zh"):
         data["compNameC"] = entity["company_name_zh"]
+    # SECTION 7, the subject company's own email (migration 045). Omitted when
+    # empty, which is every company until somebody types one: `fill.py` then
+    # prints "None given" in the box exactly as it has always done. CR marks it
+    # `Mandatory = N` and diffs it against its own record, so the two states
+    # that matter are "we said nothing" and "we said what CR holds" -- never an
+    # empty element, which claims the company has no address.
+    if (entity.get("email") or "").strip():
+        data["emailAddr"] = entity["email"].strip()
 
     data.update(_officer_lists(graph, problems))
 

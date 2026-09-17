@@ -60,6 +60,11 @@ _EDITABLE_FIELDS = {
     "ar_last_date", "ar_next_date", "ar_due_date", "agm_next_date",
     "aoa_director_min", "aoa_director_max", "aoa_agm_waived",
     "previous_name", "date_name_changed", "case_notes", "assigned_to",
+    # The body corporate's own email (migration 045). CR asks for it in three
+    # places -- this company's own in NAR1 s7, and its officers' in
+    # corpSec/corpDir on THEIR returns -- and diffs all three against its own
+    # database, which is how a blank one became a discrepancy notice.
+    "email",
 }
 
 # Dashboard tiles (wireframe_v7 s2) + which statuses count as unfinished work.
@@ -171,6 +176,48 @@ _RELATIONS = {
 }
 
 
+#: CR's own ceiling for every email element on both forms (`contract.py`, the
+#: `corpEmailAddr` / `emailAddr` / `email` entries). Enforced on write because
+#: this column is NEW -- there is no legacy value to grandfather, and a 61st
+#: character discovered at CR costs a round trip on a statutory filing.
+_EMAIL_MAX = 60
+
+
+def _clean_email(value, *, field: str = "email") -> str | None:
+    """Normalise and refuse an unfilable email address.
+
+    Deliberately NOT an RFC validator. The job is to catch what CR will refuse
+    or what is obviously a typo -- an address with no `@`, an address with a
+    space in it, an address longer than CR's element -- and to let everything
+    else through, because a regex that is cleverer than CR is a regex that
+    refuses addresses CR would have accepted.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if any(ch.isspace() for ch in text):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field} may not contain spaces: {text!r}",
+        )
+    if text.count("@") != 1 or text.startswith("@") or text.endswith("@"):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"{text!r} is not an email address. The Companies Registry "
+                    f"holds one for each body corporate and compares it with "
+                    f"what the return declares."),
+        )
+    if len(text) > _EMAIL_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"the Companies Registry allows {_EMAIL_MAX} characters for "
+                    f"an email address; this one is {len(text)}"),
+        )
+    return text
+
+
 class CreateCompanyRequest(BaseModel):
     company_name: str
     company_name_zh: Optional[str] = None
@@ -199,6 +246,7 @@ class CreateCompanyRequest(BaseModel):
     # code it describes.
     business_nature_code: Optional[str] = None
     mortgages_total: Optional[str] = None
+    email: Optional[str] = None
     # Add Company form (wireframe_v7): these live in `addresses` / `contacts`,
     # not on `entities` — created alongside the company below.
     registered_address: Optional[str] = None
@@ -224,6 +272,7 @@ class UpdateCompanyRequest(BaseModel):
     tcsp_exemption_reason: Optional[str] = None
     business_nature_code: Optional[str] = None
     mortgages_total: Optional[str] = None
+    email: Optional[str] = None
     ar_last_date: Optional[str] = None
     ar_next_date: Optional[str] = None
     ar_due_date: Optional[str] = None
@@ -754,6 +803,11 @@ async def create_company(
     address_line = payload.pop("registered_address", None)
     phone = payload.pop("company_phone", None)
     row = {k: v for k, v in payload.items() if v is not None}
+    # Same refusal as PATCH, for the same reason the company-type check above
+    # is duplicated: a value accepted here and refused there would let a company
+    # be born unable to save itself.
+    if row.get("email"):
+        row["email"] = _clean_email(row["email"])
     if row.get("business_nature_code"):
         row["business_nature_code"] = str(row["business_nature_code"]).strip()
         row["business_nature_desc"] = BUSINESS_NATURE[row["business_nature_code"]]
@@ -831,6 +885,11 @@ async def update_company(
                 )
             updates["business_nature_code"] = code
             updates["business_nature_desc"] = description
+
+    # Clearing is allowed and arrives as None from the normalisation above --
+    # `in updates` rather than a truthiness test, so "" really does clear it.
+    if "email" in updates:
+        updates["email"] = _clean_email(updates["email"])
 
     sb = get_supabase()
     current = (

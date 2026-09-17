@@ -238,7 +238,8 @@ def test_composite_form_status_is_none_without_a_filing():
     assert result["form_status"] is None
     # derive() must still run with filing=None -- it does not blow up without
     # a filing row (that is the whole point of the D-6 split).
-    assert result["workflow_status"]["code"] == "data_verification"
+    # A bare case — no filing, nobody mailed — is at stage 1 since migration 046.
+    assert result["workflow_status"]["code"] == "client_verification"
 
 
 def test_composite_receipt_prefers_the_filing_receipt_over_manual():
@@ -677,7 +678,8 @@ def test_composite_workflow_status_stays_the_derived_OBJECT():
         result = nar1_cases.composite("c1")
 
     assert isinstance(result["workflow_status"], dict)
-    assert result["workflow_status"]["code"] == "data_verification"
+    # A bare case — no filing, nobody mailed — is at stage 1 since migration 046.
+    assert result["workflow_status"]["code"] == "client_verification"
 
 
 def test_composite_still_renders_when_the_registry_view_is_unreachable():
@@ -693,7 +695,8 @@ def test_composite_still_renders_when_the_registry_view_is_unreachable():
         result = nar1_cases.composite("c1")
 
     assert result["case_no"] == "NAR-2026-0041"
-    assert result["workflow_status"]["code"] == "data_verification"
+    # A bare case — no filing, nobody mailed — is at stage 1 since migration 046.
+    assert result["workflow_status"]["code"] == "client_verification"
 
 
 def test_composite_tolerates_a_case_missing_from_the_view():

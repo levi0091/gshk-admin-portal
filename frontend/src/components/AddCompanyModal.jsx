@@ -62,6 +62,8 @@ const OPTIONAL_FIELDS = [
   // exactly that. A 0 would read as "none registered" rather than "nothing to
   // declare".
   { key: 'mortgages_total', label: 'Mortgages and Charges', full: true },
+  // Parity again (migration 045): the profile can edit it, so this can set it.
+  { key: 'email', label: 'Email Address' },
   { key: 'case_notes', label: 'Case Notes', full: true },
 ]
 

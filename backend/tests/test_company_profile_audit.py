@@ -532,3 +532,98 @@ def test_a_version_that_does_not_exist_is_a_404_not_the_current_file():
 
     assert resp.status_code == 404
     assert "does not exist" in resp.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+#  entities.email — the body corporate's own address (migration 045)
+# --------------------------------------------------------------------------- #
+
+def _patch_company(payload, current=None):
+    """PATCH /companies/e1, returning (response, the values written)."""
+    captured = {}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb, \
+         patch("routers.companies.log_events", new=AsyncMock()):
+        sb = msb.return_value
+        (sb.table.return_value.select.return_value.eq.return_value
+         .single.return_value.execute.return_value.data) = (
+            current or {"id": "e1", "company_name": "Skyline"})
+
+        def update(values):
+            captured.update(values)
+            m = MagicMock()
+            m.eq.return_value.execute.return_value.data = [{"id": "e1", **values}]
+            return m
+
+        sb.table.return_value.update.side_effect = update
+        resp = client.patch("/companies/e1", json=payload, headers=H)
+    return resp, captured
+
+
+def test_a_company_email_is_stored_trimmed():
+    resp, written = _patch_company({"email": "  DataResources@getstarted.hk "})
+    assert resp.status_code == 200
+    assert written["email"] == "DataResources@getstarted.hk"
+
+
+def test_an_emailless_string_is_refused_before_it_can_reach_cr():
+    resp, _ = _patch_company({"email": "dataresources.getstarted.hk"})
+    assert resp.status_code == 422
+    assert "not an email address" in resp.json()["detail"]
+
+
+def test_an_email_with_a_space_in_it_is_refused():
+    """Two addresses pasted into one box is the common form of this, and CR
+    takes the whole string as one address."""
+    resp, _ = _patch_company({"email": "a@b.hk c@d.hk"})
+    assert resp.status_code == 422
+    assert "spaces" in resp.json()["detail"]
+
+
+def test_an_email_longer_than_crs_element_is_refused_here_not_at_cr():
+    """60 characters, from the form contract. A 61st discovered at CR costs a
+    round trip on a statutory filing."""
+    long_one = ("a" * 55) + "@b.hk"
+    assert len(long_one) == 60
+    ok, _ = _patch_company({"email": long_one})
+    assert ok.status_code == 200
+
+    resp, _ = _patch_company({"email": "a" + long_one})
+    assert resp.status_code == 422
+    assert "60 characters" in resp.json()["detail"]
+
+
+def test_clearing_the_email_stores_null_rather_than_being_refused():
+    """"" is how this endpoint spells "clear it", and it must not be validated
+    as an address -- the same trap business nature fell into."""
+    resp, written = _patch_company({"email": ""})
+    assert resp.status_code == 200
+    assert written["email"] is None
+
+
+def test_create_refuses_an_email_the_edit_form_would_refuse():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase"):
+        resp = client.post("/companies", headers=H, json={
+            "company_name": "New Co", "status": "live", "email": "not-an-email"})
+    assert resp.status_code == 422
+    assert "not an email address" in resp.json()["detail"]
+
+
+def test_create_accepts_an_email_and_stores_it():
+    captured = {}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb, \
+         patch("routers.companies.log_events", new=AsyncMock()):
+        def insert(values):
+            captured.update(values)
+            m = MagicMock()
+            m.execute.return_value.data = [{"id": "e9", **values}]
+            return m
+        msb.return_value.table.return_value.insert.side_effect = insert
+        resp = client.post("/companies", headers=H, json={
+            "company_name": "New Co", "status": "live",
+            "email": " info@getstarted.hk "})
+
+    assert resp.status_code == 201
+    assert captured["email"] == "info@getstarted.hk"

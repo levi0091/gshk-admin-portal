@@ -177,6 +177,12 @@ async def load_entity_graph(entity_id: str) -> dict:
         row["corporate_address"] = addresses.get(party.get("registered_address_id"))
         row["corporate_br_no"] = party.get("br_number")
         row["corporate_name_zh"] = party.get("company_name_zh")
+        # The body corporate's OWN email (migration 045) -- CR's corpEmailAddr,
+        # which it holds in its own database and diffs the filed return against.
+        # `.get` rather than `[...]`: a deployment whose 045 has not been run yet
+        # returns rows without the key, and a filing must not 500 over a field
+        # CR marks optional.
+        row["corporate_email"] = party.get("email")
         # THE LINKED ENTITY'S NAME WINS. `corporate_name` on the officer and
         # shareholding rows holds Viewpoint's entity CODE, not a company name --
         # "GETSTA", "CHEAPI", "57THST", "BLACKANDWH" -- for 5,604 of 5,606
@@ -198,6 +204,7 @@ async def load_entity_graph(entity_id: str) -> dict:
         if party:
             sec["corporate_br_no"] = party.get("br_number")
             sec["corporate_name_zh"] = party.get("company_name_zh")
+            sec["corporate_email"] = party.get("email")
 
     identity_documents: dict[str, list] = {}
     for doc in identity_rows or []:

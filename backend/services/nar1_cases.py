@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from db.supabase import get_supabase
-from services import nar1_approvals, nar1_case_status, table_filters as tf
+from services import (
+    nar1_approvals, nar1_case_status, nar1_verification, table_filters as tf,
+)
 from services.tpsi import doc_status
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.filings import form_status
@@ -773,6 +775,20 @@ def composite(case_id: str) -> dict:
         "cr_status_checked_at": case.get("cr_status_checked_at"),
         "cr_document_ref_no": case.get("cr_document_ref_no"),
         "receipt": (filing or {}).get("receipt") or case.get("manual_receipt"),
+        # HAS THE RETURN MOVED SINCE THE CLIENT APPROVED IT (migration 046)?
+        #
+        # A LIST, and an empty one means "nothing has moved" — not "we do not
+        # know". The two are different and the screen must not merge them, so a
+        # case with no stored snapshot (one sent before 046, or one never sent)
+        # answers with the flag below rather than with a misleadingly empty
+        # list.
+        #
+        # NON-BLOCKING, and deliberately not part of any gate: this is what the
+        # new stage order costs, made visible. The thing that refuses is the
+        # pre-submit drift check, which asks whether the snapshot still matches
+        # the live company record.
+        "approval_divergence": nar1_verification.approval_divergence(case, filing),
+        "approval_snapshot_kept": bool(case.get("verification_xml")),
     }
 
 

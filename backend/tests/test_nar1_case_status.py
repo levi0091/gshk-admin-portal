@@ -23,19 +23,43 @@ def filing(stage):
     return {"stage": stage}
 
 
+#: CLIENT VERIFICATION IS STAGE 1 (migration 046), so every case that is meant
+#: to be past it has to say so. Before the reorder a case reached Data
+#: Verification with the client untouched; now the client is what unlocks it.
+APPROVED = {"verification_sent_at": "2026-08-16T00:00:00Z", "client_approved": True}
+
+
 @pytest.mark.parametrize("stage", [None, "draft", "validation_failed"])
-def test_no_validated_filing_means_data_verification(stage):
+def test_no_validated_filing_means_data_verification_ONCE_THE_CLIENT_HAS_APPROVED(stage):
+    """`validation_failed` lands here too: re-validating is free, and that IS
+    data verification."""
     f = filing(stage) if stage else None
-    assert st.derive(case(), f)["code"] == "data_verification"
+    assert st.derive(case(**APPROVED), f)["code"] == "data_verification"
 
 
-def test_validated_but_not_sent_is_client_verification():
-    assert st.derive(case(), filing("validated"))["code"] == "client_verification"
+@pytest.mark.parametrize("stage", [None, "draft", "validation_failed", "validated"])
+def test_nothing_sent_to_the_client_is_client_verification_whatever_cr_knows(stage):
+    """THE REORDER (migration 046). This used to answer `data_verification` for
+    the first three: the client could not be asked until CR had validated the
+    return. Now the client comes first, so an unprepared case is waiting on the
+    email, and a prepared one is too."""
+    f = filing(stage) if stage else None
+    assert st.derive(case(), f)["code"] == "client_verification"
 
 
 def test_sent_and_unanswered_is_awaiting_client():
     c = case(verification_sent_at="2026-08-16T00:00:00Z")
     assert st.derive(c, filing("validated"))["code"] == "awaiting_client"
+    # ...and before CR has seen the return at all, which is the normal case now.
+    assert st.derive(c, filing("draft"))["code"] == "awaiting_client"
+
+
+def test_a_rejection_beats_everything_below_it():
+    """A client who said no is not waiting on data work, whatever stage the
+    filing happens to be in."""
+    for stage in (None, "draft", "validation_failed", "validated"):
+        c = case(verification_sent_at="2026-08-16T00:00:00Z", client_approved=False)
+        assert st.derive(c, filing(stage) if stage else None)["code"] ==             "client_rejected"
 
 
 def test_a_no_from_the_client_is_its_own_badge():
@@ -108,9 +132,12 @@ def test_an_unfiled_case_never_wears_a_cr_badge():
     """THE ORDER THAT MATTERS. A repair (or a future poller bug) could write a
     CR code onto a case CR has never seen; the filed test has to come first, or
     "Registered by CR" appears on a case still in Data Verification."""
-    c = case(cr_doc_status_code=st.CR_STATUS_CODES[3])  # cr_registered
+    c = case(cr_doc_status_code=st.CR_STATUS_CODES[3], **APPROVED)  # cr_registered
     assert st.derive(c, filing("draft"))["code"] == st.DATA_VERIFICATION
     assert st.derive(c, None)["code"] == st.DATA_VERIFICATION
+    # And on a case nobody has mailed yet, which is now the first stage.
+    unsent = case(cr_doc_status_code=st.CR_STATUS_CODES[3])
+    assert st.derive(unsent, filing("draft"))["code"] == st.CLIENT_VERIFICATION
 
 
 def test_crs_own_words_ride_along_with_the_badge():
@@ -157,10 +184,14 @@ def test_off_portal_is_false_on_an_ordinary_filing():
 def test_overdue_is_an_overlay_not_a_stage():
     """42 days past the anniversary can be true of a case at ANY step, so it is
     a separate flag -- folding it into the code would hide the real step."""
-    c = case(days_to_anniversary=-43)
+    c = case(days_to_anniversary=-43, **APPROVED)
     result = st.derive(c, None)
     assert result["code"] == "data_verification"
     assert result["overdue"] is True
+    # ...and at the first stage too, which is where most overdue cases sit.
+    early = st.derive(case(days_to_anniversary=-43), None)
+    assert early["code"] == "client_verification"
+    assert early["overdue"] is True
 
 
 def test_the_last_day_of_the_filing_window_is_not_yet_overdue():
@@ -312,8 +343,8 @@ def test_closed_beats_a_filed_return_rather_than_the_other_way_round():
 
 def test_an_open_case_is_unaffected_by_the_new_branch():
     """The guard is `closed_at`, not "the key is present"."""
-    assert st.derive({"closed_at": None}, None)["code"] == st.DATA_VERIFICATION
-    assert st.derive({}, None)["code"] == st.DATA_VERIFICATION
+    assert st.derive({"closed_at": None}, None)["code"] == st.CLIENT_VERIFICATION
+    assert st.derive({}, None)["code"] == st.CLIENT_VERIFICATION
 
 
 def test_a_closed_case_is_never_overdue():

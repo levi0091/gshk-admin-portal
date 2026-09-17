@@ -27,6 +27,12 @@ The first six codes are the six badges wireframe_v11 renders for the stages
 added after v11: a case the client abandoned finishes somewhere, and "Completed"
 was the one thing it must never be called -- which is now moot, since nothing is
 called that any more.
+
+CLIENT VERIFICATION IS THE FIRST STAGE, NOT THE SECOND (Levi 2026-09-17: "we
+need client validation to be 1st step ... users send the email way ahead of time
+to the client and then make the necessary changes ... before validating with CR
+portal after that first step"). The branch order in `_code` below IS that
+decision; see the comment there for what it cost and why it is worth it.
 """
 from services.tpsi.doc_status import (
     CR_STATUS_CODES,
@@ -61,9 +67,11 @@ SUBMISSION = "submission"
 CLOSED = "closed"
 
 #: The stages, then the CR codes, then closed. Order is the order the dashboard
-#: filter offers them in, which is the order a case moves through them.
+#: filter offers them in, which is the order a case moves through them — so
+#: CLIENT_VERIFICATION leads since 2026-09-17, when the client's approval became
+#: the first step rather than the second.
 GSHK_STATUSES = (
-    DATA_VERIFICATION, CLIENT_VERIFICATION, AWAITING_CLIENT, CLIENT_REJECTED,
+    CLIENT_VERIFICATION, AWAITING_CLIENT, CLIENT_REJECTED, DATA_VERIFICATION,
     SIGNING, SUBMISSION,
 )
 
@@ -123,13 +131,24 @@ def _code(case: dict, filing: dict | None) -> str:
     if case.get("manual_receipt") or stage in _FINISHED:
         return _cr_code(case)
 
-    # Nothing validated -> the data is still being worked on. validation_failed
-    # lands here too: it is free to fix and retry, and that IS data verification.
-    if stage != STAGE_VALIDATED and stage not in (
-        STAGE_SIGNED, STAGE_SUBMISSION_FAILED, STAGE_SIGNING_FAILED
-    ):
-        return DATA_VERIFICATION
-
+    # THE CLIENT COMES FIRST (Levi 2026-09-17). These three branches used to sit
+    # BELOW the validation test, so a case could not reach Client Verification
+    # until CR had validated the return.
+    #
+    # The old order had a real argument behind it: the client approved
+    # `validated_xml`, the exact bytes CR had just accepted, so nobody was ever
+    # asked to approve a form CR would refuse minutes later. What it cost was
+    # the calendar. The client is the slow party — they read the return, notice
+    # a director's address is stale, and ask for changes — and putting them last
+    # meant that conversation started only after the data work was finished, and
+    # then invalidated it. Sending early means the corrections arrive BEFORE the
+    # return is prepared for filing rather than after.
+    #
+    # What the client now approves is `request_xml`, built from the company
+    # record by the same mapper, rendered into CR's own Form NAR1. It is not a
+    # CR-validated document, and `cases.send_verification` stores the bytes that
+    # were mailed so the case can say when what will be filed has moved away
+    # from what was approved.
     if case.get("client_approved") is False:
         return CLIENT_REJECTED
     if not case.get("verification_sent_at"):
@@ -137,7 +156,17 @@ def _code(case: dict, filing: dict | None) -> str:
     if case.get("client_approved") is None:
         return AWAITING_CLIENT
 
-    # Approved. Which side of the signature are we on?
+    # Approved. Nothing validated -> the data is still being worked on.
+    # validation_failed lands here too: it is free to fix and retry, and that IS
+    # data verification. A failure here does NOT send the case back to the
+    # client — the approval stands and an operator mails them by hand if the
+    # correction warrants it (Levi 2026-09-17).
+    if stage != STAGE_VALIDATED and stage not in (
+        STAGE_SIGNED, STAGE_SUBMISSION_FAILED, STAGE_SIGNING_FAILED
+    ):
+        return DATA_VERIFICATION
+
+    # Which side of the signature are we on?
     if stage == STAGE_SIGNED or stage == STAGE_SUBMISSION_FAILED:
         return SUBMISSION
     return SIGNING

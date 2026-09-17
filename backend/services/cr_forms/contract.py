@@ -50,7 +50,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/roAddr/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NAR1', 'submission/Eform/formModel/emailAddr'):
-        ('unsourced', 'as email at (top)', False, 60),
+        ('mapped', 'entities.email', False, 60),
     ('NAR1', 'submission/Eform/formModel/telNo'):
         ('mapped', 'contacts.contact_value', False, 8),
     ('NAR1', 'submission/Eform/formModel/totalAmountMortCharge'):
@@ -126,7 +126,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/stdAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpEmailAddr'):
-        ('unsourced', "a corporate director's/secretary's own email; no entity-level Email column in Entity, CR_Entity or RefMaster", False, 60),
+        ('mapped', 'entities.email', False, 60),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpBrNo'):
         ('mapped', 'entities.br_number', False, 20),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpTcspNo'):
@@ -198,7 +198,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/corpDirList/corpDir/stdAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NAR1', 'submission/Eform/formModel/corpDirList/corpDir/corpEmailAddr'):
-        ('unsourced', "a corporate director's/secretary's own email; no entity-level Email column in Entity, CR_Entity or RefMaster", False, 60),
+        ('mapped', 'entities.email', False, 60),
     ('NAR1', 'submission/Eform/formModel/corpDirList/corpDir/corpBrNo'):
         ('mapped', 'entities.br_number', False, 20),
     ('NAR1', 'submission/Eform/formModel/resDirList/resDir/indvChiName'):
@@ -370,7 +370,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NNC1', 'submission/Eform/formModel/stdAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NNC1', 'submission/Eform/formModel/email'):
-        ('unsourced', 'company-level email; no entity-level Email column in Entity, CR_Entity or RefMaster', False, 60),
+        ('mapped', 'entities.email', False, 60),
     ('NNC1', 'submission/Eform/formModel/telNo'):
         ('mapped', 'contacts.contact_value', False, 8),
     ('NNC1', 'submission/Eform/formModel/shareCapitals/shareCapital/classOfShare'):
@@ -470,7 +470,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/correspondingAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/email'):
-        ('unsourced', 'as corpEmailAddr', False, 60),
+        ('mapped', 'entities.email', False, 60),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/ubino'):
         ('mapped', 'entities.br_number', False, 20),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/tcspNo'):
@@ -546,7 +546,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/correspondingAddress/ctryRegion'):
         ('mapped', 'addresses.country', True, 4),
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/email'):
-        ('unsourced', 'as corpEmailAddr', False, 60),
+        ('mapped', 'entities.email', False, 60),
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/ubino'):
         ('mapped', 'entities.br_number', False, 20),
     ('NNC1', 'submission/Eform/formModel/corpDirList/corpDir/consentSigned'):
