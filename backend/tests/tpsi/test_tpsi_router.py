@@ -1233,17 +1233,57 @@ def test_submit_is_refused_when_no_deposit_account_can_be_resolved(client):
 
 # ---- filings: GET /tpsi/filings/{id}/pdf (BE-2) -----------------------------
 
-def test_pdf_is_refused_until_the_filing_is_validated(client):
-    """The preview must render the CR-validated snapshot. A draft has none, and
-    rendering anything else would show the admin something other than what CR
-    is holding. 409 not 404: the filing exists, it just is not validated yet."""
+def test_pdf_renders_an_unvalidated_draft_from_its_request_xml(client):
+    """REVERSES "refused until validated" (2026-09-17). Client Verification is
+    the FIRST stage now, so the screen that shows this preview is reached
+    BEFORE CR has seen the return — the old refusal made the preview fail on
+    every case at stage 1, which is what an operator reported as "The preview
+    could not be rendered" on a case they had only just opened.
+
+    `request_xml` is what `filings.validate()` sends to CR verbatim, so it is
+    the document that will be filed."""
+    row = {"stage": "draft", "form_code": "Nar1", "validated_xml": None,
+           "request_xml": "<the-draft/>", "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<the-draft/>"
+
+
+def test_pdf_still_prefers_the_cr_validated_snapshot_when_there_is_one(client):
+    """THE GUARANTEE THE SUBMIT STAGE RESTS ON is unchanged: the admin
+    double-confirms an irreversible, chargeable submit off this document, and by
+    then the filing is validated — so `validated_xml` still wins and the
+    fallback above can never apply at that point."""
+    row = {"stage": "validated", "form_code": "Nar1",
+           "validated_xml": "<cr-holds-this/>", "request_xml": "<older-draft/>",
+           "nar1_case_id": "c1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<cr-holds-this/>"
+
+
+def test_pdf_is_refused_when_there_is_no_return_at_all(client):
+    """Neither payload. 409 not 404: the filing exists, it just carries nothing
+    to draw."""
     with _super(), \
          patch("routers.tpsi.filings.get_filing",
                return_value={"stage": "draft", "form_code": "Nar1",
-                             "validated_xml": None}):
+                             "validated_xml": None, "request_xml": None}):
         response = client.get("/tpsi/filings/f1/pdf", headers=H)
     assert response.status_code == 409
-    assert "validated" in response.json()["detail"].lower()
+    assert "no return" in response.json()["detail"].lower()
 
 
 def test_pdf_refuses_a_form_code_it_has_no_renderer_for(client):

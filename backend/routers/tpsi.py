@@ -927,21 +927,26 @@ async def get_filing(filing_id: str, user=Depends(require_permission("tpsi", "re
 async def filing_pdf(
     filing_id: str, user=Depends(require_permission("tpsi", "read"))
 ):
-    """Form NAR1 + Schedule 1/2, from the CR-validated snapshot (BE-2).
+    """Form NAR1 + Schedule 1/2, from the filing's own return (BE-2).
 
     `read`, not `write`: nothing is sent to CR, nothing is charged, and nothing
     is stored. It is still permission-gated, because a statutory return is data
     about real people -- residential addresses and partial identity numbers.
 
-    Rendered on demand rather than saved to Storage: `validated_xml` is the
+    Rendered on demand rather than saved to Storage: the filing row is the
     single source, so a re-render can never drift from it, and there is no
     stale artefact to garbage-collect when a filing is re-validated after a
     field fix.
 
-    409 before validation, not 404: the filing exists, it simply has no
-    CR-validated payload yet, and the caller's fix is to validate -- not to look
-    somewhere else. Also 409 for any form code other than NAR1: there is one
-    renderer and it is a NAR1 renderer.
+    CR's validated copy when there is one, the prepared `request_xml` otherwise
+    -- see the comment at the payload below for why the second was added and why
+    it cannot weaken the guarantee the Submission stage rests on. 409, not 404,
+    when there is neither: the filing exists, it simply carries nothing to draw.
+    Also 409 for any form code other than NAR1: there is one renderer and it is
+    a NAR1 renderer.
+
+    A CASE at Client Verification usually has no filing at all, so that screen
+    does not use this endpoint -- see `cases.preview_verification`.
     """
     try:
         row = filings.get_filing(filing_id)
@@ -963,11 +968,26 @@ async def filing_pdf(
             "only NAR1 has a renderer, so there is no preview to show",
         )
 
-    if not row.get("validated_xml"):
+    # WHAT THE CLIENT AND THE ADMIN ARE LOOKING AT.
+    #
+    # `validated_xml` FIRST, and that is the guarantee the Submission stage
+    # rests on: the admin double-confirms an irreversible, chargeable submit off
+    # this document, and by then the filing is validated, so the fallback below
+    # can never apply at that point.
+    #
+    # `request_xml` SECOND (2026-09-17). This used to be a flat 409 — "this
+    # filing has not been validated by CR yet" — which was right while Client
+    # Verification was the SECOND stage. It is the first stage now, so the
+    # screen showing this preview is reached BEFORE CR has seen the return, and
+    # the refusal fired on every case at stage 1. `request_xml` is what
+    # `filings.validate()` sends to CR verbatim, so it is the document that will
+    # be filed.
+    payload = row.get("validated_xml") or row.get("request_xml")
+    if not payload:
         raise HTTPException(
             409,
-            "this filing has not been validated by CR yet, so there is no "
-            "validated XML to render",
+            "this filing carries no return to draw — neither a CR-validated "
+            "snapshot nor a prepared one. Open the case again to rebuild it.",
         )
 
     try:
@@ -988,7 +1008,7 @@ async def filing_pdf(
         except Exception:  # noqa: BLE001
             entity = {}
         pdf = nar1_form_fill.render(
-            row["validated_xml"],
+            payload,
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),

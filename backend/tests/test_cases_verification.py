@@ -233,6 +233,115 @@ def _prepares(form_xml="<built/>", filing=None):
     ]
 
 
+# --------------------------------------------------------------------------- #
+#  GET /cases/{id}/verification/preview
+#
+#  THE BUG THIS EXISTS FOR (reported 2026-09-17, on PROD and DEV). The screen
+#  fetched `/tpsi/filings/{id}/pdf`, which needs a filing id. At stage 1 a case
+#  usually has NO FILING AT ALL, so the browser never issued a request and the
+#  panel sat on "Rendering the preview…" for ever — 13 of DEV's 44 open cases.
+#  Where a filing did exist but CR had not validated it, the same screen got a
+#  409 and read "The preview could not be rendered".
+# --------------------------------------------------------------------------- #
+
+def test_the_preview_builds_the_return_when_the_case_has_no_filing(client):
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(return_value="<built-in-memory/>")), \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
+    assert render.call_args.args[0] == "<built-in-memory/>"
+
+
+def test_the_preview_PERSISTS_NOTHING(client):
+    """It is a GET under `nar1:read`. Opening a case to look at the return must
+    not open a filing row — pressing Send is what does that."""
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(return_value="<built-in-memory/>")), \
+         patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF-1.4"), \
+         patch("routers.cases.tpsi_filings.create_filing") as create, \
+         patch("routers.cases.tpsi_filings.rebuild_draft") as rebuild, \
+         patch("routers.cases.nar1_cases.update_case") as update, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 200
+    create.assert_not_called()
+    rebuild.assert_not_called()
+    update.assert_not_called()
+
+
+def test_the_preview_uses_the_draft_when_one_exists(client):
+    """Not a fresh build: the operator must see the return that is actually on
+    the case, so that pressing Send cannot mail something different."""
+    draft = {"id": "f1", "form_code": "Nar1", "stage": "draft",
+             "request_xml": "<the-draft/>", "validated_xml": None}
+    with _super(), _Stack(*_sendable(filing=draft)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock()) as build, \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<the-draft/>"
+    build.assert_not_awaited()
+
+
+def test_the_preview_prefers_the_cr_validated_snapshot(client):
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<x/>"      # VALIDATED's validated_xml
+
+
+def test_the_preview_reports_an_unfilable_company_rather_than_spinning(client):
+    """The operator learns at stage 1 that the record cannot produce a NAR1 —
+    which is earlier than they used to find out, and is the point of the
+    reorder."""
+    from services.tpsi.forms import nar1_mapper
+
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(side_effect=nar1_mapper.MappingError(
+                   ["no registered-office country"]))):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["problems"] == ["no registered-office country"]
+
+
+def test_the_preview_needs_nar1_read(client):
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for", return_value=set()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+    assert response.status_code == 403
+
+
+def test_the_preview_is_reachable_with_nar1_READ_alone(client):
+    """It writes nothing, so a read-only role must be able to look at the return
+    — withholding it would make the whole stage unreadable to them."""
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth._permissions_for", return_value={"read"}), \
+         _Stack(*_sendable()), \
+         patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF-1.4"), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+    assert response.status_code == 200
+
+
 def test_a_case_with_no_filing_builds_one_and_sends_it(client):
     """THE NORMAL CASE at stage 1. This used to be a 409."""
     with _super(), _Stack(*_sendable(filing=NO_FILING), *_prepares()), \

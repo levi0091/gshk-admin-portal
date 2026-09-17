@@ -11,7 +11,7 @@ import sys
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
-                     UploadFile)
+                     Response, UploadFile)
 from pydantic import BaseModel
 
 from middleware.auth import require_permission
@@ -1205,6 +1205,103 @@ async def _undeliverable(addresses: list[str]) -> dict[str, str]:
     return out
 
 
+def _mapping_error(exc) -> HTTPException:
+    """The shape /tpsi/filings/prepare returns, so one fault list renders the
+    same wherever it was produced."""
+    return HTTPException(400, {"message": "entity cannot be filed as a NAR1",
+                               "problems": exc.problems})
+
+
+def _prepare_failed(exc) -> HTTPException:
+    """Everything else `nar1_prepare` can raise, as an upstream failure."""
+    if isinstance(exc, LookupError):
+        return HTTPException(400, str(exc))
+    if isinstance(exc, nar1_prepare.LoaderFailed):
+        return HTTPException(
+            502,
+            f"could not load entity {exc.entity_id} from the profile store "
+            f"(nar1_source.load_entity_graph): "
+            f"{type(exc.cause).__name__}: {exc.cause}",
+        )
+    return HTTPException(
+        502, f"the return could not be prepared: {type(exc).__name__}: {exc}")
+
+
+@router.get("/{case_id}/verification/preview")
+async def preview_verification(
+    case_id: str, user=Depends(require_permission("nar1", "read")),
+):
+    """The return this case would send the client, as CR's own Form NAR1.
+
+    WHY THIS IS CASE-SCOPED AND NOT `/tpsi/filings/{id}/pdf`. That endpoint
+    needs a filing id, and at stage 1 a case usually has NO FILING AT ALL --
+    Client Verification became the first stage on 2026-09-17, so nothing has
+    prepared one yet. The screen consequently never issued a request and sat on
+    "Rendering the preview..." for ever; on DEV that was 13 of 44 open cases.
+
+    IT PERSISTS NOTHING, which is why it is a GET under `nar1:read`. Opening a
+    case to look at the return must not open a filing row; pressing Send is what
+    does that, and `send_verification` builds and stores the draft then. Both
+    build through `nar1_prepare.build_form_xml` from the same company record, so
+    what is previewed is what would be mailed.
+
+    The payload preference is the filing's, in the same order the send uses:
+    CR's validated copy when there is one, else the prepared `request_xml`,
+    else a build made here and thrown away.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    filing = nar1_cases.current_filing(case_id)
+    payload = (filing or {}).get("validated_xml") or (filing or {}).get("request_xml")
+
+    if not payload:
+        try:
+            payload = await nar1_prepare.build_form_xml(
+                entity_id=case["entity_id"],
+                nar1_case_id=case_id,
+                user_id=user["id"],
+            )
+        except nar1_mapper.MappingError as exc:
+            # NOT a 500 and not a spinner: an operator now learns at stage 1
+            # that the record cannot produce a NAR1, which is the whole point of
+            # asking the client first.
+            raise _mapping_error(exc)
+        except Exception as exc:  # noqa: BLE001
+            raise _prepare_failed(exc)
+
+    # A missing entity is not a reason to fail the preview: the resolver
+    # defaults to "private", which is what all but a handful of the book are.
+    # Matches the guard on /tpsi/filings/{id}/pdf.
+    try:
+        entity = nar1_cases.entity_for(case["entity_id"]) or {}
+    except Exception:  # noqa: BLE001
+        entity = {}
+
+    try:
+        # Off the event loop, as the send does: filling and compressing a
+        # 15-page AcroForm is CPU-bound and this handler is `async def`.
+        pdf = await asyncio.to_thread(
+            nar1_form_fill.render,
+            payload,
+            company_type=nar1_form_fill.company_type_from_profile(
+                entity.get("company_type")
+            ),
+            signed_on=(filing or {}).get("signed_at") or "",
+        )
+    except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
+        raise HTTPException(422, f"the return could not be rendered: {exc}")
+
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'inline; filename="NAR1-{case.get("case_no") or case_id}.pdf"'},
+    )
+
+
 @router.post("/{case_id}/verification/send")
 async def send_verification(
     case_id: str, body: VerificationSendIn, request: Request,
@@ -1257,25 +1354,13 @@ async def send_verification(
                 nar1_case_id=case_id,
                 user_id=user["id"],
             )
-        except LookupError as exc:
-            raise HTTPException(400, str(exc))
-        except nar1_prepare.LoaderFailed as exc:
-            raise HTTPException(
-                502,
-                f"could not load entity {exc.entity_id} from the profile store "
-                f"(nar1_source.load_entity_graph): "
-                f"{type(exc.cause).__name__}: {exc.cause}",
-            )
         except nar1_mapper.MappingError as exc:
-            # The same shape /tpsi/filings/prepare returns, so the screen can
-            # render the fault list identically wherever it was produced.
-            raise HTTPException(
-                400, {"message": "entity cannot be filed as a NAR1",
-                      "problems": exc.problems})
+            raise _mapping_error(exc)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                502, f"the return could not be prepared: "
-                     f"{type(exc).__name__}: {exc}")
+            # Shared with the preview above, so the two cannot report the same
+            # failure differently — an operator who sees a reason on the preview
+            # must see the same reason when they press Send.
+            raise _prepare_failed(exc)
 
         if filing is None:
             filing = tpsi_filings.create_filing(

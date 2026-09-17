@@ -49,3 +49,22 @@ export async function downloadFilingPdf(filingId, fileName = 'NAR1.pdf') {
     URL.revokeObjectURL(url)
   }
 }
+
+/**
+ * The same form, for a CASE rather than a filing.
+ *
+ * Needed because a case at Client Verification — the FIRST stage since
+ * 2026-09-17 — usually has no filing row yet, so there is no id to download by.
+ * The case endpoint builds the return in memory when it has to, and still
+ * prefers CR's validated copy whenever one exists, so this and
+ * `downloadFilingPdf` hand over the same bytes wherever both would work.
+ */
+export async function downloadCasePdf(caseId, fileName = 'NAR1.pdf') {
+  const blob = await api.blob(`/cases/${caseId}/verification/preview`)
+  const url = URL.createObjectURL(blob)
+  try {
+    saveUrl(url, fileName)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
