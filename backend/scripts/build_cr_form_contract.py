@@ -165,23 +165,33 @@ RULES: list[tuple] = [
     (None, "corpChiName",       MAPPED, "entities.company_name_zh"),
     (None, "corpEngName",       MAPPED, "entities.company_name"),
     (None, "engName",           MAPPED, "entities.company_name"),
-    # An email on a CORPORATE block is that company's, and no entity-level
-    # email column exists to hold it -- Viewpoint has none either, so it is
-    # unsourced exactly like the top-level company email (PRD 7.2). Mapping it
-    # to a column that does not exist is worse than admitting the gap.
-    (None, "corpEmailAddr",     UNSOURCED,
-     "a corporate director's/secretary's own email; no entity-level Email "
-     "column in Entity, CR_Entity or RefMaster"),
-    ("corpDirList", "email",    UNSOURCED, "as corpEmailAddr"),
-    ("corpSecList", "email",    UNSOURCED, "as corpEmailAddr"),
+    # AN EMAIL ON A CORPORATE BLOCK IS THAT COMPANY'S OWN, and since migration
+    # 045 there is a column for it. These four were `unsourced` -- "no
+    # entity-level Email column in Entity, CR_Entity or RefMaster", which was
+    # true of Viewpoint and stopped being true of us.
+    #
+    # It was not a harmless gap. CR keeps an email for each body corporate in
+    # its OWN database and diffs the filed return against it, so an empty
+    # element is a mismatch rather than a neutral omission: it produced a
+    # discrepancy notice against GET STARTED HK LIMITED as company secretary,
+    # and would have produced one on every return GSHK files.
+    #
+    # `entities.email` serves all four because they are one fact asked in four
+    # places -- the subject company's own address in NAR1 s7 / NNC1 (top), and
+    # each corporate officer's address read off THAT officer's entity row.
+    # nar1_source attaches it as `corporate_email` on both the secretary
+    # register and entity_officers; nar1_mapper omits the element when it is
+    # empty, so every company that has not been given one files exactly as it
+    # did before.
+    (None, "corpEmailAddr",     MAPPED, "entities.email"),
+    ("corpDirList", "email",    MAPPED, "entities.email"),
+    ("corpSecList", "email",    MAPPED, "entities.email"),
 
     # `email` on an individual block is the person's, and that we do hold.
     ("indDirList", "email",     MAPPED, "persons.email"),
     ("indSecList", "email",     MAPPED, "persons.email"),
-    (None, "email",             UNSOURCED,
-     "company-level email; no entity-level Email column in Entity, CR_Entity "
-     "or RefMaster"),
-    (None, "emailAddr",         UNSOURCED, "as email at (top)"),
+    (None, "email",             MAPPED, "entities.email"),
+    (None, "emailAddr",         MAPPED, "entities.email"),
 
     # -- Directors ---------------------------------------------------------
     (None, "dirInd",            DERIVED,

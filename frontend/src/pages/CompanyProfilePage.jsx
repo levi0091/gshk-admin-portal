@@ -41,6 +41,15 @@ const EDITABLE = [
     lookup: 'cr_business_nature' },
   // Brian's B6.
   { key: 'mortgages_total', label: 'Mortgages and Charges' },
+  // THE BODY CORPORATE'S OWN EMAIL (migration 045). CR asks for it in three
+  // places and holds its own copy of all three: this company's in NAR1 s7, and
+  // this company's again in corpSec / corpDir on the returns of the companies
+  // it acts as an officer for. Blank is not neutral — CR diffs the return
+  // against its record and raised a discrepancy notice over an empty one.
+  //
+  // `maxLength` and the mandatory marker come from /form-contract like every
+  // other mapped field; nothing about CR's 60 characters is written here.
+  { key: 'email', label: 'Email Address' },
   { key: 'incorporation_place', label: 'Country of Incorporation', lookup: 'cr_country' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
   { key: 'case_notes', label: 'Case Notes', full: true },
@@ -648,6 +657,15 @@ export default function CompanyProfilePage() {
                     identical once you comma-join them. */}
                 <AddressBlock value={company.registered_address} readOnly
                               warnings={addressWarnings} />
+                {/* Beside the phone, because they are the same kind of fact and
+                    CR asks for both. THE READ VIEW IS HAND-WRITTEN, not derived
+                    from EDITABLE — a field added to the editor and not here is
+                    invisible until somebody presses Edit, which is how it would
+                    have shipped. */}
+                <Kv label="Email Address"
+                    warning={warnFor('entities', 'email', company.email)}>
+                  {company.email}
+                </Kv>
                 <Kv label="Company Phone">{companyPhone(company) || null}</Kv>
                 <Kv label="Create Date">{formatDate(company.created_at)}</Kv>
                 <Kv label="Incorporation Date">{formatDate(company.incorporation_date)}</Kv>

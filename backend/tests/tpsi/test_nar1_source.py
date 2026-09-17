@@ -399,3 +399,50 @@ async def test_no_corporate_parties_means_no_second_entities_query():
         await nar1_source.load_entity_graph("e1")
 
     assert sb.queried.count("entities") == 1
+
+
+# ---- entities.email, attached as `corporate_email` (migration 045) ----------
+
+async def test_a_corporate_secretary_carries_its_own_email():
+    """CR holds one for each body corporate and diffs the filed return against
+    it — an empty element is what produced the discrepancy notice against
+    GET STARTED HK LIMITED."""
+    sb = _Supabase({
+        "entities": [ENTITY, {**GSHK, "email": "dataresources@getstarted.hk"}],
+        "company_secretaries": [_secretary()],
+        "addresses": [FILER_ADDR, GSHK_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["secretaries"][0]["corporate_email"] == "dataresources@getstarted.hk"
+
+
+async def test_a_corporate_officer_carries_its_own_email():
+    sb = _Supabase({
+        "entities": [ENTITY, {**HOLDCO, "email": "board@holdco.example"}],
+        "entity_officers": [{"id": "o1", "entity_id": "e1", "role": "director",
+                             "party_type": "corporate",
+                             "corporate_entity_id": "c1", "is_current": True}],
+        "addresses": [FILER_ADDR, CORP_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["officers"][0]["corporate_email"] == "board@holdco.example"
+
+
+async def test_a_party_row_without_the_column_does_not_blow_up_the_load():
+    """A deployment whose 045 has not run yet returns entity rows with no
+    `email` key. CR marks the field optional, so a filing must not 500 over it
+    — this is the deploy-before-migrate window, which is the normal order here
+    because Railway deploys on push and alembic is run by hand."""
+    sb = _Supabase({
+        "entities": [ENTITY, GSHK],          # no `email` key on either row
+        "company_secretaries": [_secretary()],
+        "addresses": [FILER_ADDR, GSHK_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["secretaries"][0]["corporate_email"] is None

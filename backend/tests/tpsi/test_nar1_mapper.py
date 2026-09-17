@@ -1627,3 +1627,112 @@ def test_shares_issued_with_nothing_paid_is_reported_not_filed_as_zero():
     with pytest.raises(nar1_mapper.MappingError) as exc:
         mapped(g)
     assert any("no Total Amount" in p for p in exc.value.problems)
+
+
+# --------------------------------------------------------------------------- #
+# corpEmailAddr / emailAddr — the body corporate's own email (migration 045)
+#
+# CR keeps an email for each body corporate in its OWN database and diffs the
+# filed return against it, so a blank element is a MISMATCH, not a neutral
+# omission. It produced a discrepancy notice against GET STARTED HK LIMITED as
+# company secretary: CR held DATARESOURCES@GETSTARTED.HK, the AR e-form carried
+# nothing, and the mapper had no node to emit because there was no column.
+# --------------------------------------------------------------------------- #
+
+def _gshk_secretary(**over):
+    """The base fixture's secretary row, with overrides."""
+    sec = {"is_gshk": True, "secretary_name": "Get Started HK Limited",
+           "tcsp_number": "TC000807", "is_current": True,
+           "corporate_entity_id": "gshk", "corporate_entity_resolution": "ok",
+           "corporate_address": SEC_ADDR, "corporate_br_no": "99999999"}
+    sec.update(over)
+    return sec
+
+
+def test_corporate_secretary_files_its_own_email():
+    g = graph(secretaries=[
+        _gshk_secretary(corporate_email="dataresources@getstarted.hk")
+    ], addresses={"a1": ADDR})
+    sec = mapped(g)["corpSecList"][0]
+    assert sec["corpEmailAddr"] == "dataresources@getstarted.hk"
+
+
+def test_corporate_secretary_email_is_absent_not_empty_when_unknown():
+    """Absent and blank are DIFFERENT statements. `<corpEmailAddr/>` asserts
+    the body corporate has no email; saying nothing asserts nothing. CR marks
+    the field Mandatory = N, so the second is the truthful one for a company
+    nobody has given an address to yet."""
+    g = graph(secretaries=[_gshk_secretary()], addresses={"a1": ADDR})
+    sec = mapped(g)["corpSecList"][0]
+    assert "corpEmailAddr" not in sec
+
+
+def test_a_whitespace_only_email_is_treated_as_absent():
+    g = graph(secretaries=[_gshk_secretary(corporate_email="   ")],
+              addresses={"a1": ADDR})
+    assert "corpEmailAddr" not in mapped(g)["corpSecList"][0]
+
+
+def test_the_email_is_trimmed_before_it_is_filed():
+    g = graph(secretaries=[
+        _gshk_secretary(corporate_email="  info@getstarted.hk \n")
+    ], addresses={"a1": ADDR})
+    assert mapped(g)["corpSecList"][0]["corpEmailAddr"] == "info@getstarted.hk"
+
+
+def test_corporate_DIRECTOR_files_its_own_email_too():
+    """Levi 2026-09-17. corpDir carries corpEmailAddr exactly as corpSec does
+    and CR diffs it the same way, so sourcing only the secretary would leave
+    the identical discrepancy notice waiting for the first corporate director."""
+    g = graph(
+        officers=[{"id": "o1", "role": "director", "party_type": "corporate",
+                   "is_current": True, "corporate_name": "HOLDCO LIMITED",
+                   "corporate_entity_id": "h1", "corporate_br_no": "12345678",
+                   "corporate_email": "board@holdco.example",
+                   "corporate_address": ADDR}],
+        secretaries=[_gshk_secretary()], addresses={"a1": ADDR},
+    )
+    assert mapped(g)["corpDirList"][0]["corpEmailAddr"] == "board@holdco.example"
+
+
+def test_the_secretarys_email_is_its_own_never_the_filing_companys():
+    """The same class of mistake as the registered-office substitution that
+    filed 1,043 companies' own address as their secretary's."""
+    g = graph(
+        entity={"id": "e1", "company_name": "TEST COMPANY LIMITED",
+                "br_number": "00000001", "registered_address_id": "a1",
+                "email": "client@example.com"},
+        secretaries=[_gshk_secretary(corporate_email="sec@getstarted.hk")],
+        addresses={"a1": ADDR},
+    )
+    out = mapped(g)
+    assert out["corpSecList"][0]["corpEmailAddr"] == "sec@getstarted.hk"
+    assert out["emailAddr"] == "client@example.com"
+
+
+def test_section_7_files_the_filing_companys_own_email():
+    g = graph(
+        entity={"id": "e1", "company_name": "TEST COMPANY LIMITED",
+                "br_number": "00000001", "registered_address_id": "a1",
+                "email": "hello@testco.example"},
+        addresses={"a1": ADDR},
+    )
+    assert mapped(g)["emailAddr"] == "hello@testco.example"
+
+
+def test_section_7_is_omitted_when_the_company_has_no_email():
+    """Every company until somebody types one. `fill.py` prints "None given"
+    in the box for an absent value, exactly as it has always done."""
+    assert "emailAddr" not in mapped(graph(addresses={"a1": ADDR}))
+
+
+def test_the_email_reaches_the_xml_where_cr_puts_it():
+    """Through build_nar1_xml, which emits in SCHEMA order — so this also
+    proves the element is one CR's own schema declares."""
+    g = graph(secretaries=[
+        _gshk_secretary(corporate_email="dataresources@getstarted.hk")
+    ], addresses={"a1": ADDR})
+    xml = nar1.build_nar1_xml(mapped(g))
+    assert (
+        "<cr:corpEmailAddr>dataresources@getstarted.hk</cr:corpEmailAddr>" in xml
+    )

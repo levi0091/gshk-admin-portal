@@ -48,23 +48,34 @@ def _ind_dir(surname):
       </cr:indDir>"""
 
 
-def _corp_dir(name):
+def _split(party):
+    """A fixture party is "NAME", or ("NAME", "email@x") when it has one."""
+    return party if isinstance(party, tuple) else (party, "")
+
+
+def _corp_dir(party):
+    name, email = _split(party)
+    email_node = f"<cr:corpEmailAddr>{email}</cr:corpEmailAddr>" if email else ""
     return f"""
       <cr:corpDir>
         <cr:dirInd>Y</cr:dirInd>
         <cr:corpEngName>{name}</cr:corpEngName>
         {_address()}
+        {email_node}
         <cr:corpBrNo>99999999</cr:corpBrNo>
       </cr:corpDir>"""
 
 
-def _corp_sec(name):
+def _corp_sec(party):
     """A body-corporate company secretary — section 12B, and Continuation
     Sheet B once there is more than one."""
+    name, email = _split(party)
+    email_node = f"<cr:corpEmailAddr>{email}</cr:corpEmailAddr>" if email else ""
     return f"""
       <cr:corpSec>
         <cr:corpEngName>{name}</cr:corpEngName>
         {_address()}
+        {email_node}
         <cr:corpBrNo>67169839</cr:corpBrNo>
         <cr:corpTcspNo>TC000807</cr:corpTcspNo>
       </cr:corpSec>"""
@@ -95,6 +106,7 @@ def _member(surname, shares):
 def build_xml(*, directors=("CHAN",), corporate_directors=(),
               secretaries=1, corporate_secretaries=(), members=("WONG",),
               date="01/02/2026", share_classes=1, issued_per_class=100,
+              company_email="",
               capacity="Director of the Company Secretary (Body Corporate)"):
     """A validated return, in CR's own shape: a BARE fragment with undeclared
     `cr:` prefixes, exactly as `tpsi_filings.validated_xml` stores it.
@@ -135,6 +147,7 @@ def build_xml(*, directors=("CHAN",), corporate_directors=(),
         <cr:brNo>T0001137</cr:brNo>
         <cr:compNameE>TEST COMPANY LIMITED</cr:compNameE>
         <cr:compNameC>測試有限公司</cr:compNameC>
+        {f"<cr:emailAddr>{company_email}</cr:emailAddr>" if company_email else ""}
         <cr:formCode>NAR1</cr:formCode>
         <cr:dateReturnMadeUp>{date}</cr:dateReturnMadeUp>
         <cr:dateReturnFrom>2025-01-01</cr:dateReturnFrom>
@@ -558,3 +571,54 @@ def test_continuation_sheets_are_still_conditional():
     # 9 base pages (main 1-8 + one Schedule 1 page) + 2 extra Sheet C pages
     # for LEE and WONG, the directors beyond the one CHAN occupies on page 5.
     assert len(overflow) == 11
+
+
+# ---------------------------------------------------------------------------
+# The email boxes (migration 045)
+#
+# `_corporate_officer` has ALWAYS written corpEmailAddr into s12B / s13B. The
+# box printed blank only because nothing upstream emitted the element, which
+# is what CR raised a discrepancy notice about. These pin the wiring end to
+# end, so a future change to the mapper cannot empty the box in silence.
+# ---------------------------------------------------------------------------
+
+def test_the_corporate_secretarys_email_is_printed_in_s12b():
+    values = values_of(fill.render_fields(build_xml(
+        corporate_secretaries=(("GET STARTED HK LIMITED",
+                                "dataresources@getstarted.hk"),),
+        secretaries=0,
+    )))
+    assert values[fm.SECRETARY_CORPORATE["email"]] == [
+        "dataresources@getstarted.hk"]
+
+
+def test_a_corporate_secretary_with_no_email_leaves_the_box_empty():
+    """Not "None given" — that treatment is section 7's, where CR's own form
+    asks a question the company must answer. An officer block simply has
+    nothing to print."""
+    values = values_of(fill.render_fields(build_xml(
+        corporate_secretaries=("GET STARTED HK LIMITED",), secretaries=0,
+    )))
+    assert fm.SECRETARY_CORPORATE["email"] not in values
+
+
+def test_the_corporate_directors_email_is_printed_in_s13b():
+    values = values_of(fill.render_fields(build_xml(
+        directors=(), corporate_directors=(("HOLDCO LIMITED",
+                                            "board@holdco.example"),),
+    )))
+    # Page 6 prints two corporate directors; this is the first slot.
+    assert values[fm.DIRECTOR_CORPORATE[0]["email"]] == ["board@holdco.example"]
+
+
+def test_section_7_prints_the_companys_own_email_when_there_is_one():
+    values = values_of(fill.render_fields(
+        build_xml(company_email="hello@testco.example")))
+    assert values[fm.MAIN_2["email_address"]] == ["hello@testco.example"]
+
+
+def test_section_7_still_says_none_given_when_there_is_no_email():
+    """The behaviour every return has had. Mapping the field changed nothing
+    for a company nobody has typed an address onto."""
+    values = values_of(fill.render_fields(build_xml()))
+    assert values[fm.MAIN_2["email_address"]] == [fill.NONE_GIVEN]
