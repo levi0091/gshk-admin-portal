@@ -18,14 +18,15 @@ from middleware.auth import require_permission
 from db.supabase import get_supabase
 from services import (
     audit_events as ev, document_service, email_service, nar1_approvals,
-    nar1_case_status, nar1_cases, nar1_return_data, table_filters as tf,
+    nar1_case_status, nar1_cases, nar1_prepare, nar1_return_data,
+    nar1_verification, table_filters as tf,
 )
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services import audit_subject
 from services.tpsi import filings as tpsi_filings
-from services.tpsi.forms import nar1_source
+from services.tpsi.forms import nar1_mapper, nar1_source
 from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL,
 )
@@ -423,6 +424,11 @@ async def patch_case(
             patch["client_approval_source"] = None
             patch["client_approval_person_id"] = None
             patch["client_approval_name"] = None
+            # And the document they were looking at (migration 046). Kept, it
+            # would have the case compare today's return against one nobody has
+            # been asked about since the restart, and report "3 fields changed
+            # since the client approved" over a case with no approval at all.
+            patch["verification_xml"] = None
             events.append((ev.CASE_STATUS_CHANGED, "verification",
                            "sent", "restarted"))
 
@@ -997,34 +1003,37 @@ async def manual_submit(
 #: comes out of the ETL and is filtered in nar1_cases.recipient_email.
 _ADDRESS = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-#: Stages whose validated_xml IS the document CR is holding. `validation_failed`
-#: is deliberately excluded and handled separately -- see _verification_gate.
-_SENDABLE_STAGES = ("validated", "signed", "signing_failed", "submission_failed")
-
-
 def _verification_gate(case: dict, filing: dict | None) -> str | None:
-    """Why this case may not be sent for verification, or None."""
+    """Why this case may not be sent for verification, or None.
+
+    TWO REFUSALS WERE REMOVED HERE (migration 046, Levi 2026-09-17). This used
+    to refuse a filing CR had not validated --
+
+        "this filing has not been validated by CR yet; the client would be
+         approving a form that may be rejected minutes later"
+
+    -- and, separately, one whose last validation had FAILED. Both were correct
+    while Client Verification was the second stage: the client approved
+    `validated_xml`, the exact bytes CR had accepted. Client Verification is now
+    the FIRST stage, so by construction CR has not seen the return, and keeping
+    either refusal would refuse every send the new order asks for.
+
+    What remains is everything that is still true: a case finished off-portal
+    has nothing to approve, a return CR already holds cannot be un-filed by an
+    answer, and an NNC1 is not a NAR1. A missing filing is NOT a refusal any
+    more -- `send_verification` builds the draft, because "there is no draft
+    yet" describes every case at stage 1.
+    """
     if case.get("manual_receipt"):
         return ("this case was completed off-portal; there is nothing left for "
                 "the client to approve")
-    if filing is None:
-        return "no filing has been prepared for this case yet"
-    if (filing.get("form_code") or "").strip().lower() != "nar1":
-        return (f"this filing is a {filing.get('form_code')} form; only NAR1 "
-                "can be sent for client verification")
-    if filing.get("stage") in nar1_cases.CR_FILED_STAGES:
-        return ("CR already holds this return; asking the client to approve it "
-                "now is a request their answer cannot change")
-    # THE STALE-SNAPSHOT HOLE. filings.validate() sets the stage on failure but
-    # LEAVES THE PREVIOUS validated_xml in place. So a filing CR has just
-    # rejected still satisfies "has validated_xml", and a gate that checked only
-    # that would mail the client a form CR is no longer holding.
-    if filing.get("stage") == "validation_failed":
-        return ("the most recent validation of this filing failed; re-validate "
-                "before sending it to the client")
-    if filing.get("stage") not in _SENDABLE_STAGES or not filing.get("validated_xml"):
-        return ("this filing has not been validated by CR yet; the client would "
-                "be approving a form that may be rejected minutes later")
+    if filing is not None:
+        if (filing.get("form_code") or "").strip().lower() != "nar1":
+            return (f"this filing is a {filing.get('form_code')} form; only NAR1 "
+                    "can be sent for client verification")
+        if filing.get("stage") in nar1_cases.CR_FILED_STAGES:
+            return ("CR already holds this return; asking the client to approve "
+                    "it now is a request their answer cannot change")
     return None
 
 
@@ -1201,12 +1210,24 @@ async def send_verification(
     case_id: str, body: VerificationSendIn, request: Request,
     user=Depends(require_permission("nar1", "write")),
 ):
-    """Mail the client the PDF of the return CR validated, for approval.
+    """Mail the client the PDF of this return, for approval.
 
-    The attachment is rendered from `validated_xml` -- the document CR is
-    holding -- not from the company profile as it reads today. Those two diverge
-    the moment anyone edits the company, and the client must approve the thing
-    that will actually be filed.
+    RENDERED FROM `request_xml` SINCE 2026-09-17, not `validated_xml`. Client
+    Verification is the FIRST stage (migration 046), so there is no CR-validated
+    snapshot to show -- the client approves the return built from the company
+    record, in CR's own Form NAR1, before CR has seen it.
+
+    A case at stage 1 normally has NO FILING AT ALL, so one is prepared here.
+    That is a local build: it maps the company to CR's schema and opens a draft
+    row, and touches no CR endpoint, spends nothing and cannot be charged for.
+    It is therefore done under `nar1:write` rather than sending the operator to
+    `tpsi:write` first -- showing a client their own return is NAR1 work, and
+    gating it on TPSI would stop a role that can run the whole client stage from
+    ever starting a case.
+
+    The bytes that go out are stored on the case (`verification_xml`) so that
+    `nar1_verification.approval_divergence` can later say which fields have
+    moved since the director said yes.
     """
     try:
         case = nar1_cases.get_case(case_id)
@@ -1222,6 +1243,49 @@ async def send_verification(
     refusal = _verification_gate(case, filing)
     if refusal:
         raise HTTPException(409, refusal)
+
+    # PREPARE, OR REFRESH A DRAFT NOBODY HAS FROZEN YET. A validated or signed
+    # filing is left exactly alone: its snapshot is what CR has seen, and
+    # rewriting it here is the "show one document, file another" failure the
+    # whole verification flow exists to prevent. Only `draft` and
+    # `validation_failed` move, which `filings.rebuild_draft` enforces inside
+    # the UPDATE rather than trusting this test.
+    if filing is None or filing.get("stage") in tpsi_filings.REBUILDABLE_STAGES:
+        try:
+            form_xml = await nar1_prepare.build_form_xml(
+                entity_id=case["entity_id"],
+                nar1_case_id=case_id,
+                user_id=user["id"],
+            )
+        except LookupError as exc:
+            raise HTTPException(400, str(exc))
+        except nar1_prepare.LoaderFailed as exc:
+            raise HTTPException(
+                502,
+                f"could not load entity {exc.entity_id} from the profile store "
+                f"(nar1_source.load_entity_graph): "
+                f"{type(exc.cause).__name__}: {exc.cause}",
+            )
+        except nar1_mapper.MappingError as exc:
+            # The same shape /tpsi/filings/prepare returns, so the screen can
+            # render the fault list identically wherever it was produced.
+            raise HTTPException(
+                400, {"message": "entity cannot be filed as a NAR1",
+                      "problems": exc.problems})
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                502, f"the return could not be prepared: "
+                     f"{type(exc).__name__}: {exc}")
+
+        if filing is None:
+            filing = tpsi_filings.create_filing(
+                entity_id=case["entity_id"], form_code="Nar1",
+                form_xml=form_xml, user_id=user["id"], nar1_case_id=case_id,
+            )
+        else:
+            # A rebuild that loses the race returns None; the filing already in
+            # hand is then the one that won, and it is still sendable.
+            filing = tpsi_filings.rebuild_draft(filing["id"], form_xml) or filing
 
     # Before anything is rendered or mailed. A missing deadline is a refusal
     # the operator fixes in two seconds, and finding that out after a 15-page
@@ -1329,6 +1393,19 @@ async def send_verification(
 
     entity = nar1_cases.entity_for(case["entity_id"])
 
+    # WHAT THE CLIENT IS BEING SHOWN, and what gets stored as the record of it.
+    #
+    # `request_xml` first, since 2026-09-17: at stage 1 it is the only thing
+    # there is, and it is what `filings.validate()` will send to CR verbatim, so
+    # it is also what will be filed. `validated_xml` is still preferred on a
+    # case CR has already validated -- there the two agree on every particular
+    # and CR's own copy is the more authoritative record of the document.
+    mailed_xml = filing.get("validated_xml") or filing.get("request_xml")
+    if not mailed_xml:
+        raise HTTPException(
+            409, "this filing carries no return to show the client; open the "
+                 "case again to rebuild it")
+
     try:
         # CR's OWN FORM, not a summary of it (Levi 2026-08-30). This PDF is
         # attached to an email asking a director to approve their company's
@@ -1340,7 +1417,7 @@ async def send_verification(
         # block every other request this worker is serving.
         pdf = await asyncio.to_thread(
             nar1_form_fill.render,
-            filing["validated_xml"],
+            mailed_xml,
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
@@ -1485,7 +1562,18 @@ async def send_verification(
         raise HTTPException(502, f"the verification email was not sent: {reasons}")
 
     sent_at = datetime.now(timezone.utc).isoformat()
-    patch = {"verification_sent_at": sent_at}
+    # THE RETURN THEY ARE LOOKING AT, kept verbatim (migration 046).
+    #
+    # Written HERE and not before the send, alongside `verification_sent_at` and
+    # for the same reason: a case that records the document it mailed but did
+    # not manage to mail it would answer "what did the client approve" about a
+    # PDF nobody received.
+    #
+    # It is the bytes, not a hash. The case screen has to say WHICH fields have
+    # moved since the client said yes -- which is the operator's next decision,
+    # whether the change is worth re-mailing a director over -- and a hash can
+    # only say that something did.
+    patch = {"verification_sent_at": sent_at, "verification_xml": mailed_xml}
 
     # A previous answer answered the PREVIOUS request. Left in place it pins the
     # badge at Client Rejected forever while the client is looking at a fresh

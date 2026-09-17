@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict
 from middleware.auth import require_permission, require_super_admin
 from db.supabase import get_supabase
 from services import audit_events as ev
-from services import nar1_cases, nar1_cr_status
+from services import nar1_cases, nar1_cr_status, nar1_prepare
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
@@ -764,84 +764,37 @@ async def prepare_filing(
             "hide it behind a draft that cannot be advanced",
         )
 
-    # Hong Kong's year, not UTC's: for the first eight hours of every HK working
-    # day UTC is still on yesterday's date, and on 1 January that is the wrong
-    # year on the statutory form.
-    year = body.year or (datetime.now(timezone.utc) + timedelta(hours=8)).year
+    # ONE OWNER FOR THE BUILD (services/nar1_prepare, 2026-09-17). Everything
+    # that used to be inline here -- the Hong Kong year, the stored signing
+    # capacity and its fallback, the signing identity, the mapper call -- moved
+    # there when Client Verification became the first stage and
+    # `cases.send_verification` acquired the need to build a return before CR
+    # has seen it. A second copy would be free to drift, and the way anyone
+    # would find out is a client approving a document built by different rules
+    # from the one that gets filed.
+    #
+    # The HTTP mapping stays here, because it is the only part the two callers
+    # do differently.
+    # Resolved here as well as inside the builder, because the audit row below
+    # records which year was filed and "whatever it defaulted to" is not an
+    # answer a trail can give years later. Hong Kong's year, not UTC's: for the
+    # first eight hours of every HK working day UTC is still on yesterday's
+    # date, and on 1 January that is the wrong year on the statutory form.
+    year = body.year or nar1_prepare.hk_year()
 
     try:
-        graph = await nar1_source.load_entity_graph(body.entity_id)
+        form_xml = await nar1_prepare.build_form_xml(
+            entity_id=body.entity_id,
+            nar1_case_id=body.nar1_case_id,
+            user_id=user["id"],
+            year=year,
+            signatory=body.signatory,
+        )
     except LookupError as exc:
         # "no entity <id>" -- the caller's identifier is wrong, not the loader.
         raise HTTPException(400, str(exc))
-    except Exception as exc:
-        raise _loader_failed(body.entity_id, exc)
-
-    # selectCapacityDesc for a body-corporate secretary cannot be derived from
-    # the company profile — it depends on who at GSHK signs. It used to be a
-    # refusal; Levi 2026-08-30 made it an operator choice, stored on the case by
-    # PATCH /cases/{id}. Read from there rather than accepted as a request
-    # field, so the value that gets filed is the one the operator saw on screen
-    # and the audit trail recorded, not one this call could differ on.
-    #
-    capacity = None
-    if body.nar1_case_id:
-        try:
-            capacity = (nar1_cases.get_case(body.nar1_case_id)
-                        or {}).get("signatory_capacity")
-        except LookupError:
-            # A bad case id is the /cases endpoints' error to raise, not this
-            # one's; prepare must not 404 on a field it merely consults.
-            capacity = None
-
-    # REVERSES this router's former "invents NO default" rule (Levi 2026-08-31).
-    #
-    # A body corporate now falls back to the arrangement every real GSHK client
-    # has — GSHK Ltd is the secretary and a GSHK director signs for it — rather
-    # than making the operator answer the same question on every case.
-    #
-    # The fallback has to live here as well as in `nar1_return_data`, and both
-    # must use `default_capacity`: the Data Verification picker shows this value,
-    # so a prepare that ignored it would refuse the filing for want of a
-    # capacity the operator can plainly see on screen.
-    #
-    # An INDIVIDUAL signatory defaults to "Director" (Levi 2026-09-14), from the
-    # Individual vocabulary — CR keeps two, and a "(Body Corporate)" capacity on
-    # a natural person is a misstatement. It used to get no default here, and
-    # the mapper then filed "Company Secretary" while the picker showed blank.
-    if not capacity:
-        try:
-            resolved = nar1_mapper._derive_signatory(graph)
-        except Exception:  # noqa: BLE001 — a graph too thin to resolve is the
-            resolved = None  # mapper's problem to report, not this line's.
-        if resolved:
-            capacity = default_capacity(
-                is_corporate=resolved.get("is_corporate") is True)
-
-    # WHO SIGNS FOR THE BODY CORPORATE, from the signed-in user's own CR
-    # credential. A GSHK client's secretary is a company, and CR will not take a
-    # company as a signatory: it wants the human acting for it, named in
-    # associatedPersonId / associatedPersonName (see nar1_mapper.
-    # _associated_signatory). Read here rather than accepted as a request field,
-    # for the same reason the capacity is read from the case: the value filed
-    # must be one this user actually holds, not one the caller could assert.
-    #
-    # It is the PREPARING user, who is normally the signing user. When they are
-    # not the same person, filings.sign() refuses the mismatch rather than
-    # signing a return naming someone else — declared_signatory_id() now reads
-    # associatedPersonId precisely so that guard can still see it.
-    try:
-        # Read INSIDE the try: a credential-store failure is operational, like
-        # the loader's, and _handle turns it into a named 502 rather than the
-        # bare 500 an unguarded call would put on the screen mid-filing.
-        signing_identity = credentials.load_signatory_identity(user["id"])
-
-        # `signatory` is still passed straight through: an explicit override
-        # replaces the whole signer, capacity included.
-        data = nar1_mapper.map_entity(graph, year=year, signatory=body.signatory,
-                                      signatory_capacity=capacity,
-                                      signing_identity=signing_identity)
-        form_xml = nar1.build_nar1_xml(data)
+    except nar1_prepare.LoaderFailed as exc:
+        raise _loader_failed(exc.entity_id, exc.cause)
     except nar1_mapper.MappingError as exc:
         # The whole list, in a structured field the UI can render as CR's own
         # fault list does. No filing row is opened: a draft for an entity that

@@ -277,12 +277,51 @@ describe('Data Verification', () => {
     expect(screen.getByText(/validation is free/)).toBeInTheDocument()
   })
 
-  it('offers Continue to Client Verification once the snapshot exists', async () => {
+  it('offers Continue to SIGNING once the snapshot exists', async () => {
+    // The client approved before this stage was reachable (2026-09-17), so
+    // what comes next is the signature, not the email.
     const onGo = vi.fn()
     renderIt({}, { onGo })
     await userEvent.setup().click(
-      screen.getByRole('button', { name: /Continue to Client Verification/ }))
-    expect(onGo).toHaveBeenCalledWith(2)
+      screen.getByRole('button', { name: /Continue to Signing/ }))
+    expect(onGo).toHaveBeenCalledWith(3)
+  })
+
+  // WHAT THE REORDER COSTS, made visible. A CR rejection here is fixed by
+  // editing the company record and re-validating, and the client's approval
+  // deliberately stands — so the return filed can move away from the one the
+  // director saw, and without this nothing on screen would say so.
+  it('names the fields that changed since the client approved', () => {
+    renderIt({ approval_divergence: [
+      { path: 'roAddr/bldg', field: 'Registered office · Building',
+        validated: 'Test Tower', current: 'New Tower' },
+    ] })
+    expect(screen.getByText(/One field has changed/)).toBeInTheDocument()
+    expect(screen.getByText(/Registered office · Building/)).toBeInTheDocument()
+    expect(screen.getByText(/Test Tower/)).toBeInTheDocument()
+    expect(screen.getByText(/New Tower/)).toBeInTheDocument()
+  })
+
+  it('says nothing when the return has not moved since approval', () => {
+    renderIt({ approval_divergence: [] })
+    expect(screen.queryByText(/since the client approved/)).toBeNull()
+  })
+
+  it('says nothing on a case that predates the stored snapshot', () => {
+    // Sent before migration 046: the backend sends [] for "we cannot say" as
+    // well as for "nothing changed", and neither is something to warn about.
+    renderIt({ approval_divergence: undefined })
+    expect(screen.queryByText(/since the client approved/)).toBeNull()
+  })
+
+  it('WARNS and never blocks — validation is still offered', () => {
+    // The thing that refuses is the pre-submit drift gate. This is a notice.
+    renderIt({ approval_divergence: [
+      { path: 'compNameE', field: 'Company name',
+        validated: 'OLD LIMITED', current: 'NEW LIMITED' },
+    ], form_status: { code: 'draft' }, filing_id: null })
+    expect(screen.getByRole('button', { name: /Validate with CR/ }))
+      .not.toBeDisabled()
   })
 })
 

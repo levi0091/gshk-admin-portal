@@ -6,9 +6,20 @@
  * should only be reachable through five rendered components.
  */
 
+// CLIENT VERIFICATION IS FIRST (Levi 2026-09-17: "we need client validation to
+// be 1st step ... users send the email way ahead of time to the client and then
+// make the necessary changes ... before validating with CR portal after that
+// first step").
+//
+// The old order let the client approve `validated_xml`, the exact bytes CR had
+// accepted, so nobody approved a form CR would refuse minutes later. What it
+// cost was the calendar: the client is the slow party, and asking them last
+// meant their corrections arrived after the data work rather than before it.
+// See services/nar1_case_status.py, which is the same decision in the backend,
+// and migration 046, which is it again in SQL.
 export const STAGE_LABELS = [
-  'Data Verification',
   'Client Verification',
+  'Data Verification',
   'Signing',
   'Submission',
   'Confirmation',
@@ -134,7 +145,7 @@ export function isSubmitted(c) {
 /**
  * The furthest stage this case may enter. Mirrors v11's `cmReached()`.
  *
- * Note step 2: the manual path does NOT bypass Client Verification (OQ-4).
+ * Note step 1: the manual path does NOT bypass Client Verification (OQ-4).
  * Signing a return on paper does not make the client's approval optional —
  * a statutory filing still goes out in the client's name.
  */
@@ -144,8 +155,12 @@ export function reachedStage(c) {
   // panel instead of the stepper, so nothing asks — but this must not answer
   // "6" to whatever does, because every button behind the later stages writes.
   if (isClosed(c)) return 0
-  if (!isValidated(c)) return 1
-  if (!(c.verification_sent_at && c.client_approved)) return 2
+  // The client unlocks the data work, not the other way round (2026-09-17).
+  // Stage 1 is always open; stage 2 waits on an approval. A client who never
+  // answers is released by the 14-day auto-approve job, so this cannot deadlock
+  // a case — see backend/jobs/auto_approve_nar1.py.
+  if (!(c.verification_sent_at && c.client_approved)) return 1
+  if (!isValidated(c)) return 2
   if (!signedOff(c)) return 3
   if (!isSubmitted(c)) return 4
   // Filing unlocks BOTH remaining stages at once, because they are two views of
@@ -181,15 +196,19 @@ export function verificationBlock(c) {
   //
   // The send is still not offered there — StageClientVerification withholds it
   // on `isSubmitted`, so this does not put a dead button back on the screen.
-  if (c.form_status?.code === 'validation_failed') {
-    return 'The last validation of this return failed. Re-validate it on Data '
-      + 'Verification before sending it to the client.'
-  }
-  if (!c.filing_id || !isValidated(c)) {
-    return 'This return has not been validated by the Companies Registry yet. '
-      + 'Validate it on Data Verification first — otherwise the client would '
-      + 'be approving a form that may be rejected minutes later.'
-  }
+  //
+  // TWO BLOCKS WERE REMOVED HERE (2026-09-17), mirroring
+  // `routers/cases._verification_gate`. They refused a return CR had not
+  // validated, and one whose last validation had failed:
+  //
+  //   'This return has not been validated by the Companies Registry yet.'
+  //   'The last validation of this return failed.'
+  //
+  // Both were right while this was the SECOND stage. It is now the first, so CR
+  // has not seen the return by construction and either message would refuse
+  // every send the new order asks for. There is nothing left for the browser to
+  // pre-empt: what remains of the gate is about cases that are already finished,
+  // and `isSubmitted` withholds the button on those.
   return null
 }
 
@@ -197,8 +216,9 @@ export function verificationBlock(c) {
 export function stageDone(c, i) {
   if (!c) return false
   switch (i) {
-    case 1: return isValidated(c)
-    case 2: return Boolean(c.client_approved)
+    // Swapped with stage 2 on 2026-09-17, with the stages themselves.
+    case 1: return Boolean(c.client_approved)
+    case 2: return isValidated(c)
     case 3: return signedOff(c)
     case 4: return isSubmitted(c)
     // CONFIRMATION IS DONE WHEN THE RECEIPT EXISTS (Levi 2026-09-16: "when the

@@ -110,6 +110,12 @@ BOARD = [
 ]
 
 
+#: `filing=None` means "use VALIDATED" in the helper below, so there was no way
+#: to express the case that matters most since migration 046: a case at stage 1
+#: with NO FILING AT ALL, which is every case before anyone has prepared one.
+NO_FILING = object()
+
+
 def _sendable(case=None, filing=None, recipient="client@example.com",
               directors=()):
     """Every collaborator of a successful send, patched at the module boundary.
@@ -121,7 +127,8 @@ def _sendable(case=None, filing=None, recipient="client@example.com",
     return [
         patch("routers.cases.nar1_cases.get_case", return_value=case or CASE),
         patch("routers.cases.nar1_cases.current_filing",
-              return_value=filing if filing is not None else VALIDATED),
+              return_value=None if filing is NO_FILING
+              else (filing if filing is not None else VALIDATED)),
         patch("routers.cases.nar1_cases.default_recipients",
               return_value=list(directors)),
         patch("routers.cases.nar1_cases.recipient_email", return_value=recipient),
@@ -195,39 +202,177 @@ def test_send_renders_the_CR_validated_snapshot_on_CRs_own_form(client):
     assert "stage" not in render.call_args.kwargs
 
 
-def test_send_is_refused_before_cr_validation(client):
-    """Sending a client a form CR has not validated asks them to approve
-    something that may be rejected minutes later."""
+# --------------------------------------------------------------------------- #
+#  CLIENT VERIFICATION IS THE FIRST STAGE (migration 046, Levi 2026-09-17)
+#
+#  Three tests used to live here and asserted the opposite of these:
+#
+#    test_send_is_refused_before_cr_validation
+#    test_send_is_refused_when_no_filing_exists_at_all
+#    test_send_is_refused_when_the_latest_validation_failed
+#
+#  Every one of them was right while this was the SECOND stage — the client
+#  approved `validated_xml`, the exact bytes CR had accepted. They are now
+#  assertions that the portal refuses the normal case: at stage 1 CR has not
+#  seen the return by construction and a case usually has no filing at all.
+# --------------------------------------------------------------------------- #
+
+def _prepares(form_xml="<built/>", filing=None):
+    """The build path `send_verification` takes when nothing is frozen yet."""
+    return [
+        patch("routers.cases.nar1_prepare.build_form_xml",
+              new=AsyncMock(return_value=form_xml)),
+        patch("routers.cases.tpsi_filings.create_filing",
+              return_value=filing or {"id": "f-new", "form_code": "Nar1",
+                                      "stage": "draft", "request_xml": form_xml,
+                                      "validated_xml": None}),
+        patch("routers.cases.tpsi_filings.rebuild_draft",
+              return_value=filing or {"id": "f1", "form_code": "Nar1",
+                                      "stage": "draft", "request_xml": form_xml,
+                                      "validated_xml": None}),
+    ]
+
+
+def test_a_case_with_no_filing_builds_one_and_sends_it(client):
+    """THE NORMAL CASE at stage 1. This used to be a 409."""
+    with _super(), _Stack(*_sendable(filing=NO_FILING), *_prepares()), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": ["client@example.com"],
+                             "intended_to": ["client@example.com"],
+                             "redirected": False}) as send, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 200
+    assert send.call_args.kwargs["attachments"][0][1] == b"%PDF-1.4"
+
+
+def test_an_unvalidated_draft_is_sent_from_its_request_xml(client):
+    """What the client approves is `request_xml` — which is what
+    `filings.validate()` will send to CR verbatim, so it is also what gets
+    filed."""
     draft = {"id": "f1", "form_code": "Nar1", "stage": "draft",
-             "validated_xml": None}
-    with _super(), \
-         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
-         patch("routers.cases.nar1_cases.current_filing", return_value=draft):
+             "request_xml": "<the-return/>", "validated_xml": None}
+    with _super(), _Stack(*_sendable(filing=draft), *_prepares(filing=draft)), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": ["client@example.com"],
+                             "intended_to": ["client@example.com"],
+                             "redirected": False}), \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
-    assert response.status_code == 409
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<the-return/>"
 
 
-def test_send_is_refused_when_no_filing_exists_at_all(client):
-    with _super(), \
-         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
-         patch("routers.cases.nar1_cases.current_filing", return_value=None):
-        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
-    assert response.status_code == 409
-
-
-def test_send_is_refused_when_the_latest_validation_failed(client):
-    """THE STALE-SNAPSHOT HOLE. filings.validate() only sets stage on failure —
-    it leaves the PREVIOUS validated_xml in place. So a filing CR has just
-    rejected still satisfies "has validated_xml", and a gate that checks only
-    that would mail the client a form CR is no longer holding."""
+def test_a_failed_validation_no_longer_blocks_the_send(client):
+    """`validation_failed` is REBUILDABLE, so the return is rebuilt from the
+    company record and that is what goes out — not the bytes CR rejected."""
     stale = {"id": "f1", "form_code": "Nar1", "stage": "validation_failed",
-             "validated_xml": "<x/>", "validated_at": "2026-08-01T00:00:00Z"}
-    with _super(), \
-         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
-         patch("routers.cases.nar1_cases.current_filing", return_value=stale):
+             "request_xml": "<old/>", "validated_xml": "<old/>"}
+    rebuilt = {"id": "f1", "form_code": "Nar1", "stage": "draft",
+               "request_xml": "<rebuilt/>", "validated_xml": None}
+    with _super(), _Stack(*_sendable(filing=stale),
+                          *_prepares(form_xml="<rebuilt/>", filing=rebuilt)), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": ["client@example.com"],
+                             "intended_to": ["client@example.com"],
+                             "redirected": False}), \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
         response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
-    assert response.status_code == 409
-    assert "validation" in response.json()["detail"].lower()
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<rebuilt/>"
+
+
+def test_a_validated_snapshot_is_NOT_rebuilt_by_a_send(client):
+    """The one thing the reorder must not break. From `validated` onward the
+    snapshot is what CR has seen; rewriting it under a client who is about to
+    approve it is the "show one document, file another" failure the whole
+    verification flow exists to prevent. `Restart verification` discards a
+    snapshot; sending must not."""
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock()) as build, \
+         patch("routers.cases.tpsi_filings.rebuild_draft") as rebuild, \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": ["client@example.com"],
+                             "intended_to": ["client@example.com"],
+                             "redirected": False}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 200
+    build.assert_not_awaited()
+    rebuild.assert_not_called()
+
+
+def test_the_return_that_was_mailed_is_stored_on_the_case(client):
+    """So that a later CR rejection — which does NOT clear the approval — can
+    be reported as "these fields moved since the client said yes" rather than
+    silently filing something they never saw."""
+    draft = {"id": "f1", "form_code": "Nar1", "stage": "draft",
+             "request_xml": "<the-return/>", "validated_xml": None}
+    with _super(), _Stack(*_sendable(filing=draft), *_prepares(filing=draft)), \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": ["client@example.com"],
+                             "intended_to": ["client@example.com"],
+                             "redirected": False}), \
+         patch("routers.cases.nar1_cases.update_case",
+               return_value=CASE) as update, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 200
+    patch_written = update.call_args.args[1]
+    assert patch_written["verification_xml"] == "<the-return/>"
+    # Written WITH verification_sent_at, never before it: a case that records
+    # the document it mailed but did not manage to mail it would answer "what
+    # did the client approve" about a PDF nobody received.
+    assert patch_written["verification_sent_at"]
+
+
+def test_nothing_is_stored_when_every_send_failed(client):
+    """Same rule the sent-at flag already follows: a case marked sent on mail
+    that never left sits in Awaiting Client forever, waiting on a reply to
+    nothing — and would now also claim to hold the return the client approved.
+
+    `EmailError`, not a bare RuntimeError: the latter is a DEPLOYMENT fault and
+    raises 503 before this branch is reached, so it would pass this test
+    without exercising it."""
+    with _super(), _Stack(*_sendable()), \
+         patch("routers.cases.email_service.send",
+               side_effect=email_service.EmailError("resend refused it")), \
+         patch("routers.cases.nar1_cases.update_case") as update, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 502
+    update.assert_not_called()
+
+
+def test_an_unfilable_company_is_a_400_listing_every_problem(client):
+    """The same shape /tpsi/filings/prepare returns, so the screen renders one
+    fault list wherever it was produced."""
+    from services.tpsi.forms import nar1_mapper
+
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(side_effect=nar1_mapper.MappingError(
+                   ["no registered-office country", "no share class"]))):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["problems"] == [
+        "no registered-office country", "no share class"]
 
 
 def test_send_is_refused_for_a_form_that_is_not_nar1(client):

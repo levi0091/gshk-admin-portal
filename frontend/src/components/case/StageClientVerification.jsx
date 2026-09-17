@@ -68,11 +68,16 @@ export function describeSendError(err) {
       // What state, and what to do about it — not the bare fact that the case
       // is in the wrong one. "Not in a state that allows this" is a sentence
       // an operator can do nothing with (Levi 2026-09-03).
+      // The "has to be validated by CR first" half of this was removed on
+      // 2026-09-17: Client Verification is the FIRST stage now, so CR has not
+      // seen the return when this is sent and that advice would send an
+      // operator to do something the new order does not ask for. What is left
+      // is the only 409 the gate can still produce here.
       return {
         message,
-        hint: 'Nothing was sent. The return has to be validated by CR and not '
-          + 'yet filed before it can go to the client — check the CR form '
-          + 'status in the header.',
+        hint: 'Nothing was sent. This case is already finished — CR is holding '
+          + 'the return, or it was filed off-portal — so there is nothing left '
+          + 'for the client to approve.',
       }
     case 422:
       return { message, hint: 'Fix the recipient list or re-validate the return, then try again.' }
@@ -140,18 +145,24 @@ export function describePartialSend(result) {
 }
 
 /**
- * Stage 2 — Client Verification (FE-3).
+ * Stage 1 — Client Verification (FE-3).
  *
- * The client sees the return before it is filed in their name. The PDF is
- * rendered from the CR-VALIDATED snapshot, not from the live company record —
- * showing the client one document and filing another is the failure this
- * guards against.
+ * THE FIRST STAGE SINCE 2026-09-17, not the second. The client sees the return
+ * before it is filed in their name, and now before CR has seen it either: the
+ * PDF is rendered from `request_xml`, the return built from the company record,
+ * so their corrections arrive before the filing is prepared rather than after
+ * it. CR's own form, either way — a director knows what Form NAR1 looks like.
+ *
+ * The bytes mailed are stored on the case, so that when a CR rejection later
+ * forces an edit the case can say which fields have moved since the director
+ * said yes. That is a warning and never a refusal; see
+ * `services/nar1_verification.py`.
  *
  * R1 has no inbound mail handling: the client replies to GSHK by email and a
  * human records the answer here. That is why "Client approved" is a button an
  * admin presses, and why it is audited as CLIENT_APPROVAL_RECEIVED.
  */
-export default function StageClientVerification({ caseRow, canWrite, onChanged, onError, onWarn }) {
+export default function StageClientVerification({ caseRow, canWrite, onChanged, onError, onWarn, onGo }) {
   // `profile` was read here only to name the signed-in user as the CC. The
   // copy is now the fixed renewals mailbox, so the screen no longer depends on
   // who is looking at it.
@@ -675,6 +686,23 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         )}
       </div>
+
+      {/* WHAT COMES NEXT, now that this stage is first (2026-09-17). Only on an
+          approval: a decline leaves the case here, and the alert above already
+          says to correct the return and send it again. */}
+      {caseRow.client_approved && onGo && !filed && (
+        <div className="action-bar">
+          <div className="ab-note">
+            The client has approved this return. The Companies Registry checks
+            it next — validating is free and nothing is filed by it.
+          </div>
+          <div className="ab-actions">
+            <button className="btn btn-primary" onClick={() => onGo(2)}>
+              Continue to Data Verification →
+            </button>
+          </div>
+        </div>
+      )}
     </>
   )
 }

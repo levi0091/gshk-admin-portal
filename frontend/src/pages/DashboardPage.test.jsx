@@ -225,7 +225,9 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     await user.click(screen.getByRole('button', { name: /Action Required/ }))
     await waitFor(() => {
       expect(urls().some(u => u.includes(
-        'workflow_status=data_verification,client_verification,client_rejected,'
+        // Client Verification leads since 2026-09-17 — the order the case
+        // moves through, which is the order the tile asks for.
+        'workflow_status=client_verification,data_verification,client_rejected,'
         + 'signing,submission,cr_rejected'
       ))).toBe(true)
     })
