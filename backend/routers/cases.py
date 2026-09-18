@@ -1290,6 +1290,10 @@ async def preview_verification(
                 entity.get("company_type")
             ),
             signed_on=(filing or {}).get("signed_at") or "",
+            # Section 4's date. CR only writes it on validation, and the return
+            # previewed here usually has not been validated; see
+            # `fill.made_up_date`.
+            incorporated_on=entity.get("incorporation_date"),
         )
     except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         raise HTTPException(422, f"the return could not be rendered: {exc}")
@@ -1511,6 +1515,12 @@ async def send_verification(
             # in Hong Kong -- what it must NOT do is leave the box empty, which
             # is how every verification attachment went out until 2026-09-04.
             signed_on=filing.get("signed_at") or "",
+            # "Date to which this Return is Made Up". Not in `request_xml` --
+            # CR writes it on validation, which at stage 1 has not happened --
+            # so it is dated from the incorporation anniversary. Without this
+            # the director's copy went out with section 4 and the Schedule 1
+            # header blank (Levi 2026-09-18).
+            incorporated_on=entity.get("incorporation_date"),
         )
     except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         raise HTTPException(
