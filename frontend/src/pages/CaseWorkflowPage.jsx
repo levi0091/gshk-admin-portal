@@ -15,7 +15,7 @@ import StageConfirmation from '../components/case/StageConfirmation.jsx'
 import StageCrStatus from '../components/case/StageCrStatus.jsx'
 import {
   STAGE_LABELS, reachedStage, isValidated, isSubmitted, isClosed, describeError,
-  persistedFailure,
+  persistedFailure, canRestart,
 } from '../components/case/workflow.js'
 import CloseCaseModal from '../components/case/CloseCaseModal.jsx'
 import { scrollToTop } from '../lib/scroll.js'
@@ -296,7 +296,12 @@ export default function CaseWorkflowPage() {
               once the return is filed: the backend refuses it with a 409, and
               its confirmation promises to send the case "back to Data
               Verification" — a stage a closed case can never re-enter. */}
-          {canWrite && !isClosed(c) && isValidated(c) && !isSubmitted(c) && (
+          {/* And there ONCE THE RETURN IS SENT, not only once CR validated it
+              (Levi 2026-09-19). Client Verification is stage 1, so a sent case
+              is usually one CR has never seen — and the send locks the return
+              year behind a note pointing at this button. See
+              workflow.canRestart. */}
+          {canWrite && canRestart(c) && (
             <button className="btn btn-outline" disabled={restarting}
                     onClick={() => setConfirmRestart(true)}>
               {restarting ? 'Restarting…' : 'Restart verification'}
@@ -399,8 +404,7 @@ export default function CaseWorkflowPage() {
                     restarted. Those are the same conditions the header button
                     applies; disagreeing with it would put a button here that
                     fails when pressed. */}
-                {banner.offerRestart && canWrite && !isClosed(c)
-                  && isValidated(c) && !isSubmitted(c) && (
+                {banner.offerRestart && canWrite && canRestart(c) && (
                   <button className="btn btn-outline btn-sm" disabled={restarting}
                           onClick={() => setConfirmRestart(true)}>
                     {restarting ? 'Restarting…' : 'Restart verification'}
@@ -500,11 +504,31 @@ export default function CaseWorkflowPage() {
             <div className="modal-confirm-title">
               Restart verification for {c.case_no || 'this case'}?
             </div>
+            {/* Says what THIS case loses. A case sent but not yet validated —
+                the usual one since the client moved to stage 1 — has no
+                CR-signed snapshot, and promising to discard one tells the
+                operator CR has seen a return it never has. */}
             <div className="modal-confirm-text">
-              The case goes back to Client Verification. The CR-signed snapshot
-              is discarded, and the client verification and any signature
-              recorded against it are cleared. The client will have to approve
-              the return again.
+              {isValidated(c) ? (
+                <>
+                  The case goes back to Client Verification. The CR-signed
+                  snapshot is discarded, and the client verification and any
+                  signature recorded against it are cleared. The client will
+                  have to approve the return again.
+                </>
+              ) : (
+                <>
+                  The case goes back to Client Verification. The return sent to
+                  the client
+                  {c.verification_sent_at
+                    ? ` on ${formatDateTime(c.verification_sent_at)}` : ''}{' '}
+                  is discarded, the Confirm link in that email stops working,
+                  and any answer recorded from the client is cleared. You can
+                  then change the return year or correct the company record and
+                  send the return again — the client will have to approve it
+                  again.
+                </>
+              )}
             </div>
             <div className="modal-confirm-actions">
               <button className="btn btn-outline"

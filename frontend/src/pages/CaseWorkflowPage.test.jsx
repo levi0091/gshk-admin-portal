@@ -424,14 +424,80 @@ describe('CaseWorkflowPage — restart verification', () => {
         .toBeInTheDocument())
   })
 
-  it('hides Restart before there is a snapshot to discard', async () => {
+  it('hides Restart before anything has been sent or validated', async () => {
+    // Nothing to undo: no copy in a client's inbox, no snapshot at CR. This
+    // fixture used to inherit CASE's sent-and-approved fields, which only read
+    // as "nothing to restart" while the rule ignored the send.
     routeGet(caseAt({ form_status: { code: 'draft', label: 'Draft', failed: false },
                       filing_id: null,
-                      workflow_status: { code: 'data_verification',
-                                         label: 'Data Verification',
+                      verification_sent_at: null, client_approved: null,
+                      client_response_at: null,
+                      workflow_status: { code: 'client_verification',
+                                         label: 'Client Verification',
                                          off_portal: false, overdue: false } }))
     await renderPage()
     expect(screen.queryByRole('button', { name: /Restart verification/ })).toBeNull()
+  })
+
+  // THE REPORT (Levi 2026-09-19). Sent on stage 1, the return year locked
+  // behind "Restart verification to choose a different year" — and no such
+  // button, because it waited for a CR validation that now comes at stage 2.
+  const awaitingClient = () => caseAt({
+    form_status: { code: 'draft', label: 'Draft', failed: false },
+    verification_sent_at: '2026-09-18T16:47:00Z',
+    client_approved: null, client_response_at: null,
+    workflow_status: { code: 'awaiting_client', label: 'Awaiting Client',
+                       off_portal: false, overdue: false },
+  })
+
+  it('offers Restart once the return is sent, before CR has seen it', async () => {
+    routeGet(awaitingClient())
+    await renderPage()
+    expect(screen.getByText('Client Verification', { selector: '.pg-title' }))
+      .toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Restart verification/ }))
+      .toBeInTheDocument()
+  })
+
+  it('does not promise to discard a CR snapshot that does not exist', async () => {
+    const user = userEvent.setup()
+    routeGet(awaitingClient())
+    await renderPage()
+    await user.click(screen.getByRole('button', { name: /Restart verification/ }))
+
+    const dialog = screen.getByRole('alertdialog', { name: 'Restart verification' })
+    expect(dialog).not.toHaveTextContent(/CR-signed snapshot/)
+    expect(dialog).toHaveTextContent(/return sent to the client/)
+    expect(dialog).toHaveTextContent(/Confirm link in that email stops working/)
+    expect(dialog).toHaveTextContent(/change the return year/)
+  })
+
+  it('restarts a sent case and keeps the operator on Client Verification', async () => {
+    const user = userEvent.setup()
+    routeGet(awaitingClient())
+    await renderPage()
+    await user.click(screen.getByRole('button', { name: /Restart verification/ }))
+    await user.click(screen.getByRole('button', { name: /Restart — back to Client Verification/ }))
+
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/cases/c1', { restart_verification: true }))
+    expect(screen.getByText('Client Verification', { selector: '.pg-title' }))
+      .toBeInTheDocument()
+  })
+
+  it('offers Restart on a return the client declined', async () => {
+    // Stage 1 says "Correct the return, restart verification and send it
+    // again" — it must be pointing at a button that is there.
+    routeGet(caseAt({
+      form_status: { code: 'draft', label: 'Draft', failed: false },
+      verification_sent_at: '2026-09-18T16:47:00Z',
+      client_approved: false, client_response_at: '2026-09-19T01:00:00Z',
+      workflow_status: { code: 'client_verification', label: 'Client Verification',
+                         off_portal: false, overdue: false },
+    }))
+    await renderPage()
+    expect(screen.getByRole('button', { name: /Restart verification/ }))
+      .toBeInTheDocument()
   })
 
   it('hides Restart from someone without nar1:write', async () => {

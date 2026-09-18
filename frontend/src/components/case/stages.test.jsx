@@ -955,6 +955,22 @@ describe('Client Verification', () => {
       .toHaveAttribute('aria-pressed', 'false')
   })
 
+  it('clears the review tick when a restart un-sends the case', async () => {
+    // Restart is on offer while this stage is on screen now (2026-09-19), and
+    // it re-reads the case WITHOUT remounting the stage — so the tick seeded on
+    // mount stayed checked on a return nobody had looked at since.
+    const tickName = { name: /I have reviewed this return and it is correct/ }
+    const { rerender } = renderIt({ verification_sent_at: '2026-08-31T11:52:00Z' })
+    await screen.findByText('chan@example.com')
+    expect(screen.getByRole('button', tickName)).toHaveAttribute('aria-pressed', 'true')
+
+    rerender(
+      <StageClientVerification caseRow={at({ verification_sent_at: null })} canWrite
+                               onWarn={onWarn} onChanged={onChanged} onError={onError} />)
+    expect(screen.getByRole('button', tickName)).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', tickName)).not.toBeDisabled()
+  })
+
   it('shows the director it cannot write to rather than dropping them', async () => {
     // A board of three rendering two chips looks exactly like a board of two.
     renderIt()

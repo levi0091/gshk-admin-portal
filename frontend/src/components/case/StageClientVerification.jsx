@@ -181,6 +181,16 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   const filingId = caseRow.filing_id
   const sent = Boolean(caseRow.verification_sent_at)
   const answered = Boolean(caseRow.client_response_at)
+
+  // THE SEED ABOVE IS NOT ENOUGH ONCE RESTART IS ON OFFER HERE (2026-09-19).
+  // `useState` reads `verification_sent_at` on mount only, and a restart
+  // pressed while this stage is on screen re-reads the case WITHOUT remounting
+  // it — so the tick stayed checked on a return nobody had looked at since, and
+  // Send was one click away. Cleared on the transition to unsent; a tick the
+  // operator gives before sending never changes `sent`, so it is left alone.
+  useEffect(() => {
+    if (!sent) setReviewed(false)
+  }, [sent])
   const caseId = caseRow.id
   // Why the backend would refuse this send, worked out before the operator
   // presses anything. See workflow.verificationBlock.
