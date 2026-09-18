@@ -56,6 +56,7 @@ from pypdf.generic import ArrayObject, NameObject, TextStringObject
 
 from services.nar1_form import appearance
 from services.nar1_form import field_map as fm
+from services.tpsi import fees
 from services.tpsi.forms.cr_vocabularies import (
     HKG,
     display_country,
@@ -440,6 +441,39 @@ def signature_date(signed_on) -> str:
         return _hk_date(datetime.fromisoformat(text.replace("Z", "+00:00")))
     except ValueError:
         return datetime.now(_HKT).strftime("%d/%m/%Y")
+
+
+def made_up_date(model: dict, incorporated_on=None) -> str:
+    """Section 4, "Date to which this Return is Made Up", as CR prints it.
+
+    CR's OWN VALUE WHEN IT HAS WRITTEN ONE. `dateReturnMadeUp` is "to be filled
+    in by system after Web-Form validation (6.6)" -- CR's validate example omits
+    it and its submit example carries it -- so on `validated_xml` it is the date
+    on CR's register and nothing here second-guesses it.
+
+    OTHERWISE THE INCORPORATION ANNIVERSARY IN THE RETURN'S OWN YEAR (Levi
+    2026-09-18: "incorporated on 15 March 2025, the return date for 2026 is 15
+    March 2026"). That is the case for every `request_xml`, and since Client
+    Verification became the first stage (2026-09-17) it is what the client is
+    sent -- which printed this box, the Schedule 1 header and every
+    continuation sheet's header BLANK. The year is `yearAnnualReturn`, not
+    today's, for the reason `_presenter_reference` gives. The arithmetic is
+    `fees.return_date_for`, the one implementation the late fee and the
+    early-filing gate already use, so the three cannot name different dates;
+    measured on DEV, it matches the date CR wrote on all 41 validated filings.
+
+    Empty when neither is available. Inventing a statutory date is worse than
+    leaving the box for CR, which fills it on validation regardless.
+    """
+    cr_value = _get(model, "dateReturnMadeUp")
+    if cr_value:
+        return cr_value
+    try:
+        year = int(_get(model, "yearAnnualReturn"))
+        incorporated = fees._coerce_date(incorporated_on, "incorporation date")
+    except (ValueError, fees.FeeError):
+        return ""
+    return fees.return_date_for(incorporated, year).strftime("%d/%m/%Y")
 
 
 def split_date(value: str) -> tuple[str, str, str]:
@@ -926,7 +960,7 @@ def _share_capital_totals(capitals: list[dict]) -> dict:
 
 
 def _compose(model: dict, *, company_type: str, presenter: dict,
-             signed_on: str = "") -> _Pages:
+             signed_on: str = "", incorporated_on=None) -> _Pages:
     """Lay the return out across CR's pages, overflowing where it must."""
     pages = _Pages()
     br_number = _get(model, "brNo")
@@ -935,7 +969,9 @@ def _compose(model: dict, *, company_type: str, presenter: dict,
     # supply nothing. See `signature_date`: it used to be blank, and blank is
     # what every return the portal has ever produced carried.
     signed_date = signature_date(signed_on)
-    dd, mm, yyyy = split_date(_get(model, "dateReturnMadeUp"))
+    # Section 4, and the header of every continuation sheet and schedule page.
+    # CR's value once it has validated; the incorporation anniversary before.
+    dd, mm, yyyy = split_date(made_up_date(model, incorporated_on))
     from_dd, from_mm, from_yyyy = split_date(_get(model, "dateReturnFrom"))
     to_dd, to_mm, to_yyyy = split_date(_get(model, "dateReturnTo"))
     ro = _address(_node(model, "roAddr"))
@@ -1455,7 +1491,8 @@ def _bake(filled: bytes) -> bytes:
 
 
 def _composed(validated_xml: str, *, company_type: str,
-              presenter: dict | None, signed_on: str) -> _Pages:
+              presenter: dict | None, signed_on: str,
+              incorporated_on=None) -> _Pages:
     """The checked page layout both `render()` and `render_fields()` fill."""
     if company_type not in COMPANY_TYPES:
         raise FormFillError(
@@ -1467,13 +1504,14 @@ def _composed(validated_xml: str, *, company_type: str,
     model = parse_validated_xml(validated_xml)
     pages = _compose(model, company_type=company_type,
                      presenter=presenter or DEFAULT_PRESENTER,
-                     signed_on=signed_on)
+                     signed_on=signed_on, incorporated_on=incorporated_on)
     _assert_nothing_dropped(model, pages)
     return pages
 
 
 def render_fields(validated_xml: str, *, company_type: str = "private",
-                  presenter: dict | None = None, signed_on: str = "") -> bytes:
+                  presenter: dict | None = None, signed_on: str = "",
+                  incorporated_on=None) -> bytes:
     """The same return as `render()`, BEFORE it is baked: CR's template with
     every value in its form field's `/V` and nothing drawn.
 
@@ -1487,11 +1525,13 @@ def render_fields(validated_xml: str, *, company_type: str = "private",
     phone.
     """
     return _fill(_composed(validated_xml, company_type=company_type,
-                           presenter=presenter, signed_on=signed_on))
+                           presenter=presenter, signed_on=signed_on,
+                           incorporated_on=incorporated_on))
 
 
 def render(validated_xml: str, *, company_type: str = "private",
-           presenter: dict | None = None, signed_on: str = "") -> bytes:
+           presenter: dict | None = None, signed_on: str = "",
+           incorporated_on=None) -> bytes:
     """CR's Form NAR1, filled from the XML CR validated.
 
     `company_type` is one of "private", "public", "guarantee". It cannot be
@@ -1506,9 +1546,15 @@ def render(validated_xml: str, *, company_type: str = "private",
     once CR's PIN signing has succeeded, and nothing before that. Empty means
     TODAY IN HONG KONG, not an empty box; see `signature_date`.
 
+    `incorporated_on` is `entities.incorporation_date`. Like `company_type` it
+    is not in the XML, and EVERY CALLER MUST PASS IT: it is what dates section
+    4 on a return CR has not validated yet -- which, since Client Verification
+    became the first stage, is the one the client is sent. See `made_up_date`.
+
     The result is FLAT: every value is page content and there is no form
     field left in it. See `appearance.bake` for why a hidden field was not
     enough.
     """
     return _bake(_fill(_composed(validated_xml, company_type=company_type,
-                                 presenter=presenter, signed_on=signed_on)))
+                                 presenter=presenter, signed_on=signed_on,
+                                 incorporated_on=incorporated_on)))

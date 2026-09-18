@@ -1274,6 +1274,27 @@ def test_pdf_still_prefers_the_cr_validated_snapshot_when_there_is_one(client):
     assert render.call_args.args[0] == "<cr-holds-this/>"
 
 
+def test_pdf_dates_an_unvalidated_draft_from_the_incorporation_date(client):
+    """CR writes `dateReturnMadeUp` during validateForm, so a draft's
+    `request_xml` never carries it and the renderer dates section 4 from the
+    incorporation anniversary -- which only the company record holds (Levi
+    2026-09-18: the box was printing blank after the stage reorder)."""
+    row = {"stage": "draft", "form_code": "Nar1", "validated_xml": None,
+           "request_xml": "<the-draft/>", "nar1_case_id": "c1",
+           "entity_id": "e1"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_cases.entity_for",
+               return_value={"id": "e1", "incorporation_date": "2025-03-15"}), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.kwargs["incorporated_on"] == "2025-03-15"
+
+
 def test_pdf_is_refused_when_there_is_no_return_at_all(client):
     """Neither payload. 409 not 404: the filing exists, it just carries nothing
     to draw."""

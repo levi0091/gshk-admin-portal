@@ -981,11 +981,21 @@ def default_recipients(entity_id: str) -> list[dict]:
 
 
 def entity_for(entity_id: str) -> dict:
-    """The company the email is about. Raises LookupError so the router 404s."""
+    """The company the email is about. Raises LookupError so the router 404s.
+
+    `incorporation_date` is here for the NAR1 renderer, which dates section 4
+    from its anniversary on a return CR has not validated yet
+    (`fill.made_up_date`). Every route that renders reads it off this row, and
+    route tests patch this function wholesale -- so a column dropped from the
+    list below reaches production as a blank box, not as a failing test.
+    `test_entity_for_selects_the_incorporation_date_the_return_is_dated_from`
+    pins it.
+    """
     rows = (
         get_supabase()
         .table("entities")
-        .select("id,company_name,company_name_zh,br_number,cr_number")
+        .select("id,company_name,company_name_zh,br_number,cr_number,"
+                "incorporation_date")
         .eq("id", entity_id)
         .limit(1)
         .execute()

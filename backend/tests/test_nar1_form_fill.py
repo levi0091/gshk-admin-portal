@@ -105,11 +105,18 @@ def _member(surname, shares):
 
 def build_xml(*, directors=("CHAN",), corporate_directors=(),
               secretaries=1, corporate_secretaries=(), members=("WONG",),
-              date="01/02/2026", share_classes=1, issued_per_class=100,
-              company_email="",
+              date="01/02/2026", year="2026", share_classes=1,
+              issued_per_class=100, company_email="",
               capacity="Director of the Company Secretary (Body Corporate)"):
     """A validated return, in CR's own shape: a BARE fragment with undeclared
     `cr:` prefixes, exactly as `tpsi_filings.validated_xml` stores it.
+
+    `date=None` is the OTHER shape, and since 2026-09-17 the commoner one: a
+    `request_xml` CR has not validated yet. CR writes `dateReturnMadeUp` during
+    validateForm -- its own validate example omits it and its submit example
+    carries it -- so an unvalidated return has `yearAnnualReturn` and no date.
+    This fixture used to model only the validated shape, which is how every
+    stage-1 PDF went out with section 4 empty behind a green suite.
 
     IN CR'S SHAPE MEANS CR'S SCHEMA, INCLUDING WHAT IT LEAVES OUT. `schedule1/
     shares/share` carries `clsOfShares` and NOTHING ELSE about the class --
@@ -149,7 +156,8 @@ def build_xml(*, directors=("CHAN",), corporate_directors=(),
         <cr:compNameC>測試有限公司</cr:compNameC>
         {f"<cr:emailAddr>{company_email}</cr:emailAddr>" if company_email else ""}
         <cr:formCode>NAR1</cr:formCode>
-        <cr:dateReturnMadeUp>{date}</cr:dateReturnMadeUp>
+        {f"<cr:yearAnnualReturn>{year}</cr:yearAnnualReturn>" if year else ""}
+        {f"<cr:dateReturnMadeUp>{date}</cr:dateReturnMadeUp>" if date else ""}
         <cr:dateReturnFrom>2025-01-01</cr:dateReturnFrom>
         <cr:dateReturnTo>2025-12-31</cr:dateReturnTo>
         <cr:roAddr>
@@ -276,6 +284,119 @@ def test_the_return_date_lands_in_the_right_boxes():
     assert values[fm.MAIN_1["return_date_dd"]] == ["09"]
     assert values[fm.MAIN_1["return_date_mm"]] == ["03"]
     assert values[fm.MAIN_1["return_date_yyyy"]] == ["2026"]
+
+
+# ---------------------------------------------------------------------------
+# "Date to which this Return is Made Up" on a return CR has not validated yet
+#
+# THE REGRESSION (Levi 2026-09-18). CR fills `dateReturnMadeUp` itself, during
+# validateForm. Until 2026-09-17 every rendered return was `validated_xml` and
+# the box was always full. Client Verification then became the FIRST stage, so
+# the client is sent `request_xml` -- which CR has not seen and which never
+# carries the date -- and section 4, the Schedule 1 header and every
+# continuation sheet's header all went out blank.
+# ---------------------------------------------------------------------------
+
+def _made_up(values, head):
+    return tuple(values.get(head[k], [""])[0]
+                 for k in ("return_date_dd", "return_date_mm", "return_date_yyyy"))
+
+
+def test_an_unvalidated_return_prints_the_incorporation_anniversary():
+    """Levi's own example: incorporated 15 March 2025, so the 2026 return is
+    made up to 15 March 2026."""
+    values = values_of(fill.render_fields(
+        build_xml(date=None, year="2026"), incorporated_on="2025-03-15"))
+    assert _made_up(values, fm.MAIN_1) == ("15", "03", "2026")
+
+
+def test_the_schedule_header_carries_the_same_date():
+    """The box in the report: Schedule 1's own "Date to which this Return is
+    Made Up", which a page separated from the bundle has to carry."""
+    values = values_of(fill.render_fields(
+        build_xml(date=None, year="2026"), incorporated_on="2025-03-15"))
+    assert _made_up(values, fm.SCHEDULE_1_HEADER) == ("15", "03", "2026")
+
+
+def test_every_continuation_sheet_header_carries_it_too():
+    values = values_of(fill.render_fields(
+        build_xml(date=None, year="2026", directors=("CHAN", "LEE")),
+        incorporated_on="2025-03-15"))
+    head = fm.sheet_header(fm.PAGE_SHEET_C)
+    assert _made_up(values, head) == ("15", "03", "2026")
+
+
+def test_the_anniversary_is_in_the_RETURNS_year_not_this_one():
+    """A 2024 return prepared late is still made up to the 2024 anniversary,
+    and the presenter's reference printed beside it must agree."""
+    values = values_of(fill.render_fields(
+        build_xml(date=None, year="2024"), incorporated_on="2019-07-01"))
+    assert _made_up(values, fm.MAIN_1) == ("01", "07", "2024")
+    assert values[fm.MAIN_1["presenter_reference"]][0].startswith("NAR1/2024/")
+
+
+def test_a_29_february_incorporation_is_made_up_to_28_february_in_a_common_year():
+    """The clamp `fees.return_date_for` applies -- the same rule the late fee
+    and the early-filing gate are measured from, so the three cannot disagree."""
+    values = values_of(fill.render_fields(
+        build_xml(date=None, year="2026"), incorporated_on="2024-02-29"))
+    assert _made_up(values, fm.MAIN_1) == ("28", "02", "2026")
+
+
+def test_a_date_object_is_taken_as_well_as_supabases_iso_string():
+    from datetime import date
+
+    values = values_of(fill.render_fields(
+        build_xml(date=None, year="2026"), incorporated_on=date(2025, 3, 15)))
+    assert _made_up(values, fm.MAIN_1) == ("15", "03", "2026")
+
+
+def test_CRs_own_date_wins_over_the_derived_one():
+    """Once CR has validated, the date it wrote is the one on its register and
+    the one to print -- derivation is only for the return CR has not seen."""
+    values = values_of(fill.render_fields(
+        build_xml(date="31/10/2026", year="2026"), incorporated_on="2025-03-15"))
+    assert _made_up(values, fm.MAIN_1) == ("31", "10", "2026")
+
+
+def test_with_neither_a_CR_date_nor_an_incorporation_date_the_boxes_stay_empty():
+    """Nothing to derive from, and inventing a statutory date is worse than
+    leaving CR to fill it on validation."""
+    values = values_of(fill.render_fields(build_xml(date=None, year="2026")))
+    assert _made_up(values, fm.MAIN_1) == ("", "", "")
+
+
+def test_an_unreadable_incorporation_date_leaves_the_boxes_empty_not_a_crash():
+    """The preview must still render; a bad profile value is not worth a 422
+    on the whole return."""
+    values = values_of(fill.render_fields(
+        build_xml(date=None, year="2026"), incorporated_on="not a date"))
+    assert _made_up(values, fm.MAIN_1) == ("", "", "")
+
+
+def test_CRs_own_request_example_renders_the_date_CR_itself_filled_in():
+    """END TO END, ON CR'S OWN PAIR OF DOCUMENTS. `validate_NAR1(Private
+    Company, Schedule 1).xml` is the request -- no `dateReturnMadeUp` -- and
+    `submit_NAR1.xml` is the same company (BR 00000001, return year 2020) after
+    CR validated it, carrying the date CR wrote. Rendering the REQUEST must
+    print the date CR went on to write, read from CR's document, not retyped.
+    """
+    from pathlib import Path
+
+    from services.tpsi.soap import extract_submission
+
+    examples = Path(__file__).resolve().parent / "fixtures" / "cr-examples"
+    request = extract_submission((
+        examples / "validateForm" / "validate_NAR1(Private Company, Schedule 1).xml"
+    ).read_bytes())
+    assert "dateReturnMadeUp" not in request   # the shape stage 1 renders
+    cr_wrote = re.search(
+        r"<cr:dateReturnMadeUp>([^<]+)</cr:dateReturnMadeUp>",
+        (examples / "submission" / "submit_NAR1.xml").read_text(encoding="utf-8"),
+    ).group(1)                                  # "31/10/2020"
+
+    values = values_of(fill.render_fields(request, incorporated_on="2012-10-31"))
+    assert _made_up(values, fm.MAIN_1) == fill.split_date(cr_wrote)
 
 
 # ---------------------------------------------------------------------------

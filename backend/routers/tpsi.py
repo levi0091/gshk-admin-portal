@@ -1016,6 +1016,9 @@ async def filing_pdf(
             # before signing is dated today in Hong Kong rather than left with
             # an empty Date box beside the signature.
             signed_on=row.get("signed_at") or "",
+            # Section 4's date on a draft CR has not validated; CR's own value
+            # wins once it has. See `fill.made_up_date`.
+            incorporated_on=entity.get("incorporation_date"),
         )
     except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
         # A stored payload CR accepted but we cannot parse is a data problem,

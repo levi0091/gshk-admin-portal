@@ -307,6 +307,53 @@ def test_the_preview_prefers_the_cr_validated_snapshot(client):
     assert render.call_args.args[0] == "<x/>"      # VALIDATED's validated_xml
 
 
+# --------------------------------------------------------------------------- #
+#  "Date to which this Return is Made Up" (Levi 2026-09-18)
+#
+#  CR writes `dateReturnMadeUp` during validateForm, so the `request_xml` the
+#  client is now sent at stage 1 never carries it, and the renderer can only
+#  date the return from the company's incorporation anniversary -- which is not
+#  in the XML either. Every render on this screen has to hand it over.
+# --------------------------------------------------------------------------- #
+
+ENTITY_INCORPORATED = {**ENTITY, "incorporation_date": "2025-03-15"}
+
+
+def test_the_preview_dates_the_return_from_the_incorporation_date(client):
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_cases.entity_for",
+               return_value=ENTITY_INCORPORATED), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(return_value="<built-in-memory/>")), \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.kwargs["incorporated_on"] == "2025-03-15"
+
+
+def test_the_mailed_return_is_dated_from_the_incorporation_date(client):
+    """The attachment is the document the director approves; it must not go
+    out with section 4 and the Schedule 1 header empty."""
+    with _super(), _Stack(*_sendable(filing=NO_FILING), *_prepares()), \
+         patch("routers.cases.nar1_cases.entity_for",
+               return_value=ENTITY_INCORPORATED), \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.email_service.send",
+               return_value={"id": "m1", "to": ["client@example.com"],
+                             "intended_to": ["client@example.com"],
+                             "redirected": False}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 200
+    assert render.call_args.kwargs["incorporated_on"] == "2025-03-15"
+
+
 def test_the_preview_reports_an_unfilable_company_rather_than_spinning(client):
     """The operator learns at stage 1 that the record cannot produce a NAR1 —
     which is earlier than they used to find out, and is the point of the

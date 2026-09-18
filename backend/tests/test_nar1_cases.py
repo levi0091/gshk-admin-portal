@@ -705,3 +705,28 @@ def test_composite_tolerates_a_case_missing_from_the_view():
         result = nar1_cases.composite("c1")
     assert result["id"] == "c1"
     assert result.get("company_name") is None
+
+
+# ---- entity_for -------------------------------------------------------
+
+def test_entity_for_selects_the_incorporation_date_the_return_is_dated_from():
+    """THE MOCKED BOUNDARY, pinned. Every route that renders a NAR1 patches
+    `entity_for` wholesale, so a route test can hand the renderer an
+    `incorporation_date` this function never actually selects -- a green suite
+    over a blank "Date to which this Return is Made Up" on every stage-1
+    return. `company_type` has been read off this row by all three routes
+    and was never in the select list; that is what not pinning it looks like.
+    """
+    with patch("services.nar1_cases.get_supabase") as msb:
+        sb = MagicMock()
+        msb.return_value = sb
+        (sb.table.return_value.select.return_value.eq.return_value
+           .limit.return_value.execute.return_value.data) = [
+            {"id": "e1", "incorporation_date": "2025-03-15"}]
+
+        row = nar1_cases.entity_for("e1")
+
+    sb.table.assert_called_with("entities")
+    columns = sb.table.return_value.select.call_args.args[0].split(",")
+    assert "incorporation_date" in columns
+    assert row["incorporation_date"] == "2025-03-15"
