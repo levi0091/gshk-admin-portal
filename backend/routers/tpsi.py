@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict
 from middleware.auth import require_permission, require_super_admin
 from db.supabase import get_supabase
 from services import audit_events as ev
-from services import nar1_cases, nar1_cr_status, nar1_prepare
+from services import nar1_cases, nar1_cr_status, nar1_prepare, nar1_return_year
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
@@ -702,6 +702,18 @@ def _loader_failed(entity_id: str, exc: Exception) -> HTTPException:
     )
 
 
+def _entity_or_empty(entity_id: str) -> dict:
+    """The company row (for its incorporation date and name), or {}.
+
+    Never a reason to fail a prepare: without it the year falls back to the
+    Hong Kong year, which is what every prepare did before the year existed.
+    """
+    try:
+        return nar1_cases.entity_for(entity_id) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 @router.post("/filings/prepare", status_code=201)
 async def prepare_filing(
     body: PrepareIn, user=Depends(require_permission("tpsi", "write"))
@@ -780,7 +792,47 @@ async def prepare_filing(
     # answer a trail can give years later. Hong Kong's year, not UTC's: for the
     # first eight hours of every HK working day UTC is still on yesterday's
     # date, and on 1 January that is the wrong year on the statutory form.
-    year = body.year or nar1_prepare.hk_year()
+    #
+    # THE CASE'S YEAR WINS (Levi 2026-09-18). A case is one annual return and
+    # names its year (`nar1_cases.ar_period_year`, chosen at Client
+    # Verification), so the filing is built for that year — the one the client
+    # was asked to approve. An explicit `year` that disagrees is REFUSED rather
+    # than obeyed: honouring it would file a different year from the approved
+    # one, and ignoring it silently would tell the caller it had been used.
+    # Read once, here, and reused for the draft rebuild below.
+    try:
+        live = nar1_cases.current_filing(body.nar1_case_id)
+    except Exception:  # noqa: BLE001 — a missing live filing is not an error
+        live = None
+    year, year_source = nar1_return_year.resolve(
+        case, live, _entity_or_empty(body.entity_id))
+    if body.year and int(body.year) != year:
+        raise HTTPException(409, {
+            "message": (f"case {case.get('case_no') or case.get('id')} files "
+                        f"the {year} annual return, not {body.year}. Change "
+                        f"the year on the case (Client Verification) instead."),
+            "reason": "return_year"})
+    try:
+        claimed = nar1_return_year.claim(case, year)
+    except nar1_return_year.YearRefused as exc:
+        raise HTTPException(exc.status, {"message": str(exc),
+                                         "reason": "return_year",
+                                         "held_by": exc.held_by})
+    if claimed:
+        entity_row = _entity_or_empty(body.entity_id)
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.CASE_FIELD_UPDATED, event_code=ev.CASE_FIELD_UPDATED,
+            # The cases router's convention (`routers/cases._audit_target`):
+            # the case in entity_id/subject, its COMPANY in case_id.
+            entity_type="nar1_case", entity_id=case["id"],
+            case_id=case.get("entity_id"),
+            company_name=entity_row.get("company_name"),
+            **audit_subject.for_case(case),
+            old_value=None, new_value=str(year),
+            metadata={"field": "ar_period_year", "fixed_by": "filing_prepare",
+                      "resolved_from": year_source},
+        )
 
     try:
         form_xml = await nar1_prepare.build_form_xml(
@@ -821,10 +873,6 @@ async def prepare_filing(
     # through to a new row rather than reporting a refresh that did not happen.
     row = None
     if body.nar1_case_id:
-        try:
-            live = nar1_cases.current_filing(body.nar1_case_id)
-        except Exception:  # noqa: BLE001 — a missing live filing is not an error
-            live = None
         if live and live.get("stage") in filings.REBUILDABLE_STAGES:
             try:
                 row = filings.rebuild_draft(live["id"], form_xml)
@@ -1052,7 +1100,40 @@ async def filing_pdf(
 async def validate_filing(
     filing_id: str, user=Depends(require_permission("tpsi", "read"))
 ):
-    """`read`: no CR-side effect and no charge (spec §6)."""
+    """`read`: no CR-side effect and no charge (spec §6).
+
+    REFUSED BEFORE THE RETURN DATE (Levi 2026-09-18). CR will not validate an
+    annual return whose made-up date — the incorporation anniversary in the
+    return's year — has not arrived. It says so twice, in its own words
+    (`ERR_MSG_NO_FUTURE_DATE` "Date to which this Return is Made Up cannot be a
+    future date", and `NAR1_ERR000023PRIVATECOYINVALIDRTNDATE` "Please submit
+    the annual return within 42 days after anniversary"), and the second of
+    those reads as if a late return were refused, which it is not. So the
+    portal answers first, with the two dates and the two ways out. Fails OPEN
+    when either date is unknown, exactly as the submit gate does: CR, which
+    has its own register, stays the check for what we cannot compute.
+    """
+    try:
+        early = filings.before_return_date(filings.get_filing(filing_id))
+    except Exception:  # noqa: BLE001 — fail open; `validate` below reads the
+        early = None   # same row and reports a real failure in its own terms.
+    if early:
+        return_date, today = early
+        days = (return_date - today).days
+        raise HTTPException(409, {
+            "message": (
+                f"CR will not validate this return yet. It is made up to "
+                f"{return_date.strftime('%d/%m/%Y')} — the company's "
+                f"incorporation anniversary in the return's year — which is "
+                f"{days} day{'' if days == 1 else 's'} away, and an annual return "
+                f"cannot be made up to a future date. Validate on or after "
+                f"{return_date.strftime('%d/%m/%Y')}, or, if this case should be "
+                f"filing an earlier year, restart verification and choose that "
+                f"year on Client Verification. Nothing was sent to CR."),
+            "reason": "before_return_date",
+            "return_date": return_date.isoformat(),
+        })
+
     try:
         row = filings.validate(client_for(user), filing_id)
     except Exception as exc:

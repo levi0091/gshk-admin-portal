@@ -247,7 +247,9 @@ export default function CaseWorkflowPage() {
           <span>{c.company_name || 'Company'}</span>
         )}
         <span className="crumb-sep">›</span>
-        <span>{c.case_type || 'NAR1'} · Annual Return{c.ar_period_year ? ` ${c.ar_period_year}` : ''}</span>
+        {/* `return_year` is resolved server-side, so a case that has not fixed
+            its year yet still names the one it would file (2026-09-18). */}
+        <span>{c.case_type || 'NAR1'} · Annual Return{(c.return_year ?? c.ar_period_year) ? ` ${c.return_year ?? c.ar_period_year}` : ''}</span>
         <span className="crumb-sep">›</span>
         <span className="crumb-here">{heading}</span>
       </div>
@@ -256,7 +258,9 @@ export default function CaseWorkflowPage() {
         <div>
           <div className="pg-title">{heading}</div>
           <div className="pg-sub">
-            Case {c.case_no || '—'} · Annual Return ({c.case_type || 'NAR1'})
+            Case {c.case_no || '—'} · Annual Return
+            {(c.return_year ?? c.ar_period_year) ? ` ${c.return_year ?? c.ar_period_year}` : ''}
+            {' '}({c.case_type || 'NAR1'})
             {c.company_name ? ` · ${c.company_name}` : ''}
             {c.br_number ? ` · BRN ${c.br_number}` : ''}
             {annivText ? ' · ' : ''}

@@ -1,10 +1,107 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
+import { downloadValidatedPdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
+import PdfFrame, { usePdfBlob } from './PdfPreview.jsx'
 import ReturnDataCard from './ReturnDataCard.jsx'
+import { crDate } from './ReturnYearCard.jsx'
 import { describeError, isValidated, rebuildBeforeValidate } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
+
+/**
+ * What moved between the return the client approved and the one CR validated,
+ * as the warning above the validated form (Levi 2026-09-18).
+ *
+ * Every row is a box printed differently on the two forms, and every one with
+ * a page is boxed in orange on that page of the form below — the list and the
+ * highlights come from the same comparison, so neither can mention a change
+ * the other does not show. A row with no page is a value that is no longer on
+ * the form at all (a director removed), which the list is the only place to
+ * say.
+ */
+export function ValidationChanges({ comparison }) {
+  if (!comparison) return null
+  if (!comparison.compared) {
+    // NOT "no changes". There is no approved copy to compare with — the case
+    // was never sent, or was sent before the mailed bytes were kept.
+    return (
+      <div className="alert al-info" role="status" style={{ marginBottom: 14 }}>
+        <span className="al-icon">ℹ</span>
+        <div className="al-body">
+          There is no copy of the return the client was sent to compare this
+          with, so differences cannot be marked. Check it against the client's
+          email before signing.
+        </div>
+      </div>
+    )
+  }
+  const changes = comparison.changes || []
+  if (changes.length === 0) {
+    return (
+      <div className="alert al-success" role="status" style={{ marginBottom: 14 }}>
+        <span className="al-icon">✓</span>
+        <div className="al-body">
+          <b>Identical to the return the client approved.</b> Every box on the
+          form CR validated prints the same as the copy they were sent.
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="alert al-warn" role="alert" style={{ marginBottom: 14 }}>
+      <span className="al-icon">⚠</span>
+      <div className="al-body">
+        <b>
+          {changes.length === 1
+            ? 'One field differs'
+            : `${changes.length} fields differ`}{' '}
+          from the return the client approved.
+        </b>{' '}
+        They are marked in orange on the form below. The client approved the
+        version emailed to them; this is the version that will be signed and
+        filed. If a difference matters to them, contact them — or use{' '}
+        <b>Restart verification</b> to send the corrected return for approval.
+        <div className="tbl-wrap" style={{ marginTop: 10 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Page</th>
+                <th>Field</th>
+                <th>Client approved</th>
+                <th>CR validated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {changes.map(c => (
+                <tr key={`${c.section}|${c.field}|${c.approved}|${c.validated}`}>
+                  <td className="td-muted">
+                    {c.pages?.length ? c.pages.join(', ') : '—'}
+                  </td>
+                  <td>
+                    <div className="td-primary">{c.field}</div>
+                    <div className="td-muted">{c.section}</div>
+                    {c.note && <div className="td-muted"><i>{c.note}</i></div>}
+                  </td>
+                  <td>
+                    {c.approved == null
+                      ? <i className="td-muted">(blank)</i>
+                      : <span className="diff-old">{c.approved}</span>}
+                  </td>
+                  <td>
+                    {c.validated == null
+                      ? <i className="td-muted">(removed)</i>
+                      : <span className="diff-new">{c.validated}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 /**
  * Stage 2 — Data Verification (FE-3).
@@ -26,9 +123,60 @@ import { ActionWithheld } from '../RequirePermission.jsx'
  */
 export default function StageDataVerification({ caseRow, canWrite, canValidate, onChanged, onError, onGo }) {
   const [busy, setBusy] = useState(null)
+  const [comparison, setComparison] = useState(null)
+  const [comparisonError, setComparisonError] = useState(null)
+  const [yearInfo, setYearInfo] = useState(null)
+  const [saving, setSaving] = useState(false)
 
   const validated = isValidated(caseRow)
   const faults = caseRow.form_status?.failed ? caseRow.form_status.faults : null
+  const year = caseRow.return_year ?? caseRow.ar_period_year
+
+  // THE VALIDATED FORM (Levi 2026-09-18). Revealed once CR has validated, and
+  // re-fetched whenever a new validated copy lands — a restart and a fresh
+  // validation give a new filing and a new timestamp, and either changes the
+  // key. Before validation there is nothing CR has accepted to show.
+  const validatedKey = `${caseRow.filing_id}|${caseRow.validated_at}`
+  const { url: validatedUrl, error: validatedError } = usePdfBlob(
+    validated ? `/cases/${caseRow.id}/validation/preview` : null, validatedKey)
+
+  useEffect(() => {
+    if (!validated) { setComparison(null); return undefined }
+    let cancelled = false
+    setComparisonError(null)
+    api.get(`/cases/${caseRow.id}/validation/comparison`)
+      .then(r => { if (!cancelled) setComparison(r) })
+      .catch(e => { if (!cancelled) setComparisonError(describeError(e)) })
+    return () => { cancelled = true }
+  }, [caseRow.id, validated, validatedKey])
+
+  // WHEN CR WILL TAKE IT. CR refuses to validate a return whose made-up date
+  // is still ahead, in two faults one of which reads as if a LATE return were
+  // refused. So the date is on screen before anybody presses Validate, and the
+  // button waits for it. The backend refuses independently.
+  useEffect(() => {
+    if (validated) return undefined
+    let cancelled = false
+    api.get(`/cases/${caseRow.id}/return-year`)
+      .then(r => { if (!cancelled) setYearInfo(r) })
+      .catch(() => { if (!cancelled) setYearInfo(null) })   // advisory only
+    return () => { cancelled = true }
+  }, [caseRow.id, validated, caseRow.updated_at])
+  const earlyUntil = yearInfo?.return_date && yearInfo?.today
+    && yearInfo.return_date > yearInfo.today ? yearInfo.return_date : null
+
+  async function downloadValidated() {
+    setSaving(true)
+    try {
+      const name = `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}`
+        + `${year ? `_${year}` : ''}_validated.pdf`
+      await downloadValidatedPdf(caseRow.id, name)
+    } catch (e) {
+      onError(describeError(e))
+    } finally {
+      setSaving(false)
+    }
+  }
   // Fields that have moved since the client approved. `?? []` rather than a
   // truthiness test: the backend sends an empty list for "nothing changed" AND
   // for "no snapshot kept" (a case sent before migration 046), and neither is
@@ -116,8 +264,13 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           A WARNING, NEVER A REFUSAL. It blocks nothing and offers no button:
           the operator decides whether the change is worth mailing a director
           over, and does that by hand (Levi 2026-09-17). Restart verification,
-          in the header, is how a case goes back to the client properly. */}
-      {divergence.length > 0 && (
+          in the header, is how a case goes back to the client properly.
+
+          BEFORE VALIDATION ONLY since 2026-09-18. Once CR has validated, the
+          validated-form viewer below compares the approved copy with CR's own
+          copy, box by box, and marks each change on the form — two lists
+          measuring slightly different things would read as two opinions. */}
+      {!validated && divergence.length > 0 && (
         <div className="alert al-warn" role="status" style={{ marginBottom: 16 }}>
           <span className="al-icon">⚠</span>
           <div className="al-body">
@@ -233,13 +386,28 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
                 stored on the case (`persistedFailure`) so a reload still says
                 why. `faults` is still read below to space and caption the
                 action bar. */}
+            {earlyUntil && (
+              // Pre-emptive, so a note and not an alert: nothing was refused.
+              <div className="card-note card-note-warn" role="status"
+                   style={{ marginBottom: 12 }}>
+                <b>CR will not validate the {yearInfo.year} return until{' '}
+                {crDate(earlyUntil)}</b> — the company's incorporation
+                anniversary in {yearInfo.year}, which is the date the return is
+                made up to. An annual return cannot be made up to a future
+                date. Validate on or after that day; if this case should be
+                filing an earlier year, restart verification and choose it on
+                Client Verification.
+              </div>
+            )}
             <div className="action-bar" style={{ marginTop: faults?.length ? 16 : 0 }}>
               <div className="ab-note">
                 {!prechecksDone
                   ? 'Tick both manual checks above before validating with CR.'
-                  : caseRow.filing_id
-                    ? 'Re-checks the corrected details with CR.'
-                    : 'Builds the return and asks CR to check it.'}
+                  : earlyUntil
+                    ? `Available from ${crDate(earlyUntil)}.`
+                    : caseRow.filing_id
+                      ? 'Re-checks the corrected details with CR.'
+                      : 'Builds the return and asks CR to check it.'}
               </div>
               <div className="ab-actions">
                 {canValidate ? (
@@ -254,7 +422,8 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
                       Requires <b>tpsi:write</b> — validation is free
                     </span>
                     <button className="btn btn-action"
-                            disabled={!prechecksDone || busy !== null}
+                            disabled={!prechecksDone || busy !== null
+                                      || Boolean(earlyUntil)}
                             onClick={runValidation}>
                       {busy === 'validate' ? 'Checking with CR…' : 'Validate with CR'}
                     </button>
@@ -268,6 +437,63 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           </>
         )}
       </div>
+
+      {/* THE RETURN CR VALIDATED (Levi 2026-09-18) — revealed once it
+          exists, and replaced whenever a new validated copy comes back.
+          Client Verification keeps showing what the client approved; this
+          shows what will be signed and filed, with every box that differs
+          from the approved copy marked, and the list of those differences
+          above it. */}
+      {validated && (
+        <div className="card mb-16">
+          <div className="card-hdr">
+            <div>
+              <div className="card-title">The return CR validated</div>
+              <div className="card-sub">
+                Validated by the Companies Registry
+                {caseRow.validated_at ? ` on ${formatDateTime(caseRow.validated_at)}` : ''}.
+                This is the version that will be signed and filed.
+              </div>
+            </div>
+            <div className="row gap-8">
+              <button type="button" className="btn btn-outline btn-sm"
+                      disabled={saving} onClick={downloadValidated}>
+                {saving ? 'Preparing…' : 'Download PDF'}
+              </button>
+              <button type="button" className="btn btn-outline btn-sm"
+                      disabled={!validatedUrl}
+                      onClick={() => window.open(validatedUrl, '_blank', 'noopener')}>
+                Open full screen
+              </button>
+            </div>
+          </div>
+
+          {comparisonError ? (
+            <div className="card-note card-note-warn" role="status"
+                 style={{ marginBottom: 14 }}>
+              <b>The differences from the approved return could not be worked
+              out.</b> {comparisonError.message}
+            </div>
+          ) : (
+            <ValidationChanges comparison={comparison} />
+          )}
+
+          <PdfFrame
+            url={validatedUrl}
+            error={validatedError}
+            label="CR-validated NAR1"
+            fileName={`NAR1${year ? ` ${year}` : ''} — as validated by CR`}
+            pills={[
+              { label: 'Rendered from the CR-validated XML', tone: 'ok' },
+              ...(comparison?.changes?.length
+                ? [{ label: `${comparison.changes.length} change`
+                    + `${comparison.changes.length === 1 ? '' : 's'} marked`,
+                     tone: 'warn' }]
+                : []),
+            ]}
+          />
+        </div>
+      )}
 
       {validated && onGo && (
         <div className="action-bar">

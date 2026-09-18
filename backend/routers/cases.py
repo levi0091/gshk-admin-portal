@@ -19,8 +19,9 @@ from db.supabase import get_supabase
 from services import (
     audit_events as ev, document_service, email_service, nar1_approvals,
     nar1_case_status, nar1_cases, nar1_prepare, nar1_return_data,
-    nar1_verification, table_filters as tf,
+    nar1_return_year, nar1_verification, table_filters as tf,
 )
+from services.nar1_form import compare as nar1_form_compare
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
@@ -127,6 +128,10 @@ class CasePatch(BaseModel):
     #: distinction matters — a picker reset to its blank option must be able to
     #: say so, and `None` already means "field not in this PATCH".
     signatory_capacity: str | None = None
+    #: The year of the annual return this case files — CR's yearAnnualReturn
+    #: (see services/nar1_return_year.py). Chosen at Client Verification, and
+    #: fixed from the moment the client is sent the return.
+    ar_period_year: int | None = None
 
 
 @router.post("", status_code=201)
@@ -148,6 +153,139 @@ async def create_case(
         metadata={"case_no": row.get("case_no"), "entity_id": body.entity_id},
     )
     return row
+
+
+# --------------------------------------------------------------------------- #
+#  The return year — which annual return this case files
+#
+#  Levi 2026-09-18: a company four years behind files four returns, one per
+#  year, and the year is chosen at Client Verification. CR takes the YEAR
+#  (`yearAnnualReturn`) and derives the made-up date itself; the evidence is in
+#  services/nar1_return_year.py.
+# --------------------------------------------------------------------------- #
+
+def _entity_or_empty(entity_id: str) -> dict:
+    """The company row for dates and names, or {} — never a reason to 500.
+
+    A read that fails leaves the year with no incorporation date to check
+    against, which the rules below treat as "unknown" rather than as "wrong".
+    """
+    try:
+        return nar1_cases.entity_for(entity_id) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    """PostgREST's report of a unique index refusing a write (SQLSTATE 23505)."""
+    return (getattr(exc, "code", None) == "23505"
+            or "23505" in str(exc) or "duplicate key" in str(exc))
+
+
+def _year_refused(exc: nar1_return_year.YearRefused) -> HTTPException:
+    detail = {"message": str(exc), "reason": "return_year"}
+    if exc.held_by:
+        detail["held_by"] = exc.held_by
+    return HTTPException(exc.status, detail)
+
+
+def _year_change(before: dict, requested: int, *, restarted: bool) -> int | None:
+    """The year to store, None for a no-op, or HTTPException saying why not.
+
+    `restarted` means this same request restarted verification, so the case is
+    judged as it will be once that lands: nothing sent, no live filing.
+    """
+    filing = None if restarted else nar1_cases.current_filing(before["id"])
+    state = before if not restarted else {
+        **before, "verification_sent_at": None, "client_approved": None,
+        "client_response_at": None,
+    }
+    entity = _entity_or_empty(before["entity_id"])
+    today = nar1_return_year.hk_today()
+    current, _source = nar1_return_year.resolve(before, filing, entity, today)
+    try:
+        year = nar1_return_year.check_range(
+            requested, nar1_return_year.incorporated(entity), today,
+            entity.get("company_name"))
+    except nar1_return_year.YearRefused as exc:
+        raise _year_refused(exc)
+
+    lock = nar1_return_year.lock_reason(state, filing, current)
+    if year == current and (before.get("ar_period_year") or lock):
+        # Already this year. On a locked case that is still a no-op rather than
+        # a refusal: the operator asked for the year the case already has.
+        return None
+    if lock:
+        raise HTTPException(409, {
+            "message": f"The return year cannot be changed: {lock}.",
+            "reason": "return_year_locked"})
+    try:
+        nar1_return_year.refuse_if_held(before["entity_id"], before["id"], year)
+    except nar1_return_year.YearRefused as exc:
+        raise _year_refused(exc)
+    return year
+
+
+def _claim_year(case: dict, year: int) -> bool:
+    """Fix the resolved year on a case that has none stored. HTTP errors out.
+
+    Mutates `case` so a caller that goes on to compose an email from it names
+    the year it has just fixed.
+    """
+    try:
+        wrote = nar1_return_year.claim(case, year)
+    except nar1_return_year.YearRefused as exc:
+        raise _year_refused(exc)
+    except Exception as exc:  # noqa: BLE001
+        if _is_unique_violation(exc):
+            raise HTTPException(409, {
+                "message": (f"another case of this company has just taken the "
+                            f"{year} return. Choose a different year on this "
+                            f"case."),
+                "reason": "return_year"})
+        raise
+    case["ar_period_year"] = int(year)
+    return wrote
+
+
+@router.get("/{case_id}/return-year")
+async def get_return_year(
+    case_id: str, user=Depends(require_permission("nar1", "read")),
+):
+    """Which year this case files, which years it could, and whether it may change.
+
+    `nar1:read`: it changes nothing and contacts no one. It is what the year
+    picker on Client Verification is drawn from — each option carrying its
+    return date, the last day of the HK$105 window, what CR would charge if it
+    were filed today, and the other case already filing it, if any.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    filing = nar1_cases.current_filing(case_id)
+    entity = _entity_or_empty(case["entity_id"])
+    today = nar1_return_year.hk_today()
+    inc = nar1_return_year.incorporated(entity)
+    year, source = nar1_return_year.resolve(case, filing, entity, today)
+    try:
+        held = nar1_return_year.held_years(case["entity_id"],
+                                           excluding_case_id=case_id)
+    except Exception:  # noqa: BLE001 — the picker still works without it; the
+        held = {}      # PATCH re-asks, and the index is the final word.
+    lock = nar1_return_year.lock_reason(case, filing, year)
+    rd = nar1_return_year.return_date(inc, year)
+    return {
+        "year": year,
+        "source": source,
+        "return_date": rd.isoformat() if rd else None,
+        "incorporation_date": inc.isoformat() if inc else None,
+        "today": today.isoformat(),
+        "locked": lock is not None,
+        "locked_reason": lock,
+        "options": nar1_return_year.options(inc, today, held),
+    }
 
 
 @router.get("")
@@ -265,8 +403,15 @@ async def get_return_data(
     except Exception:  # noqa: BLE001 — a credential read failure must not blank
         signing_identity = None  # a read-only card; the mapper names the gap.
 
+    # THE CASE'S year, not this calendar year's. The card says "Return year"
+    # and it must name the return this case files — which, for a company
+    # catching up on 2023, is not the one due this October.
+    year, _source = nar1_return_year.resolve(
+        case, nar1_cases.current_filing(case_id), graph.get("entity"))
+
     return nar1_return_data.summarise(
         graph,
+        year=year,
         signatory_capacity=case.get("signatory_capacity"),
         signing_identity=signing_identity,
     )
@@ -432,11 +577,35 @@ async def patch_case(
             events.append((ev.CASE_STATUS_CHANGED, "verification",
                            "sent", "restarted"))
 
+    if body.ar_period_year is not None:
+        # AFTER the restart, and judged against its outcome: "restart, then
+        # choose 2024" in one request is the natural way to move a case that
+        # was sent for the wrong year, and the lock it has to pass is the one
+        # the restart has just lifted.
+        year = _year_change(before, body.ar_period_year,
+                            restarted=body.restart_verification)
+        if year is not None:
+            patch["ar_period_year"] = year
+            events.append((ev.CASE_FIELD_UPDATED, "ar_period_year",
+                           None if before.get("ar_period_year") is None
+                           else str(before.get("ar_period_year")), str(year)))
+
     if not patch and not events:
         return nar1_cases.composite(case_id)
 
     if patch:
-        nar1_cases.update_case(case_id, patch)
+        try:
+            nar1_cases.update_case(case_id, patch)
+        except Exception as exc:  # noqa: BLE001
+            # Migration 047's unique index: another operator claimed this
+            # company-year between `refuse_if_held` above and this write.
+            # Anything else is not ours to translate.
+            if "ar_period_year" in patch and _is_unique_violation(exc):
+                raise HTTPException(409, (
+                    f"another case of this company has just taken the "
+                    f"{patch['ar_period_year']} return. Reload the case to see "
+                    f"which, and choose a different year."))
+            raise
     for action, field, old, new in events:
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],
@@ -1245,9 +1414,22 @@ async def preview_verification(
     build through `nar1_prepare.build_form_xml` from the same company record, so
     what is previewed is what would be mailed.
 
-    The payload preference is the filing's, in the same order the send uses:
-    CR's validated copy when there is one, else the prepared `request_xml`,
-    else a build made here and thrown away.
+    WHAT IT SHOWS, in order (Levi 2026-09-18):
+
+      1. ONCE THE CLIENT HAS BEEN SENT IT, THE RETURN THEY WERE SENT —
+         `verification_xml`, dated the day it was mailed. Frozen: the approval
+         on this screen is an approval of that document, so the screen must go
+         on showing that document however the record, the filing or CR's copy
+         moves afterwards. `Restart verification` clears it, and only then
+         does this go back to the live return. What CR validated is shown at
+         Data Verification, marked against this one.
+      2. A snapshot CR has validated but nobody has mailed (a case that went
+         through validation before the stage order was reversed): that
+         snapshot, which is what the send would mail.
+      3. Otherwise a FRESH build from the company record for the case's
+         return year, thrown away after. Fresh even when a draft filing
+         exists: the send rebuilds a draft before mailing it, so a stored
+         draft is not what would go out — the record as it reads now is.
     """
     try:
         case = nar1_cases.get_case(case_id)
@@ -1255,14 +1437,30 @@ async def preview_verification(
         raise HTTPException(404, str(exc))
 
     filing = nar1_cases.current_filing(case_id)
-    payload = (filing or {}).get("validated_xml") or (filing or {}).get("request_xml")
+    # A missing entity is not a reason to fail the preview: the resolver
+    # defaults to "private", which is what all but a handful of the book are.
+    # Matches the guard on /tpsi/filings/{id}/pdf.
+    entity = _entity_or_empty(case["entity_id"])
 
-    if not payload:
+    mailed = case.get("verification_xml")
+    frozen = (filing or {}).get("validated_xml") or (filing or {}).get("request_xml")
+    if mailed:
+        payload = mailed
+        # The mailed copy was dated the day it went out; reproducing it means
+        # dating it the same way, not today.
+        signed_on = case.get("verification_sent_at") or ""
+    elif filing and frozen and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
+        payload = frozen
+        signed_on = filing.get("signed_at") or ""
+    else:
+        year, _source = nar1_return_year.resolve(case, filing, entity)
+        signed_on = ""
         try:
             payload = await nar1_prepare.build_form_xml(
                 entity_id=case["entity_id"],
                 nar1_case_id=case_id,
                 user_id=user["id"],
+                year=year,
             )
         except nar1_mapper.MappingError as exc:
             # NOT a 500 and not a spinner: an operator now learns at stage 1
@@ -1271,14 +1469,6 @@ async def preview_verification(
             raise _mapping_error(exc)
         except Exception as exc:  # noqa: BLE001
             raise _prepare_failed(exc)
-
-    # A missing entity is not a reason to fail the preview: the resolver
-    # defaults to "private", which is what all but a handful of the book are.
-    # Matches the guard on /tpsi/filings/{id}/pdf.
-    try:
-        entity = nar1_cases.entity_for(case["entity_id"]) or {}
-    except Exception:  # noqa: BLE001
-        entity = {}
 
     try:
         # Off the event loop, as the send does: filling and compressing a
@@ -1289,7 +1479,7 @@ async def preview_verification(
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
-            signed_on=(filing or {}).get("signed_at") or "",
+            signed_on=signed_on,
             # Section 4's date. CR only writes it on validation, and the return
             # previewed here usually has not been validated; see
             # `fill.made_up_date`.
@@ -1303,6 +1493,137 @@ async def preview_verification(
         media_type="application/pdf",
         headers={"Content-Disposition":
                  f'inline; filename="NAR1-{case.get("case_no") or case_id}.pdf"'},
+    )
+
+
+# --------------------------------------------------------------------------- #
+#  Data Verification — the return CR validated, marked against the approved one
+#
+#  Levi 2026-09-18: "there is no pdf preview in that stage for the user to see
+#  again what is the final validated form, what it looks like and how it
+#  differs from the form sent to the client earlier ... highlight the fields
+#  that are different between stage 1 and stage 2 ... list the fields and what
+#  was changed in a warning message."
+# --------------------------------------------------------------------------- #
+
+def _validated_pair(case_id: str):
+    """(case, filing, entity) for a case CR has validated, or HTTPException.
+
+    409 before validation: there is no CR-validated form to show, and
+    rendering the draft here instead would label a document CR has never
+    accepted as the one it did.
+    """
+    try:
+        case = nar1_cases.get_case(case_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    filing = nar1_cases.current_filing(case_id)
+    if (not filing or not filing.get("validated_xml")
+            or filing.get("stage") in tpsi_filings.REBUILDABLE_STAGES):
+        raise HTTPException(409, {
+            "message": ("CR has not validated this return yet, so there is no "
+                        "validated form to show. Validate with CR first."),
+            "reason": "not_validated"})
+    return case, filing, _entity_or_empty(case["entity_id"])
+
+
+def _comparison(case: dict, filing: dict, entity: dict):
+    """The approved-vs-validated comparison, or None when there is no approved
+    copy to compare with (never sent, or sent before migration 046 kept it)."""
+    approved = case.get("verification_xml")
+    if not approved:
+        return None
+    return nar1_form_compare.compare(
+        approved, filing["validated_xml"],
+        company_type=nar1_form_fill.company_type_from_profile(
+            entity.get("company_type")),
+        incorporated_on=entity.get("incorporation_date"),
+    )
+
+
+@router.get("/{case_id}/validation/comparison")
+async def validation_comparison(
+    case_id: str, user=Depends(require_permission("nar1", "read")),
+):
+    """What moved between the return the client approved and the one CR validated.
+
+    The warning list beside the Data Verification viewer, and the facts the
+    viewer's header states: when CR validated it, when the client was sent and
+    answered. Every entry is a box printed differently on the two forms —
+    `services/nar1_form/compare.py` explains why the comparison is made on the
+    printed form rather than on the XML — and `pages` are the pages of the
+    validated PDF on which that box is highlighted.
+
+    `compared` is False when there is nothing to compare against: the case was
+    never sent, or was sent before the mailed copy was kept (migration 046).
+    That is "cannot say", and the screen must not render it as "no changes".
+    """
+    case, filing, entity = _validated_pair(case_id)
+    try:
+        result = await asyncio.to_thread(_comparison, case, filing, entity)
+    except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
+        raise HTTPException(422, f"the two returns could not be compared: {exc}")
+    return {
+        "validated_at": filing.get("validated_at"),
+        "verification_sent_at": case.get("verification_sent_at"),
+        "client_response_at": case.get("client_response_at"),
+        "client_approved": case.get("client_approved"),
+        "return_year": nar1_return_year.filing_year(filing),
+        "compared": result is not None,
+        "changes": result.changes if result else [],
+    }
+
+
+@router.get(
+    "/{case_id}/validation/preview",
+    response_class=Response,
+    responses={200: {"content": {"application/pdf": {}},
+                     "description": "The CR-validated NAR1, changes marked."}},
+)
+async def validation_preview(
+    case_id: str,
+    highlight: bool = Query(True, description=(
+        "Box the fields that differ from the approved return. False gives the "
+        "clean validated form, which is what the Download button saves.")),
+    user=Depends(require_permission("nar1", "read")),
+):
+    """The NAR1 exactly as CR validated it, as CR's own Form NAR1.
+
+    Rendered from `validated_xml` — CR's copy, the one that will be signed and
+    filed — dated the day CR's PIN signing succeeded where it has, else today.
+    With `highlight` (the default), every box that prints differently from the
+    return the client approved is boxed in carrot; the list of what changed is
+    `GET /validation/comparison`, computed by the same function.
+
+    `nar1:read`, like the stage-1 preview: it persists nothing and contacts no
+    one. The highlights make this a REVIEWER'S copy — it is never mailed and
+    never filed.
+    """
+    case, filing, entity = _validated_pair(case_id)
+
+    def build() -> bytes:
+        comparison = _comparison(case, filing, entity) if highlight else None
+        return nar1_form_fill.render(
+            filing["validated_xml"],
+            company_type=nar1_form_fill.company_type_from_profile(
+                entity.get("company_type")),
+            signed_on=filing.get("signed_at") or "",
+            incorporated_on=entity.get("incorporation_date"),
+            highlight=comparison.highlight if comparison else None,
+        )
+
+    try:
+        pdf = await asyncio.to_thread(build)
+    except (ValueError, nar1_form_fill.FormFillError, AppearanceError) as exc:
+        raise HTTPException(422, f"the validated return could not be rendered: {exc}")
+
+    suffix = "-changes-marked" if highlight else ""
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'inline; filename="NAR1-{case.get("case_no") or case_id}'
+                 f'-validated{suffix}.pdf"'},
     )
 
 
@@ -1345,6 +1666,21 @@ async def send_verification(
     if refusal:
         raise HTTPException(409, refusal)
 
+    # THE YEAR THIS RETURN IS FOR (Levi 2026-09-18). From this send on the
+    # client is approving the return for one year, so the case will hold that
+    # year. Checked HERE, read-only, so a year another live case of this
+    # company already holds is refused before anything is built or written;
+    # it is STORED further down, once every cheap refusal has passed and the
+    # mail is about to go — so a send refused for a missing deadline does not
+    # leave a trail saying the send fixed the year.
+    year, year_source = nar1_return_year.resolve(
+        case, filing, _entity_or_empty(case["entity_id"]))
+    if not case.get("ar_period_year"):
+        try:
+            nar1_return_year.refuse_if_held(case["entity_id"], case_id, year)
+        except nar1_return_year.YearRefused as exc:
+            raise _year_refused(exc)
+
     # PREPARE, OR REFRESH A DRAFT NOBODY HAS FROZEN YET. A validated or signed
     # filing is left exactly alone: its snapshot is what CR has seen, and
     # rewriting it here is the "show one document, file another" failure the
@@ -1357,6 +1693,7 @@ async def send_verification(
                 entity_id=case["entity_id"],
                 nar1_case_id=case_id,
                 user_id=user["id"],
+                year=year,
             )
         except nar1_mapper.MappingError as exc:
             raise _mapping_error(exc)
@@ -1479,6 +1816,22 @@ async def send_verification(
         raise HTTPException(
             422, f"nothing was sent: no address on this case can receive mail "
                  f"({named})")
+
+    # THE YEAR IS FIXED NOW — every refusal that costs nothing has passed and
+    # the mail is about to go. Still BEFORE the mail, not after it: if another
+    # operator took this company-year since the check above, the unique index
+    # (migration 047) refuses it here with nobody emailed, rather than after
+    # the directors have been asked to approve a return that cannot be filed.
+    # `_claim_year` also sets it on `case`, so the email names the year.
+    if _claim_year(case, year):
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.CASE_FIELD_UPDATED, event_code=ev.CASE_FIELD_UPDATED,
+            **_audit_target(case),
+            old_value=None, new_value=str(year),
+            metadata={"field": "ar_period_year", "fixed_by": "verification_send",
+                      "resolved_from": year_source},
+        )
 
     entity = nar1_cases.entity_for(case["entity_id"])
 
@@ -1743,7 +2096,10 @@ async def send_verification(
         # Identifiers only. The PDF is the whole statutory return; its bytes
         # belong on the filing row, not in an insert-only trail -- and
         # after_state is NOT scrubbed by audit_service.
-        metadata={# The first, kept so existing readers of this key still
+        metadata={# Which annual return the client was asked to approve. One
+                  # company can have several cases open, one per year.
+                  "return_year": case.get("ar_period_year"),
+                  # The first, kept so existing readers of this key still
                   # resolve to a real message; `message_ids` is the whole set,
                   # because there is now one message per director.
                   "message_id": message_ids[0] if message_ids else None,

@@ -277,7 +277,17 @@ def test_a_reference_with_no_value_omits_its_part_entirely():
     _, html = email_service.verification_email({"case_no": "NAR-2026-0041"},
                                                {"company_name": "ACME LIMITED"})
     assert "BR " not in html
+    assert "Annual return" not in html
     assert "Ref NAR-2026-0041" in html
+
+
+def test_the_reference_line_names_the_year_of_the_return():
+    """Levi 2026-09-18: a company catching up on missed years is sent one of
+    these per year. The year is what tells the 2024 message from the 2025 one
+    — in the reference line, because the letter's wording is the sample's."""
+    _, html = email_service.verification_email(
+        {"case_no": "NAR-2026-0041", "ar_period_year": 2024}, ENTITY)
+    assert "BR 00000001 · Annual return 2024 · Ref NAR-2026-0041" in html
 
 
 def test_the_message_carries_no_link_WHEN_NONE_IS_GIVEN():

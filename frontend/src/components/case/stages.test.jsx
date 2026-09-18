@@ -114,6 +114,46 @@ const PREFILL = {
   },
 }
 
+//: GET /cases/{id}/return-year — the year picker (2026-09-18). ShoppyVerse's
+//: shape: the 2026 anniversary is three weeks ahead, 2025 is long overdue, and
+//: 2024 is already on another open case.
+const RETURN_YEAR_INFO = {
+  year: 2026, source: 'default', return_date: '2026-10-09',
+  incorporation_date: '2019-10-09', today: '2026-09-18',
+  locked: false, locked_reason: null,
+  options: [
+    { year: 2026, return_date: '2026-10-09', deadline: '2026-11-20', due: false,
+      days_since_return_date: -21, fee: null, held_by: null },
+    { year: 2025, return_date: '2025-10-09', deadline: '2025-11-20', due: true,
+      days_since_return_date: 344,
+      fee: { amount: '3480.00', band: 'more than 9 months after the return date',
+             certain: true },
+      held_by: null },
+    { year: 2024, return_date: '2024-10-09', deadline: '2024-11-20', due: true,
+      days_since_return_date: 709, fee: null,
+      held_by: { case_id: 'c0', case_no: 'NAR-2026-0001' } },
+  ],
+}
+//: The DEFAULT every other test gets is a year already DUE, so nothing that
+//: is not about the return date finds Validate held for it. The picker tests
+//: opt into the three-weeks-early shape above explicitly.
+const RETURN_YEAR_DUE = { ...RETURN_YEAR_INFO, year: 2025, source: 'case',
+                          return_date: '2025-10-09' }
+let RETURN_YEAR = RETURN_YEAR_DUE
+
+//: GET /cases/{id}/validation/comparison — what moved between the approved
+//: return and CR's validated copy.
+const COMPARISON_INFO = {
+  validated_at: '2026-10-10T03:00:00Z', verification_sent_at: '2026-09-10T02:00:00Z',
+  client_response_at: '2026-09-11T02:00:00Z', client_approved: true,
+  return_year: 2026, compared: true,
+  changes: [
+    { section: 'Director — CHAN Tai Man', field: 'Address — building',
+      approved: 'Old Tower', validated: 'New Tower', note: null, pages: [5] },
+  ],
+}
+let COMPARISON = COMPARISON_INFO
+
 //: Reassigned per-test where the absence is the point.
 let CREDENTIALS = {
   eservice_user_id: 'GSHKPN02', has_eservice_password: true,
@@ -127,8 +167,12 @@ beforeEach(() => {
     eservice_user_id: 'GSHKPN02', has_eservice_password: true,
     eservice_password_hint: '••••••••9021', is_test: true,
   }
+  RETURN_YEAR = RETURN_YEAR_DUE
+  COMPARISON = COMPARISON_INFO
   get.mockImplementation(url => {
     const u = String(url)
+    if (u.includes('/return-year')) return Promise.resolve(RETURN_YEAR)
+    if (u.includes('/validation/comparison')) return Promise.resolve(COMPARISON)
     if (u.includes('/return-data')) return Promise.resolve(RETURN_DATA)
     if (u.includes('/verification/recipients')) return Promise.resolve(RECIPIENTS)
     if (u.includes('/summary')) return Promise.resolve(FILING_SUMMARY)
@@ -292,7 +336,9 @@ describe('Data Verification', () => {
   // deliberately stands — so the return filed can move away from the one the
   // director saw, and without this nothing on screen would say so.
   it('names the fields that changed since the client approved', () => {
-    renderIt({ approval_divergence: [
+    // BEFORE CR has validated (2026-09-18). Once it has, the validated-form
+    // viewer's own comparison replaces this list — see the tests below.
+    renderIt({ form_status: { code: 'draft' }, approval_divergence: [
       { path: 'roAddr/bldg', field: 'Registered office · Building',
         validated: 'Test Tower', current: 'New Tower' },
     ] })
@@ -2273,5 +2319,197 @@ describe('Stage permissions — controls are absent, never merely disabled', () 
       expect(screen.getByRole('button', { name: /Record the filing/ }))
         .toBeInTheDocument()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The return year, the frozen approved copy, and the CR-validated viewer
+// (Levi 2026-09-18)
+// ---------------------------------------------------------------------------
+
+describe('Return year at Client Verification', () => {
+  beforeEach(() => { RETURN_YEAR = RETURN_YEAR_INFO })
+
+  const renderIt = (over = {}, props = {}) => render(
+    <StageClientVerification caseRow={at({ form_status: { code: 'draft' },
+                                           ...over })}
+                             canWrite onWarn={onWarn} onChanged={onChanged}
+                             onError={onError} {...props} />)
+
+  it('offers every year back to the first return, each with its made-up date', async () => {
+    renderIt()
+    const select = await screen.findByLabelText('Return year')
+    expect(select).toHaveValue('2026')
+    const options = within(select).getAllByRole('option').map(o => o.textContent)
+    expect(options[0]).toMatch(/2026 — made up to 09\/10\/2026 · not due yet/)
+    expect(options[1]).toMatch(/2025 — made up to 09\/10\/2025/)
+  })
+
+  it('says when the chosen return is made up to and when CR will take it', async () => {
+    renderIt()
+    expect(await screen.findByTestId('return-year-detail'))
+      .toHaveTextContent(/Made up to 09\/10\/2026 — 21 days from now.*only validate it from 09\/10\/2026/)
+  })
+
+  it('choosing a missed year saves it on the case and reloads it', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await user.selectOptions(await screen.findByLabelText('Return year'), '2025')
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('/cases/c1',
+                                                           { ar_period_year: 2025 }))
+    expect(onChanged).toHaveBeenCalled()
+  })
+
+  it('a year another case already files cannot be chosen, and says which case', async () => {
+    renderIt()
+    const select = await screen.findByLabelText('Return year')
+    const held = within(select).getByRole('option', { name: /2024/ })
+    expect(held).toBeDisabled()
+    expect(held.textContent).toMatch(/already on NAR-2026-0001/)
+  })
+
+  it('once sent the year is fixed, and the card says how to change it', async () => {
+    RETURN_YEAR = { ...RETURN_YEAR_INFO, source: 'case', locked: true,
+      locked_reason: 'the 2026 return has been sent to the client. Restart '
+        + 'verification to choose a different year' }
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', ar_period_year: 2026 })
+    expect(await screen.findByLabelText('Return year')).toBeDisabled()
+    expect(screen.getByText(/The year is fixed:.*Restart verification/)).toBeInTheDocument()
+  })
+
+  it('a refused change is raised to the page, not swallowed', async () => {
+    const user = userEvent.setup()
+    patch.mockRejectedValueOnce(Object.assign(new Error('another case files 2025'),
+                                              { status: 409 }))
+    renderIt()
+    await user.selectOptions(await screen.findByLabelText('Return year'), '2025')
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith(
+      expect.objectContaining({ message: 'another case files 2025' })))
+  })
+
+  it('a payload it cannot read shows a note instead of blanking the stage', async () => {
+    RETURN_YEAR = { unexpected: true }
+    renderIt()
+    expect(await screen.findByText(/The return year could not be loaded/))
+      .toBeInTheDocument()
+    // The rest of the stage is still there.
+    expect(screen.getByText(/Send for verification/)).toBeInTheDocument()
+  })
+})
+
+describe('Client Verification is frozen once the client has the return', () => {
+  const renderIt = over => render(
+    <StageClientVerification caseRow={at(over)} canWrite onWarn={onWarn}
+                             onChanged={onChanged} onError={onError} />)
+
+  it('before sending, the preview is the live return, not a frozen one', () => {
+    renderIt({ form_status: { code: 'draft' }, verification_sent_at: null })
+    expect(screen.getByText('The return the client will see')).toBeInTheDocument()
+    expect(screen.queryByText(/This is the return (sent to|the client approved)/))
+      .toBeNull()
+  })
+
+  it('after sending, it is the copy in the client\'s inbox, with the date it went', () => {
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', client_response_at: null })
+    expect(screen.getByText('The return sent to the client')).toBeInTheDocument()
+    expect(screen.getByText(/This is the return sent to the client/)).toBeInTheDocument()
+  })
+
+  it('after approval, it is the return the client approved, and when', () => {
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z',
+               client_response_at: '2026-09-11T02:00:00Z', client_approved: true,
+               client_approval: { summary: 'Approved by AH CHAN' } })
+    expect(screen.getByText('The return the client approved')).toBeInTheDocument()
+    const banner = screen.getByText(/This is the return the client approved/)
+      .closest('.al-body')
+    expect(banner).toHaveTextContent(/approved .*Approved by AH CHAN/)
+    expect(banner).toHaveTextContent(/Restart verification/)
+  })
+
+  it('reads the preview from the case, which serves the mailed copy once sent', async () => {
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z' })
+    await waitFor(() => expect(blob).toHaveBeenCalledWith('/cases/c1/verification/preview'))
+  })
+})
+
+describe('Data Verification — the return CR validated', () => {
+  const renderIt = (over = {}) => render(
+    <StageDataVerification caseRow={at({ validated_at: '2026-10-10T03:00:00Z',
+                                         ...over })}
+                           canWrite canValidate onChanged={onChanged}
+                           onError={onError} />)
+
+  it('appears once CR has validated, rendered from CR\'s copy with the changes boxed', async () => {
+    renderIt()
+    expect(screen.getByText('The return CR validated')).toBeInTheDocument()
+    await waitFor(() => expect(blob).toHaveBeenCalledWith('/cases/c1/validation/preview'))
+    expect(await screen.findByLabelText('CR-validated NAR1')).toBeInTheDocument()
+  })
+
+  it('lists every change against the approved return, with its page', async () => {
+    renderIt()
+    const warning = await screen.findByText(/One field differs/)
+    const alert = warning.closest('.al-body')
+    expect(alert).toHaveTextContent('marked in orange on the form below')
+    const row = within(alert).getByText('Address — building').closest('tr')
+    expect(row).toHaveTextContent('5')
+    expect(row).toHaveTextContent('Director — CHAN Tai Man')
+    expect(row).toHaveTextContent('Old Tower')
+    expect(row).toHaveTextContent('New Tower')
+    expect(await screen.findByText('1 change marked')).toBeInTheDocument()
+  })
+
+  it('says so plainly when nothing moved', async () => {
+    COMPARISON = { ...COMPARISON_INFO, changes: [] }
+    renderIt()
+    expect(await screen.findByText(/Identical to the return the client approved/))
+      .toBeInTheDocument()
+  })
+
+  it('never reads "no changes" when there was nothing to compare against', async () => {
+    COMPARISON = { ...COMPARISON_INFO, compared: false, changes: [] }
+    renderIt()
+    expect(await screen.findByText(/no copy of the return the client was sent/))
+      .toBeInTheDocument()
+    expect(screen.queryByText(/Identical to the return/)).toBeNull()
+  })
+
+  it('replaces the pre-validation divergence list rather than adding a second', async () => {
+    renderIt({ approval_divergence: [
+      { path: 'roAddr/bldg', field: 'Registered office · Building',
+        validated: 'Test Tower', current: 'New Tower' }] })
+    await screen.findByText(/One field differs/)
+    expect(screen.queryByText(/One field has changed/)).toBeNull()
+  })
+
+  it('downloads the CLEAN validated form, without the review marks', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    const card = screen.getByText('The return CR validated').closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Download PDF' }))
+    await waitFor(() => expect(blob).toHaveBeenCalledWith(
+      '/cases/c1/validation/preview?highlight=false'))
+  })
+
+  it('is not there before CR has validated', () => {
+    renderIt({ form_status: { code: 'draft' }, filing_id: null })
+    expect(screen.queryByText('The return CR validated')).toBeNull()
+    expect(blob).not.toHaveBeenCalledWith('/cases/c1/validation/preview')
+  })
+
+  it('holds Validate until the return date, and says why', async () => {
+    RETURN_YEAR = RETURN_YEAR_INFO
+    renderIt({ form_status: { code: 'draft' }, filing_id: null })
+    expect(await screen.findByText(/CR will not validate the 2026 return until/))
+      .toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Validate with CR/ })).toBeDisabled()
+  })
+
+  it('offers Validate for a year that is already due', async () => {
+    RETURN_YEAR = { ...RETURN_YEAR_INFO, year: 2025, return_date: '2025-10-09' }
+    renderIt({ form_status: { code: 'draft' }, filing_id: null })
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/cases/c1/return-year'))
+    expect(screen.queryByText(/CR will not validate/)).toBeNull()
+    expect(screen.getByRole('button', { name: /Validate with CR/ })).not.toBeDisabled()
   })
 })

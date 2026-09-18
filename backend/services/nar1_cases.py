@@ -18,7 +18,8 @@ from decimal import Decimal, InvalidOperation
 
 from db.supabase import get_supabase
 from services import (
-    nar1_approvals, nar1_case_status, nar1_verification, table_filters as tf,
+    nar1_approvals, nar1_case_status, nar1_return_year, nar1_verification,
+    table_filters as tf,
 )
 from services.tpsi import doc_status
 from services.tpsi import filings as tpsi_filings
@@ -557,6 +558,9 @@ _LIST_COLS = (
     "client_approved, manual_receipt_present, manual_submitted_at, created_at, "
     "updated_at, days_to_anniversary, workflow_status, workflow_off_portal, "
     "workflow_overdue, closed_at, closed_by_name, closed_reason, "
+    # Migration 047. A company catching up on missed years has one case per
+    # year, and without this the dashboard lists them as identical rows.
+    "ar_period_year, "
     # CR's own words, for the one badge that cannot be labelled without them:
     # `cr_unknown` renders what CR said, because that is the only informative
     # thing there is about a status this portal does not recognise.
@@ -734,10 +738,28 @@ def _company_header(case_id: str) -> dict:
     return rows[0] if rows else {}
 
 
+def _return_year(case: dict, filing: dict | None) -> tuple[int, str]:
+    """(year, source) this case files. See services/nar1_return_year.
+
+    The company is read only when the year is still a DEFAULT — a stored year
+    or one already built into the filing needs no incorporation date, and this
+    runs on every case load.
+    """
+    year, source = nar1_return_year.resolve(case, filing, None)
+    if source != nar1_return_year.SOURCE_DEFAULT:
+        return year, source
+    try:
+        entity = entity_for(case["entity_id"])
+    except Exception:  # noqa: BLE001 — a header fact, never a reason to 500
+        entity = None
+    return nar1_return_year.resolve(case, filing, entity)
+
+
 def composite(case_id: str) -> dict:
     """The case plus BOTH statuses — the shape the v11 case header needs."""
     case = get_case(case_id)
     filing = current_filing(case_id)
+    return_year, return_year_source = _return_year(case, filing)
     return {
         **case,
         # Before the explicit keys below, never after: the view carries a
@@ -789,6 +811,17 @@ def composite(case_id: str) -> dict:
         # the live company record.
         "approval_divergence": nar1_verification.approval_divergence(case, filing),
         "approval_snapshot_kept": bool(case.get("verification_xml")),
+        # WHICH ANNUAL RETURN THIS CASE FILES (Levi 2026-09-18). Resolved, so a
+        # case that has not fixed one yet still names the year it would build;
+        # `ar_period_year` (from **case) stays the STORED value, and
+        # `return_year_source` says which of the two the screen is looking at.
+        "return_year": return_year,
+        "return_year_source": return_year_source,
+        # When CR validated the live filing. Data Verification's success banner
+        # and its validated-form viewer both state it; it used to be read off
+        # the case, which never carried it, so the banner said "frozen" with no
+        # time.
+        "validated_at": (filing or {}).get("validated_at"),
     }
 
 

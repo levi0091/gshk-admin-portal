@@ -5,17 +5,12 @@ import { formatDateTime } from '../../lib/format.js'
 import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { downloadCasePdf } from '../../lib/download.js'
 import CheckRow from './CheckRow.jsx'
+import PdfFrame, { usePdfBlob } from './PdfPreview.jsx'
 import RecipientPicker from './RecipientPicker.jsx'
+import ReturnYearCard from './ReturnYearCard.jsx'
 import VerificationDeliveryModal from './VerificationDeliveryModal.jsx'
 import { describeError, verificationBlock, isSubmitted, isValidated } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
-
-// Zoom bounds for the embedded preview. 60% still shows a full A4 page on a
-// laptop; past 200% the object viewport is taller than any screen and the
-// operator is scrolling a scroller.
-const ZOOM_MIN = 60
-const ZOOM_MAX = 200
-const ZOOM_STEP = 20
 
 /**
  * The address copied on every client verification email (Levi 2026-09-08).
@@ -30,24 +25,9 @@ const ZOOM_STEP = 20
  */
 export const CLIENT_CC = 'renewal@getstarted.hk'
 
-/**
- * The frame's height at 100%, in CSS pixels.
- *
- * 1035 was 30% too tall (Levi 2026-09-09) — a partial reversal of the raise
- * made two days earlier. That raise bought a bigger glance at the return and
- * paid for it with the rest of the screen: at 1035px the recipients and the
- * Send button sat below the fold on a laptop, and reaching them meant
- * scrolling PAST an <object> that swallows the wheel, so the preview held the
- * page hostage.
- *
- * The reasoning behind the raise still stands — the operator checking these
- * particulars is the last human between a wrong director's address and a
- * filing made in the client's name — but no embedded height that leaves room
- * for the controls holds a NINE-page return, so the frame was never going to
- * be where that check is done. `Open full screen` above is, and 725 still
- * clears a full A4 page at 100%.
- */
-const FRAME_HEIGHT = 725
+// The frame's height and zoom live in PdfPreview.jsx now (2026-09-18), shared
+// with Data Verification's validated-form viewer so the two copies of one
+// return are looked at through the same window.
 
 /**
  * What a failed SEND means — which is not what a failed CR call means.
@@ -186,12 +166,9 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // REPORTED — a partial delivery, a message without a Confirm button — goes
   // to `onWarn`. Both render at the top of the page and both scroll there, so
   // this screen no longer keeps an error surface of its own (Levi 2026-09-03).
-  const [pdfUrl, setPdfUrl] = useState(null)
-  const [pdfError, setPdfError] = useState(null)
   const [recipients, setRecipients] = useState([])
   const [to, setTo] = useState(null)
   const [maxRecipients, setMaxRecipients] = useState(20)
-  const [zoom, setZoom] = useState(100)
   const [saving, setSaving] = useState(false)
   // THE CLIENT'S DEADLINE, and it starts EMPTY (Levi 2026-09-07). It used to be
   // `sent + 14 days`, computed in the token issuer, chosen by nobody — and a
@@ -214,8 +191,16 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // BEFORE it has, so the copy on this screen must not claim otherwise — see
   // the banner below.
   const validated = isValidated(caseRow)
+  // FROZEN ONCE SENT (Levi 2026-09-18): from the moment the return is mailed,
+  // this stage shows the return the client was sent — and, once they answer,
+  // the return they approved — however the record or CR's copy moves after.
+  // The backend serves those bytes (`verification_xml`); this only says so.
+  // Restart verification clears the send, and only then does it go live again.
+  const approved = sent && answered && Boolean(caseRow.client_approved)
+  const year = caseRow.return_year ?? caseRow.ar_period_year
   const pdfName =
-    `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}.pdf`
+    `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}`
+    + `${year ? `_${year}` : ''}.pdf`
 
   async function download() {
     setSaving(true)
@@ -263,24 +248,11 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   //
   // The case endpoint builds the return in memory when there is no filing, so
   // there is always either a document or a stated reason — never silence.
-  // Keyed on `filingId` AND `updated_at` so that validating, or restarting
-  // verification, re-fetches rather than leaving yesterday's document on screen.
-  useEffect(() => {
-    let url = null
-    let cancelled = false
-    setPdfError(null)
-    api.blob(`/cases/${caseId}/verification/preview`)
-      .then(b => {
-        if (cancelled) return
-        url = URL.createObjectURL(b)
-        setPdfUrl(url)
-      })
-      .catch(e => { if (!cancelled) setPdfError(describeError(e)) })
-    return () => {
-      cancelled = true
-      if (url) URL.revokeObjectURL(url)
-    }
-  }, [caseId, filingId, caseRow.updated_at])
+  // Keyed on `filingId` AND `updated_at` so that choosing a year, sending, or
+  // restarting verification re-fetches rather than leaving yesterday's
+  // document on screen.
+  const { url: pdfUrl, error: pdfError } = usePdfBlob(
+    `/cases/${caseId}/verification/preview`, `${filingId}|${caseRow.updated_at}`)
 
   async function send() {
     onError(null); onWarn?.(null, null); setBusy('send')
@@ -386,8 +358,35 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           stage this always read "Snapshot frozen at validation … generated from
           the CR-validated XML", which on stage 1 of the new order is simply
           untrue: CR has not seen the return yet. Saying so anyway would tell an
-          operator the Registry had accepted something it had never been sent. */}
-      {validated ? (
+          operator the Registry had accepted something it had never been sent.
+
+          FROZEN ONCE SENT (2026-09-18) comes first: from then on the document
+          below is the one in the client's inbox, whatever else is true. */}
+      {sent ? (
+        <div className="alert al-success" role="note" style={{ marginBottom: 16 }}>
+          <span className="al-icon">🔒</span>
+          <div className="al-body">
+            {approved ? (
+              <>
+                <b>This is the return the client approved</b> — sent{' '}
+                {formatDateTime(caseRow.verification_sent_at)}, approved{' '}
+                {formatDateTime(caseRow.client_response_at)}
+                {caseRow.client_approval?.summary
+                  ? ` (${caseRow.client_approval.summary})` : ''}.
+              </>
+            ) : (
+              <>
+                <b>This is the return sent to the client</b> on{' '}
+                {formatDateTime(caseRow.verification_sent_at)}.
+              </>
+            )}{' '}
+            It stays exactly as they saw it. What the Companies Registry
+            validates is shown at Data Verification, with anything that differs
+            from this copy marked. <b>Restart verification</b> discards it and
+            builds the return afresh.
+          </div>
+        </div>
+      ) : validated ? (
         <div className="alert al-success" role="note" style={{ marginBottom: 16 }}>
           <span className="al-icon">🔒</span>
           <div className="al-body">
@@ -408,16 +407,28 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
         </div>
       )}
 
+      {/* THE YEAR FIRST (Levi 2026-09-18): it decides which return everything
+          below is — the preview, the email, and what is validated and filed. */}
+      <ReturnYearCard caseRow={caseRow} canWrite={canWrite}
+                      onChanged={onChanged} onError={onError} />
+
       <div className="card mb-16">
         <div className="card-hdr">
           <div>
-            <div className="card-title">The return the client will see</div>
+            <div className="card-title">
+              {approved ? 'The return the client approved'
+                : sent ? 'The return sent to the client'
+                  : 'The return the client will see'}
+            </div>
             <div className="card-sub">
-              {validated
-                ? 'Rendered from the CR-validated snapshot — the same document '
-                  + 'that will be filed.'
-                : 'Rendered from the return as prepared — the same document '
-                  + 'that will be sent to the client and filed.'}
+              {sent
+                ? `Frozen as it was emailed on ${formatDateTime(caseRow.verification_sent_at)}`
+                  + (approved ? ` and approved on ${formatDateTime(caseRow.client_response_at)}.` : '.')
+                : validated
+                  ? 'Rendered from the CR-validated snapshot — the same document '
+                    + 'that will be filed.'
+                  : 'Rendered from the return as prepared — the same document '
+                    + 'that will be sent to the client and filed.'}
             </div>
           </div>
           <div className="row gap-8">
@@ -437,47 +448,24 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
         </div>
 
-        {pdfError ? (
-          // The preview pane saying it has nothing to show, in the place the
-          // preview would have been. Not an alert: nothing the operator did
-          // was refused, and the Download and Send controls above it still
-          // work.
-          <div className="card-note card-note-warn" role="status">
-            <b>The preview could not be rendered.</b>
-            <div style={{ marginTop: 4 }}>{pdfError.message}</div>
-            {pdfError.hint && <div style={{ marginTop: 4 }}>{pdfError.hint}</div>}
-          </div>
-        ) : pdfUrl ? (
-          <>
-            <div className="pdf-toolbar">
-              <span className="pdf-fname">{pdfName}</span>
-              <span className="pdf-pill">Form NAR1 + Schedule 1</span>
-              <span className={`pdf-pill${validated ? ' ok' : ''}`}>
-                {validated ? 'Rendered from the CR-validated XML'
-                           : 'Not yet checked by CR'}
-              </span>
-              <span className="pdf-tb-spacer" />
-              <span className="pdf-zoom">
-                <button type="button" aria-label="Zoom out" disabled={zoom <= ZOOM_MIN}
-                        onClick={() => setZoom(z => Math.max(ZOOM_MIN, z - ZOOM_STEP))}>−</button>
-                <span className="zval">{zoom}%</span>
-                <button type="button" aria-label="Zoom in" disabled={zoom >= ZOOM_MAX}
-                        onClick={() => setZoom(z => Math.min(ZOOM_MAX, z + ZOOM_STEP))}>+</button>
-              </span>
-            </div>
-            {/* Zoom grows the VIEWPORT, not a CSS transform. Scaling the
-                element would scale its scrollbars and clip the page; a taller
-                frame is what the embedded viewer actually reads as bigger. */}
-            <object data={pdfUrl} type="application/pdf" aria-label="NAR1 preview"
-                    className="pdf-frame"
-                    style={{ height: Math.round(FRAME_HEIGHT * zoom / 100) }}>
-              {/* Some browsers refuse to embed; a link is not a dead end. */}
-              <a href={pdfUrl} target="_blank" rel="noreferrer">Open the NAR1 preview</a>
-            </object>
-          </>
-        ) : (
-          <div className="empty-state" style={{ padding: 24 }}>Rendering the preview…</div>
-        )}
+        {/* The preview pane, or — in the same place — why there is nothing to
+            show. Not an alert: nothing the operator did was refused, and the
+            Download and Send controls still work. */}
+        <PdfFrame
+          url={pdfUrl}
+          error={pdfError}
+          fileName={pdfName}
+          label="NAR1 preview"
+          pills={[
+            { label: year ? `Annual return ${year}` : 'Form NAR1 + Schedule 1' },
+            sent
+              ? { label: approved ? 'Approved by the client' : 'As sent to the client',
+                  tone: 'ok' }
+              : validated
+                ? { label: 'Rendered from the CR-validated XML', tone: 'ok' }
+                : { label: 'Not yet checked by CR' },
+          ]}
+        />
       </div>
 
       {/* ONE section, in the order the decision is made (Levi 2026-08-30):

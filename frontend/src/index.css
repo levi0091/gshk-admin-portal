@@ -1168,6 +1168,8 @@ tbody tr.clickable { cursor: pointer; }
   background: var(--indigo-10); color: var(--t-body); white-space: nowrap;
 }
 .pdf-pill.ok { background: var(--bang-10); color: var(--bang); }
+/* Carrot, like the boxes drawn on the validated form it describes (2026-09-18). */
+.pdf-pill.warn { background: var(--carrot-10); color: #B4441A; font-weight: 600; }
 .pdf-tb-spacer { flex: 1 1 auto; }
 .pdf-zoom { display: flex; align-items: center; gap: 2px; }
 .pdf-zoom button {

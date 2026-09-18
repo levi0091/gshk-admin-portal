@@ -278,12 +278,37 @@ def test_the_preview_PERSISTS_NOTHING(client):
     update.assert_not_called()
 
 
-def test_the_preview_uses_the_draft_when_one_exists(client):
-    """Not a fresh build: the operator must see the return that is actually on
-    the case, so that pressing Send cannot mail something different."""
+def test_the_preview_rebuilds_over_a_stored_draft_as_the_send_will(client):
+    """REVERSED 2026-09-18. This used to render the stored draft, on the
+    reasoning that "pressing Send cannot mail something different" — but the
+    send REBUILDS a draft before mailing it (`REBUILDABLE_STAGES`), so the
+    stored draft is exactly what Send will NOT mail once the record has moved.
+    The fresh build is what goes out, so it is what the operator is shown —
+    built for the case's own return year."""
     draft = {"id": "f1", "form_code": "Nar1", "stage": "draft",
-             "request_xml": "<the-draft/>", "validated_xml": None}
-    with _super(), _Stack(*_sendable(filing=draft)), \
+             "request_xml": "<the-stale-draft/>", "validated_xml": None}
+    case = {**CASE, "ar_period_year": 2024}
+    with _super(), _Stack(*_sendable(case=case, filing=draft)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(return_value="<fresh/>")) as build, \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<fresh/>"
+    assert build.await_args.kwargs["year"] == 2024
+
+
+def test_once_sent_the_preview_is_frozen_to_the_return_the_client_was_sent(client):
+    """Levi 2026-09-18: stage 1 "should always show the form that the client
+    approved". Whatever has happened since — a rebuilt draft, CR's validated
+    copy — the stage-1 preview is the mailed bytes, dated the day they went."""
+    case = {**CASE, "verification_sent_at": "2026-09-10T02:00:00+00:00",
+            "client_approved": True, "client_response_at": "2026-09-11T02:00:00+00:00",
+            "verification_xml": "<as-mailed/>"}
+    with _super(), _Stack(*_sendable(case=case)), \
          patch("routers.cases.nar1_prepare.build_form_xml",
                new=AsyncMock()) as build, \
          patch("routers.cases.nar1_form_fill.render",
@@ -292,8 +317,27 @@ def test_the_preview_uses_the_draft_when_one_exists(client):
         response = client.get("/cases/c1/verification/preview", headers=H)
 
     assert response.status_code == 200
-    assert render.call_args.args[0] == "<the-draft/>"
+    # VALIDATED (the helper's default filing) carries "<x/>"; not that.
+    assert render.call_args.args[0] == "<as-mailed/>"
+    assert render.call_args.kwargs["signed_on"] == "2026-09-10T02:00:00+00:00"
     build.assert_not_awaited()
+
+
+def test_a_restarted_case_previews_the_live_return_again(client):
+    """Restart verification clears `verification_xml`; only then does stage 1
+    go back to building from the record."""
+    case = {**CASE, "verification_xml": None, "ar_period_year": 2025}
+    with _super(), _Stack(*_sendable(case=case, filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(return_value="<live/>")) as build, \
+         patch("routers.cases.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.args[0] == "<live/>"
+    assert build.await_args.kwargs["year"] == 2025
 
 
 def test_the_preview_prefers_the_cr_validated_snapshot(client):
