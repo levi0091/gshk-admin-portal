@@ -685,18 +685,112 @@ tbody tr.clickable { cursor: pointer; }
   font-size: 11px; font-weight: 600; color: var(--carrot); background: var(--carrot-10); margin: 0 6px 6px 0;
 }
 
-/* Cases accordion (right column) */
-.case-acc { border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 10px; overflow: hidden; }
-.case-acc:last-child { margin-bottom: 0; }
-.case-acc-hdr { display: flex; align-items: center; gap: 9px; padding: 11px 12px; cursor: pointer; user-select: none; transition: .15s; }
-.case-acc-hdr:hover { background: var(--indigo-5); }
-.case-acc.open .case-acc-hdr { border-bottom: 1px solid var(--border); background: var(--indigo-5); }
-.case-chevron { transition: transform .18s; color: var(--t-muted); font-size: 11px; flex-shrink: 0; line-height: 1; }
-.case-acc.open .case-chevron { transform: rotate(90deg); }
-.case-acc-titles { flex: 1; min-width: 0; }
-.case-acc-type { font-size: 12px; font-weight: 700; color: var(--t-head); }
-.case-acc-id { font-size: 10px; color: var(--t-muted); letter-spacing: .02em; margin-top: 1px; }
-.case-acc-body { padding: 14px 14px 4px; }
+/* ── Cases pane (Company Profile, right column) — components/CasesPane.jsx ──
+   Every case is headed by its RETURN YEAR, on a tinted spine that runs the full
+   height of the card. The year is what a case is (one live case per company
+   per year, migration 047), so the pane reads down like a filing index.
+
+   The spine is the card's BACKGROUND, not a grid cell: the header is a <button>
+   and the body is not inside it, so no single grid could span both — and a
+   gradient needs no shared parent. `--spine` is the one number the header's
+   first column, the gradient and the body's indent all have to agree on. */
+.cases { --spine: 60px; }
+.cases-group {
+  display: flex; align-items: center; gap: 8px; margin: 16px 0 8px;
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--t-muted);
+}
+.cases-group:first-child { margin-top: 2px; }
+.cases-group::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+.case-card {
+  border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 8px; overflow: hidden;
+  background: linear-gradient(to right,
+    var(--indigo-5) calc(var(--spine) - 1px),
+    var(--border) calc(var(--spine) - 1px) var(--spine),
+    var(--bg-card) var(--spine));
+  transition: border-color .15s, box-shadow .15s;
+}
+.case-card:last-child { margin-bottom: 0; }
+.case-card:hover { border-color: var(--indigo-20); }
+.case-card.open:not(.ended) { box-shadow: var(--sh-sm); }
+/* Finished cases recede: no tint, a quieter year. Still one click to open. */
+.case-card.ended {
+  background: linear-gradient(to right,
+    var(--bg-card) calc(var(--spine) - 1px),
+    var(--border) calc(var(--spine) - 1px) var(--spine),
+    var(--bg-card) var(--spine));
+}
+
+.case-card-hdr {
+  display: grid; grid-template-columns: var(--spine) minmax(0, 1fr) auto 12px;
+  align-items: center; column-gap: 10px;
+  width: 100%; padding: 11px 12px 11px 0; text-align: left; color: inherit;
+}
+.case-card-hdr:focus-visible { outline: 2px solid var(--indigo); outline-offset: -2px; border-radius: var(--r); }
+.case-year {
+  justify-self: center; text-align: center;
+  font-size: 19px; font-weight: 800; line-height: 1; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; color: var(--indigo);
+}
+.case-card.ended .case-year { color: var(--t-muted); font-weight: 700; }
+.case-year-none, .case-year-code {
+  display: block; font-size: 9px; font-weight: 700; line-height: 1.3;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--t-muted);
+}
+.case-year-code { font-size: 11px; letter-spacing: .04em; color: var(--indigo); }
+.case-card-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.case-card-title { font-size: 13px; font-weight: 700; line-height: 1.2; color: var(--t-head); }
+.case-card.ended .case-card-title { font-weight: 600; color: var(--t-body); }
+.case-card-no {
+  font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--indigo-80);
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.case-card-status { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; }
+.case-card-chev { color: var(--t-muted); transition: transform .18s, color .15s; }
+.case-card-hdr:hover .case-card-chev { color: var(--indigo); }
+.case-card.open .case-card-chev { transform: rotate(90deg); }
+
+.case-card-body { padding: 0 12px 12px calc(var(--spine) + 10px); animation: case-reveal .16s ease-out; }
+@keyframes case-reveal { from { opacity: 0; transform: translateY(-3px); } }
+
+/* The six stages as one bar. Green = done; the current stage wears the same
+   tone family as the case stepper (carrot ours to do, indigo waiting on
+   somebody, red refused; stage 6 is CR's answer via workflow.CR_TONE). */
+.case-card-lead {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  column-gap: 14px; margin-bottom: 8px;
+}
+.case-stage-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; }
+.case-stage { height: 5px; border-radius: 3px; background: var(--indigo-10); }
+.case-stage.done { background: var(--bang); }
+.case-stage.now.tone-act  { background: var(--carrot); }
+.case-stage.now.tone-info { background: var(--indigo); }
+.case-stage.now.tone-warn { background: var(--peridot); box-shadow: inset 0 0 0 1px var(--peridot-ink); }
+.case-stage.now.tone-bad  { background: #C53030; }
+.case-stage.now.tone-wait { background: var(--indigo-20); }
+
+.case-facts {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; row-gap: 3px;
+  min-width: 0; font-size: 11.5px; line-height: 1.35;
+}
+.case-facts dt { font-weight: 600; color: var(--t-muted); }
+.case-facts dd { font-weight: 500; color: var(--t-head); font-variant-numeric: tabular-nums; }
+.case-by { color: var(--t-body); }
+.case-facts .case-reason {
+  grid-column: 2; margin-top: 2px; padding-left: 8px;
+  border-left: 2px solid var(--border); color: var(--t-body);
+}
+.case-open { padding: 2px 0; font-size: 12px; font-weight: 700; color: var(--indigo); white-space: nowrap; }
+.case-open:hover { color: var(--carrot); }
+.case-open:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; border-radius: 3px; }
+.case-open span { display: inline-block; transition: transform .15s; }
+.case-open:hover span { transform: translateX(2px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .case-card-body { animation: none; }
+  .case-card-chev, .case-open span { transition: none; }
+}
 
 /* Two-column form grid — Add Company, Add Person, both profile editors.
    `minmax(0, 1fr)` rather than `1fr`: a bare `1fr` is `minmax(auto, 1fr)`, and

@@ -41,6 +41,13 @@ describe('formatDateTime', () => {
     expect(formatDateTime('2026-04-12T13:00:00Z')).toBe('12 Apr 2026, 21:00')
   })
 
+  it('calls the minutes after midnight 00, never 24', () => {
+    // 16:49 UTC == 00:49 HKT the next day. `hour12: false` let ICU pick the
+    // h24 cycle, and a CR poll that ran at 00:49 read "17 Sept 2026, 24:49" —
+    // the right date with an hour that does not exist.
+    expect(formatDateTime('2026-08-16T16:49:00Z')).toBe('17 Aug 2026, 00:49')
+  })
+
   it('shows an em dash for a missing value', () => {
     expect(formatDateTime(null)).toBe('—')
   })
