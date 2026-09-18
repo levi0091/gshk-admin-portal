@@ -237,6 +237,46 @@ def test_get_company_includes_relations_and_cases():
         assert body["documents"] == [] and body["contacts"] == []
 
 
+def test_each_case_on_the_profile_names_its_return_year_and_carries_the_dashboards_badge():
+    """The Cases pane needs the year a legacy case was FILED for — its
+    `ar_period_year` is NULL — and the same badge object the dashboard sends,
+    not the view's bare code."""
+    entity = {"id": "e1", "company_name": "Acme", "is_client": True}
+    registry_row = {
+        "id": "c1", "case_no": "NAR-2026-0012", "entity_id": "e1",
+        "ar_period_year": None, "workflow_status": "cr_pending",
+        "workflow_off_portal": False, "workflow_overdue": False,
+        "cr_doc_status": "Lodged", "created_by_name": "UAT Shot",
+        "created_at": "2026-08-27T05:47:42.137871+00:00",
+        "updated_at": "2026-09-16T16:49:56.689339+00:00",
+    }
+    default = MagicMock()
+    sel = default.select.return_value
+    sel.eq.return_value.single.return_value.execute.return_value.data = entity
+    sel.eq.return_value.execute.return_value.data = []
+    sel.eq.return_value.neq.return_value.execute.return_value.data = []
+    sel.eq.return_value.eq.return_value.execute.return_value.data = []
+    registry = MagicMock()
+    registry.select.return_value.eq.return_value.execute.return_value.data = [registry_row]
+
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb, \
+         patch("routers.companies.document_service.list_documents", return_value=[]), \
+         patch("routers.companies.nar1_return_year.resolve_many",
+               return_value={"c1": (2026, "filing")}) as resolve_many:
+        msb.return_value.table.side_effect = (
+            lambda name: registry if name == "nar1_case_registry" else default)
+        resp = client.get("/companies/e1", headers=H)
+
+    assert resp.status_code == 200
+    (case,) = resp.json()["cases"]["nar1"]
+    assert case["return_year"] == 2026 and case["return_year_source"] == "filing"
+    assert case["workflow_status"] == {
+        "code": "cr_pending", "label": "Pending at CR", "off_portal": False,
+        "overdue": False, "cr_text": "Lodged"}
+    assert resolve_many.call_args.args[0][0]["id"] == "c1"
+
+
 def test_get_company_omits_cases_pane_for_non_client():
     """Cases pane is client-only (§6 visibility)."""
     entity = {"id": "e3", "company_name": "Asia BC", "is_client": False,

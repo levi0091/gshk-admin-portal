@@ -20,6 +20,7 @@ import { useLookups } from '../lib/lookups.js'
 import { useFormContract, fieldWarning } from '../lib/formContract.js'
 import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
+import CasesPane, { caseSummary } from '../components/CasesPane.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
 import { companyProfileCaps } from '../lib/screenCapabilities.js'
@@ -455,6 +456,7 @@ export default function CompanyProfilePage() {
   // The §11.1 blocking set, computed server-side so the screen and the API
   // agree about what "filable" means (OQ-2).
   const filingProblems = company.filing_problems || []
+  const caseCount = (company.cases?.nar1?.length || 0) + (company.cases?.nnc1?.length || 0)
   const businessName = (company.business_names || [])
     .map(b => [b.business_name, b.business_name_zh].filter(Boolean).join(' · '))
     .filter(Boolean).join(', ')
@@ -973,8 +975,12 @@ export default function CompanyProfilePage() {
             <div className="card">
               <div className="card-hdr">
                 <div>
-                  <div className="card-title">Cases</div>
-                  <div className="card-sub">NAR1 &amp; NNC1 workflow cases</div>
+                  <div className="card-title">
+                    Cases <span className="count-pill">{caseCount}</span>
+                  </div>
+                  <div className="card-sub">
+                    {caseSummary(company.cases) || 'NAR1 & NNC1 workflow cases'}
+                  </div>
                 </div>
                 {/* The annual return is started from the company it is for.
                     Without this the only route was the dashboard, where you
@@ -1194,35 +1200,3 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
   )
 }
 
-function CasesPane({ cases, onOpen }) {
-  const all = [
-    ...(cases?.nar1 || []).map(c => ({ ...c, kind: 'NAR1 — Annual Return' })),
-    ...(cases?.nnc1 || []).map(c => ({ ...c, kind: 'NNC1 — Incorporation' })),
-  ]
-  const [open, setOpen] = useState(null)
-
-  if (all.length === 0) {
-    return <div className="empty-state" style={{ padding: '16px 0' }}>No cases yet.</div>
-  }
-  return all.map(c => (
-    <div className={`case-acc${open === c.id ? ' open' : ''}`} key={c.id}>
-      <div className="case-acc-hdr"
-           onClick={() => (onOpen ? onOpen(c.id) : setOpen(open === c.id ? null : c.id))}>
-        <span className="case-chevron">❯</span>
-        <div className="case-acc-titles">
-          <div className="case-acc-type">{c.kind}</div>
-          <div className="case-acc-id">Case ID: {c.id.slice(0, 8)}</div>
-        </div>
-        <StatusBadge status={c.status} />
-      </div>
-      {open === c.id && (
-        <div className="case-acc-body">
-          <div className="kv-list">
-            <Kv label="Status">{c.status}</Kv>
-            <Kv label="Created">{formatDate(c.created_at)}</Kv>
-          </div>
-        </div>
-      )}
-    </div>
-  ))
-}

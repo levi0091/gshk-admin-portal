@@ -330,3 +330,133 @@ def test_a_case_that_already_has_a_year_is_not_claimed_again():
         assert ry.claim({"id": "c1", "entity_id": "e1", "ar_period_year": 2023},
                         2023) is False
     assert store.updates == []
+
+
+# ---------------------------------------------------------------------------
+# Every case on a company profile at once (the Cases pane)
+# ---------------------------------------------------------------------------
+
+def _year(y):
+    """A fragment in the shape CR's stored XML really has — prefixed, padded."""
+    return f"<cr:brNo>T0001137</cr:brNo><cr:yearAnnualReturn> {y} </cr:yearAnnualReturn>"
+
+
+class _Tables:
+    """`nar1_cases` and `tpsi_filings`, with the four builder methods the
+    batched read uses — honoured, not ignored, so a missing filter fails."""
+
+    def __init__(self, cases=(), filings=(), boom=False):
+        self.data = {"nar1_cases": list(cases), "tpsi_filings": list(filings)}
+        self.boom = boom
+        self.reads = []
+
+    def table(self, name):
+        return _TableQuery(self, name)
+
+
+class _TableQuery:
+    def __init__(self, tables, name):
+        self.tables, self.name = tables, name
+        self.keep = lambda _row: True
+        self.newest_first = False
+
+    def select(self, *_a):
+        return self
+
+    def in_(self, column, values):
+        prev = self.keep
+        self.keep = lambda row: prev(row) and row.get(column) in values
+        return self
+
+    def neq(self, column, value):
+        prev = self.keep
+        self.keep = lambda row: prev(row) and row.get(column) != value
+        return self
+
+    def order(self, column, desc=False):
+        self.newest_first = desc and column == "created_at"
+        return self
+
+    def execute(self):
+        if self.tables.boom:
+            raise RuntimeError("PostgREST is down")
+        self.tables.reads.append(self.name)
+        rows = [r for r in self.tables.data[self.name] if self.keep(r)]
+        if self.newest_first:
+            rows.sort(key=lambda r: r["created_at"], reverse=True)
+        return type("R", (), {"data": rows})()
+
+
+def _many(on_profile, **tables):
+    store = _Tables(**tables)
+    with patch("services.nar1_return_year.get_supabase", return_value=store):
+        return ry.resolve_many(on_profile), store
+
+
+def test_a_stored_year_needs_no_query_at_all():
+    years, store = _many([{"id": "c1", "ar_period_year": 2024}])
+    assert years == {"c1": (2024, ry.SOURCE_CASE)}
+    assert store.reads == []
+
+
+def test_a_legacy_case_filed_before_the_column_existed_still_names_its_year():
+    """25 of 27 cases on DEV's test company store no year; ten were filed."""
+    years, _ = _many(
+        [{"id": "c1", "ar_period_year": None}],
+        cases=[{"id": "c1", "verification_xml": None}],
+        filings=[{"nar1_case_id": "c1", "stage": "submitted",
+                  "created_at": "2026-08-27T05:47:42+00:00",
+                  "validated_xml": _year(2026), "request_xml": _year(2026)}],
+    )
+    assert years == {"c1": (2026, ry.SOURCE_FILING)}
+
+
+def test_what_was_mailed_wins_over_what_cr_validated():
+    years, store = _many(
+        [{"id": "c1"}],
+        cases=[{"id": "c1", "verification_xml": _year(2025)}],
+        filings=[{"nar1_case_id": "c1", "stage": "validated",
+                  "created_at": "2026-09-01T00:00:00+00:00",
+                  "validated_xml": _year(2026), "request_xml": None}],
+    )
+    assert years == {"c1": (2025, ry.SOURCE_SENT)}
+    # Both read, concurrently — one round trip, not two in a row.
+    assert sorted(store.reads) == ["nar1_cases", "tpsi_filings"]
+
+
+def test_the_current_filing_decides_as_it_does_on_the_case_screen():
+    """Newest non-superseded row, as `nar1_cases.current_filing` picks it.
+
+    A newer DRAFT is current, and a draft's year is nobody's choice — so the
+    older validated row behind it must not leak its year through."""
+    years, _ = _many(
+        [{"id": "c1"}, {"id": "c2"}],
+        cases=[{"id": "c1"}, {"id": "c2"}],
+        filings=[
+            {"nar1_case_id": "c1", "stage": "validated",
+             "created_at": "2026-08-01T00:00:00+00:00",
+             "validated_xml": _year(2026), "request_xml": None},
+            {"nar1_case_id": "c1", "stage": "draft",
+             "created_at": "2026-09-01T00:00:00+00:00",
+             "validated_xml": None, "request_xml": _year(2026)},
+            # c2: the superseded attempt is newer and must be skipped.
+            {"nar1_case_id": "c2", "stage": "signed",
+             "created_at": "2026-08-01T00:00:00+00:00",
+             "validated_xml": _year(2024), "request_xml": None},
+            {"nar1_case_id": "c2", "stage": "superseded",
+             "created_at": "2026-09-01T00:00:00+00:00",
+             "validated_xml": _year(2019), "request_xml": None},
+        ],
+    )
+    assert years == {"c1": (None, None), "c2": (2024, ry.SOURCE_FILING)}
+
+
+def test_a_new_case_has_no_year_on_the_profile_either():
+    years, _ = _many([{"id": "c1", "ar_period_year": None}], cases=[{"id": "c1"}])
+    assert years == {"c1": (None, None)}
+
+
+def test_a_failed_read_leaves_the_years_unknown_and_never_raises():
+    years, _ = _many([{"id": "c1", "ar_period_year": 2023}, {"id": "c2"}],
+                     boom=True)
+    assert years == {"c1": (2023, ry.SOURCE_CASE), "c2": (None, None)}

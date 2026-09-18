@@ -81,6 +81,8 @@ mistaken case gives its year back.
 from __future__ import annotations
 
 import re
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from db.supabase import get_supabase
@@ -215,6 +217,63 @@ def resolve(case: dict | None, filing: dict | None) -> tuple[int | None, str | N
         if built:
             return built, SOURCE_FILING
     return None, None
+
+
+def resolve_many(cases: list[dict]) -> dict[str, tuple[int | None, str | None]]:
+    """`resolve` for every case on a company profile at once, keyed by case id.
+
+    WHY THE PROFILE CANNOT JUST READ `ar_period_year`. The column was first
+    written on 2026-09-18, so every case older than that stores NULL — measured
+    on DEV the day this was written, 25 of the 27 cases on one test company,
+    ten of them already filed with CR. Their year is real; it lives in what was
+    mailed or what CR validated. A Cases pane showing a dash for a filed 2026
+    return would say the opposite of the case screen one click later.
+
+    Same order as `resolve` — this only batches its reads, it does not restate
+    its rule. Two queries, run CONCURRENTLY so the profile pays one round trip
+    rather than two (latency here is Supabase round trips), and none at all
+    when every case stores its year, which is every case created from now on.
+    The filings read picks each case's newest non-superseded row, exactly as
+    `nar1_cases.current_filing` does.
+
+    NEVER RAISES. This decorates a profile that has already been read; a case
+    whose year cannot be resolved here shows no year, which is also what a case
+    nobody has chosen one for shows. Losing the whole page over it would not be.
+    """
+    out: dict[str, tuple[int | None, str | None]] = {}
+    pending: list[str] = []
+    for case in cases or []:
+        if case.get("ar_period_year"):
+            out[case["id"]] = resolve(case, None)
+        elif case.get("id"):
+            pending.append(case["id"])
+    if not pending:
+        return out
+
+    try:
+        sb = get_supabase()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            mailed = pool.submit(lambda: (
+                sb.table(_TABLE).select("id, verification_xml")
+                .in_("id", pending).execute().data or []))
+            filed = pool.submit(lambda: (
+                sb.table("tpsi_filings")
+                .select("nar1_case_id, stage, created_at, validated_xml, request_xml")
+                .in_("nar1_case_id", pending)
+                .neq("stage", tpsi_filings.STAGE_SUPERSEDED)
+                .order("created_at", desc=True)
+                .execute().data or []))
+            sent = {row["id"]: row.get("verification_xml") for row in mailed.result()}
+            current: dict[str, dict] = {}
+            for row in filed.result():  # newest first: the first seen is current
+                current.setdefault(row["nar1_case_id"], row)
+    except Exception as exc:  # noqa: BLE001
+        print(f"nar1_return_year.resolve_many: {exc!r}", file=sys.stderr)
+        return {**out, **{cid: (None, None) for cid in pending}}
+
+    for cid in pending:
+        out[cid] = resolve({"verification_xml": sent.get(cid)}, current.get(cid))
+    return out
 
 
 def check_range(year, inc: date | None, today: date,

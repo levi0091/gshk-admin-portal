@@ -15,7 +15,8 @@ from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_subject
 from services import (
-    audit_events, document_service, address_service, table_filters as tf)
+    audit_events, document_service, address_service, table_filters as tf,
+    nar1_case_status, nar1_return_year)
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE, COMPANY_TYPE, CURRENCY)
 from services.cr_forms.readiness import filing_problems
@@ -763,6 +764,19 @@ async def get_company(
                        .eq("entity_id", company_id).execute().data) or []),
             q(lambda: (sb.table("nnc1_cases").select("*").eq("entity_id", company_id).execute().data) or []),
         )
+        # WHICH RETURN EACH CASE FILES. Resolved, not read off the column: a
+        # case older than 2026-09-18 stores no year even when it has been filed
+        # for one (see nar1_return_year.resolve_many). Same key names as the
+        # case screen, so the pane and the case header cannot disagree.
+        years = await asyncio.to_thread(nar1_return_year.resolve_many, nar1)
+        for row in nar1:
+            row["return_year"], row["return_year_source"] = (
+                years.get(row.get("id"), (None, None)))
+            # The badge the dashboard sends for the same row — code, label, and
+            # CR's own words — rather than the view's bare code. Two endpoints
+            # handing the same case to the frontend in two shapes is how a badge
+            # ends up labelled on one screen and blank on the next.
+            row["workflow_status"] = nar1_case_status.badge_from_row(row)
         result["cases"] = {"nar1": nar1, "nnc1": nnc1}
     return result
 

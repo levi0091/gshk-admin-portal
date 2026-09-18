@@ -23,12 +23,17 @@ export function formatDate(iso) {
  *
  * Was copy-pasted into AuditTrailTab and AuditLogPage; one definition means the
  * two audit surfaces cannot drift apart, and there is one place to change.
+ *
+ * `hourCycle: 'h23'`, NOT `hour12: false`. The latter only says "not 12-hour"
+ * and leaves the cycle to the locale data, which for en-HK is h24 — so every
+ * timestamp in the first hour after midnight printed as "24:49", on the day
+ * that had already begun. h23 is 00–23.
  */
 export function formatDateTime(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('en-HK', {
     day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: false,
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
     timeZone: HK_TZ,
   })
 }

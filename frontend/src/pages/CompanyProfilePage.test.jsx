@@ -233,6 +233,25 @@ describe('CompanyProfilePage', () => {
     expect(screen.getByText('No cases yet.')).toBeInTheDocument()
   })
 
+  it('heads the Cases pane with how many are in progress and finished', async () => {
+    mockGet({
+      ...CLIENT,
+      cases: {
+        nar1: [
+          { id: 'c1', case_no: 'NAR-2026-0041', return_year: 2026,
+            workflow_status: { code: 'signing', label: 'Signing' } },
+          { id: 'c2', case_no: 'NAR-2025-0007', return_year: 2025,
+            workflow_status: { code: 'cr_registered', label: 'Registered by CR' } },
+        ],
+        nnc1: [],
+      },
+    })
+    renderPage()
+    const card = (await screen.findByText('1 in progress · 1 finished')).closest('.card')
+    expect(within(card).getByText('2026')).toBeInTheDocument()
+    expect(within(card).getByText('NAR-2026-0041')).toBeInTheDocument()
+  })
+
   it('toggles a flag via PATCH /flags and refetches', async () => {
     const user = userEvent.setup()
     renderPage()
@@ -417,9 +436,9 @@ describe('CompanyProfilePage', () => {
     renderPage()
     await editName(user)
 
-    expect(screen.getByRole('alertdialog',
-      { name: 'Edit conflicts with a live case' })).toBeInTheDocument()
-    expect(screen.getByText(/NAR-2026-0041/)).toBeInTheDocument()
+    const dialog = screen.getByRole('alertdialog', { name: 'Edit conflicts with a live case' })
+    // Within the dialog: the Cases pane beside it names the same case.
+    expect(within(dialog).getByText(/NAR-2026-0041/)).toBeInTheDocument()
     // and NOTHING has been written yet
     expect(api.patch).not.toHaveBeenCalled()
   })
