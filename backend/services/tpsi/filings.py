@@ -953,6 +953,25 @@ def return_date_of(filing: dict):
     return assess(filing)[1]
 
 
+def before_return_date(filing: dict):
+    """(return date, today) when this NAR1's return date is still ahead, else None.
+
+    For the VALIDATE route, which answers before CR does: CR refuses to
+    validate a return made up to a future date. None for anything that is not
+    a NAR1 and whenever either date is unknown — the same fail-open rule as
+    `_refuse_if_before_return_date` below, for the same reason.
+    """
+    from services.tpsi import fees
+
+    if (filing or {}).get("form_code") != "Nar1":
+        return None
+    return_date = return_date_of(filing)
+    if return_date is None:
+        return None
+    today = fees._hk_today()
+    return (return_date, today) if today < return_date else None
+
+
 def _refuse_if_before_return_date(filing: dict, return_date=None) -> None:
     """An annual return cannot be filed before the year it reports on has closed.
 

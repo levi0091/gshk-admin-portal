@@ -1437,7 +1437,7 @@ def _fill(pages: _Pages) -> bytes:
     writer._root_object[NameObject("/AcroForm")] = writer._add_object(acroform)
 
     for index, (template_page, values) in enumerate(pages.items):
-        mapping = _add_page(writer, template_page, f"__p{index}")
+        mapping = _add_page(writer, template_page, widget_name(index, ""))
         if not values:
             continue
         renamed = {mapping[name]: value for name, value in values.items()
@@ -1470,7 +1470,17 @@ def _fill(pages: _Pages) -> bytes:
     return buffer.getvalue()
 
 
-def _bake(filled: bytes) -> bytes:
+def widget_name(page_index: int, field: str) -> str:
+    """The name `_fill` gives `field` on the `page_index`-th output page.
+
+    Every page copy renames its widgets with this suffix (see `_add_page`), so
+    this is the one place that knows the convention; `compare` and `render`
+    address a box on one page through it rather than spelling the suffix.
+    """
+    return f"{field}__p{page_index}"
+
+
+def _bake(filled: bytes, highlight=None) -> bytes:
     """The filled form, drawn as page content in fonts we embed, with the
     form itself removed. Until this runs the document renders through CR's
     non-embedded /PMingLiU -- which made the emailed copy and the portal
@@ -1480,7 +1490,10 @@ def _bake(filled: bytes) -> bytes:
         return appearance.bake(filled, sizes=FIELD_SIZES,
                                regular=REGULAR_WEIGHT_FIELDS,
                                centred=CENTRED_FIELDS, faces=FIELD_FACES,
-                               strike=fm.STRIKE_THROUGH)
+                               strike=fm.STRIKE_THROUGH,
+                               highlight=frozenset(
+                                   widget_name(page, field)
+                                   for page, field in (highlight or ())))
     except appearance.AppearanceError as exc:
         # Translated rather than left to propagate: every caller of
         # `render()` already catches `FormFillError` (routers/cases.py,
@@ -1531,7 +1544,7 @@ def render_fields(validated_xml: str, *, company_type: str = "private",
 
 def render(validated_xml: str, *, company_type: str = "private",
            presenter: dict | None = None, signed_on: str = "",
-           incorporated_on=None) -> bytes:
+           incorporated_on=None, highlight=None) -> bytes:
     """CR's Form NAR1, filled from the XML CR validated.
 
     `company_type` is one of "private", "public", "guarantee". It cannot be
@@ -1554,7 +1567,13 @@ def render(validated_xml: str, *, company_type: str = "private",
     The result is FLAT: every value is page content and there is no form
     field left in it. See `appearance.bake` for why a hidden field was not
     enough.
+
+    `highlight` is `(page index, field name)` pairs -- `compare.Comparison.
+    highlight` -- boxed in carrot on a REVIEWER'S copy. It is for the Data
+    Verification screen, which marks what moved since the client approved, and
+    never for a document that is mailed, downloaded as the return, or filed.
     """
     return _bake(_fill(_composed(validated_xml, company_type=company_type,
                                  presenter=presenter, signed_on=signed_on,
-                                 incorporated_on=incorporated_on)))
+                                 incorporated_on=incorporated_on)),
+                 highlight=highlight)

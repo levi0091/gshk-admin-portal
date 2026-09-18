@@ -68,3 +68,21 @@ export async function downloadCasePdf(caseId, fileName = 'NAR1.pdf') {
     URL.revokeObjectURL(url)
   }
 }
+
+/**
+ * The return exactly as the Companies Registry validated it — the CLEAN copy.
+ *
+ * `highlight=false`, deliberately: the viewer at Data Verification boxes what
+ * moved since the client approved, and those boxes are a review aid, not part
+ * of the return. A file someone saves is a file someone forwards, and a
+ * statutory form with orange boxes on it is not the form that was filed.
+ */
+export async function downloadValidatedPdf(caseId, fileName = 'NAR1-validated.pdf') {
+  const blob = await api.blob(`/cases/${caseId}/validation/preview?highlight=false`)
+  const url = URL.createObjectURL(blob)
+  try {
+    saveUrl(url, fileName)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}

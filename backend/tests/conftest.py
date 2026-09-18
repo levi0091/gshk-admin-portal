@@ -55,3 +55,42 @@ def _no_dns_in_tests():
     with patch("services.email_service.undeliverable_reason",
                return_value=None):
         yield
+
+
+class _EmptyQuery:
+    """A PostgREST query builder that finds nothing and writes nowhere.
+
+    Every builder method returns the builder, and `execute()` answers with no
+    rows — the shape of an empty table, which is the honest default for a
+    store no test has seeded.
+    """
+
+    def __getattr__(self, _name):
+        return self
+
+    def __call__(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        return type("Result", (), {"data": [], "count": 0})()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_return_year_store():
+    """No test reaches the live database through `services.nar1_return_year`.
+
+    The send and the prepare now fix a case's return year before they build
+    (Levi 2026-09-18), which reads the company's other live cases and writes
+    `nar1_cases.ar_period_year`. Every existing route test mocks the case
+    store at `routers.cases.nar1_cases.*` — none of them knew this module
+    existed — so without this they would each make a real PostgREST call, which
+    is exactly the green-locally-for-the-wrong-reason fault the DNS guard above
+    exists to prevent.
+
+    The default is an EMPTY store: no other case holds any year, so nothing is
+    refused. A test about the year patches `services.nar1_return_year.
+    get_supabase` itself, and that inner patch wins.
+    """
+    with patch("services.nar1_return_year.get_supabase",
+               return_value=_EmptyQuery()):
+        yield

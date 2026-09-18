@@ -143,6 +143,28 @@ export function isSubmitted(c) {
 }
 
 /**
+ * Is there anything for `Restart verification` to undo — and may it?
+ *
+ * TWO things a restart discards, and either is enough (Levi 2026-09-19): the
+ * copy SENT to the client, and a snapshot CR has VALIDATED. This used to ask
+ * only the second, which was the whole question while Client Verification came
+ * after CR. Since the client moved to stage 1 (2026-09-17) a case is sent long
+ * before CR sees it — and the send locks the return year behind a note saying
+ * "Restart verification to choose a different year" while no such button was
+ * on the page.
+ *
+ * The client fields are the ones `PATCH /cases/{id} {restart_verification}`
+ * clears; a validated snapshot is the one it supersedes. Never once the return
+ * is filed (the backend refuses with a 409) or the case is closed.
+ */
+export function canRestart(c) {
+  if (!c || isClosed(c) || isSubmitted(c)) return false
+  const asked = Boolean(c.verification_sent_at || c.client_response_at)
+    || (c.client_approved !== null && c.client_approved !== undefined)
+  return asked || isValidated(c)
+}
+
+/**
  * The furthest stage this case may enter. Mirrors v11's `cmReached()`.
  *
  * Note step 1: the manual path does NOT bypass Client Verification (OQ-4).

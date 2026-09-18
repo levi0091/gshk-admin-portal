@@ -543,11 +543,42 @@ def _is_ticked(obj) -> bool:
     return False
 
 
+#: The highlight a reviewer's copy draws behind a CHANGED value — the brand's
+#: carrot (#F36C32), translucent so the value, the printed rule and the
+#: template's own label all stay legible through it. A review aid, never part
+#: of the return: see `bake(highlight=...)`.
+HIGHLIGHT_RGB = (0xF3 / 255, 0x6C / 255, 0x32 / 255)
+HIGHLIGHT_FILL_ALPHA = 0.22
+HIGHLIGHT_STROKE_ALPHA = 0.9
+#: Outward from the widget rectangle, so a highlight reads as a box around the
+#: value rather than a stain the exact size of it.
+HIGHLIGHT_PAD = 1.0
+
+
+def draw_highlight(canvas, rect) -> None:
+    """A translucent carrot box over one widget's rectangle.
+
+    Inside saveState/restoreState, and that is load-bearing: the value drawn
+    next reuses the canvas's fill colour, and without the restore every
+    highlighted value would print in 22%-opaque carrot instead of black.
+    """
+    x0, y0, x1, y1 = (float(v) for v in rect)
+    canvas.saveState()
+    canvas.setFillColorRGB(*HIGHLIGHT_RGB, alpha=HIGHLIGHT_FILL_ALPHA)
+    canvas.setStrokeColorRGB(*HIGHLIGHT_RGB, alpha=HIGHLIGHT_STROKE_ALPHA)
+    canvas.setLineWidth(0.8)
+    canvas.rect(min(x0, x1) - HIGHLIGHT_PAD, min(y0, y1) - HIGHLIGHT_PAD,
+                abs(x1 - x0) + 2 * HIGHLIGHT_PAD,
+                abs(y1 - y0) + 2 * HIGHLIGHT_PAD, stroke=1, fill=1)
+    canvas.restoreState()
+
+
 def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
          regular: frozenset[str] | set[str] | None = None,
          centred: frozenset[str] | set[str] | None = None,
          faces: dict[str, str] | None = None,
-         strike: str | None = None) -> bytes:
+         strike: str | None = None,
+         highlight: frozenset[str] | set[str] | None = None) -> bytes:
     """Draw every field value as page content, then remove the form itself.
 
     Every one of these four is keyed on a field's ORIGINAL template name, and
@@ -573,12 +604,21 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
                  own option string on the signature line. Passed in rather than
                  imported so this module keeps knowing nothing about the field
                  map, and so an UNRECOGNISED dropdown value still raises.
+    `highlight` -- FULL widget names, per-page suffix included (a changed box
+                 is one box on one page, not every copy of that field), to be
+                 boxed in carrot behind their value. For the Data Verification
+                 reviewer's copy, which marks what moved since the client
+                 approved. Checked BEFORE the empty-value test, because a value
+                 that was removed is a change too, and its empty box is where
+                 the reader has to look. Never passed for a document anybody is
+                 sent or that is filed.
     """
     register_fonts()
     sizes = sizes or {}
     regular = regular or frozenset()
     centred = centred or frozenset()
     faces = faces or {}
+    highlight = highlight or frozenset()
     reader = PdfReader(io.BytesIO(pdf_bytes))
     # clone_from, rather than building a writer and adding pages to it one at a
     # time. `merge_page` on a page that is not yet attached to a writer is
@@ -604,7 +644,11 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
                 kept.append(annot)
                 continue
             kind = obj.get("/FT")
-            name = str(obj.get("/T") or "").split("__p")[0]
+            full_name = str(obj.get("/T") or "")
+            name = full_name.split("__p")[0]
+            if full_name in highlight:
+                draw_highlight(layer, obj["/Rect"])
+                drew = True
             if kind == "/Btn":
                 if _is_ticked(obj):
                     draw_tick(layer, obj["/Rect"])

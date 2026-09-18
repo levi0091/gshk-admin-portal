@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   STAGE_LABELS, reachedStage, stageDone, signedOff, isValidated, isSubmitted,
   describeError, verificationBlock, persistedFailure, isClosed,
-  crStatus, stageTone, CR_TONE, CR_MEANING,
+  crStatus, stageTone, CR_TONE, CR_MEANING, canRestart,
 } from './workflow.js'
 
 // A case at the very start: nothing validated, nothing sent, nothing signed.
@@ -139,6 +139,51 @@ describe('what counts as validated / signed / submitted', () => {
     expect(signedOff(fresh({ signing_method: 'manual', manual_signed_document_id: 'd' }))).toBe(true)
     expect(signedOff(fresh({ signing_method: 'manual', manual_signed_document_version: 2 }))).toBe(true)
     expect(signedOff(fresh({ signing_method: 'manual' }))).toBe(false)
+  })
+})
+
+describe('canRestart — is there anything for Restart verification to undo?', () => {
+  const SENT = '2026-09-19T00:47:00Z'
+
+  it('offers it once the return is SENT, before CR has seen it', () => {
+    // THE REPORT (Levi 2026-09-19): sent on stage 1, the year locked behind
+    // "Restart verification to choose a different year", and no such button on
+    // the page — because it waited for a CR validation that comes at stage 2.
+    expect(canRestart(fresh({ verification_sent_at: SENT }))).toBe(true)
+    expect(canRestart(withStage('draft', { verification_sent_at: SENT }))).toBe(true)
+  })
+
+  it('offers it on an answered case, declined or approved', () => {
+    // A decline says "correct the return, restart verification and send it
+    // again" — pointing at a button that has to exist.
+    expect(canRestart(fresh({ verification_sent_at: SENT, client_approved: false,
+                              client_response_at: SENT }))).toBe(true)
+    expect(canRestart(fresh({ verification_sent_at: SENT, client_approved: true,
+                              client_response_at: SENT }))).toBe(true)
+  })
+
+  it('still offers it on a snapshot CR has only validated', () => {
+    expect(canRestart(withStage('validated'))).toBe(true)
+    expect(canRestart(withStage('signed', { verification_sent_at: SENT }))).toBe(true)
+  })
+
+  it('does not offer it when there is nothing to undo', () => {
+    expect(canRestart(fresh())).toBe(false)
+    expect(canRestart(withStage('draft'))).toBe(false)
+    expect(canRestart(null)).toBe(false)
+  })
+
+  it('never once the return is filed, by either road', () => {
+    for (const s of ['submitted', 'registered', 'edrive']) {
+      expect(canRestart(withStage(s, { verification_sent_at: SENT })), s).toBe(false)
+    }
+    expect(canRestart(fresh({ verification_sent_at: SENT,
+                              manual_submitted_at: SENT }))).toBe(false)
+  })
+
+  it('never on a closed case', () => {
+    expect(canRestart(fresh({ verification_sent_at: SENT,
+                              closed_at: SENT }))).toBe(false)
   })
 })
 

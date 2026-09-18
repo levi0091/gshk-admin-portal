@@ -405,7 +405,13 @@ export default function DashboardPage() {
                         onClick={() => navigate(`/cases/${c.id}`)}>
                       <td data-label="Case ID"><span className="td-id">{c.case_no || '—'}</span></td>
                       <td data-label="Case Type">
-                        <span className="badge b-inactive">{c.case_type || 'NAR1'}</span>
+                        {/* The YEAR rides with the type (migration 047): a
+                            company catching up on missed returns has one case
+                            per year, and without it they list as identical
+                            rows. Absent until the case fixes its year. */}
+                        <span className="badge b-inactive">
+                          {c.case_type || 'NAR1'}{c.ar_period_year ? ` · ${c.ar_period_year}` : ''}
+                        </span>
                       </td>
                       <td data-label="Entity ID"><span className="td-id">{c.entity_id || '—'}</span></td>
                       <td data-label="Company Name"><span className="td-primary">{c.company_name}</span></td>

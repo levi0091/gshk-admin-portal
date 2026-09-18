@@ -635,3 +635,44 @@ def test_restart_still_works_on_a_return_cr_has_only_validated(client):
                                 json={"restart_verification": True})
     assert response.status_code == 200
     assert spy.call_args.args[1]["client_approved"] is None
+
+
+def test_restart_works_on_a_return_sent_but_never_validated(client):
+    """THE CASE THE SCREEN NOW OFFERS RESTART ON (Levi 2026-09-19).
+
+    Client Verification is stage 1, so the usual sent case holds only the DRAFT
+    the send prepared, and CR has never seen it. The send locks the return year
+    behind "Restart verification to choose a different year", and the header
+    button used to wait for a validation that comes a stage later. The restart
+    must clear the send, drop the mailed copy, retire the draft built for the
+    old year, kill the Confirm links — and leave the year free to change."""
+    from services import nar1_return_year
+
+    sent = _filed_case(client_approved=None, client_response_at=None,
+                       ar_period_year=2024, verification_xml="<mailed/>")
+    logged = []
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=sent), \
+         patch("routers.cases.nar1_cases.current_filing",
+               return_value={"id": "f1", "stage": "draft"}), \
+         patch("routers.cases.tpsi_filings.supersede", return_value=True) as sup, \
+         patch("routers.cases.nar1_approvals.supersede_outstanding") as links, \
+         patch("routers.cases.nar1_cases.update_case",
+               return_value={"id": "c1"}) as spy, \
+         patch("routers.cases.nar1_cases.composite", return_value={"id": "c1"}), \
+         patch("routers.cases.log_event",
+               new=AsyncMock(side_effect=lambda **kw: logged.append(kw))):
+        response = client.patch("/cases/c1", headers=H,
+                                json={"restart_verification": True})
+
+    assert response.status_code == 200
+    sup.assert_called_once_with("f1")
+    links.assert_called_once_with("c1")
+    written = spy.call_args.args[1]
+    assert written["verification_sent_at"] is None
+    assert written["verification_xml"] is None
+    # The year is KEPT — the operator may still want it — but no longer locked.
+    assert "ar_period_year" not in written
+    after = {**sent, **written}
+    assert nar1_return_year.lock_reason(after, None, 2024) is None
+    assert {e["new_value"] for e in logged} == {"superseded", "restarted"}

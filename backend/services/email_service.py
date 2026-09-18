@@ -757,8 +757,15 @@ def verification_email(case: dict, entity: dict,
     # The reference block. NOT in the sample letter, and kept small and last for
     # that reason: a client replying about the wrong year is the failure it
     # prevents, and it costs one line.
+    #
+    # THE YEAR IS IN IT SINCE 2026-09-18. A company catching up on missed years
+    # gets one of these per year (2023, 2024, 2025 …), and without the year the
+    # messages differ only in a case number the client has never seen. Still
+    # here and not in the letter: the letter's wording is the sample's.
+    year = case.get("ar_period_year")
     reference = ""
     reference_bits = [b for b in (br_number and f"BR {br_number}",
+                                  year and f"Annual return {year}",
                                   case_no and f"Ref {case_no}") if b]
     if reference_bits:
         reference = (
