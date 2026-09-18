@@ -85,17 +85,36 @@ class _Stack:
 # GET /cases/{id}/return-year
 # ---------------------------------------------------------------------------
 
-def test_the_picker_offers_every_year_back_to_the_first_return(client):
+def test_the_picker_starts_empty_with_every_year_back_to_the_first_return(client):
+    """Levi 2026-09-19: "do not default the dropdown to current year... make it
+    empty by default but mandatory"."""
     with _Stack(_super(), _today(), _case()):
         response = client.get("/cases/c1/return-year", headers=H)
     assert response.status_code == 200
     body = response.json()
-    assert body["year"] == 2026 and body["source"] == "default"
-    assert body["return_date"] == "2026-10-09"
+    assert body["year"] is None and body["source"] is None
+    assert body["return_date"] is None
     assert body["locked"] is False
     years = [o["year"] for o in body["options"]]
     assert years[0] == 2026 and years[-1] == 2020
     assert {2023, 2024, 2025, 2026} <= set(years)
+
+
+def test_a_draft_built_under_the_old_default_does_not_preselect_its_year(client):
+    draft = {"id": "f1", "stage": "draft",
+             "request_xml": "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"}
+    with _Stack(_super(), _today(), _case(filing=draft)):
+        body = client.get("/cases/c1/return-year", headers=H).json()
+    assert body["year"] is None
+
+
+def test_the_picker_shows_the_year_a_legacy_case_was_sent_for(client):
+    legacy = {**CASE, "verification_sent_at": "2026-09-10T00:00:00Z",
+              "verification_xml": "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"}
+    with _Stack(_super(), _today(), _case(case=legacy)):
+        body = client.get("/cases/c1/return-year", headers=H).json()
+    assert (body["year"], body["source"]) == (2026, "sent")
+    assert body["locked"] is True
 
 
 def test_the_picker_says_why_a_sent_case_cannot_change_year(client):
@@ -300,12 +319,47 @@ def test_the_send_builds_and_fixes_the_year_the_case_names(client):
     assert sent[0]["metadata"]["return_year"] == 2024
 
 
+#: A case mailed before the year existed, being RE-sent: no stored year, but
+#: the return it was sent is for one — the only way a send can still meet a
+#: case whose year is not written down.
+LEGACY_SENT = {**CASE, "verification_sent_at": "2026-09-10T00:00:00Z",
+               "verification_xml": "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"}
+
+
+def test_a_case_with_no_year_is_refused_before_anything_is_built(client):
+    """MANDATORY (Levi 2026-09-19). Nobody is asked to approve "a" return."""
+    build = AsyncMock(return_value="<built/>")
+    mail = MagicMock()
+    claim = MagicMock()
+    with _Stack(_super(), _today(), _send_patches(dict(CASE), claim={"new": claim}),
+                patch("routers.cases.nar1_prepare.build_form_xml", new=build),
+                patch("routers.cases.email_service.send", new=mail),
+                patch("routers.cases.log_event", new=AsyncMock())):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "return_year_required"
+    build.assert_not_awaited()
+    mail.assert_not_called()
+    claim.assert_not_called()
+
+
+def test_the_stage_one_preview_asks_for_the_year_instead_of_guessing(client):
+    build = AsyncMock(return_value="<built/>")
+    with _Stack(_super(), _today(), _case(),
+                patch("routers.cases.nar1_prepare.build_form_xml", new=build)):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "return_year_required"
+    build.assert_not_awaited()
+
+
 def test_a_year_another_case_holds_refuses_the_send_before_any_mail(client):
     refused = nar1_return_year.YearRefused(
         "case NAR-2026-0001 is already filing this company's 2026 annual return",
         status=409, held_by={"case_id": "c0", "case_no": "NAR-2026-0001"})
     mail = MagicMock()
-    with _Stack(_super(), _today(), _send_patches(CASE, claim={"side_effect": refused}),
+    with _Stack(_super(), _today(),
+                _send_patches(dict(LEGACY_SENT), claim={"side_effect": refused}),
                 patch("routers.cases.email_service.send", new=mail),
                 patch("routers.cases.log_event", new=AsyncMock())):
         response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
@@ -320,7 +374,8 @@ def test_a_held_year_is_refused_before_anything_is_built(client):
     held = {2026: {"case_id": "c0", "case_no": "NAR-2026-0001"}}
     build = AsyncMock(return_value="<built/>")
     mail = MagicMock()
-    with _Stack(_super(), _today(), _send_patches(CASE, claim={"return_value": False}),
+    with _Stack(_super(), _today(),
+                _send_patches(dict(LEGACY_SENT), claim={"return_value": False}),
                 patch("routers.cases.nar1_return_year.held_years", return_value=held),
                 patch("routers.cases.nar1_prepare.build_form_xml", new=build),
                 patch("routers.cases.email_service.send", new=mail),
@@ -336,7 +391,8 @@ def test_a_send_refused_for_a_missing_deadline_does_not_fix_the_year(client):
     """The year is stored only once the mail is about to go. A send refused
     on a cheap check must not leave "fixed by the send" in the trail."""
     claim = MagicMock(return_value=True)
-    with _Stack(_super(), _today(), _send_patches(dict(CASE), claim={"new": claim}),
+    with _Stack(_super(), _today(),
+                _send_patches(dict(LEGACY_SENT), claim={"new": claim}),
                 patch("routers.cases.email_service.send"),
                 patch("routers.cases.log_event", new=AsyncMock())):
         response = client.post("/cases/c1/verification/send", headers=H,
@@ -345,12 +401,13 @@ def test_a_send_refused_for_a_missing_deadline_does_not_fix_the_year(client):
     claim.assert_not_called()
 
 
-def test_a_defaulted_year_fixed_by_the_send_is_audited(client):
+def test_a_legacy_cases_year_written_down_by_the_send_is_audited(client):
     log = AsyncMock()
     mail = MagicMock(return_value={"id": "m1", "to": ["client@example.com"],
                                    "intended_to": ["client@example.com"],
                                    "redirected": False})
-    with _Stack(_super(), _today(), _send_patches(dict(CASE), claim={"return_value": True}),
+    with _Stack(_super(), _today(),
+                _send_patches(dict(LEGACY_SENT), claim={"return_value": True}),
                 patch("routers.cases.email_service.send", new=mail),
                 patch("routers.cases.log_event", new=log)):
         response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
@@ -358,7 +415,9 @@ def test_a_defaulted_year_fixed_by_the_send_is_audited(client):
     fixed = [c.kwargs for c in log.call_args_list
              if c.kwargs.get("action_type") == "CASE_FIELD_UPDATED"]
     assert fixed and fixed[0]["new_value"] == "2026"
-    assert fixed[0]["metadata"]["fixed_by"] == "verification_send"
+    assert fixed[0]["metadata"] == {"field": "ar_period_year",
+                                    "fixed_by": "verification_send",
+                                    "resolved_from": "sent"}
 
 
 # ---------------------------------------------------------------------------

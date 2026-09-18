@@ -738,28 +738,12 @@ def _company_header(case_id: str) -> dict:
     return rows[0] if rows else {}
 
 
-def _return_year(case: dict, filing: dict | None) -> tuple[int, str]:
-    """(year, source) this case files. See services/nar1_return_year.
-
-    The company is read only when the year is still a DEFAULT — a stored year
-    or one already built into the filing needs no incorporation date, and this
-    runs on every case load.
-    """
-    year, source = nar1_return_year.resolve(case, filing, None)
-    if source != nar1_return_year.SOURCE_DEFAULT:
-        return year, source
-    try:
-        entity = entity_for(case["entity_id"])
-    except Exception:  # noqa: BLE001 — a header fact, never a reason to 500
-        entity = None
-    return nar1_return_year.resolve(case, filing, entity)
-
-
 def composite(case_id: str) -> dict:
     """The case plus BOTH statuses — the shape the v11 case header needs."""
     case = get_case(case_id)
     filing = current_filing(case_id)
-    return_year, return_year_source = _return_year(case, filing)
+    # None until chosen (services/nar1_return_year: there is no default).
+    return_year, return_year_source = nar1_return_year.resolve(case, filing)
     return {
         **case,
         # Before the explicit keys below, never after: the view carries a
@@ -812,9 +796,10 @@ def composite(case_id: str) -> dict:
         "approval_divergence": nar1_verification.approval_divergence(case, filing),
         "approval_snapshot_kept": bool(case.get("verification_xml")),
         # WHICH ANNUAL RETURN THIS CASE FILES (Levi 2026-09-18). Resolved, so a
-        # case that has not fixed one yet still names the year it would build;
-        # `ar_period_year` (from **case) stays the STORED value, and
-        # `return_year_source` says which of the two the screen is looking at.
+        # legacy case whose year is only readable off what it mailed or what CR
+        # validated still names it; NONE until somebody chooses one — there is
+        # no default (2026-09-19). `ar_period_year` (from **case) stays the
+        # STORED value, and `return_year_source` says where this one came from.
         "return_year": return_year,
         "return_year_source": return_year_source,
         # When CR validated the live filing. Data Verification's success banner

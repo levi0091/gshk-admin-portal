@@ -44,6 +44,9 @@ const CASE = {
   // getting there.
   aml_cleared: true, accounts_ready: true,
   form_status: { code: 'validated', label: 'Validated by CR', failed: false, faults: [] },
+  // Chosen: the year is MANDATORY (Levi 2026-09-19) and nothing can be sent
+  // without one. Tests about the empty picker set it to null explicitly.
+  return_year: 2025,
 }
 const at = over => ({ ...CASE, ...over })
 
@@ -118,7 +121,8 @@ const PREFILL = {
 //: shape: the 2026 anniversary is three weeks ahead, 2025 is long overdue, and
 //: 2024 is already on another open case.
 const RETURN_YEAR_INFO = {
-  year: 2026, source: 'default', return_date: '2026-10-09',
+  // A new case: NOTHING chosen (Levi 2026-09-19 — empty by default).
+  year: null, source: null, return_date: null,
   incorporation_date: '2019-10-09', today: '2026-09-18',
   locked: false, locked_reason: null,
   options: [
@@ -225,6 +229,36 @@ describe('Data Verification', () => {
     expect(post.mock.calls[0][0]).toBe('/tpsi/filings/prepare')
     expect(post.mock.calls[0][1]).toEqual({ entity_id: 'e7', nar1_case_id: 'c1' })
     expect(post.mock.calls[1][0]).toBe('/tpsi/filings/f9/validate')
+  })
+
+  it('stays on Data Verification after validating, so the validated form can be read', async () => {
+    // Levi 2026-09-19: "it should not skip directly to step 3 signing ... load
+    // the pdf viewer and then provide a continue to signing button". The
+    // re-read that ADVANCES (`onChanged`) is not used; the one that does not is.
+    const user = userEvent.setup()
+    const onRefresh = vi.fn()
+    post.mockResolvedValueOnce({ id: 'f9' })
+    render(
+      <StageDataVerification caseRow={at({ form_status: { code: 'draft' }, filing_id: null })}
+                             canWrite canValidate onChanged={onChanged}
+                             onRefresh={onRefresh} onError={onError} onGo={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /Validate with CR/ }))
+    await waitFor(() => expect(onRefresh).toHaveBeenCalled())
+    expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  it('offers Continue to Signing only after the validated form', () => {
+    const onGo = vi.fn()
+    render(<StageDataVerification caseRow={at({ validated_at: '2026-10-10T03:00:00Z' })}
+                                  canWrite canValidate onChanged={onChanged}
+                                  onError={onError} onGo={onGo} />)
+    const viewer = screen.getByText('The return CR validated')
+    const next = screen.getByRole('button', { name: /Continue to Signing/ })
+    // Document order: the viewer, then the way on.
+    expect(viewer.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy()
+    fireEvent.click(next)
+    expect(onGo).toHaveBeenCalledWith(3)
   })
 
   it('rebuilds the return before re-validating, so a correction reaches CR', async () => {
@@ -590,10 +624,12 @@ describe('Client Verification', () => {
   })
 
   it('labels the preview with what it is and where it came from', async () => {
+    // Which YEAR's return it is leads (2026-09-18): a company catching up has
+    // one of these per year, and the file name carries it too.
     renderIt()
-    expect(await screen.findByText('Form NAR1 + Schedule 1')).toBeInTheDocument()
+    expect(await screen.findByText('Annual return 2025')).toBeInTheDocument()
     expect(screen.getByText('Rendered from the CR-validated XML')).toBeInTheDocument()
-    expect(screen.getByText(/NAR1_Harbour_Tech_Ltd_\.pdf/)).toBeInTheDocument()
+    expect(screen.getByText('NAR1_Harbour_Tech_Ltd_2025.pdf')).toBeInTheDocument()
   })
 
   it('zooms the preview, within bounds', async () => {
@@ -2336,17 +2372,41 @@ describe('Return year at Client Verification', () => {
                              canWrite onWarn={onWarn} onChanged={onChanged}
                              onError={onError} {...props} />)
 
-  it('offers every year back to the first return, each with its made-up date', async () => {
-    renderIt()
-    const select = await screen.findByLabelText('Return year')
-    expect(select).toHaveValue('2026')
+  it('starts EMPTY and mandatory, never on a year nobody chose', async () => {
+    // Levi 2026-09-19: "do not default the dropdown to current year... make it
+    // empty by default but mandatory".
+    renderIt({ return_year: null })
+    const select = await screen.findByLabelText(/Return year/)
+    expect(select).toHaveValue('')
+    expect(select).toBeRequired()
+    expect(screen.getByTestId('return-year-detail')).toHaveTextContent(/Required/)
+  })
+
+  it('offers the years newest first, each with its made-up date', async () => {
+    renderIt({ return_year: null })
+    const select = await screen.findByLabelText(/Return year/)
     const options = within(select).getAllByRole('option').map(o => o.textContent)
-    expect(options[0]).toMatch(/2026 — made up to 09\/10\/2026 · not due yet/)
-    expect(options[1]).toMatch(/2025 — made up to 09\/10\/2025/)
+    expect(options[0]).toMatch(/Choose the return year/)
+    expect(options[1]).toMatch(/2026 — made up to 09\/10\/2026 · not due yet/)
+    expect(options[2]).toMatch(/2025 — made up to 09\/10\/2025/)
+  })
+
+  it('without a year there is nothing to preview and nothing to send', async () => {
+    renderIt({ return_year: null })
+    await screen.findByLabelText(/Return year/)
+    expect(screen.getByText('Choose the return year above to see the return.'))
+      .toBeInTheDocument()
+    expect(blob).not.toHaveBeenCalledWith('/cases/c1/verification/preview')
+    expect(screen.getByText('Choose the return year above before sending.'))
+      .toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Download PDF' })).toBeDisabled()
   })
 
   it('says when the chosen return is made up to and when CR will take it', async () => {
-    renderIt()
+    RETURN_YEAR = { ...RETURN_YEAR_INFO, year: 2026, source: 'case',
+                    return_date: '2026-10-09' }
+    renderIt({ return_year: 2026 })
     expect(await screen.findByTestId('return-year-detail'))
       .toHaveTextContent(/Made up to 09\/10\/2026 — 21 days from now.*only validate it from 09\/10\/2026/)
   })
@@ -2354,7 +2414,7 @@ describe('Return year at Client Verification', () => {
   it('choosing a missed year saves it on the case and reloads it', async () => {
     const user = userEvent.setup()
     renderIt()
-    await user.selectOptions(await screen.findByLabelText('Return year'), '2025')
+    await user.selectOptions(await screen.findByLabelText(/Return year/), '2025')
     await waitFor(() => expect(patch).toHaveBeenCalledWith('/cases/c1',
                                                            { ar_period_year: 2025 }))
     expect(onChanged).toHaveBeenCalled()
@@ -2362,7 +2422,7 @@ describe('Return year at Client Verification', () => {
 
   it('a year another case already files cannot be chosen, and says which case', async () => {
     renderIt()
-    const select = await screen.findByLabelText('Return year')
+    const select = await screen.findByLabelText(/Return year/)
     const held = within(select).getByRole('option', { name: /2024/ })
     expect(held).toBeDisabled()
     expect(held.textContent).toMatch(/already on NAR-2026-0001/)
@@ -2373,7 +2433,7 @@ describe('Return year at Client Verification', () => {
       locked_reason: 'the 2026 return has been sent to the client. Restart '
         + 'verification to choose a different year' }
     renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', ar_period_year: 2026 })
-    expect(await screen.findByLabelText('Return year')).toBeDisabled()
+    expect(await screen.findByLabelText(/Return year/)).toBeDisabled()
     expect(screen.getByText(/The year is fixed:.*Restart verification/)).toBeInTheDocument()
   })
 
@@ -2382,7 +2442,7 @@ describe('Return year at Client Verification', () => {
     patch.mockRejectedValueOnce(Object.assign(new Error('another case files 2025'),
                                               { status: 409 }))
     renderIt()
-    await user.selectOptions(await screen.findByLabelText('Return year'), '2025')
+    await user.selectOptions(await screen.findByLabelText(/Return year/), '2025')
     await waitFor(() => expect(onError).toHaveBeenLastCalledWith(
       expect.objectContaining({ message: 'another case files 2025' })))
   })
@@ -2498,7 +2558,8 @@ describe('Data Verification — the return CR validated', () => {
   })
 
   it('holds Validate until the return date, and says why', async () => {
-    RETURN_YEAR = RETURN_YEAR_INFO
+    RETURN_YEAR = { ...RETURN_YEAR_INFO, year: 2026, source: 'case',
+                    return_date: '2026-10-09' }
     renderIt({ form_status: { code: 'draft' }, filing_id: null })
     expect(await screen.findByText(/CR will not validate the 2026 return until/))
       .toBeInTheDocument()

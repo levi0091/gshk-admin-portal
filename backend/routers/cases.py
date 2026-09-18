@@ -202,7 +202,7 @@ def _year_change(before: dict, requested: int, *, restarted: bool) -> int | None
     }
     entity = _entity_or_empty(before["entity_id"])
     today = nar1_return_year.hk_today()
-    current, _source = nar1_return_year.resolve(before, filing, entity, today)
+    current, _source = nar1_return_year.resolve(before, filing)
     try:
         year = nar1_return_year.check_range(
             requested, nar1_return_year.incorporated(entity), today,
@@ -258,6 +258,10 @@ async def get_return_year(
     picker on Client Verification is drawn from — each option carrying its
     return date, the last day of the HK$105 window, what CR would charge if it
     were filed today, and the other case already filing it, if any.
+
+    `year` is None until somebody chooses one (Levi 2026-09-19: "empty by
+    default but mandatory") — the picker then starts blank rather than on a
+    year nobody picked.
     """
     try:
         case = nar1_cases.get_case(case_id)
@@ -268,14 +272,14 @@ async def get_return_year(
     entity = _entity_or_empty(case["entity_id"])
     today = nar1_return_year.hk_today()
     inc = nar1_return_year.incorporated(entity)
-    year, source = nar1_return_year.resolve(case, filing, entity, today)
+    year, source = nar1_return_year.resolve(case, filing)
     try:
         held = nar1_return_year.held_years(case["entity_id"],
                                            excluding_case_id=case_id)
     except Exception:  # noqa: BLE001 — the picker still works without it; the
         held = {}      # PATCH re-asks, and the index is the final word.
     lock = nar1_return_year.lock_reason(case, filing, year)
-    rd = nar1_return_year.return_date(inc, year)
+    rd = nar1_return_year.return_date(inc, year) if year else None
     return {
         "year": year,
         "source": source,
@@ -407,14 +411,19 @@ async def get_return_data(
     # and it must name the return this case files — which, for a company
     # catching up on 2023, is not the one due this October.
     year, _source = nar1_return_year.resolve(
-        case, nar1_cases.current_filing(case_id), graph.get("entity"))
+        case, nar1_cases.current_filing(case_id))
 
-    return nar1_return_data.summarise(
+    summary = nar1_return_data.summarise(
         graph,
+        # With no year chosen yet, the filability check still needs SOME year
+        # to build against — the year does not decide whether the record can
+        # produce a NAR1 — but the card must not claim one was chosen.
         year=year,
         signatory_capacity=case.get("signatory_capacity"),
         signing_identity=signing_identity,
     )
+    summary["year"] = year
+    return summary
 
 
 @router.patch("/{case_id}")
@@ -1453,7 +1462,16 @@ async def preview_verification(
         payload = frozen
         signed_on = filing.get("signed_at") or ""
     else:
-        year, _source = nar1_return_year.resolve(case, filing, entity)
+        year, _source = nar1_return_year.resolve(case, filing)
+        if not year:
+            # NO YEAR, NO RETURN (Levi 2026-09-19: the year is mandatory and
+            # starts empty). Building for this calendar year here would put a
+            # year nobody chose in front of the operator — the very default
+            # that was removed. The screen asks for the year instead.
+            raise HTTPException(409, {
+                "message": nar1_return_year.NO_YEAR[0].upper()
+                           + nar1_return_year.NO_YEAR[1:] + ".",
+                "reason": "return_year_required"})
         signed_on = ""
         try:
             payload = await nar1_prepare.build_form_xml(
@@ -1673,8 +1691,15 @@ async def send_verification(
     # it is STORED further down, once every cheap refusal has passed and the
     # mail is about to go — so a send refused for a missing deadline does not
     # leave a trail saying the send fixed the year.
-    year, year_source = nar1_return_year.resolve(
-        case, filing, _entity_or_empty(case["entity_id"]))
+    #
+    # MANDATORY (Levi 2026-09-19). A case with no year is refused before
+    # anything is built: the client is being asked to approve ONE year's
+    # return, and nobody has said which.
+    year, year_source = nar1_return_year.resolve(case, filing)
+    if not year:
+        raise HTTPException(409, {
+            "message": f"Nothing was sent: {nar1_return_year.NO_YEAR}.",
+            "reason": "return_year_required"})
     if not case.get("ar_period_year"):
         try:
             nar1_return_year.refuse_if_held(case["entity_id"], case_id, year)

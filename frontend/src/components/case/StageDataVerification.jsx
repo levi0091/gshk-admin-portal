@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { formatDateTime } from '../../lib/format.js'
 import { downloadValidatedPdf } from '../../lib/download.js'
@@ -121,8 +121,12 @@ export function ValidationChanges({ comparison }) {
  * actually answers. Splitting them means a mapping failure reads as a mapping
  * failure instead of arriving disguised as a CR rejection.
  */
-export default function StageDataVerification({ caseRow, canWrite, canValidate, onChanged, onError, onGo }) {
+export default function StageDataVerification({ caseRow, canWrite, canValidate, onChanged, onRefresh, onError, onGo }) {
   const [busy, setBusy] = useState(null)
+  // Set when THIS session's validation succeeded, so the validated form is
+  // brought into view once it renders — not on every visit to the stage.
+  const [justValidated, setJustValidated] = useState(false)
+  const validatedCard = useRef(null)
   const [comparison, setComparison] = useState(null)
   const [comparisonError, setComparisonError] = useState(null)
   const [yearInfo, setYearInfo] = useState(null)
@@ -165,10 +169,20 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
   const earlyUntil = yearInfo?.return_date && yearInfo?.today
     && yearInfo.return_date > yearInfo.today ? yearInfo.return_date : null
 
+  // Bring the validated form into view once, right after validating — it
+  // renders below the fold, under the return data and the checks.
+  useEffect(() => {
+    if (!justValidated || !validated) return
+    try {
+      validatedCard.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+    } catch { /* scrolling is a courtesy */ }
+    setJustValidated(false)
+  }, [justValidated, validated])
+
   async function downloadValidated() {
     setSaving(true)
     try {
-      const name = `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}`
+      const name = `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_').replace(/_+$/, '')}`
         + `${year ? `_${year}` : ''}_validated.pdf`
       await downloadValidatedPdf(caseRow.id, name)
     } catch (e) {
@@ -226,7 +240,15 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
         filingId = filing.id
       }
       await api.post(`/tpsi/filings/${filingId}/validate`, {})
-      onChanged()
+      // STAY HERE (Levi 2026-09-19): "after CR validation, it should not skip
+      // directly to step 3 signing ... after user click on validate, load the
+      // pdf viewer and then provide a continue to signing button". `onChanged`
+      // advances a stage whenever the next one unlocks, which validating
+      // always does — so it threw the operator onto Signing before they had
+      // seen the form CR validated or what moved since the client approved.
+      // `onRefresh` re-reads without advancing; the button below moves on.
+      setJustValidated(true)
+      ;(onRefresh || onChanged)()
     } catch (e) {
       onError(describeError(e))
     } finally {
@@ -445,7 +467,7 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           from the approved copy marked, and the list of those differences
           above it. */}
       {validated && (
-        <div className="card mb-16">
+        <div className="card mb-16" ref={validatedCard}>
           <div className="card-hdr">
             <div>
               <div className="card-title">The return CR validated</div>
@@ -500,9 +522,12 @@ export default function StageDataVerification({ caseRow, canWrite, canValidate, 
           {/* The client has already approved by the time this stage is
               reachable (2026-09-17) — they are stage 1 now — so what comes
               next is the signature, not the email. */}
+          {/* AFTER the validated form, and the only way on (2026-09-19):
+              validating no longer jumps to Signing by itself. */}
           <div className="ab-note">
-            The Companies Registry has accepted this return for filing. It is
-            signed next.
+            The Companies Registry has accepted this return for filing. Check
+            the validated form above — anything that differs from what the
+            client approved is marked — then continue to sign it.
           </div>
           <div className="ab-actions">
             <button className="btn btn-primary" onClick={() => onGo(3)}>

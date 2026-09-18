@@ -804,8 +804,16 @@ async def prepare_filing(
         live = nar1_cases.current_filing(body.nar1_case_id)
     except Exception:  # noqa: BLE001 — a missing live filing is not an error
         live = None
-    year, year_source = nar1_return_year.resolve(
-        case, live, _entity_or_empty(body.entity_id))
+    year, year_source = nar1_return_year.resolve(case, live)
+    if not year:
+        # MANDATORY and never defaulted (Levi 2026-09-19). An explicit `year`
+        # does not stand in for the case's: the year is chosen, and audited, on
+        # Client Verification — where the client is asked to approve it — not
+        # asserted by whoever calls this.
+        raise HTTPException(409, {
+            "message": (f"case {case.get('case_no') or case.get('id')} has no "
+                        f"return year: {nar1_return_year.NO_YEAR}."),
+            "reason": "return_year_required"})
     if body.year and int(body.year) != year:
         raise HTTPException(409, {
             "message": (f"case {case.get('case_no') or case.get('id')} files "

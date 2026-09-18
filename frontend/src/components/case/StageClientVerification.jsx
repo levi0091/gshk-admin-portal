@@ -198,8 +198,12 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // Restart verification clears the send, and only then does it go live again.
   const approved = sent && answered && Boolean(caseRow.client_approved)
   const year = caseRow.return_year ?? caseRow.ar_period_year
+  // MANDATORY and never defaulted (Levi 2026-09-19). Until a year is chosen
+  // there is no return to preview, download or send — which year's would it
+  // be? The backend refuses all three independently.
+  const yearChosen = Boolean(year)
   const pdfName =
-    `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_')}`
+    `NAR1_${(caseRow.company_name || 'return').replace(/[^\w]+/g, '_').replace(/_+$/, '')}`
     + `${year ? `_${year}` : ''}.pdf`
 
   async function download() {
@@ -252,7 +256,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   // restarting verification re-fetches rather than leaving yesterday's
   // document on screen.
   const { url: pdfUrl, error: pdfError } = usePdfBlob(
-    `/cases/${caseId}/verification/preview`, `${filingId}|${caseRow.updated_at}`)
+    sent || yearChosen ? `/cases/${caseId}/verification/preview` : null,
+    `${filingId}|${caseRow.updated_at}`)
 
   async function send() {
     onError(null); onWarn?.(null, null); setBusy('send')
@@ -433,7 +438,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           </div>
           <div className="row gap-8">
             <button type="button" className="btn btn-outline btn-sm"
-                    disabled={saving} onClick={download}>
+                    disabled={saving || (!sent && !yearChosen)} onClick={download}>
               {saving ? 'Preparing…' : 'Download PDF'}
             </button>
             {/* A tab, not a modal: the operator is checking this against the
@@ -456,6 +461,9 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           error={pdfError}
           fileName={pdfName}
           label="NAR1 preview"
+          emptyText={sent || yearChosen
+            ? 'Rendering the preview…'
+            : 'Choose the return year above to see the return.'}
           pills={[
             { label: year ? `Annual return ${year}` : 'Form NAR1 + Schedule 1' },
             sent
@@ -615,6 +623,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             <div className="ab-note">
               {blocked
                 ? 'Sending is not available for this case.'
+                : !yearChosen
+                  ? 'Choose the return year above before sending.'
                 : !reviewed
                   ? 'Confirm you have reviewed the return to enable sending.'
                   : to === null
@@ -634,7 +644,7 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             <div className="ab-actions">
               <span className="perm-tag">Requires <b>nar1:write</b></span>
               <button className="btn btn-action"
-                      disabled={!reviewed || busy !== null || !to
+                      disabled={!yearChosen || !reviewed || busy !== null || !to
                                 || to.length === 0 || Boolean(blocked)
                                 || !respondBy}
                       onClick={send}>

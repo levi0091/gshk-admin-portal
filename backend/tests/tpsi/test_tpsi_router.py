@@ -286,8 +286,11 @@ def _prepare_patches(**overrides):
         # case CR already holds, or one completed off-portal. Mocked here like
         # every other collaborator so no test in this file reaches Supabase.
         "blocking": MagicMock(return_value=None),
+        # With its return year chosen — mandatory since 2026-09-19; a case
+        # without one is refused before anything is built (tested below).
         "case": MagicMock(return_value={"id": "c1", "entity_id": "e1",
-                                        "manual_receipt": None}),
+                                        "manual_receipt": None,
+                                        "ar_period_year": 2026}),
         # The case's live attempt, and the rebuild that refreshes it in place.
         # Default: the case has no filing yet, so prepare opens one.
         "current": MagicMock(return_value=None),
@@ -477,14 +480,38 @@ def test_prepare_unknown_entity_is_a_clean_400(client):
     assert "e9" in response.text
 
 
-def test_prepare_defaults_the_return_year_to_the_current_hk_year(client):
-    p = _prepare_patches(map=MagicMock(return_value={}))
+def test_prepare_refuses_a_case_whose_year_nobody_has_chosen(client):
+    """REVERSED 2026-09-19. This used to default to the current HK year. Levi:
+    "do not default ... make it empty by default but mandatory" — so a case
+    with no year is refused before anything is built, and an explicit `year`
+    in the body does not stand in for the one chosen on Client Verification."""
+    p = _prepare_patches(case=MagicMock(return_value={
+        "id": "c1", "entity_id": "e1", "manual_receipt": None,
+        "case_no": "NAR-2026-0004"}))
     with _with_prepare(p):
-        client.post("/tpsi/filings/prepare", headers=H,
-                    json={"entity_id": "e1", "nar1_case_id": "c1"})
-    from datetime import datetime, timedelta, timezone
-    hk_year = (datetime.now(timezone.utc) + timedelta(hours=8)).year
-    assert p["map"].call_args.kwargs["year"] == hk_year
+        for body in ({}, {"year": 2026}):
+            response = client.post("/tpsi/filings/prepare", headers=H,
+                                   json={"entity_id": "e1", "nar1_case_id": "c1",
+                                         **body})
+            assert response.status_code == 409
+            assert response.json()["detail"]["reason"] == "return_year_required"
+    p["map"].assert_not_called()
+    p["create"].assert_not_called()
+
+
+def test_prepare_ignores_the_year_in_a_draft_it_is_about_to_rebuild(client):
+    """A draft built under the old default carries a year nobody chose."""
+    p = _prepare_patches(
+        case=MagicMock(return_value={"id": "c1", "entity_id": "e1",
+                                     "manual_receipt": None}),
+        current=MagicMock(return_value={
+            "id": "f9", "stage": "draft",
+            "request_xml": "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"}))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 409
+    p["rebuild"].assert_not_called()
 
 
 def test_prepare_builds_the_year_the_case_names(client):
@@ -534,22 +561,29 @@ def test_prepare_refuses_a_year_the_case_does_not_file(client):
     p["create"].assert_not_called()
 
 
-def test_prepare_fixes_a_defaulted_year_on_the_case_and_audits_it(client):
-    """A legacy case with no stored year gets the one it is built for, before
-    the filing opens — so the case, the filing and the trail agree."""
-    from datetime import datetime, timedelta, timezone
-    hk_year = (datetime.now(timezone.utc) + timedelta(hours=8)).year
+#: A case sent to its client before the year existed: no stored year, but the
+#: return it mailed was built for one.
+_LEGACY_SENT = {"id": "c1", "entity_id": "e1", "manual_receipt": None,
+                "verification_xml": "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"}
+
+
+def test_prepare_writes_down_a_legacy_cases_year_and_audits_it(client):
+    """The year a legacy case was SENT for is stored before the filing opens —
+    so the case, the filing and the trail agree."""
     claim = MagicMock(return_value=True)
-    p = _prepare_patches()
+    p = _prepare_patches(case=MagicMock(return_value=dict(_LEGACY_SENT)))
     with _with_prepare(p), patch("routers.tpsi.nar1_return_year.claim", new=claim):
         response = client.post("/tpsi/filings/prepare", headers=H,
                                json={"entity_id": "e1", "nar1_case_id": "c1"})
     assert response.status_code == 201
-    assert claim.call_args.args[1] == hk_year
+    assert claim.call_args.args[1] == 2026
+    assert p["map"].call_args.kwargs["year"] == 2026
     fixed = [c for c in p["log"].call_args_list
              if c.kwargs.get("action_type") == "CASE_FIELD_UPDATED"]
-    assert fixed and fixed[0].kwargs["new_value"] == str(hk_year)
-    assert fixed[0].kwargs["metadata"]["field"] == "ar_period_year"
+    assert fixed and fixed[0].kwargs["new_value"] == "2026"
+    assert fixed[0].kwargs["metadata"] == {
+        "field": "ar_period_year", "fixed_by": "filing_prepare",
+        "resolved_from": "sent"}
     # The company goes in case_id, as every NAR1 workflow row does.
     assert fixed[0].kwargs["case_id"] == "e1"
 
@@ -560,7 +594,7 @@ def test_prepare_refuses_a_year_another_case_already_files(client):
     refused = nar1_return_year.YearRefused(
         "case NAR-2026-0001 is already filing this company's 2026 annual return",
         status=409, held_by={"case_id": "c0", "case_no": "NAR-2026-0001"})
-    p = _prepare_patches()
+    p = _prepare_patches(case=MagicMock(return_value=dict(_LEGACY_SENT)))
     with _with_prepare(p), patch("routers.tpsi.nar1_return_year.claim",
                                  side_effect=refused):
         response = client.post("/tpsi/filings/prepare", headers=H,
@@ -1984,7 +2018,7 @@ def test_prepare_falls_back_to_the_default_capacity_for_a_body_corporate(client)
     refusal to the same question."""
     p = _prepare_patches(case=MagicMock(return_value={
         "id": "c1", "entity_id": "e1", "manual_receipt": None,
-        "signatory_capacity": None,
+        "ar_period_year": 2026, "signatory_capacity": None,
     }))
     with _with_prepare(p), \
          patch("routers.tpsi.nar1_mapper._derive_signatory",
@@ -2001,7 +2035,7 @@ def test_prepare_keeps_the_operators_stored_capacity_over_the_default(client):
     chosen = "Company Secretary of the Company Secretary (Body Corporate)"
     p = _prepare_patches(case=MagicMock(return_value={
         "id": "c1", "entity_id": "e1", "manual_receipt": None,
-        "signatory_capacity": chosen,
+        "ar_period_year": 2026, "signatory_capacity": chosen,
     }))
     with _with_prepare(p):
         response = client.post("/tpsi/filings/prepare", headers=H,
@@ -2019,7 +2053,7 @@ def test_prepare_defaults_an_individual_signatory_to_director(client):
     then filed "Company Secretary" while the picker showed blank."""
     p = _prepare_patches(case=MagicMock(return_value={
         "id": "c1", "entity_id": "e1", "manual_receipt": None,
-        "signatory_capacity": None,
+        "ar_period_year": 2026, "signatory_capacity": None,
     }))
     with _with_prepare(p), \
          patch("routers.tpsi.nar1_mapper._derive_signatory",

@@ -86,9 +86,13 @@ def client():
     return TestClient(app)
 
 
+#: `ar_period_year` is set because the year is MANDATORY (Levi 2026-09-19):
+#: a case with none refuses the preview and the send, and every test here is
+#: about what happens once one has been chosen. The refusal itself is tested in
+#: test_cases_return_year.py.
 CASE = {"id": "c1", "case_no": "NAR-2026-0041", "entity_id": "e1",
         "verification_sent_at": None, "client_approved": None,
-        "client_response_at": None}
+        "client_response_at": None, "ar_period_year": 2026}
 
 VALIDATED = {"id": "f1", "form_code": "Nar1", "stage": "validated",
              "validated_xml": "<x/>", "validated_at": "2026-08-16T00:00:00Z"}

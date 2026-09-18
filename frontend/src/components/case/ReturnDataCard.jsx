@@ -123,7 +123,9 @@ export default function ReturnDataCard({ caseId, reloadKey, onChanged,
           )}
         </Row>
         <Row label="BR number">{data.br_number}</Row>
-        <Row label="Return year">{data.year}</Row>
+        <Row label="Return year">
+          {data.year ?? <i className="td-muted">Not chosen — choose it on Client Verification</i>}
+        </Row>
         <Row label="Registered office">{data.registered_office}</Row>
         <Row label="Directors">
           {data.directors?.length ? data.directors.join(' · ') : null}

@@ -67,18 +67,26 @@ def test_a_company_younger_than_a_year_can_only_prepare_its_first_return():
 
 
 def test_without_an_incorporation_date_the_range_is_the_last_ten_years():
-    assert ry.earliest_year(None, TODAY) == 2016
+    assert ry.earliest_year(None, TODAY) == 2017
     assert ry.latest_year(None, TODAY) == 2026
 
 
-@pytest.mark.parametrize("inc, expected", [
-    (UPCOMING, 2026),            # the return due in three weeks
-    (PASSED, 2026),              # this year's, already due — what hk_year() was
-    (date(2026, 3, 1), 2027),    # incorporated this year: first return is next year's
-    (None, 2026),
-])
-def test_the_default_is_this_year_clamped_into_the_range(inc, expected):
-    assert ry.default_year(inc, TODAY) == expected
+def test_an_old_company_is_offered_ten_years_not_every_year_since_incorporation():
+    """Levi 2026-09-19: ten years in the dropdown. CR sets no maximum, so the
+    floor is ours: this year and the nine before it."""
+    old = date(2005, 3, 1)
+    assert ry.earliest_year(old, TODAY) == 2017
+    years = [o["year"] for o in ry.options(old, TODAY)]
+    # 2027 is the upcoming return (this year's anniversary has passed).
+    assert years == list(range(2027, 2016, -1))
+
+
+def test_a_year_past_the_ten_year_window_is_refused_saying_it_is_our_limit():
+    with pytest.raises(ry.YearRefused) as refused:
+        ry.check_range(2016, date(2005, 3, 1), TODAY)
+    message = str(refused.value)
+    assert "last 10 years" in message and "2017" in message
+    assert "sets no such limit" in message
 
 
 def test_a_leap_day_incorporation_files_on_the_28th_in_a_common_year():
@@ -89,24 +97,45 @@ def test_a_leap_day_incorporation_files_on_the_28th_in_a_common_year():
 # Resolution order
 # ---------------------------------------------------------------------------
 
+_Y = "<cr:yearAnnualReturn>{}</cr:yearAnnualReturn>"
+
+
 def test_a_stored_year_wins():
-    case = {"ar_period_year": 2023}
-    filing = {"request_xml": "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"}
-    assert ry.resolve(case, filing, {"incorporation_date": "2019-10-09"}, TODAY) \
-        == (2023, ry.SOURCE_CASE)
+    case = {"ar_period_year": 2023, "verification_xml": _Y.format(2025)}
+    filing = {"stage": "validated", "validated_xml": _Y.format(2026)}
+    assert ry.resolve(case, filing) == (2023, ry.SOURCE_CASE)
 
 
-def test_a_legacy_case_keeps_the_year_its_filing_was_built_for():
-    """Every case in flight before this existed was built for hk_year(). It
-    must not change year under anybody just because the code learned to ask."""
-    filing = {"validated_xml": "<cr:yearAnnualReturn>2026</cr:yearAnnualReturn>"}
-    assert ry.resolve({}, filing, {"incorporation_date": "2019-01-05"}, TODAY) \
-        == (2026, ry.SOURCE_FILING)
+def test_a_legacy_case_keeps_the_year_it_was_sent_to_the_client_for():
+    """Mailed before the year existed — for a year, and that is it."""
+    case = {"verification_xml": _Y.format(2026)}
+    assert ry.resolve(case, {"stage": "draft", "request_xml": _Y.format(2025)}) \
+        == (2026, ry.SOURCE_SENT)
 
 
-def test_a_new_case_gets_the_default():
-    assert ry.resolve({}, None, {"incorporation_date": "2026-03-01"}, TODAY) \
-        == (2027, ry.SOURCE_DEFAULT)
+def test_a_legacy_case_keeps_the_year_cr_validated():
+    filing = {"stage": "validated", "validated_xml": _Y.format(2026)}
+    assert ry.resolve({}, filing) == (2026, ry.SOURCE_FILING)
+
+
+@pytest.mark.parametrize("stage", ["draft", "validation_failed"])
+def test_a_draft_filings_year_is_not_a_choice(stage):
+    """Levi 2026-09-19: "do not default the dropdown to current year". Drafts
+    were built with the old hk_year() default and are rebuilt before they are
+    sent or validated, so their year is an assumption nobody made."""
+    assert ry.resolve({}, {"stage": stage, "request_xml": _Y.format(2026)}) \
+        == (None, None)
+
+
+def test_a_new_case_has_no_year_until_one_is_chosen():
+    assert ry.resolve({}, None) == (None, None)
+    assert ry.resolve({"ar_period_year": None, "verification_xml": None}, None) \
+        == (None, None)
+
+
+def test_a_lock_on_a_case_with_no_readable_year_still_reads_as_a_sentence():
+    reason = ry.lock_reason({"verification_sent_at": "2026-09-10"}, None, None)
+    assert reason.startswith("the return has been sent")
 
 
 # ---------------------------------------------------------------------------

@@ -28,27 +28,48 @@ public approval page already read it. One case is one return, so the year is a
 fact about the case, chosen at Client Verification — the first stage, and the
 one where the client is shown the return they will be asked to approve.
 
-RESOLUTION, in this order, so no case in flight changes under anybody:
+THERE IS NO DEFAULT (Levi 2026-09-19: "do not default the dropdown to current
+year... make it empty by default but mandatory"). A case has a year when
+somebody has CHOSEN one, or when one is already a fact about the case — and
+otherwise it has none, and nothing that depends on the year (the preview, the
+send, the CR build) proceeds until it does. Resolution, in this order, so no
+case in flight changes under anybody:
 
-  1. `ar_period_year`, once somebody chose it or a send/prepare fixed it;
-  2. the year already in the case's filing XML — every legacy case, whose
-     return was built with `hk_year()` before this existed;
-  3. the default: the current year in Hong Kong, clamped into the range below.
-     That is what `hk_year()` always was, and it is the same year the
-     dashboard's `days_to_anniversary` is measured to (migration 033), so a
-     case reading "in 22 days" is for the return due in 22 days.
+  1. `ar_period_year` — chosen on Client Verification, or fixed by a send or
+     prepare of a legacy case (below);
+  2. the year in `verification_xml` — the return the client was SENT. A case
+     mailed before the year existed was mailed for a year, and that is it;
+  3. the year in a FROZEN filing (validated or later) — CR has checked the
+     return for that year, and the snapshot will not be rebuilt;
+  4. nothing.
 
-THE RANGE. From the first return (the year after incorporation — the first
-anniversary) to the NEXT return that falls due on or after today. Every year in
-it is either already due, and filable now, or the upcoming one: GSHK sends the
-return to the client ahead of the anniversary (Levi 2026-09-17), so the upcoming
-year has to be choosable at stage 1 even though CR will not validate it until
-its return date. Nothing later is: that is a year early, and no client should
-be asked to approve it.
+A DRAFT filing's year does not count. Drafts were built with the old
+`hk_year()` default and are rebuilt before they are sent or validated, so the
+year in one is an assumption nobody made, not a choice — which is exactly what
+the dropdown must no longer present as if it were.
+
+THE RANGE. The last `BACKLOG_YEARS` years — this year's return and the nine
+before it — up to the NEXT return that falls due on or after today, and never
+earlier than the company's first return (the year after incorporation).
+
+  * The upper end: every year offered is either already due, and filable now,
+    or the upcoming one. GSHK sends the return to the client ahead of the
+    anniversary (Levi 2026-09-17), so the upcoming year has to be choosable at
+    stage 1 even though CR will not validate it until its return date. Nothing
+    later is: that is a year early, and no client should be asked to approve it.
+  * The lower end is OURS, not CR's (Levi 2026-09-19: "can we put 10 years in
+    the dropdown? but if CR maximum is 4 years then put 4 years"). CR sets NO
+    maximum: its guidance is that a company delivers a return "in respect of
+    every year", that an outstanding one should be delivered "immediately",
+    and its late-fee scale stops rising at "more than 9 months after the return
+    date" (HK$3,480) with no cut-off after that. Nothing in the TPSI API
+    Interface or its parameter worksheet bounds `yearAnnualReturn` either. Ten
+    years is therefore a product choice about a usable dropdown, and a company
+    further behind than that is a conversation, not a menu item.
 
 A company with no incorporation date on record has no first year and no return
-dates. It is offered the last `UNKNOWN_BACKLOG_YEARS` years up to this one and
-told why the dates are missing; CR, which has the date, remains the check.
+dates. It gets the same ten years up to this one and is told why the dates are
+missing; CR, which has the date, remains the check.
 
 ONE LIVE CASE PER COMPANY PER YEAR. Four missed years are four cases (2023,
 2024, 2025, 2026), and nothing stops a company holding several open cases — two
@@ -68,17 +89,19 @@ from services.tpsi import filings as tpsi_filings
 
 _TABLE = "nar1_cases"
 
-#: How far back a company with NO incorporation date may reach. There is no
-#: first return to anchor on, and an unbounded list is not a choice anybody can
-#: make. Ten years is well beyond any backlog GSHK files; CR checks the real
-#: date either way.
-UNKNOWN_BACKLOG_YEARS = 10
+#: How many years of returns the picker offers: this year's and the nine before
+#: it (Levi 2026-09-19). A PRODUCT limit — CR sets none; see the module
+#: docstring for what CR does and does not say.
+BACKLOG_YEARS = 10
 
-#: Where the resolved year came from. The screen says which, because "you chose
-#: 2024" and "we assumed 2026" are different statements to be looking at.
+#: Where the resolved year came from. None means no year — nothing chosen.
 SOURCE_CASE = "case"
+SOURCE_SENT = "sent"
 SOURCE_FILING = "filing"
-SOURCE_DEFAULT = "default"
+
+#: The refusal every year-dependent action gives on a case with no year.
+NO_YEAR = ("choose the return year on Client Verification first — it decides "
+           "which annual return this case files")
 
 #: `yearAnnualReturn` in a stored fragment. The fragments carry undeclared
 #: prefixes (`cr:`), so a regex on the local name is sturdier than a parse that
@@ -147,9 +170,17 @@ def first_year(inc: date | None) -> int | None:
     return inc.year + 1 if inc else None
 
 
+def backlog_floor(today: date) -> int:
+    """The oldest year offered: this year and the nine before it."""
+    return today.year - (BACKLOG_YEARS - 1)
+
+
 def earliest_year(inc: date | None, today: date) -> int:
+    """The oldest year offered — the ten-year floor, or the company's first
+    return if it was incorporated more recently than that."""
     first = first_year(inc)
-    return first if first is not None else today.year - UNKNOWN_BACKLOG_YEARS
+    floor = backlog_floor(today)
+    return max(first, floor) if first is not None else floor
 
 
 def latest_year(inc: date | None, today: date) -> int:
@@ -167,23 +198,23 @@ def latest_year(inc: date | None, today: date) -> int:
     return max(latest, first_year(inc))
 
 
-def default_year(inc: date | None, today: date) -> int:
-    """This year in Hong Kong, clamped into the range — what `hk_year()` was."""
-    return min(max(today.year, earliest_year(inc, today)),
-               latest_year(inc, today))
+def resolve(case: dict | None, filing: dict | None) -> tuple[int | None, str | None]:
+    """(year, source) for this case, or (None, None) when nobody has chosen one.
 
-
-def resolve(case: dict | None, filing: dict | None, entity: dict | None = None,
-            today: date | None = None) -> tuple[int, str]:
-    """(year, source) for this case. See the module docstring for the order."""
+    See the module docstring for the order, and for why a draft filing's year
+    is not one of the sources.
+    """
     stored = (case or {}).get("ar_period_year")
     if stored:
         return int(stored), SOURCE_CASE
-    built = filing_year(filing)
-    if built:
-        return built, SOURCE_FILING
-    today = today or hk_today()
-    return default_year(incorporated(entity), today), SOURCE_DEFAULT
+    sent = year_in_xml((case or {}).get("verification_xml"))
+    if sent:
+        return sent, SOURCE_SENT
+    if filing and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
+        built = filing_year(filing)
+        if built:
+            return built, SOURCE_FILING
+    return None, None
 
 
 def check_range(year, inc: date | None, today: date,
@@ -197,16 +228,17 @@ def check_range(year, inc: date | None, today: date,
     latest = latest_year(inc, today)
     who = company_name or "this company"
     if year < earliest:
-        if inc is not None:
+        first = first_year(inc)
+        if first is not None and year < first:
             raise YearRefused(
                 f"{who} was incorporated on {_hk(inc)}, so its first annual "
-                f"return is for {earliest} (made up to {_hk(return_date(inc, earliest))}). "
+                f"return is for {first} (made up to {_hk(return_date(inc, first))}). "
                 f"There is no {year} return to file.")
         raise YearRefused(
-            f"{year} is more than {UNKNOWN_BACKLOG_YEARS} years ago. {who} has "
-            f"no incorporation date on record, so the portal cannot tell which "
-            f"returns exist — record the incorporation date on the company "
-            f"profile to reach earlier years.")
+            f"the portal offers the last {BACKLOG_YEARS} years of annual "
+            f"returns, {earliest} onwards; {year} is further back than that. "
+            f"The Companies Registry sets no such limit — a return that old "
+            f"has to be arranged outside this case.")
     if year > latest:
         if inc is not None:
             raise YearRefused(
@@ -257,7 +289,7 @@ def refuse_if_held(entity_id: str, case_id: str, year: int) -> None:
             status=409, held_by=other)
 
 
-def lock_reason(case: dict, filing: dict | None, year: int) -> str | None:
+def lock_reason(case: dict, filing: dict | None, year: int | None) -> str | None:
     """Why the year on this case can no longer be changed, or None.
 
     FIXED THE MOMENT THE CLIENT IS ASKED. What a director approves is the
@@ -271,28 +303,33 @@ def lock_reason(case: dict, filing: dict | None, year: int) -> str | None:
     rebuilt under it.
     """
     stage = (filing or {}).get("stage")
+    # "the 2024 return", or just "the return" on the rare legacy case locked
+    # without a year anybody can read back.
+    which = f"the {year} return" if year else "the return"
     if case.get("closed_at"):
         return "this case is closed"
     if (case.get("manual_submitted_at") or case.get("manual_receipt")
             or stage in tpsi_filings.TERMINAL_STAGES):
-        return f"the {year} return has already been filed"
+        return f"{which} has already been filed"
     if case.get("verification_sent_at"):
-        return (f"the {year} return has been sent to the client. Restart "
-                f"verification to choose a different year — the client has to "
-                f"approve the return for the year that is filed")
+        return (f"{which} has been sent to the client. Restart verification "
+                f"to choose a different year — the client has to approve the "
+                f"return for the year that is filed")
     if filing and stage not in tpsi_filings.REBUILDABLE_STAGES:
-        return (f"CR has validated the {year} return. Restart verification to "
-                f"choose a different year")
+        return (f"CR has validated {which}. Restart verification to choose a "
+                f"different year")
     return None
 
 
 def claim(case: dict, year: int) -> bool:
     """Store `year` on a case that has none yet. Returns whether it wrote.
 
-    Called by the send and by prepare, so a case whose year was only ever the
-    default gets it fixed at the moment it starts to matter: the email names it
-    and the filing is built for it. Refuses (409) a year another live case
-    already holds — the default can collide as easily as a choice can.
+    Called by the send and by prepare. Since the year became mandatory a case
+    reaching either has usually STORED one already and this writes nothing; it
+    exists for the legacy case whose year is only readable off what it mailed
+    or what CR validated, which gets that year written down at the moment it
+    starts to matter. Refuses (409) a year another live case already holds —
+    a legacy year can collide as easily as a choice can.
     """
     if case.get("ar_period_year"):
         return False

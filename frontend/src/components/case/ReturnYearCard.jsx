@@ -89,8 +89,13 @@ export default function ReturnYearCard({ caseRow, canWrite, onChanged, onError }
   // (see the React #31 note in project memory). A payload without a year or
   // options renders as "could not be loaded", never as a crash.
   const options = Array.isArray(info?.options) ? info.options : []
-  const usable = info && Number.isInteger(info.year)
-  const selected = usable && (options.find(o => o.year === info.year)
+  // `year: null` is a VALID answer — nobody has chosen one yet (Levi
+  // 2026-09-19: "make it empty by default but mandatory"). Only a payload with
+  // no options at all, or a year that is neither null nor a whole number, is
+  // one this card cannot read.
+  const chosen = Number.isInteger(info?.year)
+  const usable = info && options.length > 0 && (chosen || info.year == null)
+  const selected = chosen && (options.find(o => o.year === info.year)
     // A year outside today's range (a legacy case built for a year that has
     // since slid out of it) is still THE year; describe it from the payload.
     || { year: info.year, return_date: info.return_date, due: null })
@@ -118,18 +123,27 @@ export default function ReturnYearCard({ caseRow, canWrite, onChanged, onError }
       ) : (
         <>
           <div className="f-group">
-            <label className="f-label" htmlFor="return-year">Return year</label>
+            <label className="f-label" htmlFor="return-year">
+              Return year<span className="f-req"> *</span>
+            </label>
             <select
               id="return-year"
               className="f-input"
               style={{ maxWidth: 420 }}
-              value={info.year}
+              value={chosen ? info.year : ''}
+              required
+              aria-invalid={!chosen}
               disabled={!canWrite || info.locked || saving}
-              onChange={e => choose(Number(e.target.value))}
+              onChange={e => { if (e.target.value) choose(Number(e.target.value)) }}
             >
-              {/* The current year first even when it is outside the offered
+              {/* EMPTY UNTIL CHOSEN (2026-09-19). The placeholder is the only
+                  thing selected on a new case; it cannot be chosen back. */}
+              {!chosen && (
+                <option value="" disabled>Choose the return year…</option>
+              )}
+              {/* The case's year first even when it is outside the offered
                   range, so the select never shows a value it does not hold. */}
-              {!options.some(o => o.year === info.year) && (
+              {chosen && !options.some(o => o.year === info.year) && (
                 <option value={info.year}>{info.year}</option>
               )}
               {options.map(o => (
@@ -144,7 +158,10 @@ export default function ReturnYearCard({ caseRow, canWrite, onChanged, onError }
               ))}
             </select>
             <span className="f-hint" data-testid="return-year-detail">
-              {describeOption(selected)}
+              {chosen
+                ? describeOption(selected)
+                : 'Required. Nothing can be previewed or sent to the client '
+                  + 'until the year is chosen.'}
             </span>
           </div>
 
@@ -152,11 +169,11 @@ export default function ReturnYearCard({ caseRow, canWrite, onChanged, onError }
             <div className="card-note" role="status">
               🔒 The year is fixed: {info.locked_reason}.
             </div>
-          ) : info.source === 'default' && (
+          ) : (
             <div className="f-hint" style={{ marginTop: 6 }}>
-              Not chosen yet — this is the current year's return. Sending the
-              return to the client fixes it. To file a year the company missed,
-              choose it here first; each year is its own case.
+              The last 10 years are offered. Each year is its own case — to
+              file several missed years, open a case for each. The year is
+              fixed once the return is sent to the client.
             </div>
           )}
         </>
