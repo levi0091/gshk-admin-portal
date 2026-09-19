@@ -234,13 +234,15 @@ export function DeletedBanner({ kind, record, basePath, canRestore, onRestored }
 
   return (
     <div className="alert al-danger deleted-banner" role="status">
-      <span className="al-icon">🗑</span>
+      {/* Not 🗑: Outfit has no glyph for it and it rendered as a blank box. */}
+      <span className="al-icon">⚠</span>
       <div className="al-body">
         <b>This {noun} has been deleted.</b>
         <div style={{ marginTop: 4 }}>
+          {/* A dash, not a full stop: display names end in one ("Levi Z."). */}
           Deleted {formatDateTime(record.deleted_at)}
-          {record.deleted_by_name ? ` by ${record.deleted_by_name}` : ''}.
-          {record.deleted_reason && <> Reason: <i>{record.deleted_reason}</i></>}
+          {record.deleted_by_name ? ` by ${record.deleted_by_name}` : ''}
+          {record.deleted_reason && <> — <i>{record.deleted_reason}</i></>}
         </div>
         <div style={{ marginTop: 4 }}>
           Nobody else can see it, and it cannot be changed until it is restored.
