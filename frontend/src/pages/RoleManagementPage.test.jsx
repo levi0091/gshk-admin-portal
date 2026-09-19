@@ -65,12 +65,29 @@ describe('the modules a role can be granted', () => {
     expect(screen.queryByText('Documents')).not.toBeInTheDocument()
   })
 
-  it('offers no Delete level anywhere', async () => {
-    // `delete` only ever existed on the documents module. Neither owner module
-    // has one, and removing a document is a WRITE on the record it belongs to.
+  it('offers Delete on Companies and Persons and nowhere else (migration 049)', async () => {
+    // Soft delete of a whole record. Not on NAR1 cases (a case is CLOSED, which
+    // is nar1:write), not on CR filing, and never on the audit trail.
     await openCreate()
-    expect(screen.queryByLabelText('Delete')).not.toBeInTheDocument()
-    expect(screen.queryByText('Delete')).not.toBeInTheDocument()
+    expect(screen.getAllByLabelText('Delete')).toHaveLength(2)
+    for (const label of ['Companies', 'Persons']) {
+      const block = screen.getByText(label).parentElement
+      expect(within(block).getByLabelText('Delete'), label).toBeInTheDocument()
+    }
+  })
+
+  it('grants Delete on its own, without Edit', async () => {
+    // Editing a record is not the right to make it disappear, and the reverse.
+    const user = await openCreate()
+    await user.type(screen.getByPlaceholderText(/company_reviewer/), 'tidier')
+    const persons = screen.getByText('Persons').parentElement
+    await user.click(within(persons).getByLabelText('Delete'))
+    await user.click(screen.getByRole('button', { name: /Create Role/ }))
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/roles/', {
+      name: 'tidier',
+      permissions: [{ module: 'persons', permission: 'delete' }],
+    }))
   })
 
   it('says where documents went, on the modules that now carry them', async () => {

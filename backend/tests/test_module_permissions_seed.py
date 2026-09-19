@@ -22,6 +22,8 @@ pytestmark = pytest.mark.skipif(
 EXPECTED_SUPER_ADMIN = {
     ("companies", "read"), ("companies", "write"),
     ("persons", "read"), ("persons", "write"),
+    # Soft delete, migration 049.
+    ("companies", "delete"), ("persons", "delete"),
 }
 
 
@@ -109,27 +111,30 @@ def test_person_registry_view_role_flags_match_distinct_persons():
 
     Counting link-table rows over-counts (one person, many companies), which is
     exactly why the view exists.
+
+    Since migration 049 the view leaves out deleted persons, and does not count
+    a role held at a deleted company -- so the comparison does the same.
     """
+    live = ("JOIN persons p ON p.id = l.person_id AND p.deleted_at IS NULL "
+            "JOIN entities e ON e.id = l.entity_id AND e.deleted_at IS NULL")
     with _conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM person_registry WHERE is_director")
         view_directors = cur.fetchone()[0]
         cur.execute(
-            "SELECT count(DISTINCT person_id) FROM entity_officers "
-            "WHERE person_id IS NOT NULL AND role = 'director'"
+            f"SELECT count(DISTINCT l.person_id) FROM entity_officers l {live} "
+            "WHERE l.role = 'director'"
         )
         assert view_directors == cur.fetchone()[0]
 
         cur.execute("SELECT count(*) FROM person_registry WHERE is_shareholder")
         view_shareholders = cur.fetchone()[0]
-        cur.execute(
-            "SELECT count(DISTINCT person_id) FROM shareholdings WHERE person_id IS NOT NULL"
-        )
+        cur.execute(f"SELECT count(DISTINCT l.person_id) FROM shareholdings l {live}")
         assert view_shareholders == cur.fetchone()[0]
 
-        # one row per person, no fan-out from the joins
+        # one row per LIVE person, no fan-out from the joins
         cur.execute("SELECT count(*) FROM person_registry")
         rows = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM persons")
+        cur.execute("SELECT count(*) FROM persons WHERE deleted_at IS NULL")
         assert rows == cur.fetchone()[0]
 
 

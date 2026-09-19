@@ -5,6 +5,7 @@ all delegating to services.document_service. Supabase Storage + audit are mocked
 """
 from unittest.mock import patch, MagicMock, AsyncMock
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -16,6 +17,22 @@ SUPER_ADMIN = {"id": "admin-1", "display_name": "Levi Z.", "role_name": "super_a
 REGULAR = {"id": "u-2", "display_name": "Staff", "role_name": "staff", "role_id": "role-x"}
 H = {"Authorization": "Bearer tok"}
 FILE = {"file": ("proof.pdf", b"%PDF-bytes", "application/pdf")}
+
+
+@pytest.fixture(autouse=True)
+def _owners_are_not_deleted():
+    """The company and person document routes first ask whether their owner has
+    been deleted (`live_company` / `live_person`, migration 049), through the
+    ROUTER's client -- which these tests, being about the document service,
+    never patched. Answer "a live record" so each test stays about documents;
+    tests/test_soft_delete.py owns the deleted case.
+    """
+    live = MagicMock()
+    (live.table.return_value.select.return_value.eq.return_value
+     .execute.return_value.data) = [{"id": "owner", "deleted_at": None}]
+    with patch("routers.companies.get_supabase", return_value=live), \
+         patch("routers.persons.get_supabase", return_value=live):
+        yield
 
 
 def _no_existing(sb):

@@ -7,6 +7,7 @@ import AddPersonModal from '../components/AddPersonModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
 import { personsRegistryCaps } from '../lib/screenCapabilities.js'
+import { DeletedTable } from '../components/SoftDelete.jsx'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
@@ -59,7 +60,10 @@ const COLUMNS = [
 export default function PersonsRegistryPage() {
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
-  const canWrite = personsRegistryCaps(hasPermission).addPerson
+  const caps = personsRegistryCaps(hasPermission)
+  const canWrite = caps.addPerson
+  // The Deleted tab (migration 049) -- see CompanyRegistryPage.
+  const [showDeleted, setShowDeleted] = useState(false)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -106,7 +110,9 @@ export default function PersonsRegistryPage() {
   appendTo(params, filters.filter(f => f.col !== 'role'))
 
   // Cancels the previous request on every toggle — UAT W-8. See the hook.
-  const { data, loading, error } = useAbortableGet(`/persons?${params}`)
+  // Paused while the Deleted tab is open; the tab counts keep the last answer.
+  const { data, loading, error } = useAbortableGet(
+    showDeleted ? null : `/persons?${params}`)
 
   const persons = data?.persons || []
   const counts = data?.role_counts || {}
@@ -167,9 +173,9 @@ export default function PersonsRegistryPage() {
           <button
             key={tab.label}
             role="tab"
-            aria-selected={role === tab.key}
-            className={`filter-tab ${role === tab.key ? 'active' : ''}`}
-            onClick={() => setRole(tab.key)}
+            aria-selected={!showDeleted && role === tab.key}
+            className={`filter-tab ${!showDeleted && role === tab.key ? 'active' : ''}`}
+            onClick={() => { setShowDeleted(false); setRole(tab.key) }}
           >
             {tab.label}
             <span className="filter-count">
@@ -177,8 +183,26 @@ export default function PersonsRegistryPage() {
             </span>
           </button>
         ))}
+        {caps.viewDeleted && (
+          <button
+            role="tab"
+            aria-selected={showDeleted}
+            className={`filter-tab tab-deleted ${showDeleted ? 'active' : ''}`}
+            onClick={() => setShowDeleted(true)}
+          >
+            Deleted
+          </button>
+        )}
       </div>
 
+      {showDeleted ? (
+        <DeletedTable
+          endpoint="/persons/deleted" rowsKey="persons" search={query}
+          refLabel="Email" refOf={p => p.email}
+          onOpen={id => navigate(`/persons/${id}`)}
+        />
+      ) : (
+      <>
       <FilterChips
         columns={COLUMNS}
         filters={filters}
@@ -254,6 +278,8 @@ export default function PersonsRegistryPage() {
             </div>
           )}
         </>
+      )}
+      </>
       )}
     </>
   )

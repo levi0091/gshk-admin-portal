@@ -982,6 +982,73 @@ def test_a_company_with_two_corporate_secretaries_still_files_both():
         "Get Started HK Limited", "Second Secretary Limited"]
 
 
+# ---- corpTcspNo: the secretary ENTITY's own licence -----------------------
+
+def _officer_register_secretary(**over):
+    """A body-corporate secretary recorded ONLY in `entity_officers`, the
+    shape of every company profile created in the portal rather than loaded
+    from Viewpoint. The portal never writes `company_secretaries`."""
+    row = {"corporate_name": "Get Started HK Limited",
+           "corporate_entity_id": "gshk", "party_type": "corporate",
+           "role": "company_secretary", "is_current": True,
+           "corporate_address": SEC_ADDR, "corporate_br_no": "67169839",
+           "corporate_tcsp_licence_no": "TC000807"}
+    row.update(over)
+    return row
+
+
+def test_a_secretary_only_in_the_officer_register_still_files_its_licence():
+    """PROD 2026-09-19, Payward Limited. Its second profile was created in the
+    portal, so it has no `company_secretaries` row, and the officer path
+    passed NO licence to `_corporate`. The NAR1's Licence No. box printed
+    empty while the profile beside it showed TC000807. An empty licence on a
+    secretary that holds one is a misstatement about who is acting as the
+    company's TCSP, and CR checks it against its own register."""
+    g = graph(secretaries=[], officers=[_officer_register_secretary()],
+              addresses={"a1": ADDR})
+    secs = mapped(g)["corpSecList"]
+    assert len(secs) == 1
+    assert secs[0]["corpTcspNo"] == "TC000807"
+
+
+def test_the_secretary_entitys_own_licence_beats_the_register_copy():
+    """`entities.tcsp_licence_no` is the licence holder's own record, the value
+    the profile screen shows, and the source the CR form contract names for
+    corpTcspNo (`contract.py`). `company_secretaries.tcsp_number` is the ETL's
+    per-appointment copy of it. Where they disagree, the entity is what staff
+    last edited and what the director was shown."""
+    sec = {"is_gshk": True, "secretary_name": "Get Started HK Limited",
+           "tcsp_number": "TC000807", "is_current": True,
+           "corporate_entity_id": "gshk", "corporate_entity_resolution": "ok",
+           "corporate_address": SEC_ADDR, "corporate_br_no": "67169839",
+           "corporate_tcsp_licence_no": "TC000999"}
+    g = graph(secretaries=[sec], addresses={"a1": ADDR})
+    assert mapped(g)["corpSecList"][0]["corpTcspNo"] == "TC000999"
+
+
+def test_the_register_licence_stands_when_the_entity_holds_none():
+    """DEV's GSHK entity carries no `tcsp_licence_no` on any of its 5,604
+    appointments; the register does. Reading only the entity would empty the
+    box on every DEV return that fills it today."""
+    sec = {"is_gshk": True, "secretary_name": "Get Started HK Limited",
+           "tcsp_number": "TC000807", "is_current": True,
+           "corporate_entity_id": "gshk", "corporate_entity_resolution": "ok",
+           "corporate_address": SEC_ADDR, "corporate_br_no": "67169839",
+           "corporate_tcsp_licence_no": None}
+    g = graph(secretaries=[sec], addresses={"a1": ADDR})
+    assert mapped(g)["corpSecList"][0]["corpTcspNo"] == "TC000807"
+
+
+def test_a_corporate_director_never_carries_a_tcsp_licence():
+    """corpDir has no licence element; only a secretary acts as a TCSP on the
+    return. A body corporate that is BOTH a director and licensed must not have
+    its licence leak into the director block."""
+    g = graph(officers=[_officer_register_secretary(role="director")],
+              addresses={"a1": ADDR})
+    corp_dir = mapped(g)["corpDirList"][0]
+    assert "corpTcspNo" not in corp_dir
+
+
 def test_hkid_is_sent_as_the_partial_number_cr_asks_for():
     """indvHkidNo on a NAR1 is the PARTIAL HKID: leading letters plus the first
     three digits, at most 5 characters. Verified live 2026-08-21 -- CR rejects

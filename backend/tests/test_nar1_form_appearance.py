@@ -171,6 +171,42 @@ def test_no_widget_survives_even_on_a_return_with_continuation_sheets():
     assert _widgets(pdf) == []
 
 
+def test_bake_never_draws_through_a_content_stream_another_page_shares():
+    """Two pages pointing at ONE content stream is ordinary, legal PDF, and
+    `fill._fill` produces exactly that: `compress_identical_objects()` folds
+    every copy of a continuation sheet onto one stream, because the template's
+    content is identical on each.
+
+    `bake()` must treat that as shared state. pypdf's `merge_page` ends in
+    `replace_contents`, which rewrites the page's EXISTING stream object in
+    place, so merging page A's layer changed page B too, and each further
+    copy added its layer on top. On PROD every Schedule 1 page and every
+    Continuation Sheet printed all of them overlaid (2026-09-19).
+
+    The sharing is forced here rather than left to `_fill`, so this still
+    tests `bake()` if `_fill` ever stops deduplicating."""
+    from pypdf import PdfWriter
+    from pypdf.generic import NameObject
+    from tests.test_nar1_form_fill import build_xml
+    from services.nar1_form import fill
+    filled = fill.render_fields(build_xml(directors=("CHAN", "LEE", "WONG")))
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(filled)))
+    # The last two pages are the two Continuation Sheet C copies: LEE, WONG.
+    sheet_1, sheet_2 = writer.pages[-2], writer.pages[-1]
+    sheet_2[NameObject("/Contents")] = sheet_1.raw_get("/Contents")
+    shared = io.BytesIO()
+    writer.write(shared)
+
+    baked = ap.bake(shared.getvalue(), strike=fm.STRIKE_THROUGH)
+    pages = PdfReader(io.BytesIO(baked)).pages
+    first = set((pages[-2].extract_text() or "").split())
+    second = set((pages[-1].extract_text() or "").split())
+    assert "LEE" in first and "WONG" not in first
+    assert "WONG" in second and "LEE" not in second
+    # Nor does page 5's director leak onto either sheet.
+    assert "CHAN" not in first | second
+
+
 def test_baking_removes_the_acroform():
     """No fields, so no form -- and with it go `/NeedAppearances`, the flag
     that first made two viewers disagree, and the `/DR` that names the

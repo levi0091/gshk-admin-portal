@@ -9,9 +9,11 @@ import { api } from '../lib/api.js'
 // differ where "Edit" reads better than the literal 'write'.
 const READ = { value: 'read', label: 'Read' }
 const EDIT = { value: 'write', label: 'Edit' }
-// `delete` was only ever offered on the documents module, which is gone (see
-// MODULES below). Removed rather than left unused, so nobody wires it back onto
-// a module whose API has no delete level to answer it.
+// Back since migration 049, and on the two RECORD modules only: soft delete of
+// a company or a natural person. It was once offered on the documents module,
+// which is gone; the API behind this one is POST /companies|persons/{id}/delete
+// and /restore, and the registries' Deleted tab.
+const DELETE = { value: 'delete', label: 'Delete' }
 const SUBMIT = { value: 'submit', label: 'File with CR' }
 
 /**
@@ -29,16 +31,20 @@ const MODULES = [
   {
     id: 'companies',
     label: 'Companies',
-    permissions: [READ, EDIT],
+    permissions: [READ, EDIT, DELETE],
     hint: 'Covers the company\'s documents too: Read downloads them, '
-        + 'Edit uploads and removes them.',
+        + 'Edit uploads and removes them. Delete removes a whole company from '
+        + 'every list and screen (it can be restored from the Deleted tab) — '
+        + 'it does not come with Edit, and Edit does not bring it.',
   },
   {
     id: 'persons',
     label: 'Persons',
-    permissions: [READ, EDIT],
+    permissions: [READ, EDIT, DELETE],
     hint: 'Covers identity documents and the person\'s other papers: Read '
-        + 'downloads them, Edit uploads and removes them.',
+        + 'downloads them, Edit uploads and removes them. Delete removes a '
+        + 'whole person from every list and screen, and can be undone from '
+        + 'the Deleted tab.',
   },
   {
     id: 'nar1',

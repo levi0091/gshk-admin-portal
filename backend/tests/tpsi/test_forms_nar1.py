@@ -268,3 +268,38 @@ def test_repeating_lists_keep_their_cardinality(path):
         expected = sum(1 for e in form_model.iter() if local(e.tag) == item)
         actual = sum(1 for e in built.iter() if local(e.tag) == item)
         assert actual == expected, f"{item}: expected {expected}, built {actual}"
+
+
+# ---- a refusal the operator can read (PROD 2026-09-19) ---------------------
+
+def test_a_pasted_tab_is_refused_as_a_list_the_screen_can_print():
+    """Payward Limited's BR number was stored as '\\t74159213', pasted out of a
+    spreadsheet cell. The refusal is right; what was wrong is that it travelled
+    as one flattened sentence keyed by CR's element name, and the case routes
+    turned it into a 502 nobody could read."""
+    with pytest.raises(nar1.FormValidationError) as caught:
+        nar1.build_nar1_xml({**BASE, "brNo": "\t74159213"})
+
+    # Every existing caller catches ValueError; the subclass must not escape them.
+    assert isinstance(caught.value, ValueError)
+    assert str(caught.value).startswith("NAR1 validation failed: brNo: ")
+    assert len(caught.value.errors) == 1
+    [problem] = caught.value.problems()
+    assert problem.startswith("Business Registration number: ")
+    assert "Tab" in problem and "retype" in problem
+
+
+def test_every_refusal_is_listed_not_just_the_first():
+    with pytest.raises(nar1.FormValidationError) as caught:
+        nar1.build_nar1_xml({**BASE, "brNo": "\t74159213",
+                             "compNameE": "PAYWARD\tLIMITED"})
+    problems = caught.value.problems()
+    assert [p.split(":")[0] for p in problems] == [
+        "Business Registration number", "Company name (English)"]
+
+
+def test_a_field_with_no_label_keeps_its_element_name():
+    """Better CR's name than nothing: an unlabelled field must still be
+    identifiable, never dropped from the list."""
+    error = nar1.FormValidationError(["someNewElement: is too long"])
+    assert error.problems() == ["someNewElement: is too long"]

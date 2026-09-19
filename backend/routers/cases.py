@@ -27,7 +27,7 @@ from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services import audit_subject
 from services.tpsi import filings as tpsi_filings
-from services.tpsi.forms import nar1_mapper, nar1_source
+from services.tpsi.forms import nar1, nar1_mapper, nar1_source
 from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL,
 )
@@ -371,9 +371,15 @@ async def get_case(case_id: str, user=Depends(require_permission("nar1", "read")
     """The case with BOTH badges — workflow status and CR-form status, reported
     side by side and never merged (D-6)."""
     try:
-        return nar1_cases.composite(case_id)
+        case = nar1_cases.composite(case_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+    # A deleted company's cases are gone with it (migration 049). Its closed
+    # or registered ones leave the dashboard through the registry view; this is
+    # the same answer for somebody following an old link or an audit row.
+    if case.get("company_deleted"):
+        raise HTTPException(404, f"no NAR1 case {case_id}")
+    return case
 
 
 @router.get("/{case_id}/return-data")
@@ -1391,9 +1397,29 @@ def _mapping_error(exc) -> HTTPException:
 
 
 def _prepare_failed(exc) -> HTTPException:
-    """Everything else `nar1_prepare` can raise, as an upstream failure."""
+    """Everything else `nar1_prepare` can raise.
+
+    A VALUE THE BUILDER REFUSES IS A FAULT IN THE RECORD, NOT AN OUTAGE: 400,
+    carrying the list, in the shape `_mapping_error` uses. It was a 502, and a
+    502's body never reaches the browser — Cloudflare swaps it for its own
+    page, which has no CORS header — so on PROD 2026-09-19 a Tab pasted into
+    one BR number read as "Failed to fetch" on the preview and "Could not
+    reach the server" on the send, while the API was answering in milliseconds
+    with the sentence that named the field. Only a failure to REACH the
+    profile store (`LoaderFailed`, and anything unrecognised) stays a 502.
+    """
     if isinstance(exc, LookupError):
         return HTTPException(400, str(exc))
+    if isinstance(exc, nar1.FormValidationError):
+        return HTTPException(400, {
+            "message": ("The return cannot be built from the company record: "
+                        "the Companies Registry would refuse these values. "
+                        "Correct them on the company profile, then try again."),
+            "problems": exc.problems()})
+    if isinstance(exc, ValueError):
+        return HTTPException(400, {
+            "message": "The return cannot be built from the company record.",
+            "problems": [str(exc)]})
     if isinstance(exc, nar1_prepare.LoaderFailed):
         return HTTPException(
             502,

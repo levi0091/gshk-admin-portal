@@ -19,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from db.supabase import get_supabase
 from services import (
     nar1_approvals, nar1_case_status, nar1_return_year, nar1_verification,
-    table_filters as tf,
+    soft_delete, table_filters as tf,
 )
 from services.tpsi import doc_status
 from services.tpsi import filings as tpsi_filings
@@ -63,6 +63,12 @@ def create_case(*, entity_id: str, form_code: str, user_id: str) -> dict:
             f"{form_code} cases are not supported yet — R1 is NAR1 only"
         )
     sb = get_supabase()
+    # The pickers never offer a deleted company; this is for a caller holding
+    # its id from before (migration 049). ValueError is the router's 400.
+    if soft_delete.is_deleted(sb, "entities", entity_id):
+        raise ValueError(
+            "That company has been deleted. Restore it before opening a case "
+            "for it.")
     prefix = f"NAR-{datetime.now(timezone.utc).year}"
     case_no = sb.rpc("next_case_no", {"p_prefix": prefix}).execute().data
     return (
@@ -738,19 +744,36 @@ def _company_header(case_id: str) -> dict:
     return rows[0] if rows else {}
 
 
+def _company_deleted(entity_id) -> bool:
+    """Non-fatal, like `_company_header`: this decorates a case already read."""
+    if not entity_id:
+        return False
+    try:
+        return soft_delete.is_deleted(get_supabase(), "entities", entity_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def composite(case_id: str) -> dict:
     """The case plus BOTH statuses — the shape the v11 case header needs."""
     case = get_case(case_id)
     filing = current_filing(case_id)
     # None until chosen (services/nar1_return_year: there is no default).
     return_year, return_year_source = nar1_return_year.resolve(case, filing)
+    header = _company_header(case_id)
     return {
         **case,
         # Before the explicit keys below, never after: the view carries a
         # `workflow_status` STRING of its own, and letting it land on top of
         # derive()'s composite object is precisely the React-#31 blank page
         # this header already shipped once.
-        **_company_header(case_id),
+        **header,
+        # Whether the COMPANY has been deleted (migration 049), for the case
+        # detail route to answer 404. Asked only when the registry view had no
+        # row for a case that exists -- the view hides exactly a deleted
+        # company's cases, so an empty header is the one time it can be true,
+        # and an ordinary read costs nothing extra.
+        "company_deleted": header == {} and _company_deleted(case.get("entity_id")),
         # Named explicitly, not left to **case: the signed-form pointer is only
         # resolvable as (document_id, version) — upload_document versions the
         # SAME documents row every year — and the Confirmation screen reads the

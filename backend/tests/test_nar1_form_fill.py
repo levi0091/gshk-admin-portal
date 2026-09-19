@@ -537,6 +537,69 @@ def test_two_copies_of_one_sheet_do_not_share_a_field():
     assert len(names) == 2, f"expected two distinct copies, got {names}"
 
 
+def _pages_naming(pdf_bytes, names) -> dict:
+    """{name: [1-based page numbers whose text layer carries it]}."""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    words = [set((page.extract_text() or "").split()) for page in reader.pages]
+    return {name: [i + 1 for i, found in enumerate(words) if name in found]
+            for name in names}
+
+
+@pytest.mark.parametrize("shape", [
+    # The first return reported on PROD (2026-09-19): 8 shareholders and 2
+    # directors. Four Schedule 1 pages, every one printing the same pile.
+    dict(directors=("DIRALPHA", "DIRBRAVO"),
+         members=tuple(f"MEMBER{c}" for c in "ABCDEFGH")),
+    # The second: several of each, so Sheet C and Schedule 1 BOTH repeat. Every
+    # continuation sheet and schedule page came out as overprinted text.
+    dict(directors=("DIRALPHA", "DIRBRAVO", "DIRCHARLIE", "DIRDELTA"),
+         members=tuple(f"MEMBER{c}" for c in "ABCDE")),
+    # Every repeatable page at once: Sheets A, B, C and D and Schedule 1 each
+    # printed at least twice.
+    dict(directors=("DIRALPHA", "DIRBRAVO", "DIRCHARLIE"),
+         secretaries=3,
+         corporate_secretaries=("CSECA", "CSECB", "CSECC"),
+         corporate_directors=tuple(f"CDIR{c}" for c in "ABCDEF"),
+         members=tuple(f"MEMBER{c}" for c in "ABCDE")),
+])
+def test_every_officer_and_member_is_printed_on_exactly_one_page(shape):
+    """THE SHIPPED DOCUMENT, read page by page (PROD 2026-09-19).
+
+    Every copy of a repeated page printed every copy's values on top of each
+    other. `_fill` deduplicates identical objects, so the four Schedule 1
+    copies ended up pointing at ONE content stream. `bake()` then merged each
+    page's drawn layer through pypdf's `replace_contents`, which rewrites the
+    page's existing stream object in place, so every copy's layer landed on
+    that shared stream and every copy showed all of them. Pages 1-8 were
+    right only because no two of them share a template page.
+
+    Nothing caught it: every other test here asks whether a name is ANYWHERE
+    in the document, and a name printed on four pages passes that. The
+    question that matters on a statutory return is which page it is on, and
+    that it is on no other."""
+    shape = {"secretaries": 0, **shape}
+    names = (shape["directors"] + shape["members"]
+             + tuple(f"SEC{i}" for i in range(shape["secretaries"]))
+             + shape.get("corporate_secretaries", ())
+             + shape.get("corporate_directors", ()))
+    found = _pages_naming(fill.render(build_xml(**shape)), names)
+    wrong = {name: pages for name, pages in found.items() if len(pages) != 1}
+    assert not wrong, f"printed on other than exactly one page: {wrong}"
+
+
+def test_a_schedule_page_prints_its_own_two_members_and_nobody_elses():
+    """The same failure, stated as the reader sees it: page 9 of an
+    eight-member return is Schedule 1 page 1 and holds members A and B."""
+    members = tuple(f"MEMBER{c}" for c in "ABCDEFGH")
+    found = _pages_naming(fill.render(build_xml(members=members)), members)
+    by_page: dict[int, set] = {}
+    for name, pages in found.items():
+        for page in pages:
+            by_page.setdefault(page, set()).add(name)
+    assert by_page == {9: {"MEMBERA", "MEMBERB"}, 10: {"MEMBERC", "MEMBERD"},
+                       11: {"MEMBERE", "MEMBERF"}, 12: {"MEMBERG", "MEMBERH"}}
+
+
 def test_more_share_classes_than_the_printed_table_is_refused():
     """CR provides no continuation sheet for section 11, so this return cannot
     be shown truthfully — and must not be shown untruthfully."""

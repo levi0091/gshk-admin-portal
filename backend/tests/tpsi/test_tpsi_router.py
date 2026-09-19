@@ -471,6 +471,25 @@ def test_prepare_returns_every_mapping_problem_at_once(client):
     p["create"].assert_not_called()
 
 
+def test_prepare_lists_what_the_builder_refused_by_field_name(client):
+    """Data Verification's half of PROD 2026-09-19: the builder's refusal used
+    to arrive as one flattened sentence keyed by CR's element name ("brNo").
+    It is a list now, each entry naming the field the way the screen does."""
+    from services.tpsi.forms import nar1
+
+    fault = nar1.FormValidationError(
+        ["brNo: contains a Tab", "compNameE: contains a Tab"])
+    p = _prepare_patches(build=MagicMock(side_effect=fault))
+    with _with_prepare(p):
+        response = client.post("/tpsi/filings/prepare", headers=H,
+                               json={"entity_id": "e1", "nar1_case_id": "c1"})
+    assert response.status_code == 400
+    assert response.json()["detail"]["problems"] == [
+        "Business Registration number: contains a Tab",
+        "Company name (English): contains a Tab"]
+    p["create"].assert_not_called()
+
+
 def test_prepare_unknown_entity_is_a_clean_400(client):
     p = _prepare_patches(load=AsyncMock(side_effect=LookupError("no entity e9")))
     with _with_prepare(p):

@@ -22,7 +22,10 @@ import {
 } from '../lib/documentSections.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
-import { personProfileCaps } from '../lib/screenCapabilities.js'
+import { personProfileCaps, asDeleted } from '../lib/screenCapabilities.js'
+import {
+  DeleteRecordModal, DeletedBanner, RecordGone, createdOn,
+} from '../components/SoftDelete.jsx'
 
 // `lookup` names the controlled vocabulary a field draws from (migration 013,
 // lifted from Viewpoint). Without it these were free-text, which is how the same
@@ -238,6 +241,10 @@ export default function PersonProfilePage() {
   const [person, setPerson] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Never existed, or deleted and this role may not see deleted records -- the
+  // API answers both with the same 404 (migration 049).
+  const [notFound, setNotFound] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
@@ -257,7 +264,12 @@ export default function PersonProfilePage() {
   // `documents` module, which a role can hold independently. Which control
   // needs which is declared in `lib/screenCapabilities.js` and enumerated by
   // the permission matrix test; the API enforces each on its own.
-  const caps = personProfileCaps(hasPermission)
+  //
+  // A DELETED person (migration 049) is shown read-only, and only to a role
+  // that could restore them; `asDeleted` withdraws everything but Restore.
+  const baseCaps = personProfileCaps(hasPermission)
+  const isDeleted = Boolean(person?.deleted_at)
+  const caps = isDeleted ? asDeleted(baseCaps) : baseCaps
   const canWrite = caps.editPerson
   const canUploadDoc = caps.uploadDocument
   const canRemoveDoc = caps.removeDocument
@@ -267,7 +279,10 @@ export default function PersonProfilePage() {
     setLoading(true)
     api.get(`/persons/${personId}`)
       .then(setPerson)
-      .catch(err => setError(err.message))
+      .catch(err => {
+        if (err.status === 404) setNotFound(true)
+        else setError(err.message)
+      })
       .finally(() => setLoading(false))
   }, [personId])
 
@@ -347,6 +362,9 @@ export default function PersonProfilePage() {
   }
 
   if (loading) return <div className="empty-state">Loading…</div>
+  if (notFound) {
+    return <RecordGone kind="person" backTo="/persons" backLabel="Back to Natural Person Registry" />
+  }
   if (error) {
     return (
       <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
@@ -427,7 +445,36 @@ export default function PersonProfilePage() {
         {/* No page-level Upload button. It offered every document type at once
             from a place that named no section, which is how a passport got
             filed as an "Identity Document Scan". Each section carries its own. */}
+        {caps.deletePerson && (
+          <div className="pg-actions">
+            <button className="btn btn-outline btn-danger-outline"
+                    onClick={() => setDeleting(true)}>
+              Delete person
+            </button>
+          </div>
+        )}
       </div>
+
+      {isDeleted && (
+        <DeletedBanner kind="person" record={person}
+                       basePath={`/persons/${personId}`}
+                       canRestore={caps.restorePerson} onRestored={load} />
+      )}
+
+      {deleting && (
+        <DeleteRecordModal
+          kind="person"
+          basePath={`/persons/${personId}`}
+          name={person.full_name}
+          identifiers={[
+            primaryDoc && `${ID_TYPE_LABEL[primaryDoc.id_type] || primaryDoc.id_type} ${primaryDoc.id_number}`,
+            person.date_of_birth && `Born ${formatDate(person.date_of_birth)}`,
+            createdOn(person),
+          ]}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => navigate('/persons')}
+        />
+      )}
 
       {uploadInto?.is_identity && (
         <IdentityDocumentModal
@@ -493,7 +540,7 @@ export default function PersonProfilePage() {
         />
       )}
 
-      {!canWrite && (
+      {!canWrite && !isDeleted && (
         <ReadOnlyNote module="persons" what="this person's details and identity documents" />
       )}
 

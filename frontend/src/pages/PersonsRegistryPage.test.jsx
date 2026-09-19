@@ -284,3 +284,28 @@ describe('PersonsRegistryPage — write access', () => {
     expect(note).toHaveTextContent('persons (write)')
   })
 })
+
+describe('PersonsRegistryPage — the Deleted tab (migration 049)', () => {
+  it('is only there for a role holding persons:delete', async () => {
+    auth.hasPermission = (m, p) => ['persons:read', 'persons:write',
+                                     'companies:delete'].includes(`${m}:${p}`)
+    renderPage()
+    await screen.findByText('John Smith')
+    expect(screen.queryByRole('tab', { name: 'Deleted' })).not.toBeInTheDocument()
+  })
+
+  it('lists deleted persons from their own endpoint', async () => {
+    api.get.mockImplementation(url => Promise.resolve(
+      url.startsWith('/persons/deleted')
+        ? { total: 1, persons: [{ id: 'p9', full_name: 'Gone Person',
+                                  email: 'g@x.com', deleted_at: '2026-09-20T02:00:00Z',
+                                  deleted_reason: 'test record' }] }
+        : PAYLOAD))
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('tab', { name: 'Deleted' }))
+    expect(await screen.findByText('Gone Person')).toBeInTheDocument()
+    expect(screen.getByText('test record')).toBeInTheDocument()
+    expect(screen.queryByText('John Smith')).not.toBeInTheDocument()
+  })
+})

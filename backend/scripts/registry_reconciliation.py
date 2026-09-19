@@ -132,7 +132,7 @@ def filing_blockers(conn, out):
         SELECT e.id, e.company_name, e.br_number, a.country
           FROM entities e
           LEFT JOIN addresses a ON a.id = e.registered_address_id
-         WHERE e.is_client
+         WHERE e.is_client AND e.deleted_at IS NULL
          ORDER BY e.company_name
     """)
     classes: dict[str, list[dict]] = {}
@@ -141,7 +141,7 @@ def filing_blockers(conn, out):
                s.total_issued, s.issued_amount, s.total_paid
           FROM share_classes s
           JOIN entities e ON e.id = s.entity_id
-         WHERE e.is_client
+         WHERE e.is_client AND e.deleted_at IS NULL
     """):
         classes.setdefault(str(row.entity_id), []).append(dict(row._mapping))
 
@@ -179,7 +179,7 @@ def ownership_gap(conn, out):
     rows = _rows(conn, """
         SELECT e.id, e.company_name, e.vp_source_key
           FROM entities e
-         WHERE e.is_client
+         WHERE e.is_client AND e.deleted_at IS NULL
            AND NOT EXISTS (SELECT 1 FROM share_classes s WHERE s.entity_id = e.id)
            AND NOT EXISTS (SELECT 1 FROM shareholdings h WHERE h.entity_id = e.id)
          ORDER BY e.company_name
@@ -214,13 +214,13 @@ def missing_br_numbers(conn, out):
     """
     rows = _rows(conn, """
         SELECT status, count(*) AS n FROM entities
-         WHERE is_client AND coalesce(btrim(br_number), '') = ''
+         WHERE is_client AND deleted_at IS NULL AND coalesce(btrim(br_number), '') = ''
          GROUP BY status ORDER BY n DESC
     """)
     total = sum(r.n for r in rows)
     with_br = _rows(conn, """
         SELECT count(*) AS n FROM entities
-         WHERE is_client AND coalesce(btrim(br_number), '') <> ''
+         WHERE is_client AND deleted_at IS NULL AND coalesce(btrim(br_number), '') <> ''
     """)[0].n
 
     out(f"NO BR NUMBER - {total} client companies ({with_br} have one)")
@@ -303,7 +303,7 @@ def hand_entered_fields(conn, out):
                              AND company_type NOT IN ('P', 'N', 'G')) AS legacy_type,
           count(*) FILTER (WHERE coalesce(btrim(company_type), '') = '') AS no_type,
           count(*) AS total
-          FROM entities WHERE is_client
+          FROM entities WHERE is_client AND deleted_at IS NULL
     """)[0]
 
     out(f"FIELDS WITH NO SOURCE - of {counts.total} client companies")

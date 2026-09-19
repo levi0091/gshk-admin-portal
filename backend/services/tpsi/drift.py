@@ -203,6 +203,13 @@ def flatten(fragment: str) -> dict:
     return out
 
 
+def label(path: str) -> str:
+    """A CR element path in the operator's words. Public for the builder's own
+    refusals (`nar1.FormValidationError.problems`), so a field is named the same
+    way whichever check caught it."""
+    return _label(path)
+
+
 def _label(path: str) -> str:
     """`indDirList/indDir[2]/stdAddress/bldg` becomes
     "Director (individual) 2 · Address · Building"."""

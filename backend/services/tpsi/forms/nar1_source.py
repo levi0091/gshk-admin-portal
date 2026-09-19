@@ -27,8 +27,14 @@ def _normalise_name(value) -> str:
 
 
 def _index_by_name(entities) -> dict[str, list]:
+    """Live entities by normalised name. A DELETED company is not a candidate
+    for anybody's secretary (migration 049) -- and leaving it out is what turns
+    an "ambiguous" name back into a resolved one once a duplicate profile, like
+    Payward Limited's second, is deleted."""
     index: dict[str, list] = {}
     for entity in entities:
+        if entity.get("deleted_at"):
+            continue
         index.setdefault(_normalise_name(entity.get("company_name")), []) \
              .append(entity)
     return index
@@ -74,7 +80,10 @@ async def _resolve_secretary_entities(q, sb, secretaries: list[dict],
 
     rows = await q(lambda: sb.table("entities").select("*")
                    .in_("company_name", sorted(unmatched)).execute().data)
-    for entity in rows or []:
+    # Only live candidates: a deleted namesake is nobody's secretary, and
+    # adding it to `corporate_entities` would report it as a deleted PARTY.
+    rows = [r for r in rows or [] if not r.get("deleted_at")]
+    for entity in rows:
         corporate_entities.setdefault(entity["id"], entity)
     found = _index_by_name(rows or [])
     for sec in secretaries:
@@ -183,6 +192,13 @@ async def load_entity_graph(entity_id: str) -> dict:
         # returns rows without the key, and a filing must not 500 over a field
         # CR marks optional.
         row["corporate_email"] = party.get("email")
+        # The body corporate's OWN TCSP licence -- the value the profile's
+        # Company Secretary tile shows and the source the CR form contract
+        # names for corpTcspNo. An `entity_officers` secretary had no other
+        # route to a licence: a profile created in the portal has no
+        # `company_secretaries` row, so Payward Limited's second profile
+        # filed an empty Licence No. box on PROD (2026-09-19).
+        row["corporate_tcsp_licence_no"] = party.get("tcsp_licence_no")
         # THE LINKED ENTITY'S NAME WINS. `corporate_name` on the officer and
         # shareholding rows holds Viewpoint's entity CODE, not a company name --
         # "GETSTA", "CHEAPI", "57THST", "BLACKANDWH" -- for 5,604 of 5,606
@@ -205,6 +221,7 @@ async def load_entity_graph(entity_id: str) -> dict:
             sec["corporate_br_no"] = party.get("br_number")
             sec["corporate_name_zh"] = party.get("company_name_zh")
             sec["corporate_email"] = party.get("email")
+            sec["corporate_tcsp_licence_no"] = party.get("tcsp_licence_no")
 
     identity_documents: dict[str, list] = {}
     for doc in identity_rows or []:
@@ -226,4 +243,14 @@ async def load_entity_graph(entity_id: str) -> dict:
         # `corporate_name` and showed Viewpoint's code ("GETSTA") as the
         # company secretary on the Data Verification screen.
         "entities": corporate_entities,
+        # CURRENT parties whose own record has been deleted (migration 049).
+        # Deleting one is refused while it holds a current role, so this is
+        # only ever a re-import or a race getting round that -- and the mapper
+        # then refuses the return rather than filing without them or with a
+        # record nobody can see.
+        "deleted_parties": sorted(
+            {p.get("full_name") or p["id"]
+             for p in persons.values() if p.get("deleted_at")}
+            | {c.get("company_name") or c["id"]
+               for c in corporate_entities.values() if c.get("deleted_at")}),
     }

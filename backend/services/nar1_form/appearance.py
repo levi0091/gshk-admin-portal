@@ -28,7 +28,7 @@ import io
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, NameObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, NameObject
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
@@ -573,6 +573,32 @@ def draw_highlight(canvas, rect) -> None:
     canvas.restoreState()
 
 
+def _own_contents(writer: PdfWriter, page) -> None:
+    """Give `page` a content stream that no other page points at.
+
+    `bake()` has to call this before `merge_page` (PROD 2026-09-19). The
+    filled form it receives shares content streams: `fill._fill` runs
+    `compress_identical_objects()`, which folds every copy of a continuation
+    sheet or schedule page onto ONE stream, since the template content is the
+    same on each. pypdf's `merge_page` ends in `replace_contents`, and that
+    REWRITES THE PAGE'S EXISTING STREAM OBJECT IN PLACE. So merging Schedule 1
+    page 1's layer also changed pages 2, 3 and 4, and each later copy added
+    its layer on top. Every copy printed every copy's members, one over
+    another. Pages 1-8 were correct only because none of them repeats a
+    template page.
+
+    A copy rather than a reference, and a single stream even when the page
+    held an array: for an array, `replace_contents` nulls every stream in it,
+    and any of those may also be shared.
+    """
+    contents = page.get_contents()
+    if contents is None:
+        return
+    own = DecodedStreamObject()
+    own.set_data(contents.get_data())
+    page[NameObject("/Contents")] = writer._add_object(own)
+
+
 def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
          regular: frozenset[str] | set[str] | None = None,
          centred: frozenset[str] | set[str] | None = None,
@@ -685,7 +711,13 @@ def bake(pdf_bytes: bytes, *, sizes: dict[str, float] | None = None,
         layer.save()
         if drew:
             buffer.seek(0)
+            _own_contents(writer, page)
             page.merge_page(PdfReader(buffer).pages[0])
+            # Now that no two drawn pages share a stream, each repeated
+            # schedule or sheet page ships its own copy of the template's
+            # drawing, left uncompressed by `merge_page`: about 42KB a page,
+            # so a 40-member register reached 2.95MB. Flate brings it back.
+            page.compress_content_streams()
 
         # THE WIDGETS GO, not just out of sight. They used to stay with their
         # Hidden flag set, still carrying `/V`, the template's `/Q 1` and an

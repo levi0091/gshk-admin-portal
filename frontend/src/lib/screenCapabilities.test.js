@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   companyProfileCaps, personProfileCaps, companyRegistryCaps,
-  personsRegistryCaps, caseWorkflowCaps, crCredentialsCaps,
+  personsRegistryCaps, caseWorkflowCaps, crCredentialsCaps, asDeleted,
 } from './screenCapabilities.js'
 
 /**
@@ -33,8 +33,9 @@ import {
  * pass while asserting nothing about the modules that now decide.
  */
 const ALL = [
-  'companies:read', 'companies:write',
-  'persons:read', 'persons:write',
+  // `delete` on the two record modules is soft delete (migration 049).
+  'companies:read', 'companies:write', 'companies:delete',
+  'persons:read', 'persons:write', 'persons:delete',
   'nar1:read', 'nar1:write',
   'tpsi:read', 'tpsi:write', 'tpsi:submit',
   'audit_trail:read',
@@ -74,6 +75,9 @@ const CONTRACT = [
     downloadDocument: 'companies:read',
     removeDocument: 'companies:write',
     openCase: 'nar1:write',
+    // NOT companies:write -- editing a company is not the right to delete it.
+    deleteCompany: 'companies:delete',
+    restoreCompany: 'companies:delete',
   }],
   ['personProfile', personProfileCaps, {
     editPerson: 'persons:write',
@@ -83,12 +87,16 @@ const CONTRACT = [
     uploadDocument: 'persons:write',
     downloadDocument: 'persons:read',
     removeDocument: 'persons:write',
+    deletePerson: 'persons:delete',
+    restorePerson: 'persons:delete',
   }],
   ['companyRegistry', companyRegistryCaps, {
     addCompany: 'companies:write',
+    viewDeleted: 'companies:delete',
   }],
   ['personsRegistry', personsRegistryCaps, {
     addPerson: 'persons:write',
+    viewDeleted: 'persons:delete',
   }],
   ['caseWorkflow', caseWorkflowCaps, {
     editCase: 'nar1:write',
@@ -278,6 +286,38 @@ describe('the module separations that actually bit', () => {
 
     const writer = caps(['nar1:read', 'tpsi:write'])
     expect(writer.case.validate).toBe(true)
+  })
+
+  it('keeps DELETING a record apart from editing it (migration 049)', () => {
+    const editor = caps(['companies:read', 'companies:write',
+                         'persons:read', 'persons:write'])
+    expect(editor.company.deleteCompany).toBe(false)
+    expect(editor.person.deletePerson).toBe(false)
+
+    // And the other way: deleting does not bring editing with it.
+    const deleter = caps(['companies:read', 'companies:delete'])
+    expect(deleter.company.deleteCompany).toBe(true)
+    expect(deleter.company.editCompany).toBe(false)
+    expect(deleter.person.deletePerson).toBe(false)
+  })
+})
+
+describe('a DELETED record (asDeleted)', () => {
+  const everything = held => canFrom(new Set(held ?? ALL))
+
+  it('withdraws every write, however much the role holds', () => {
+    const company = asDeleted(companyProfileCaps(everything()))
+    const person = asDeleted(personProfileCaps(everything()))
+    for (const [name, allowed] of [...Object.entries(company), ...Object.entries(person)]) {
+      const kept = ['downloadDocument', 'restoreCompany', 'restorePerson'].includes(name)
+      expect(allowed, name).toBe(kept)
+    }
+  })
+
+  it('still asks the role -- restoring takes the delete level', () => {
+    const reader = asDeleted(companyProfileCaps(everything(['companies:read'])))
+    expect(reader.restoreCompany).toBe(false)
+    expect(reader.downloadDocument).toBe(true)
   })
 })
 

@@ -41,6 +41,12 @@ GF_FLAGS_CHANGED = "GF_FLAGS_CHANGED"
 GF_DOC_UPLOADED = "GF_DOC_UPLOADED"
 GF_DOC_VERSION = "GF_DOC_VERSION"
 GF_DOC_DELETED = "GF_DOC_DELETED"
+# Soft delete of a whole record (migration 049). Viewpoint's ADN has no
+# deleting counterpart, and OFD / OCAD delete a ROLE, not the party.
+GF_COMPANY_DELETED = "GF_COMPANY_DELETED"
+GF_COMPANY_RESTORED = "GF_COMPANY_RESTORED"
+GF_PERSON_DELETED = "GF_PERSON_DELETED"
+GF_PERSON_RESTORED = "GF_PERSON_RESTORED"
 
 # ---- TPSI codes (CR e-Filing transport) ------------------------------------
 #   Their own family rather than the GF_ prefix: TPSI is a distinct source

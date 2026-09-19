@@ -227,6 +227,18 @@ def require_permission(module: str, permission: str):
     return check
 
 
+def has_permission(user: dict, module: str, permission: str) -> bool:
+    """The same answer `require_permission` gives, for a route that has to ASK.
+
+    For a read whose response depends on the caller's grant rather than one it
+    refuses outright -- a deleted company's profile is a 404 to everybody but a
+    holder of `companies:delete`, who needs it to restore it (migration 049).
+    """
+    if user.get("role_name") == "super_admin":
+        return True
+    return permission in _permissions_for(user, module)
+
+
 def require_any_permission(*modules: tuple[str, str]):
     """Guard for endpoints serving data that belongs to no single module.
 
