@@ -846,6 +846,25 @@ def _corporate(name: str, addr: dict | None, problems: list[str],
     return {k: v for k, v in block.items() if v not in ("", None, {})}
 
 
+def _secretary_licence(row: dict) -> str | None:
+    """corpTcspNo for a body-corporate secretary, from either register.
+
+    THE SECRETARY ENTITY'S OWN `tcsp_licence_no` FIRST, as nar1_source attaches
+    it. It is the licence holder's own record, the value the profile's Company
+    Secretary tile shows, and the source `cr_forms/contract.py` names for this
+    element. Until 2026-09-19 it was never read. The officer path passed no
+    licence at all, and the register path read only the ETL's per-appointment
+    copy, `company_secretaries.tcsp_number`. Payward Limited's second profile,
+    created in the portal and so absent from `company_secretaries`, filed an
+    empty Licence No. box under a profile screen showing TC000807.
+
+    The register's copy stays as the fallback: DEV's GSHK entity holds no
+    licence on any of its 5,604 appointments, and the register holds it on
+    every one. On PROD the two agree on all 5,971 rows that carry both.
+    """
+    return row.get("corporate_tcsp_licence_no") or row.get("tcsp_number") or None
+
+
 def _check_secretary_resolved(sec: dict, name: str, problems: list[str]) -> None:
     """Say WHY a corporate secretary has no details, when nar1_source knows.
 
@@ -944,7 +963,7 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
         corp_sec.append(
             _corporate(name, sec.get("corporate_address"), problems,
                        br_no=sec.get("corporate_br_no"),
-                       tcsp_no=sec.get("tcsp_number"),
+                       tcsp_no=_secretary_licence(sec),
                        name_zh=sec.get("corporate_name_zh"),
                        email=sec.get("corporate_email"),
                        hkg_only=True)
@@ -1004,6 +1023,11 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
                 # record, and sourcing only the secretary would leave the same
                 # discrepancy notice waiting for the first corporate director.
                 email=officer.get("corporate_email"),
+                # A secretary's only. corpDir has no licence element, and a
+                # body corporate sitting as a director is not acting as the
+                # company's TCSP.
+                tcsp_no=(_secretary_licence(officer)
+                         if role == "company_secretary" else None),
                 hkg_only=role == "company_secretary",
             )
             if role == "director":

@@ -446,3 +446,39 @@ async def test_a_party_row_without_the_column_does_not_blow_up_the_load():
         graph = await nar1_source.load_entity_graph("e1")
 
     assert graph["secretaries"][0]["corporate_email"] is None
+
+
+# ---- entities.tcsp_licence_no, attached as `corporate_tcsp_licence_no` ------
+
+async def test_a_corporate_secretary_officer_row_carries_its_entitys_tcsp_licence():
+    """PROD 2026-09-19, Payward Limited: a company profile created IN THE
+    PORTAL has its secretary in `entity_officers` only. `company_secretaries`
+    is the Viewpoint ETL's register and the portal never writes it, so that
+    profile had no row there, and the register row was the only place the
+    mapper looked for a licence. The NAR1 printed an empty Licence No. box
+    under a profile screen showing TC000807, which it reads off the
+    secretary's own entity. That entity is where this has to come from too."""
+    sb = _Supabase({
+        "entities": [ENTITY, {**GSHK, "tcsp_licence_no": "TC000807"}],
+        "entity_officers": [{"id": "o1", "entity_id": "e1",
+                             "role": "company_secretary",
+                             "party_type": "corporate",
+                             "corporate_entity_id": "g1", "is_current": True}],
+        "addresses": [FILER_ADDR, GSHK_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["officers"][0]["corporate_tcsp_licence_no"] == "TC000807"
+
+
+async def test_a_register_secretary_carries_its_entitys_tcsp_licence():
+    sb = _Supabase({
+        "entities": [ENTITY, {**GSHK, "tcsp_licence_no": "TC000807"}],
+        "company_secretaries": [_secretary(tcsp_number="")],
+        "addresses": [FILER_ADDR, GSHK_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+
+    assert graph["secretaries"][0]["corporate_tcsp_licence_no"] == "TC000807"
