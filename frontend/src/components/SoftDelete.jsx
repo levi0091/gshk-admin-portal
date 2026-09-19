@@ -70,6 +70,9 @@ export function DeleteRecordModal({ kind, basePath, name, identifiers = [], onCl
   }
 
   const links = check?.links || []
+  // The API names at most 50 and COUNTS the rest: GSHK's own entity is the
+  // secretary of ~5,600 companies, and that list is not one anybody reads.
+  const linksTotal = Math.max(check?.links_total || 0, links.length)
   const cases = check?.cases || []
 
   return (
@@ -117,8 +120,9 @@ export function DeleteRecordModal({ kind, basePath, name, identifiers = [], onCl
                 {links.length > 0 && (
                   <>
                     <div style={{ marginTop: 6 }}>
-                      It still holds a current role at {links.length === 1
-                        ? 'this company' : `these ${links.length} companies`}.
+                      It still holds a current role at {linksTotal === 1
+                        ? 'this company'
+                        : `${linksTotal.toLocaleString('en-HK')} companies`}.
                       End each one on the company&rsquo;s own profile first, so
                       nobody&rsquo;s annual return loses an officer or member
                       without anyone looking at it:
@@ -131,6 +135,11 @@ export function DeleteRecordModal({ kind, basePath, name, identifiers = [], onCl
                           <span className="t-muted"> — {l.roles.join(', ')}</span>
                         </li>
                       ))}
+                      {linksTotal > links.length && (
+                        <li className="t-muted">
+                          …and {(linksTotal - links.length).toLocaleString('en-HK')} more
+                        </li>
+                      )}
                     </ul>
                   </>
                 )}

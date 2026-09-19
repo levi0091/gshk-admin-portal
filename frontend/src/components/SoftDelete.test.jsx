@@ -60,6 +60,14 @@ describe('DeleteRecordModal', () => {
     expect(screen.queryByLabelText(/Why is this company being deleted/)).not.toBeInTheDocument()
   })
 
+  it('counts every blocking company, though it names only some', async () => {
+    // GSHK's own entity: the API names 50 of its ~5,600 secretaryships.
+    api.get.mockResolvedValue({ ...BLOCKED, cases: [], links_total: 5603 })
+    modal()
+    expect(await screen.findByText(/current role at 5,603 companies/)).toBeInTheDocument()
+    expect(screen.getByText('…and 5,602 more')).toBeInTheDocument()
+  })
+
   it('needs a reason before it will delete, and sends it trimmed', async () => {
     api.get.mockResolvedValue(CAN)
     api.post.mockResolvedValue({})

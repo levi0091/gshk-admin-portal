@@ -73,33 +73,64 @@ def clean_reason(raw: Optional[str]) -> str:
     return reason
 
 
-def _live_companies(sb, entity_ids: set[str]) -> dict[str, dict]:
-    """The companies among `entity_ids` that are not deleted, by id."""
-    if not entity_ids:
-        return {}
-    rows = _rows(sb.table("entities")
-                 .select("id, company_name, br_number, deleted_at")
-                 .in_("id", sorted(entity_ids)).execute().data)
-    return {r["id"]: r for r in rows if r.get("deleted_at") is None}
+#: PostgREST's row cap. A query that could match more is read page by page.
+_PAGE = 1000
+
+#: How many blocking companies the dialog is given by name. GSHK's own entity
+#: is the current secretary of ~5,600 companies; a list of 5,600 is not
+#: something anybody reads, and fetching their names by id would put 5,600
+#: uuids in one URL. The rest are COUNTED (`links_total`), never dropped.
+SHOWN_LINKS = 50
 
 
-def _group(links: list[tuple[str, str]], companies: dict[str, dict]) -> list[dict]:
-    """[(entity_id, role label)] -> one entry per live company, roles merged."""
-    by_company: dict[str, dict] = {}
+def _paged(build) -> list:
+    """Every row a query matches, `_PAGE` at a time. `build()` makes a fresh
+    query each time, so no page inherits the last one's range."""
+    rows: list = []
+    start = 0
+    while True:
+        page = _rows(build().range(start, start + _PAGE - 1).execute().data)
+        rows += page
+        if len(page) < _PAGE:
+            return rows
+        start += _PAGE
+
+
+def _deleted_entity_ids(sb) -> set[str]:
+    """Every deleted company's id -- a short list, where the companies a record
+    is linked to can be thousands, so this is the cheap side to ask about."""
+    return {r["id"] for r in _paged(
+        lambda: sb.table("entities").select("id").not_.is_("deleted_at", "null"))}
+
+
+def _group(sb, links: list[tuple[str, str]]) -> tuple[list[dict], int]:
+    """[(entity_id, role label)] -> the LIVE companies, roles merged.
+
+    Returns up to SHOWN_LINKS of them by name, and how many there are in all.
+    """
+    deleted = _deleted_entity_ids(sb) if links else set()
+    roles: dict[str, list[str]] = {}
     for entity_id, label in links:
-        company = companies.get(entity_id)
-        if not company:
+        if entity_id in deleted:
             continue
-        entry = by_company.setdefault(entity_id, {
-            "company_id": entity_id,
-            "company_name": company.get("company_name"),
-            "br_number": company.get("br_number"),
-            "roles": [],
-        })
-        if label not in entry["roles"]:
-            entry["roles"].append(label)
-    return sorted(by_company.values(),
-                  key=lambda e: (e["company_name"] or "").lower())
+        held = roles.setdefault(entity_id, [])
+        if label not in held:
+            held.append(label)
+    if not roles:
+        return [], 0
+
+    shown = sorted(roles)[:SHOWN_LINKS]
+    details = {r["id"]: r for r in _rows(
+        sb.table("entities").select("id, company_name, br_number")
+        .in_("id", shown).execute().data)}
+    entries = [{
+        "company_id": entity_id,
+        "company_name": (details.get(entity_id) or {}).get("company_name"),
+        "br_number": (details.get(entity_id) or {}).get("br_number"),
+        "roles": roles[entity_id],
+    } for entity_id in shown]
+    entries.sort(key=lambda e: (e["company_name"] or "").lower())
+    return entries, len(roles)
 
 
 def _current_links(sb, column: str, value: str) -> list[tuple[str, str]]:
@@ -111,8 +142,8 @@ def _current_links(sb, column: str, value: str) -> list[tuple[str, str]]:
     links: list[tuple[str, str]] = []
     for table, label, role_col in _LINK_TABLES:
         cols = "entity_id" + (f", {role_col}" if role_col else "")
-        rows = _rows(sb.table(table).select(cols).eq(column, value)
-                     .eq("is_current", True).execute().data)
+        rows = _paged(lambda: sb.table(table).select(cols).eq(column, value)
+                      .eq("is_current", True))
         for r in rows:
             role = (_RELATION_LABELS.get(r.get(role_col), "Officer")
                     if role_col else label)
@@ -120,16 +151,19 @@ def _current_links(sb, column: str, value: str) -> list[tuple[str, str]]:
     return links
 
 
+def _blockers(sb, links, cases) -> dict:
+    shown, total = _group(sb, links)
+    return {"links": shown, "links_total": total, "cases": cases}
+
+
 def person_blockers(sb, person_id: str) -> dict:
     """What stops a person being deleted: their current appointments."""
     links = _current_links(sb, "person_id", person_id)
     # The ETL's secretary register holds natural-person secretaries by id.
-    rows = _rows(sb.table("company_secretaries").select("entity_id")
-                 .eq("person_id", person_id).eq("is_current", True)
-                 .execute().data)
+    rows = _paged(lambda: sb.table("company_secretaries").select("entity_id")
+                  .eq("person_id", person_id).eq("is_current", True))
     links += [(r["entity_id"], "Company secretary") for r in rows]
-    companies = _live_companies(sb, {e for e, _ in links})
-    return {"links": _group(links, companies), "cases": []}
+    return _blockers(sb, links, [])
 
 
 def _escape_like(text: str) -> str:
@@ -150,9 +184,9 @@ def _register_secretaryships(sb, company: dict) -> list[tuple[str, str]]:
     if not name:
         return []
     pattern = _escape_like(name)
-    rows = _rows(sb.table("company_secretaries").select("entity_id")
-                 .is_("person_id", "null").eq("is_current", True)
-                 .ilike("secretary_name", pattern).execute().data)
+    rows = _paged(lambda: sb.table("company_secretaries").select("entity_id")
+                  .is_("person_id", "null").eq("is_current", True)
+                  .ilike("secretary_name", pattern))
     if not rows:
         return []
     twins = _rows(sb.table("entities").select("id")
@@ -170,7 +204,6 @@ def company_blockers(sb, company: dict) -> dict:
              _current_links(sb, "corporate_entity_id", company_id)
              + _register_secretaryships(sb, company)
              if e != company_id]
-    companies = _live_companies(sb, {e for e, _ in links})
 
     cases = _rows(sb.table("nar1_case_registry")
                   .select("id, case_no, workflow_status")
@@ -180,7 +213,7 @@ def company_blockers(sb, company: dict) -> dict:
          "workflow_status": c.get("workflow_status")}
         for c in cases if c.get("workflow_status") not in FINISHED_CASE_STATES
     ]
-    return {"links": _group(links, companies), "cases": open_cases}
+    return _blockers(sb, links, open_cases)
 
 
 def has_blockers(blockers: dict) -> bool:
@@ -192,8 +225,9 @@ def describe(blockers: dict) -> str:
     parts = []
     links = blockers.get("links") or []
     if links:
+        total = blockers.get("links_total") or len(links)
         names = ", ".join(e["company_name"] or e["company_id"] for e in links[:5])
-        more = f" and {len(links) - 5} more" if len(links) > 5 else ""
+        more = f" and {total - 5} more" if total > 5 else ""
         parts.append(f"it is still a current officer, shareholder or beneficial "
                      f"owner of {names}{more}; end those first")
     cases = blockers.get("cases") or []

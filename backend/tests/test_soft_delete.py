@@ -32,9 +32,14 @@ DELETED_AT = "2026-09-20T02:00:00+00:00"
 # --------------------------------------------------------------------------- #
 
 class FakeSB:
+    #: PostgREST's own cap on an un-ranged read, which is what makes paging
+    #: necessary at all.
+    MAX_ROWS = 1000
+
     def __init__(self, **tables):
         self.tables = {k: [dict(r) for r in v] for k, v in tables.items()}
         self.writes: list[tuple[str, str, dict]] = []
+        self.in_sizes: list[int] = []
 
     def table(self, name):
         return _Query(self, name)
@@ -48,6 +53,7 @@ class _Query:
     def __init__(self, sb, name):
         self.sb, self.name = sb, name
         self.filters, self.op, self.values, self.one = [], "select", None, False
+        self.window = (0, FakeSB.MAX_ROWS - 1)
 
     def select(self, *_a, **_k):
         return self
@@ -66,6 +72,7 @@ class _Query:
 
     def in_(self, col, vals):
         vals = set(vals)
+        self.sb.in_sizes.append(len(vals))
         self.filters.append(lambda r: r.get(col) in vals)
         return self
 
@@ -96,7 +103,8 @@ class _Query:
     def order(self, *_a, **_k):
         return self
 
-    def range(self, *_a, **_k):
+    def range(self, start, end):
+        self.window = (start, min(end, start + FakeSB.MAX_ROWS - 1))
         return self
 
     def limit(self, *_a, **_k):
@@ -113,10 +121,13 @@ class _Query:
             for r in rows:
                 r.update(self.values)
             self.sb.writes.append((self.name, "update", dict(self.values)))
+        total = len(rows)
+        if self.op == "select":
+            rows = rows[self.window[0]:self.window[1] + 1]
         data = [dict(r) for r in rows]
         if self.one:
             data = data[0] if data else None
-        return SimpleNamespace(data=data, count=len(rows))
+        return SimpleNamespace(data=data, count=total)
 
 
 def _company(cid, name, **kw):
@@ -224,6 +235,29 @@ def test_a_company_is_blocked_by_its_roles_elsewhere_including_the_register():
     blockers = soft_delete.company_blockers(sb, sb.tables["entities"][0])
     assert [(e["company_id"], e["roles"]) for e in blockers["links"]] == [
         ("client", ["Company secretary"]), ("client2", ["Company secretary"])]
+
+
+def test_the_company_secretary_of_thousands_is_counted_not_listed():
+    """GSHK's own entity is the current secretary of ~5,600 companies.
+
+    Every one of them must COUNT -- past PostgREST's 1,000-row page -- while
+    only SHOWN_LINKS are named, and no request may carry thousands of ids in
+    its URL, which is what asking for all their names at once would do.
+    """
+    clients = [_company(f"c{i:05d}", f"CLIENT {i:05d} LTD") for i in range(2500)]
+    clients[7]["deleted_at"] = DELETED_AT        # a deleted one does not count
+    sb = _company_sb(
+        entities=[_company("gshk", "Get Started HK Limited"), *clients],
+        entity_officers=[{"entity_id": c["id"], "corporate_entity_id": "gshk",
+                          "role": "company_secretary", "is_current": True}
+                         for c in clients],
+        company_secretaries=[])
+    blockers = soft_delete.company_blockers(sb, sb.tables["entities"][0])
+
+    assert blockers["links_total"] == 2499
+    assert len(blockers["links"]) == soft_delete.SHOWN_LINKS
+    assert max(sb.in_sizes) <= soft_delete.SHOWN_LINKS
+    assert "and 2494 more" in soft_delete.describe(blockers)
 
 
 def test_a_register_name_does_not_block_when_a_live_twin_would_still_resolve_it():
