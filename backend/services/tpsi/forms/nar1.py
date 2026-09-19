@@ -108,7 +108,12 @@ def _validate_level(data: dict, path: str, errors: list[str]) -> None:
         if not text:
             continue
         if _has_control_chars(text):
-            errors.append(f"{where}: contains a control character (including Tab)")
+            # Worded for the operator, who reads it on the case screen: in
+            # practice this is a value pasted out of a spreadsheet cell, and
+            # the character is invisible in every box that displays it.
+            errors.append(f"{where}: contains a Tab or another invisible control "
+                          f"character, which CR refuses — retype the value "
+                          f"rather than pasting it")
         # Characters, not bytes — CR counts characters, and a 100-character
         # Chinese name is 300 UTF-8 bytes.
         if node.max_length and len(text) > node.max_length:
@@ -165,10 +170,36 @@ def _build_level(data: dict, path: str) -> str:
     return "".join(parts)
 
 
+class FormValidationError(ValueError):
+    """Every value in a built return that CR would refuse.
+
+    A ValueError still, so every caller that already catches one keeps working.
+    It exists so the faults travel as a LIST: flattened into one sentence they
+    were unreadable, and on the case routes they were answered as a 502 — whose
+    body Cloudflare replaces, so the operator saw "Failed to fetch" instead
+    (PROD 2026-09-19, a Tab pasted into a BR number).
+    """
+
+    def __init__(self, errors: list[str]):
+        self.errors = list(errors)
+        super().__init__("NAR1 validation failed: " + "; ".join(self.errors))
+
+    def problems(self) -> list[str]:
+        """The faults as the screen should print them: each field named the way
+        the drift gate names it ("Business Registration number"), not by CR's
+        element path ("brNo")."""
+        from services.tpsi import drift  # lazy: drift imports this module lazily too
+        out = []
+        for error in self.errors:
+            where, _, reason = error.partition(": ")
+            out.append(f"{drift.label(where)}: {reason}" if reason else error)
+        return out
+
+
 def build_nar1_xml(data: dict) -> str:
     """Inner content of <cr:formModel>, ready for soap.build_submission()."""
     errors = validate(data)
     if errors:
-        raise ValueError("NAR1 validation failed: " + "; ".join(errors))
+        raise FormValidationError(errors)
     load_nar1_schema()  # fail fast if the committed schema is missing
     return _build_level(data, "")

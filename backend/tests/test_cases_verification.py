@@ -418,6 +418,39 @@ def test_the_preview_reports_an_unfilable_company_rather_than_spinning(client):
     assert response.json()["detail"]["problems"] == ["no registered-office country"]
 
 
+def test_a_return_cr_would_refuse_is_a_400_naming_the_field_not_a_502(client):
+    """PROD 2026-09-19, NAR-2026-0013 (Payward Limited). The builder refused a
+    Tab in the BR number and the route answered 502 -- and a 502's body is
+    swapped for Cloudflare's own page, with no CORS header, so the browser
+    showed "Failed to fetch" and "Could not reach the server" while the API sat
+    there with the exact sentence naming the field. A value the builder refuses
+    is a fault in the record: a 4xx, carrying the list, like a mapping error."""
+    from services.tpsi.forms import nar1
+
+    fault = nar1.FormValidationError(["brNo: contains a Tab"])
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(side_effect=fault)):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["problems"] == ["Business Registration number: contains a Tab"]
+    assert "company profile" in detail["message"]
+
+
+def test_any_other_value_fault_in_the_build_is_a_400_too(client):
+    """A bare ValueError out of the mapper is bad data as well (an unparseable
+    date, say) — not an upstream outage — and the operator has to read it."""
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(side_effect=ValueError("bad incorporation date"))):
+        response = client.get("/cases/c1/verification/preview", headers=H)
+
+    assert response.status_code == 400
+    assert "bad incorporation date" in str(response.json()["detail"])
+
+
 def test_the_preview_needs_nar1_read(client):
     with patch("middleware.auth._resolve_user", return_value=REGULAR), \
          patch("middleware.auth._permissions_for", return_value=set()):
@@ -577,6 +610,24 @@ def test_an_unfilable_company_is_a_400_listing_every_problem(client):
     assert response.status_code == 400
     assert response.json()["detail"]["problems"] == [
         "no registered-office country", "no share class"]
+
+
+def test_a_send_the_builder_refuses_is_a_400_and_mails_nobody(client):
+    """The send half of NAR-2026-0013: same fault, same 502, same "Could not
+    reach the server" -- and it must still stop before any director is mailed."""
+    from services.tpsi.forms import nar1
+
+    fault = nar1.FormValidationError(["brNo: contains a Tab"])
+    with _super(), _Stack(*_sendable(filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml",
+               new=AsyncMock(side_effect=fault)), \
+         patch("routers.cases.email_service.send") as send:
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["problems"] == [
+        "Business Registration number: contains a Tab"]
+    send.assert_not_called()
 
 
 def test_send_is_refused_for_a_form_that_is_not_nar1(client):

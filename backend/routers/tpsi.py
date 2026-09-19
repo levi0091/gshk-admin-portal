@@ -271,6 +271,13 @@ def _handle(exc: Exception) -> HTTPException:
     form; a signature fault means the signatory is not authorised for this
     company at CR, and no amount of editing the return will help.
     """
+    # Before the ValueError branch it subclasses: the builder's refusals are a
+    # list, and the fault panel renders `problems` one per line.
+    if isinstance(exc, nar1.FormValidationError):
+        return HTTPException(400, {
+            "message": ("The return cannot be built from the company record: "
+                        "the Companies Registry would refuse these values."),
+            "problems": exc.problems()})
     if isinstance(exc, (LookupError, ValueError)):
         return HTTPException(400, str(exc))
     if isinstance(exc, TpsiPasswordExpiredError):

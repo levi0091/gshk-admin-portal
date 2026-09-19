@@ -77,6 +77,14 @@ export default function PdfFrame({ url, error, fileName, pills = [], label,
       <div className="card-note card-note-warn" role="status">
         <b>The preview could not be rendered.</b>
         <div style={{ marginTop: 4 }}>{error.message}</div>
+        {/* Every field the backend named. Without the list a refused return
+            said "the Companies Registry would refuse these values" and never
+            said which — the one thing the operator has to go and fix. */}
+        {error.problems?.length > 0 && (
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+            {error.problems.map(p => <li key={p}>{p}</li>)}
+          </ul>
+        )}
         {error.hint && <div style={{ marginTop: 4 }}>{error.hint}</div>}
       </div>
     )
