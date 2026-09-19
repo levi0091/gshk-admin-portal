@@ -23,7 +23,10 @@ import NewCaseModal from '../components/NewCaseModal.jsx'
 import CasesPane, { caseSummary } from '../components/CasesPane.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
-import { companyProfileCaps } from '../lib/screenCapabilities.js'
+import { companyProfileCaps, asDeleted } from '../lib/screenCapabilities.js'
+import {
+  DeleteRecordModal, DeletedBanner, RecordGone, createdOn,
+} from '../components/SoftDelete.jsx'
 
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
@@ -189,6 +192,10 @@ export default function CompanyProfilePage() {
   const [company, setCompany] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // A 404 is its own answer: the company never existed, or it was deleted and
+  // this role may not see deleted records. The API says the two the same way.
+  const [notFound, setNotFound] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
   const lookups = useLookups()
@@ -211,7 +218,13 @@ export default function CompanyProfilePage() {
   // refuses each independently — this only stops the screen OFFERING an action
   // it knows will be refused, and every control below is rendered
   // conditionally, never disabled (Levi 2026-09-04).
-  const caps = companyProfileCaps(hasPermission)
+  //
+  // A DELETED company (migration 049) reaches this page only for a role that
+  // could restore it, and shows read-only: every write is refused by the API
+  // with a 404, so `asDeleted` withdraws them all but Restore.
+  const baseCaps = companyProfileCaps(hasPermission)
+  const isDeleted = Boolean(company?.deleted_at)
+  const caps = isDeleted ? asDeleted(baseCaps) : baseCaps
   const canWrite = caps.editCompany
   const canUploadDoc = caps.uploadDocument
   const canRemoveDoc = caps.removeDocument
@@ -233,7 +246,10 @@ export default function CompanyProfilePage() {
     setLoading(true)
     api.get(`/companies/${companyId}`)
       .then(setCompany)
-      .catch(err => setError(err.message))
+      .catch(err => {
+        if (err.status === 404) setNotFound(true)
+        else setError(err.message)
+      })
       .finally(() => setLoading(false))
   }, [companyId])
 
@@ -424,6 +440,9 @@ export default function CompanyProfilePage() {
   // minority of companies whose records sit elsewhere.
 
   if (loading) return <div className="empty-state">Loading…</div>
+  if (notFound) {
+    return <RecordGone kind="company" backTo="/registry" backLabel="Back to Company Registry" />
+  }
   if (error) {
     return (
       <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
@@ -495,7 +514,38 @@ export default function CompanyProfilePage() {
         {/* No page-level Upload button: it offered every document type at
             once from a place that named no section. Each section carries its
             own. */}
+        {caps.deleteCompany && (
+          <div className="pg-actions">
+            {/* Outlined red, as Close case is: a destructive action on an
+                ordinary header, which the confirmation then asks about. */}
+            <button className="btn btn-outline btn-danger-outline"
+                    onClick={() => setDeleting(true)}>
+              Delete company
+            </button>
+          </div>
+        )}
       </div>
+
+      {isDeleted && (
+        <DeletedBanner kind="company" record={company}
+                       basePath={`/companies/${companyId}`}
+                       canRestore={caps.restoreCompany} onRestored={load} />
+      )}
+
+      {deleting && (
+        <DeleteRecordModal
+          kind="company"
+          basePath={`/companies/${companyId}`}
+          name={company.company_name}
+          identifiers={[
+            company.br_number && `BRN ${company.br_number}`,
+            company.cr_number && `CR No. ${company.cr_number}`,
+            createdOn(company),
+          ]}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => navigate('/registry')}
+        />
+      )}
 
       {newCase && (
         <NewCaseModal
@@ -564,7 +614,9 @@ export default function CompanyProfilePage() {
           rendered at all for this role, so this banner is the ONLY thing on the
           screen that explains their absence — without it the page reads as a
           product that cannot edit a company, rather than a role that cannot. */}
-      {!canWrite && (
+      {/* Not on a deleted company: the banner above already says why nothing
+          here can be changed, and this note would blame the role instead. */}
+      {!canWrite && !isDeleted && (
         <ReadOnlyNote module="companies" what="this company's full profile" />
       )}
 

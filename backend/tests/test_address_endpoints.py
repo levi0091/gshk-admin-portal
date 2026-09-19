@@ -185,7 +185,10 @@ def test_an_unknown_hong_kong_district_is_refused():
 
 def test_an_unknown_field_is_refused_rather_than_silently_dropped():
     """A typo'd key that is ignored looks exactly like a save that worked."""
-    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN):
+    # FastAPI resolves the route's dependencies before it validates the body,
+    # and `live_company` asks whether the company was deleted (migration 049).
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase"):
         resp = client.put(
             "/companies/c-1/registered-address",
             json={**GOOD, "line4": "nope"}, headers=H,

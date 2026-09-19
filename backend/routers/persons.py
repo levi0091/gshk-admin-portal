@@ -10,19 +10,38 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 
-from middleware.auth import require_permission
+from middleware.auth import require_permission, has_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_subject
 from services import (
     audit_events, document_service, document_sections, address_service,
-    table_filters as tf,
+    table_filters as tf, soft_delete,
 )
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
 from services.tpsi.forms.cr_vocabularies import resolve_country
 
 router = APIRouter()
+
+#: The same words for a deleted person as for one that never existed.
+PERSON_NOT_FOUND = "Person not found"
+
+
+def live_person(permission: str):
+    """`require_permission("persons", permission)`, then 404 a DELETED person.
+
+    See `routers.companies.live_company`, which this mirrors.
+    """
+    guard = require_permission("persons", permission)
+
+    async def live_person_check(person_id: str, user=Depends(guard)) -> dict:
+        if soft_delete.is_deleted(get_supabase(), "persons", person_id):
+            raise HTTPException(status_code=404, detail=PERSON_NOT_FOUND)
+        return user
+
+    live_person_check.refuses_deleted = "persons"
+    return live_person_check
 
 _EDITABLE_FIELDS = {
     "full_name", "given_names", "surname", "full_name_zh", "former_name",
@@ -226,13 +245,19 @@ def _role_rollup(sb, person_id: str) -> list[dict]:
                 "resigned_date": r.get("resigned_date"),
             })
     names: dict[str, str] = {}
+    gone: set[str] = set()
     if entity_ids:
         ents = (
-            sb.table("entities").select("id, company_name")
+            sb.table("entities").select("id, company_name, deleted_at")
             .in_("id", list(entity_ids)).execute().data
         ) or []
         names = {e["id"]: e["company_name"] for e in ents}
+        gone = {e["id"] for e in ents if e.get("deleted_at")}
     for c in collected:
+        # A role at a DELETED company is not shown, and so not counted towards
+        # VIP status either (migration 049).
+        if c["entity_id"] in gone:
+            continue
         c["company_name"] = names.get(c["entity_id"])
         roll.append(c)
     return roll
@@ -358,6 +383,37 @@ async def list_persons(
     }
 
 
+_DELETED_COLS = (
+    "id, full_name, full_name_zh, email, nationality, date_of_birth, "
+    "created_at, deleted_at, deleted_by, deleted_reason"
+)
+
+
+@router.get("/deleted")
+async def list_deleted_persons(
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+    user=Depends(require_permission("persons", "delete")),
+):
+    """The Persons Registry's Deleted tab, for a role that could restore one.
+
+    Declared BEFORE `/{person_id}`, or "deleted" would be read as an id. Reads
+    `persons`, not `person_registry`, which hides exactly these rows.
+    """
+    sb = get_supabase()
+    search_or = None
+    if search:
+        search_or = (f"full_name.ilike.%{search}%,"
+                     f"full_name_zh.ilike.%{search}%,"
+                     f"email.ilike.%{search}%")
+    rows, total = soft_delete.list_deleted(
+        sb, "persons", cols=_DELETED_COLS, search_or=search_or,
+        page=page, page_size=page_size)
+    return {"persons": rows, "page": page, "page_size": page_size,
+            "total": total}
+
+
 @router.get("/{person_id}")
 async def get_person(
     person_id: str,
@@ -368,7 +424,12 @@ async def get_person(
         sb.table("persons").select("*").eq("id", person_id).single().execute()
     ).data
     if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
+        raise HTTPException(status_code=404, detail=PERSON_NOT_FOUND)
+    # 404 to anybody who could not restore it; read-only to somebody who could.
+    if person.get("deleted_at"):
+        if not has_permission(user, "persons", "delete"):
+            raise HTTPException(status_code=404, detail=PERSON_NOT_FOUND)
+        soft_delete.with_deleter_names(sb, [person])
 
     identity_docs = (
         sb.table("person_identity_documents").select("*")
@@ -429,7 +490,7 @@ async def create_person(
 async def update_person(
     person_id: str,
     body: UpdatePersonRequest,
-    user=Depends(require_permission("persons", "write")),
+    user=Depends(live_person("write")),
 ):
     updates = {k: v for k, v in body.model_dump().items()
                if v is not None and k in _EDITABLE_FIELDS}
@@ -467,6 +528,105 @@ async def update_person(
         if old_val != new_val
     ])
     return updated
+
+
+# --------------------------------------------------------------------------- #
+#  Soft delete (migration 049) -- `persons:delete`. Rules: services/soft_delete.
+# --------------------------------------------------------------------------- #
+
+class DeleteRequest(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    reason: str
+
+
+def _deletion_target(sb, person_id: str) -> dict:
+    rows = (sb.table("persons").select("id, full_name, deleted_at")
+            .eq("id", person_id).execute().data) or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=PERSON_NOT_FOUND)
+    return rows[0]
+
+
+@router.get("/{person_id}/deletion-check")
+async def person_deletion_check(
+    person_id: str,
+    user=Depends(live_person("delete")),
+):
+    """What would stop this person being deleted, for the dialog to show
+    before anybody types a reason. The delete itself asks again."""
+    sb = get_supabase()
+    _deletion_target(sb, person_id)
+    blockers = soft_delete.person_blockers(sb, person_id)
+    return {"can_delete": not soft_delete.has_blockers(blockers), **blockers}
+
+
+@router.post("/{person_id}/delete")
+async def delete_person(
+    person_id: str,
+    body: DeleteRequest,
+    user=Depends(live_person("delete")),
+):
+    try:
+        reason = soft_delete.clean_reason(body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    sb = get_supabase()
+    person = _deletion_target(sb, person_id)
+    blockers = soft_delete.person_blockers(sb, person_id)
+    if soft_delete.has_blockers(blockers):
+        raise HTTPException(status_code=409, detail=soft_delete.describe(blockers))
+
+    deleted = soft_delete.mark_deleted(
+        sb, "persons", person_id, user_id=user["id"], reason=reason)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=PERSON_NOT_FOUND)
+
+    await log_event(
+        case_id=None, user_id=user["id"],
+        user_display_name=user["display_name"], action_type="PERSON_DELETED",
+        event_code=audit_events.GF_PERSON_DELETED,
+        company_name=person.get("full_name"),
+        **audit_subject.for_person(
+            person, id_number=audit_subject.primary_id_number(sb, person_id)),
+        entity_type="person", entity_id=str(person_id),
+        new_value=reason,
+        before_state={"deleted_at": None},
+        after_state={"deleted_at": deleted.get("deleted_at"),
+                     "deleted_reason": reason},
+    )
+    return deleted
+
+
+@router.post("/{person_id}/restore")
+async def restore_person(
+    person_id: str,
+    user=Depends(require_permission("persons", "delete")),
+):
+    """Undelete. Not `live_person` -- a deleted person is the whole point."""
+    sb = get_supabase()
+    person = _deletion_target(sb, person_id)
+    if not person.get("deleted_at"):
+        raise HTTPException(status_code=409, detail="This person is not deleted.")
+    restored = soft_delete.restore(sb, "persons", person_id)
+    if not restored:
+        raise HTTPException(status_code=409, detail="This person is not deleted.")
+
+    await log_event(
+        case_id=None, user_id=user["id"],
+        user_display_name=user["display_name"], action_type="PERSON_RESTORED",
+        event_code=audit_events.GF_PERSON_RESTORED,
+        company_name=person.get("full_name"),
+        **audit_subject.for_person(
+            person, id_number=audit_subject.primary_id_number(sb, person_id)),
+        entity_type="person", entity_id=str(person_id),
+        new_value="Restored",
+        before_state={"deleted_at": person.get("deleted_at")},
+        after_state={"deleted_at": None},
+    )
+    return restored
 
 
 class UpdateIdentityDocumentRequest(BaseModel):
@@ -596,7 +756,7 @@ async def update_identity_document(
     person_id: str,
     document_id: str,
     body: UpdateIdentityDocumentRequest,
-    user=Depends(require_permission("persons", "write")),
+    user=Depends(live_person("write")),
 ):
     """Edit one identity document.
 
@@ -684,7 +844,7 @@ async def save_identity_document(
     is_primary: bool = Form(False),
     title: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
-    user=Depends(require_permission("persons", "write")),
+    user=Depends(live_person("write")),
 ):
     """Record an identity document, and optionally the scan that evidences it.
 
@@ -814,7 +974,7 @@ async def save_identity_document(
 async def delete_identity_document(
     person_id: str,
     document_id: str,
-    user=Depends(require_permission("persons", "write")),
+    user=Depends(live_person("write")),
 ):
     """Remove one identity document. Its scan is kept, in Document History.
 
@@ -886,7 +1046,7 @@ async def delete_identity_document(
 async def update_residential_address(
     person_id: str,
     body: AddressIn,
-    user=Depends(require_permission("persons", "write")),
+    user=Depends(live_person("write")),
 ):
     """Set this person's residential address.
 
@@ -947,7 +1107,7 @@ async def update_residential_address(
 @router.get("/{person_id}/documents")
 async def list_person_documents(
     person_id: str,
-    user=Depends(require_permission("persons", "read")),
+    user=Depends(live_person("read")),
 ):
     return document_service.list_documents(owner_kind="person", owner_id=person_id)
 
@@ -958,7 +1118,7 @@ async def upload_person_document(
     file: UploadFile = File(...),
     document_type_code: str = Form(...),
     title: Optional[str] = Form(None),
-    user=Depends(require_permission("persons", "write")),
+    user=Depends(live_person("write")),
 ):
     content = await file.read()
     return await document_service.upload_document(

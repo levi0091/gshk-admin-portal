@@ -1058,3 +1058,75 @@ describe('CompanyProfilePage — a read-only role', () => {
     expect(within(card).getByRole('button', { name: 'Remove' })).toBeEnabled()
   })
 })
+
+describe('CompanyProfilePage — soft delete (migration 049)', () => {
+  const only = (...perms) => (module, permission) =>
+    perms.includes(`${module}:${permission}`)
+  const DELETED = {
+    ...CLIENT, deleted_at: '2026-09-20T02:00:00Z',
+    deleted_by_name: 'Levi Z.', deleted_reason: 'duplicate of the ETL profile',
+  }
+  const answering = (url, value) => {
+    const base = api.get.getMockImplementation()
+    api.get.mockImplementation(u => (u === url ? value() : base(u)))
+  }
+
+  it('offers Delete only to a role holding companies:delete', async () => {
+    auth.hasPermission = only('companies:read', 'companies:write', 'nar1:write')
+    renderPage()
+    await screen.findByText('Company Information')
+    expect(screen.queryByRole('button', { name: 'Delete company' })).not.toBeInTheDocument()
+  })
+
+  it('deletes from the header, with a reason, and leaves for the registry', async () => {
+    answering('/companies/e1/deletion-check',
+              () => Promise.resolve({ can_delete: true, links: [], cases: [] }))
+    api.post.mockResolvedValue({})
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Delete company' }))
+    const dialog = await screen.findByRole('alertdialog', { name: 'Delete company' })
+    expect(within(dialog).getByText('BRN 2100031')).toBeInTheDocument()
+
+    await user.type(within(dialog).getByLabelText(/Why is this company/), 'test entry')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete company' }))
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/registry'))
+    expect(api.post).toHaveBeenCalledWith('/companies/e1/delete', { reason: 'test entry' })
+  })
+
+  it('shows a deleted company read-only: who, when, why, and Restore', async () => {
+    mockGet(DELETED)
+    renderPage()
+    await screen.findByText('This company has been deleted.')
+    expect(screen.getByText('duplicate of the ETL profile')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore company' })).toBeInTheDocument()
+    // Every write is withdrawn, however much the role holds: the API would
+    // 404 each one.
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete company' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New case/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Upload Document/ })).not.toBeInTheDocument()
+  })
+
+  it('restores, and re-reads the company', async () => {
+    mockGet(DELETED)
+    api.post.mockResolvedValue({})
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Restore company' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/companies/e1/restore', {}))
+    await waitFor(() => expect(
+      api.get.mock.calls.filter(([u]) => u === '/companies/e1').length).toBe(2))
+  })
+
+  it('says "not available" for a 404, with the way back -- not a red error box', async () => {
+    answering('/companies/e1', () => Promise.reject(
+      Object.assign(new Error('Company not found'), { status: 404 })))
+    renderPage()
+    expect(await screen.findByText('This company is not available')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to Company Registry' }))
+      .toHaveAttribute('href', '/registry')
+    expect(screen.queryByText(/Failed to load company/)).not.toBeInTheDocument()
+  })
+})

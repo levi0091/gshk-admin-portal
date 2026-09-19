@@ -1241,6 +1241,17 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None,
 
     if not entity.get("br_number"):
         problems.append("entity: no BR number — CR rejects a NAR1 without one")
+    # Soft delete (migration 049). Neither can happen through the portal --
+    # a deleted company cannot open a case, and a party with a current role
+    # cannot be deleted -- so each is named rather than quietly filed around.
+    if entity.get("deleted_at"):
+        problems.append("entity: this company has been deleted — restore it "
+                        "before filing its return")
+    for name in graph.get("deleted_parties") or []:
+        problems.append(
+            f"{name}: holds a current role on this return but their record "
+            f"has been deleted — restore it, or end the appointment or "
+            f"holding, before filing")
 
     data: dict = {
         # Filed in English. G-FlowDesk holds Chinese variants but a NAR1 carries

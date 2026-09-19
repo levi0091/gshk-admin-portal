@@ -2079,3 +2079,24 @@ th.th-filtered {
   .rf-compare { grid-template-columns: 1fr; }
   .rf-arrow { transform: rotate(90deg); justify-self: center; }
 }
+
+/* ── Soft delete (migration 049) ───────────────────────────────────────────
+   The record being deleted, named by what is unique about it -- two profiles
+   can share a name and a BR number, so the created date is shown too. */
+.delete-subject {
+  border: 1.5px solid var(--border); border-radius: var(--r);
+  padding: 10px 12px; margin-bottom: 14px; background: var(--bg-page);
+}
+.delete-subject-name { font-weight: 600; color: var(--t-head); font-size: 14px; }
+.delete-subject-id { color: var(--t-muted); font-size: 12px; margin-top: 2px; }
+.delete-blockers { margin: 6px 0 0; padding-left: 18px; }
+.delete-blockers li { margin: 2px 0; }
+.t-muted { color: var(--t-muted); }
+/* The banner carries its own Restore button on the right. */
+.deleted-banner { align-items: center; }
+.deleted-banner .al-body { flex: 1; min-width: 0; }
+.record-gone { padding: 24px; max-width: 520px; }
+/* A registry tab only a delete-holder sees, set apart from the filters it is
+   not one of: it swaps the whole list, it does not narrow it. */
+.filter-tab.tab-deleted { color: #C53030; }
+.filter-tab.tab-deleted.active { background: #C53030; color: #fff; }

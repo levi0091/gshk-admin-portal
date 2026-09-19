@@ -8,6 +8,7 @@ import AddCompanyModal from '../components/AddCompanyModal.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
 import { companyRegistryCaps } from '../lib/screenCapabilities.js'
+import { DeletedTable } from '../components/SoftDelete.jsx'
 import FilterableTh from '../components/FilterableTh.jsx'
 import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
@@ -88,7 +89,12 @@ const COLUMNS = [
 export default function CompanyRegistryPage() {
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
-  const canWrite = companyRegistryCaps(hasPermission).addCompany
+  const caps = companyRegistryCaps(hasPermission)
+  const canWrite = caps.addCompany
+  // The Deleted tab (migration 049). Not a flag like the others: it swaps the
+  // whole list for the deleted companies, which the registry otherwise never
+  // shows, and only for a role that could restore one.
+  const [showDeleted, setShowDeleted] = useState(false)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -139,7 +145,9 @@ export default function CompanyRegistryPage() {
   appendTo(params, filters.filter(f => f.col !== 'flag'))
 
   // Cancels the previous request on every toggle — UAT W-8. See the hook.
-  const { data, loading, error } = useAbortableGet(`/companies?${params}`)
+  // Paused while the Deleted tab is open; the tab counts keep the last answer.
+  const { data, loading, error } = useAbortableGet(
+    showDeleted ? null : `/companies?${params}`)
 
   const companies = data?.companies || []
   const flagCounts = data?.flag_counts || {}
@@ -202,9 +210,9 @@ export default function CompanyRegistryPage() {
           <button
             key={tab.label}
             role="tab"
-            aria-selected={flag === tab.key}
-            className={`filter-tab ${tab.cls} ${flag === tab.key ? 'active' : ''}`}
-            onClick={() => setFlag(tab.key)}
+            aria-selected={!showDeleted && flag === tab.key}
+            className={`filter-tab ${tab.cls} ${!showDeleted && flag === tab.key ? 'active' : ''}`}
+            onClick={() => { setShowDeleted(false); setFlag(tab.key) }}
           >
             {tab.label}
             <span className="filter-count">
@@ -212,8 +220,26 @@ export default function CompanyRegistryPage() {
             </span>
           </button>
         ))}
+        {caps.viewDeleted && (
+          <button
+            role="tab"
+            aria-selected={showDeleted}
+            className={`filter-tab tab-deleted ${showDeleted ? 'active' : ''}`}
+            onClick={() => setShowDeleted(true)}
+          >
+            Deleted
+          </button>
+        )}
       </div>
 
+      {showDeleted ? (
+        <DeletedTable
+          endpoint="/companies/deleted" rowsKey="companies" search={query}
+          refLabel="BRN" refOf={c => c.br_number}
+          onOpen={id => navigate(`/companies/${id}`)}
+        />
+      ) : (
+      <>
       <FilterChips
         columns={COLUMNS}
         filters={filters}
@@ -291,6 +317,8 @@ export default function CompanyRegistryPage() {
             </div>
           )}
         </>
+      )}
+      </>
       )}
     </>
   )

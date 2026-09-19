@@ -41,15 +41,31 @@ export function companyProfileCaps(can) {
     // DELETE /documents/{id} — ALL ON `companies` (Levi 2026-09-07). There is
     // no documents module any more: the papers filed against a company are
     // part of that record, so the right to change the record is the right to
-    // add and remove them. Delete included — neither owner module has a delete
-    // level, and removing a document IS changing what the record holds.
+    // add and remove them. Removing a document IS changing what the record
+    // holds, so it is a write -- not `companies:delete`, which is the right to
+    // delete the company itself.
     uploadDocument: can('companies', 'write'),
     downloadDocument: can('companies', 'read'),
     removeDocument: can('companies', 'write'),
     // POST /cases. Deliberately not `companies:write`: editing a profile does
     // not entitle you to drive a statutory filing.
     openCase: can('nar1', 'write'),
+    // POST /companies/{id}/delete and /restore (migration 049). Its own level:
+    // editing a company is not the right to make it disappear.
+    deleteCompany: can('companies', 'delete'),
+    restoreCompany: can('companies', 'delete'),
   }
+}
+
+/**
+ * A DELETED record's profile: everything withdrawn but reading its papers and
+ * restoring it. The API refuses every write on a deleted record with a 404, so
+ * any other control would only ever produce that.
+ */
+export function asDeleted(caps) {
+  const keep = new Set(['downloadDocument', 'restoreCompany', 'restorePerson'])
+  return Object.fromEntries(
+    Object.entries(caps).map(([name, allowed]) => [name, keep.has(name) && allowed]))
 }
 
 /**
@@ -70,19 +86,31 @@ export function personProfileCaps(can) {
     addIdentityDocument: can('persons', 'write'),
     uploadDocument: can('persons', 'write'),
     downloadDocument: can('persons', 'read'),
-    // Removing a document IS changing what the record holds — and `persons`
-    // has no delete level to map the old `documents:delete` onto.
+    // Removing a document IS changing what the record holds, so a write.
     removeDocument: can('persons', 'write'),
+    // POST /persons/{id}/delete and /restore (migration 049).
+    deletePerson: can('persons', 'delete'),
+    restorePerson: can('persons', 'delete'),
   }
 }
 
-/** Both registries: the list is the read, the Add button is the write. */
+/**
+ * Both registries: the list is the read, the Add button is the write, and the
+ * Deleted tab -- GET /companies/deleted, /persons/deleted -- is the delete
+ * level, because it exists to restore from.
+ */
 export function companyRegistryCaps(can) {
-  return { addCompany: can('companies', 'write') }
+  return {
+    addCompany: can('companies', 'write'),
+    viewDeleted: can('companies', 'delete'),
+  }
 }
 
 export function personsRegistryCaps(can) {
-  return { addPerson: can('persons', 'write') }
+  return {
+    addPerson: can('persons', 'write'),
+    viewDeleted: can('persons', 'delete'),
+  }
 }
 
 /**

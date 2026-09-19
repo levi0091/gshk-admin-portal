@@ -62,11 +62,11 @@ MODULE_FOR_OWNER_COLUMN = {
 #: exactly one is ever set.
 _OWNER_COLUMNS = ("entity_id", "person_id", "nar1_case_id")
 
-#: `documents:delete` has no equivalent under an owner module — neither
-#: `companies` nor `persons` has a delete level, and inventing one would mean a
-#: migration seeding a permission nobody had asked for. Removing a document is
-#: therefore a WRITE on the owning record, which is what it is: changing what
-#: the record holds.
+#: Removing a document is a WRITE on the owning record, which is what it is:
+#: changing what the record holds. `companies:delete` and `persons:delete` DO
+#: exist since migration 049, and are deliberately not what this maps to --
+#: they are the right to delete the company or the person itself, a different
+#: and much larger act than taking one scan off its profile.
 _LEVEL = {"read": "read", "write": "write", "delete": "write"}
 
 

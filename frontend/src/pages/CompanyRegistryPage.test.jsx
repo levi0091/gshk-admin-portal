@@ -593,3 +593,45 @@ describe('CompanyRegistryPage — a read-only role', () => {
     expect(screen.getByRole('button', { name: /Add Company/ })).toBeEnabled()
   })
 })
+
+describe('CompanyRegistryPage — the Deleted tab (migration 049)', () => {
+  const DELETED = {
+    total: 1, page: 1, page_size: 50,
+    companies: [{ id: 'e9', company_name: 'Payward Limited', br_number: '74159213',
+                  deleted_at: '2026-09-20T02:00:00Z', deleted_by_name: 'Levi Z.',
+                  deleted_reason: 'duplicate profile' }],
+  }
+
+  it('is not there for a role without companies:delete', async () => {
+    auth.hasPermission = (m, p) => ['companies:read', 'companies:write'].includes(`${m}:${p}`)
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+    expect(screen.queryByRole('tab', { name: 'Deleted' })).not.toBeInTheDocument()
+  })
+
+  it('swaps the list for the deleted companies, and opens one', async () => {
+    api.get.mockImplementation(url => Promise.resolve(
+      url.startsWith('/companies/deleted') ? DELETED : PAYLOAD))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Harbour Tech Ltd.')
+
+    await user.click(screen.getByRole('tab', { name: 'Deleted' }))
+    await user.click(await screen.findByText('Payward Limited'))
+
+    expect(screen.queryByText('Harbour Tech Ltd.')).not.toBeInTheDocument()
+    expect(screen.getByText('duplicate profile')).toBeInTheDocument()
+    expect(navigate).toHaveBeenCalledWith('/companies/e9')
+  })
+
+  it('goes back to the live list from any other tab', async () => {
+    api.get.mockImplementation(url => Promise.resolve(
+      url.startsWith('/companies/deleted') ? DELETED : PAYLOAD))
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('tab', { name: 'Deleted' }))
+    await screen.findByText('Payward Limited')
+    await user.click(screen.getByRole('tab', { name: /^All/ }))
+    expect(await screen.findByText('Harbour Tech Ltd.')).toBeInTheDocument()
+  })
+})

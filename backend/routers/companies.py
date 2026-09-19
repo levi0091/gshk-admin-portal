@@ -10,19 +10,45 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 
-from middleware.auth import require_permission
+from middleware.auth import require_permission, has_permission
 from db.supabase import get_supabase
 from services.audit_service import log_event, log_events
 from services import audit_subject
 from services import (
     audit_events, document_service, address_service, table_filters as tf,
-    nar1_case_status, nar1_return_year)
+    nar1_case_status, nar1_return_year, soft_delete)
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE, COMPANY_TYPE, CURRENCY)
 from services.cr_forms.readiness import filing_problems
 from services.cr_forms import control_nature, record_types
 
 router = APIRouter()
+
+#: What a deleted company is to anybody who may not restore it: nothing. The
+#: same words as a company that never existed, so a 404 does not confirm that
+#: one did.
+COMPANY_NOT_FOUND = "Company not found"
+
+
+def live_company(permission: str):
+    """`require_permission("companies", permission)`, then 404 a DELETED company.
+
+    Every route that takes a `company_id` and is not specifically about a
+    deleted one uses this rather than `require_permission` directly (migration
+    049). A dependency, so a route added later cannot forget the check without
+    `tests/test_soft_delete.py`'s route sweep noticing; and it depends on the
+    permission check rather than preceding it, so a caller with no grant learns
+    nothing -- not even whether the company was deleted.
+    """
+    guard = require_permission("companies", permission)
+
+    async def live_company_check(company_id: str, user=Depends(guard)) -> dict:
+        if soft_delete.is_deleted(get_supabase(), "entities", company_id):
+            raise HTTPException(status_code=404, detail=COMPANY_NOT_FOUND)
+        return user
+
+    live_company_check.refuses_deleted = "entities"
+    return live_company_check
 
 #: CR's `coyType` codes, for the write check below.
 _COMPANY_TYPE_CODES = {code for code, _ in COMPANY_TYPE}
@@ -582,6 +608,60 @@ async def list_companies(
     return payload
 
 
+_DELETED_COLS = (
+    "id, company_name, company_name_zh, br_number, cr_number, is_client, "
+    "is_corporate_party, created_at, deleted_at, deleted_by, deleted_reason"
+)
+
+
+@router.get("/deleted")
+async def list_deleted_companies(
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+    user=Depends(require_permission("companies", "delete")),
+):
+    """The Company Registry's Deleted tab -- the one place a deleted company is
+    listed, and only for a role that could restore it (migration 049).
+
+    Declared BEFORE `/{company_id}`, or "deleted" would be read as an id.
+    Reads `entities`, not `company_registry`, which hides exactly these rows.
+    """
+    sb = get_supabase()
+    search_or = None
+    if search:
+        search_or = (f"company_name.ilike.%{search}%,"
+                     f"br_number.ilike.%{search}%,"
+                     f"cr_number.ilike.%{search}%")
+    rows, total = soft_delete.list_deleted(
+        sb, "entities", cols=_DELETED_COLS, search_or=search_or,
+        page=page, page_size=page_size)
+    return {"companies": rows, "page": page, "page_size": page_size,
+            "total": total}
+
+
+def _drop_deleted_parties(rows: list[dict], corp_names: dict[str, dict]) -> tuple[list, list]:
+    """Split link rows into the ones to show and the CURRENT ones hidden.
+
+    A party whose record is deleted is left off the profile like everywhere
+    else. It can only still hold a CURRENT role here if something went round
+    the deletion check -- a Viewpoint re-import re-linking it, or two people
+    racing -- and then hiding it would make the profile disagree with the
+    return, so the caller turns those into a filing problem instead.
+    """
+    shown, hidden = [], []
+    for r in rows:
+        person = r.get("persons") or {}
+        corp = corp_names.get(r.get("corporate_entity_id")) or {}
+        if person.get("deleted_at") or corp.get("deleted_at"):
+            if r.get("is_current"):
+                hidden.append(person.get("full_name") or corp.get("company_name")
+                              or r.get("person_id") or r.get("corporate_entity_id"))
+            continue
+        shown.append(r)
+    return shown, hidden
+
+
 @router.get("/{company_id}")
 async def get_company(
     company_id: str,
@@ -592,7 +672,14 @@ async def get_company(
         sb.table("entities").select("*").eq("id", company_id).single().execute()
     ).data
     if not entity:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=COMPANY_NOT_FOUND)
+    # A DELETED company is a 404 to everybody who could not restore it, and a
+    # read-only profile, with who deleted it and why, to somebody who could.
+    # Not `live_company`: that answers 404 to both.
+    if entity.get("deleted_at"):
+        if not has_permission(user, "companies", "delete"):
+            raise HTTPException(status_code=404, detail=COMPANY_NOT_FOUND)
+        soft_delete.with_deleter_names(sb, [entity])
 
     # Party rows embed the linked person; corporate parties are resolved by a
     # second lookup (entity_id AND corporate_entity_id both FK `entities`, so a
@@ -601,9 +688,10 @@ async def get_company(
     # PERSON, and the tile used to read the licence only off the corporate
     # party — so an individual licensed under the AMLO rendered as an em dash
     # with nowhere in the portal to fill it in (migration 038).
+    # `deleted_at` so a deleted party can be left off (migration 049).
     person_cols = ("persons(id, full_name, full_name_zh, email, phone, "
                    "nationality, date_of_birth, residential_address_id, "
-                   "tcsp_licence_no)")
+                   "tcsp_licence_no, deleted_at)")
     # Officers and secretaries both live in entity_officers, split by role.
     # (company_secretaries is a denormalized ETL mirror of the same rows and is
     # NOT corporate-party aware — it has no corporate_entity_id — so the profile
@@ -654,9 +742,24 @@ async def get_company(
     if corp_ids:
         rows = (sb.table("entities")
                 .select("id, company_name, company_name_zh, br_number, cr_number, "
-                        "tcsp_licence_no, registered_address_id")
+                        "tcsp_licence_no, registered_address_id, deleted_at")
                 .in_("id", list(corp_ids)).execute().data) or []
         corp_names = {r["id"]: r for r in rows}
+
+    # Deleted parties leave the profile (migration 049). A CURRENT one cannot
+    # simply vanish -- see _drop_deleted_parties -- so it is named below as a
+    # filing problem, which the Open case button already prints.
+    hidden_current: list = []
+    officers, gone = _drop_deleted_parties(officers, corp_names)
+    hidden_current += gone
+    secretaries, gone = _drop_deleted_parties(secretaries, corp_names)
+    hidden_current += gone
+    shareholders, gone = _drop_deleted_parties(shareholders, corp_names)
+    hidden_current += gone
+    ben_owners, gone = _drop_deleted_parties(ben_owners, corp_names)
+    hidden_current += gone
+    linked = officers + secretaries + shareholders + ben_owners
+
     for r in linked:
         cid = r.get("corporate_entity_id")
         if cid:
@@ -751,7 +854,13 @@ async def get_company(
     # Whether a return can be produced from this profile at all. Computed here
     # so the screen and the API agree, and so the Open case button can say why
     # it is refusing rather than just being grey (PRD OQ-2).
-    result["filing_problems"] = filing_problems(result)
+    result["filing_problems"] = filing_problems(result) + [
+        {"field": "parties",
+         "message": (f"{name} still holds a current role here but their record "
+                     f"has been deleted. Restore the record, or end the "
+                     f"appointment or holding, before filing.")}
+        for name in dict.fromkeys(hidden_current)
+    ]
     # Cases pane only for client entities (§6 visibility).
     if entity.get("is_client"):
         # `nar1_case_registry` (024) rather than the raw table: it carries
@@ -863,7 +972,7 @@ async def create_company(
 async def update_company(
     company_id: str,
     body: UpdateCompanyRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     updates = {k: v for k, v in body.model_dump().items()
                if v is not None and k in _EDITABLE_FIELDS}
@@ -972,7 +1081,7 @@ class CompanyPhoneRequest(BaseModel):
 async def update_company_phone(
     company_id: str,
     body: CompanyPhoneRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     """Set (or clear) the company's phone number.
 
@@ -1038,7 +1147,7 @@ async def update_company_phone(
 async def update_registered_address(
     company_id: str,
     body: AddressIn,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     """Set this company's registered office.
 
@@ -1128,7 +1237,7 @@ async def update_share_class(
     company_id: str,
     share_class_id: str,
     body: ShareClassRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     """Edit one class of shares — CR's section 11.
 
@@ -1190,7 +1299,7 @@ async def update_share_class(
 async def create_share_class(
     company_id: str,
     body: ShareClassRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     """Give a company its share capital.
 
@@ -1259,7 +1368,7 @@ async def set_record_location(
     company_id: str,
     record_type: str,
     body: RecordLocationRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     """Point one statutory register at an address, or at nothing (OQ-3).
 
@@ -1328,7 +1437,7 @@ async def set_record_location(
 async def update_flags(
     company_id: str,
     body: FlagsRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if not updates:
@@ -1363,6 +1472,108 @@ async def update_flags(
 
 
 # --------------------------------------------------------------------------- #
+#  Soft delete (migration 049)
+#  (declared BEFORE the /{relation} catch-all, or "delete" and "restore" would
+#   be read as relation names)
+#
+#  `companies:delete`, its own level: editing a company is not thereby the
+#  right to make it disappear. The rules are in services/soft_delete.py.
+# --------------------------------------------------------------------------- #
+
+class DeleteRequest(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    reason: str
+
+
+def _deletion_target(sb, company_id: str) -> dict:
+    rows = (sb.table("entities").select("id, company_name, br_number, deleted_at")
+            .eq("id", company_id).execute().data) or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=COMPANY_NOT_FOUND)
+    return rows[0]
+
+
+@router.get("/{company_id}/deletion-check")
+async def company_deletion_check(
+    company_id: str,
+    user=Depends(live_company("delete")),
+):
+    """What would stop this company being deleted, for the dialog to show
+    BEFORE anybody types a reason. The delete itself asks again."""
+    sb = get_supabase()
+    blockers = soft_delete.company_blockers(sb, _deletion_target(sb, company_id))
+    return {"can_delete": not soft_delete.has_blockers(blockers), **blockers}
+
+
+@router.post("/{company_id}/delete")
+async def delete_company(
+    company_id: str,
+    body: DeleteRequest,
+    user=Depends(live_company("delete")),
+):
+    try:
+        reason = soft_delete.clean_reason(body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    sb = get_supabase()
+    company = _deletion_target(sb, company_id)
+    blockers = soft_delete.company_blockers(sb, company)
+    if soft_delete.has_blockers(blockers):
+        raise HTTPException(status_code=409, detail=soft_delete.describe(blockers))
+
+    deleted = soft_delete.mark_deleted(
+        sb, "entities", company_id, user_id=user["id"], reason=reason)
+    if not deleted:
+        # Somebody else deleted it between the guard and here.
+        raise HTTPException(status_code=404, detail=COMPANY_NOT_FOUND)
+
+    await log_event(
+        case_id=company_id, user_id=user["id"],
+        user_display_name=user["display_name"], action_type="COMPANY_DELETED",
+        event_code=audit_events.GF_COMPANY_DELETED,
+        company_name=company.get("company_name"),
+        **audit_subject.for_company(company),
+        entity_type="entity", entity_id=str(company_id),
+        new_value=reason,
+        before_state={"deleted_at": None},
+        after_state={"deleted_at": deleted.get("deleted_at"),
+                     "deleted_reason": reason},
+    )
+    return deleted
+
+
+@router.post("/{company_id}/restore")
+async def restore_company(
+    company_id: str,
+    user=Depends(require_permission("companies", "delete")),
+):
+    """Undelete. Not `live_company` -- a deleted company is the whole point."""
+    sb = get_supabase()
+    company = _deletion_target(sb, company_id)
+    if not company.get("deleted_at"):
+        raise HTTPException(status_code=409, detail="This company is not deleted.")
+    restored = soft_delete.restore(sb, "entities", company_id)
+    if not restored:
+        raise HTTPException(status_code=409, detail="This company is not deleted.")
+
+    await log_event(
+        case_id=company_id, user_id=user["id"],
+        user_display_name=user["display_name"], action_type="COMPANY_RESTORED",
+        event_code=audit_events.GF_COMPANY_RESTORED,
+        company_name=company.get("company_name"),
+        **audit_subject.for_company(company),
+        entity_type="entity", entity_id=str(company_id),
+        old_value=None, new_value="Restored",
+        before_state={"deleted_at": company.get("deleted_at")},
+        after_state={"deleted_at": None},
+    )
+    return restored
+
+
+# --------------------------------------------------------------------------- #
 #  Company-scoped documents
 #  (declared BEFORE the /{relation} catch-all so "documents" isn't matched as a
 #   relation segment)
@@ -1383,7 +1594,7 @@ async def update_flags(
 @router.get("/{company_id}/documents")
 async def list_company_documents(
     company_id: str,
-    user=Depends(require_permission("companies", "read")),
+    user=Depends(live_company("read")),
 ):
     return document_service.list_documents(owner_kind="entity", owner_id=company_id)
 
@@ -1394,7 +1605,7 @@ async def upload_company_document(
     file: UploadFile = File(...),
     document_type_code: str = Form(...),
     title: Optional[str] = Form(None),
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     content = await file.read()
     return await document_service.upload_document(
@@ -1523,7 +1734,7 @@ async def link_party(
     company_id: str,
     relation: str,
     body: LinkPartyRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     if relation not in _RELATIONS:
         raise HTTPException(status_code=404, detail="Unknown relation")
@@ -1548,6 +1759,17 @@ async def link_party(
         raise HTTPException(status_code=422, detail="share_class_id is required for shareholders")
 
     sb = get_supabase()
+    # The pickers never offer a deleted record (the registry views hide it),
+    # so this is for whoever calls the API with an id they already had. A
+    # deleted party linked here would sit on the register, invisible, and be
+    # filed on the next return (migration 049).
+    for table, party_id, noun in (("persons", body.person_id, "person"),
+                                  ("entities", body.corporate_entity_id, "company")):
+        if party_id and soft_delete.is_deleted(sb, table, party_id):
+            raise HTTPException(
+                status_code=422,
+                detail=f"That {noun} has been deleted. Restore it before "
+                       f"giving it a role here.")
     row = _validate_link_attributes(sb, relation, row)
     created = sb.table(cfg["table"]).insert(row).execute().data
     if not created:
@@ -1574,7 +1796,7 @@ async def update_link(
     relation: str,
     link_id: str,
     body: LinkPartyRequest,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     if relation not in _RELATIONS:
         raise HTTPException(status_code=404, detail="Unknown relation")
@@ -1629,7 +1851,7 @@ async def unlink_party(
     company_id: str,
     relation: str,
     link_id: str,
-    user=Depends(require_permission("companies", "write")),
+    user=Depends(live_company("write")),
 ):
     if relation not in _RELATIONS:
         raise HTTPException(status_code=404, detail="Unknown relation")

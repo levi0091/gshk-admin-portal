@@ -937,3 +937,58 @@ describe('PersonProfilePage — a persons:read-only role', () => {
       .not.toBeInTheDocument()
   })
 })
+
+describe('PersonProfilePage — soft delete (migration 049)', () => {
+  const only = (...perms) => (module, permission) =>
+    perms.includes(`${module}:${permission}`)
+  const DELETED = {
+    ...PERSON, deleted_at: '2026-09-20T02:00:00Z',
+    deleted_by_name: 'Levi Z.', deleted_reason: 'created by mistake',
+  }
+
+  it('offers Delete only to a role holding persons:delete', async () => {
+    auth = { ...auth, hasPermission: only('persons:read', 'persons:write', 'companies:delete') }
+    renderPage()
+    await screen.findByText('Personal Information')
+    expect(screen.queryByRole('button', { name: 'Delete person' })).not.toBeInTheDocument()
+  })
+
+  it('asks the server what blocks it before asking why', async () => {
+    const base = api.get.getMockImplementation()
+    api.get.mockImplementation(u => (u === '/persons/p1/deletion-check'
+      ? Promise.resolve({
+        can_delete: false, cases: [],
+        links: [{ company_id: 'e1', company_name: 'Skyline Capital',
+                  br_number: '2100031', roles: ['Director'] }] })
+      : base(u)))
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Delete person' }))
+    const dialog = await screen.findByRole('alertdialog', { name: 'Delete person' })
+    expect(await within(dialog).findByRole('link', { name: 'Skyline Capital' }))
+      .toHaveAttribute('href', '/companies/e1')
+    expect(within(dialog).queryByRole('button', { name: 'Delete person' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('shows a deleted person read-only, with Restore', async () => {
+    mockGet(DELETED)
+    renderPage()
+    await screen.findByText('This person has been deleted.')
+    expect(screen.getByText('created by mistake')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore person' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete person' })).not.toBeInTheDocument()
+  })
+
+  it('says "not available" for a 404, with the way back', async () => {
+    const base = api.get.getMockImplementation()
+    api.get.mockImplementation(u => (u === '/persons/p1'
+      ? Promise.reject(Object.assign(new Error('Person not found'), { status: 404 }))
+      : base(u)))
+    renderPage()
+    expect(await screen.findByText('This person is not available')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to Natural Person Registry' }))
+      .toHaveAttribute('href', '/persons')
+  })
+})

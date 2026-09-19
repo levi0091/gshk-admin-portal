@@ -371,9 +371,15 @@ async def get_case(case_id: str, user=Depends(require_permission("nar1", "read")
     """The case with BOTH badges — workflow status and CR-form status, reported
     side by side and never merged (D-6)."""
     try:
-        return nar1_cases.composite(case_id)
+        case = nar1_cases.composite(case_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+    # A deleted company's cases are gone with it (migration 049). Its closed
+    # or registered ones leave the dashboard through the registry view; this is
+    # the same answer for somebody following an old link or an audit row.
+    if case.get("company_deleted"):
+        raise HTTPException(404, f"no NAR1 case {case_id}")
+    return case
 
 
 @router.get("/{case_id}/return-data")
