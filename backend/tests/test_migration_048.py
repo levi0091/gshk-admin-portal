@@ -74,21 +74,26 @@ def test_the_view_runs_with_the_callers_rights(conn):
 
 
 @db
-def test_no_public_relation_bypasses_rls_for_a_client_role(conn):
-    """The sweep that found this, kept as a guard for the next view.
+def test_no_public_view_bypasses_rls_for_a_client_role(conn):
+    """The sweep that found this, kept as a guard for the next VIEW.
 
-    A view that is not security_invoker, or a table with RLS off, that anon or
-    authenticated can SELECT, is readable with the key the frontend ships.
+    A view that is not security_invoker, and that anon or authenticated can
+    SELECT, is readable with the key the frontend ships.
+
+    VIEWS ONLY, deliberately. The sweep on DEV and PROD also covered tables and
+    found them all protected -- but RLS on several of them (lookup_values,
+    audit_field_labels, entity_record_locations) was switched on in Supabase,
+    not by a migration, so CI's vanilla Postgres has it off. A table assertion
+    here tested a configuration this database does not reproduce, and turned
+    Backend CI red on the commit that closed the leak.
     """
     with conn.cursor() as cur:
         cur.execute("""
             SELECT c.relname
             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm', 'r')
+            WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm')
               AND (has_table_privilege('anon', c.oid, 'SELECT')
                    OR has_table_privilege('authenticated', c.oid, 'SELECT'))
-              AND CASE WHEN c.relkind = 'r' THEN NOT c.relrowsecurity
-                       ELSE NOT coalesce('security_invoker=true'
-                                         = ANY (c.reloptions), false) END
+              AND NOT coalesce('security_invoker=true' = ANY (c.reloptions), false)
         """)
         assert [r[0] for r in cur.fetchall()] == []
