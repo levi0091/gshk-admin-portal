@@ -173,6 +173,38 @@ def current_filing(case_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def filed_on(filing: dict | None, case: dict | None) -> str:
+    """The instant CR received this return, or "" while it has not.
+
+    This is the ONE answer to "when was it filed?", and it is what every
+    renderer call prints in the Date box beside the signature (Levi
+    2026-09-22, `nar1_form.fill.signature_date`). CR's own filed return dates
+    that box the day CR got the form — so an anniversary on 26 October and a
+    filing on 1 November prints 1 November.
+
+    NOT `signed_at`. Signing and submitting are separate CR calls: a return
+    signed at 23:55 and submitted at 00:10 was filed the NEXT day, and one
+    signed but never submitted was never filed at all. Reading the signing
+    timestamp printed a date for a return CR did not have.
+
+    Two roads to the register, and both count. The e-Sign path writes
+    `tpsi_filings.submitted_at`; the off-portal path never touches the filing
+    row at all — it is signed on paper and lodged by hand — and records the day
+    on `nar1_cases.manual_submitted_at`. Without the second, a manually filed
+    return carried a different date every time it was downloaded.
+
+    PURE, deliberately: both rows are passed in and nothing is looked up. A
+    query hidden here would run inside the renderers' refusal paths and inside
+    every router test that patches the renderer but not the Supabase client.
+    """
+    for row, column in ((filing, "submitted_at"),
+                        (case, "manual_submitted_at")):
+        value = (row or {}).get(column)
+        if value:
+            return value if isinstance(value, str) else str(value)
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # The manual (wet-signature, off-portal) path — BE-6
 # ---------------------------------------------------------------------------

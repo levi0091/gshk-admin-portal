@@ -57,9 +57,17 @@ SPECIMEN_INSET = 10.4
 _OUR_FACES = ("Tinos", "NotoSerif", "Helvetica")
 
 
+#: A FILED return, because the specimen these measurements come off is one.
+#: The Date box is empty until CR receives the form (Levi 2026-09-22,
+#: `fill.signature_date`), and measuring the signature block on an undated copy
+#: would mean measuring a box with nothing in it.
+SPECIMEN_FILED_ON = "2026-09-22"
+
+
 @pytest.fixture(scope="module")
 def rendered():
-    return PdfReader(io.BytesIO(fill.render(build_xml())))
+    return PdfReader(io.BytesIO(
+        fill.render(build_xml(), submitted_on=SPECIMEN_FILED_ON)))
 
 
 def _runs(page):
@@ -269,10 +277,12 @@ def test_a_share_capital_cell_is_centred_but_the_schedules_class_is_not(rendered
 
 
 def test_the_signatory_name_and_date_are_centred(rendered):
-    """BOTH are always drawn. The date box used to be allowed to come back
-    empty, and this test skipped it when it did -- which is how a form whose
-    Date box was blank on every return ever generated passed a suite that
-    claimed to measure the signature block."""
+    """BOTH are drawn on a FILED return, and this measures a filed one (see
+    `SPECIMEN_FILED_ON`). An earlier version of this test SKIPPED the date
+    whenever the box came back empty, which is how a form whose Date box was
+    blank on every return ever generated passed a suite that claimed to measure
+    the signature block. It must never skip again: an empty box is now a
+    statement about the return, not a licence to measure nothing."""
     for field in ("signed_name", "signed_date"):
         name = fm.MEMBERS_AND_SIGNATURE[field]
         text, x, _, size, _ = drawn(rendered, name)

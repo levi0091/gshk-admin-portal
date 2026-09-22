@@ -1070,15 +1070,26 @@ async def filing_pdf(
             entity = nar1_cases.entity_for(row.get("entity_id")) or {}
         except Exception:  # noqa: BLE001
             entity = {}
+        # The case, for the OFF-PORTAL filing date only — a return signed on
+        # paper and lodged by hand never writes `tpsi_filings.submitted_at`, so
+        # reading the filing row alone re-dated every manual return to whatever
+        # day it was downloaded. Skipped once the filing answers for itself, and
+        # tolerant of a missing case for the same reason as the entity above: a
+        # preview must not fail over the row that only supplies its date.
+        case = {}
+        if not row.get("submitted_at") and row.get("nar1_case_id"):
+            try:
+                case = nar1_cases.get_case(row["nar1_case_id"]) or {}
+            except Exception:  # noqa: BLE001
+                case = {}
         pdf = nar1_form_fill.render(
             payload,
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
-            # The day CR's PIN signing succeeded, where it has. A preview taken
-            # before signing is dated today in Hong Kong rather than left with
-            # an empty Date box beside the signature.
-            signed_on=row.get("signed_at") or "",
+            # The day CR received this return, and EMPTY until it did. A
+            # preview taken before filing is a preview of an unfiled return.
+            submitted_on=nar1_cases.filed_on(row, case),
             # Section 4's date on a draft CR has not validated; CR's own value
             # wins once it has. See `fill.made_up_date`.
             incorporated_on=entity.get("incorporation_date"),

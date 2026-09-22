@@ -512,13 +512,31 @@ def test_the_clean_copy_carries_no_highlight(client):
     entered[-2].assert_not_called()   # no comparison computed for a clean copy
 
 
-def test_the_validated_preview_is_dated_the_day_cr_signing_succeeded(client):
+def test_the_validated_preview_is_dated_the_day_cr_RECEIVED_the_return(client):
+    """`submitted_at`, which `filings.submit()` writes when CR accepts it."""
     render = MagicMock(return_value=b"%PDF-1.4")
-    signed = {**VALIDATED, "stage": "signed", "signed_at": "2026-10-12T02:00:00Z"}
+    submitted = {**VALIDATED, "stage": "submitted",
+                 "signed_at": "2026-10-12T02:00:00Z",
+                 "submitted_at": "2026-10-13T02:00:00Z"}
+    with _Stack(_super(), _case(case=APPROVED_CASE, filing=submitted), _comparing(),
+                patch("routers.cases.nar1_form_fill.render", new=render)):
+        client.get("/cases/c1/validation/preview", headers=H)
+    assert render.call_args.kwargs["submitted_on"] == "2026-10-13T02:00:00Z"
+
+
+def test_the_validated_preview_of_a_SIGNED_return_is_undated(client):
+    """REVERSES "dated the day CR signing succeeded" (Levi 2026-09-22). Signing
+    and submitting are separate CR calls: a return signed at 23:55 and
+    submitted at 00:10 was filed the next day, and one signed but never
+    submitted was never filed at all. Until CR has the form there is no date to
+    print, and printing today's made the box change from day to day."""
+    render = MagicMock(return_value=b"%PDF-1.4")
+    signed = {**VALIDATED, "stage": "signed", "signed_at": "2026-10-12T02:00:00Z",
+              "submitted_at": None}
     with _Stack(_super(), _case(case=APPROVED_CASE, filing=signed), _comparing(),
                 patch("routers.cases.nar1_form_fill.render", new=render)):
         client.get("/cases/c1/validation/preview", headers=H)
-    assert render.call_args.kwargs["signed_on"] == "2026-10-12T02:00:00Z"
+    assert render.call_args.kwargs["submitted_on"] == ""
 
 
 @pytest.mark.parametrize("path", ["comparison", "preview"])

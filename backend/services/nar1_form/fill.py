@@ -404,33 +404,38 @@ def _hk_date(moment: datetime) -> str:
     return moment.astimezone(_HKT).strftime("%d/%m/%Y")
 
 
-def signature_date(signed_on) -> str:
+def signature_date(submitted_on) -> str:
     """The date beside the signature, in the dd/mm/yyyy its boxes are labelled
-    for.
+    for: THE DAY THE RETURN WAS FILED WITH CR, and nothing until it has been.
 
-    THIS REVERSES "blank when the caller supplies nothing" (Levi 2026-09-04).
-    That rule was written because "a date printed beside an unsigned signature
-    block would assert something untrue" -- but NEITHER caller ever supplied
-    one, so every NAR1 the portal has produced went to a director, and would
-    have gone to CR, with an empty Date box. On CR's own filed return that box
-    is filled, and an empty one reads as an unfinished form rather than as a
-    scrupulous abstention. So an absent value now means TODAY IN HONG KONG:
-    the day this copy of the return was made.
+    THIS REVERSES "an absent value means today in Hong Kong" (Levi 2026-09-22).
+    That rule was itself a reversal -- of "blank when the caller supplies
+    nothing" -- written on 2026-09-04 because no caller ever supplied a date,
+    so every NAR1 the portal produced carried an empty box where CR's own filed
+    return carries a date. Dating the copy TODAY fixed the empty box by putting
+    a wrong date in it, in two ways at once:
 
-    A real signing date still wins where one exists -- `tpsi_filings.signed_at`
-    is passed by both callers once CR's PIN signing has succeeded -- so a
-    return downloaded a week after it was signed carries the day it was signed,
-    not the day it was printed.
+      * a director approving on 28 October saw 28 October on a return CR would
+        not receive until 1 November, and
+      * the same return downloaded on two days showed two different dates,
+        because "today" moves and a filing date does not.
+
+    What CR prints there is the day CR received the return. Until CR has it
+    there is no such day, so the box stays empty -- an unfiled return IS
+    unfiled, and a blank box says so where a plausible-looking date does not.
+
+    NOT the signing date. Signing and submitting are separate CR calls (see
+    `nar1_cases.filed_on`, which is what the callers resolve this from).
 
     Accepts a datetime, a CR date in either of `split_date`'s two formats, or
-    an ISO timestamp. Anything else falls back to today rather than to blank:
-    blank is the failure being fixed here.
+    an ISO timestamp. Anything it cannot read prints NOTHING rather than today:
+    a fallback date is indistinguishable on the page from a real filing date.
     """
-    if isinstance(signed_on, datetime):
-        return _hk_date(signed_on)
-    text = str(signed_on or "").strip()
+    if isinstance(submitted_on, datetime):
+        return _hk_date(submitted_on)
+    text = str(submitted_on or "").strip()
     if not text:
-        return datetime.now(_HKT).strftime("%d/%m/%Y")
+        return ""
     # A plain date is already expressed in whatever terms the caller meant, so
     # it is taken verbatim -- shifting "2026-07-25" by a timezone would move a
     # date somebody typed. Only a TIMESTAMP gets converted.
@@ -440,7 +445,7 @@ def signature_date(signed_on) -> str:
     try:
         return _hk_date(datetime.fromisoformat(text.replace("Z", "+00:00")))
     except ValueError:
-        return datetime.now(_HKT).strftime("%d/%m/%Y")
+        return ""
 
 
 def made_up_date(model: dict, incorporated_on=None) -> str:
@@ -960,15 +965,15 @@ def _share_capital_totals(capitals: list[dict]) -> dict:
 
 
 def _compose(model: dict, *, company_type: str, presenter: dict,
-             signed_on: str = "", incorporated_on=None) -> _Pages:
+             submitted_on: str = "", incorporated_on=None) -> _Pages:
     """Lay the return out across CR's pages, overflowing where it must."""
     pages = _Pages()
     br_number = _get(model, "brNo")
-    # The date beside the signature. NOT in the validated XML -- CR hands none
-    # back -- so it is the caller's to supply, and TODAY IN HONG KONG when they
-    # supply nothing. See `signature_date`: it used to be blank, and blank is
-    # what every return the portal has ever produced carried.
-    signed_date = signature_date(signed_on)
+    # The date beside the signature: the day CR received this return. NOT in
+    # the validated XML -- CR hands none back -- so the caller resolves it,
+    # through `nar1_cases.filed_on`. Empty until the return is filed, which is
+    # the state most copies of it are rendered in. See `signature_date`.
+    signed_date = signature_date(submitted_on)
     # Section 4, and the header of every continuation sheet and schedule page.
     # CR's value once it has validated; the incorporation anniversary before.
     dd, mm, yyyy = split_date(made_up_date(model, incorporated_on))
@@ -1504,7 +1509,7 @@ def _bake(filled: bytes, highlight=None) -> bytes:
 
 
 def _composed(validated_xml: str, *, company_type: str,
-              presenter: dict | None, signed_on: str,
+              presenter: dict | None, submitted_on: str,
               incorporated_on=None) -> _Pages:
     """The checked page layout both `render()` and `render_fields()` fill."""
     if company_type not in COMPANY_TYPES:
@@ -1517,13 +1522,14 @@ def _composed(validated_xml: str, *, company_type: str,
     model = parse_validated_xml(validated_xml)
     pages = _compose(model, company_type=company_type,
                      presenter=presenter or DEFAULT_PRESENTER,
-                     signed_on=signed_on, incorporated_on=incorporated_on)
+                     submitted_on=submitted_on,
+                     incorporated_on=incorporated_on)
     _assert_nothing_dropped(model, pages)
     return pages
 
 
 def render_fields(validated_xml: str, *, company_type: str = "private",
-                  presenter: dict | None = None, signed_on: str = "",
+                  presenter: dict | None = None, submitted_on: str = "",
                   incorporated_on=None) -> bytes:
     """The same return as `render()`, BEFORE it is baked: CR's template with
     every value in its form field's `/V` and nothing drawn.
@@ -1538,12 +1544,12 @@ def render_fields(validated_xml: str, *, company_type: str = "private",
     phone.
     """
     return _fill(_composed(validated_xml, company_type=company_type,
-                           presenter=presenter, signed_on=signed_on,
+                           presenter=presenter, submitted_on=submitted_on,
                            incorporated_on=incorporated_on))
 
 
 def render(validated_xml: str, *, company_type: str = "private",
-           presenter: dict | None = None, signed_on: str = "",
+           presenter: dict | None = None, submitted_on: str = "",
            incorporated_on=None, highlight=None) -> bytes:
     """CR's Form NAR1, filled from the XML CR validated.
 
@@ -1555,9 +1561,10 @@ def render(validated_xml: str, *, company_type: str = "private",
     "private" matches essentially all of GSHK's book; a caller that knows
     better should say so.
 
-    `signed_on` is the date beside the signature -- `tpsi_filings.signed_at`
-    once CR's PIN signing has succeeded, and nothing before that. Empty means
-    TODAY IN HONG KONG, not an empty box; see `signature_date`.
+    `submitted_on` is the date beside the signature: the day CR received the
+    return, which every caller resolves through `nar1_cases.filed_on` and NOT
+    from `signed_at`. Empty until the return has been filed, and empty then
+    means an EMPTY BOX -- not today. See `signature_date`.
 
     `incorporated_on` is `entities.incorporation_date`. Like `company_type` it
     is not in the XML, and EVERY CALLER MUST PASS IT: it is what dates section
@@ -1574,6 +1581,6 @@ def render(validated_xml: str, *, company_type: str = "private",
     never for a document that is mailed, downloaded as the return, or filed.
     """
     return _bake(_fill(_composed(validated_xml, company_type=company_type,
-                                 presenter=presenter, signed_on=signed_on,
+                                 presenter=presenter, submitted_on=submitted_on,
                                  incorporated_on=incorporated_on)),
                  highlight=highlight)

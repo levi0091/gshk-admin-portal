@@ -206,6 +206,28 @@ def test_send_renders_the_CR_validated_snapshot_on_CRs_own_form(client):
     assert "stage" not in render.call_args.kwargs
 
 
+def test_the_directors_copy_carries_NO_date_beside_the_signature(client):
+    """Levi 2026-09-22. The client is being asked to approve a return that has
+    NOT been filed, and CR fills that box the day it receives the form — so
+    there is no date to print and the portal prints none.
+
+    It used to print today, which put 28 October in front of a director for a
+    return CR would not receive until 1 November."""
+    with _super(), \
+         patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         patch("routers.cases.nar1_cases.current_filing", return_value=VALIDATED), \
+         patch("routers.cases.nar1_cases.default_recipients", return_value=[]), \
+         patch("routers.cases.nar1_cases.recipient_email",
+               return_value="client@example.com"), \
+         patch("routers.cases.nar1_cases.entity_for", return_value=ENTITY), \
+         patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF") as render, \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=CASE), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
+    assert render.call_args.kwargs["submitted_on"] == ""
+
+
 # --------------------------------------------------------------------------- #
 #  CLIENT VERIFICATION IS THE FIRST STAGE (migration 046, Levi 2026-09-17)
 #
@@ -308,7 +330,13 @@ def test_the_preview_rebuilds_over_a_stored_draft_as_the_send_will(client):
 def test_once_sent_the_preview_is_frozen_to_the_return_the_client_was_sent(client):
     """Levi 2026-09-18: stage 1 "should always show the form that the client
     approved". Whatever has happened since — a rebuilt draft, CR's validated
-    copy — the stage-1 preview is the mailed bytes, dated the day they went."""
+    copy — the stage-1 preview is the mailed bytes.
+
+    UNDATED (Levi 2026-09-22). This used to date the reproduction
+    `verification_sent_at`, to reproduce the mailed copy faithfully — but that
+    only matched because the mailed copy was itself dated the day it went out,
+    which is not the day CR receives the return and not what CR prints in that
+    box. Both are blank now, and the reproduction is still faithful."""
     case = {**CASE, "verification_sent_at": "2026-09-10T02:00:00+00:00",
             "client_approved": True, "client_response_at": "2026-09-11T02:00:00+00:00",
             "verification_xml": "<as-mailed/>"}
@@ -323,7 +351,7 @@ def test_once_sent_the_preview_is_frozen_to_the_return_the_client_was_sent(clien
     assert response.status_code == 200
     # VALIDATED (the helper's default filing) carries "<x/>"; not that.
     assert render.call_args.args[0] == "<as-mailed/>"
-    assert render.call_args.kwargs["signed_on"] == "2026-09-10T02:00:00+00:00"
+    assert render.call_args.kwargs["submitted_on"] == ""
     build.assert_not_awaited()
 
 
