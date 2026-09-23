@@ -435,7 +435,10 @@ def compare(approved_xml: str, validated_xml: str, *,
     presenter — so a difference here is a difference between the two PDFs.
     Raises what `fill.render` raises for a document that cannot be laid out.
     """
+    # Undated on BOTH sides. The signature date is not a field either XML
+    # carries, so letting it differ would report the filing date as a change
+    # the client did not approve.
     kwargs = dict(company_type=company_type, presenter=presenter,
-                  signed_on="", incorporated_on=incorporated_on)
+                  submitted_on="", incorporated_on=incorporated_on)
     return compare_pages(fill._composed(approved_xml, **kwargs),
                          fill._composed(validated_xml, **kwargs))

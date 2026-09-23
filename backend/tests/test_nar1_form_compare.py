@@ -30,7 +30,7 @@ def _compare(approved, validated):
 def _page_index(xml, template_page, occurrence=0):
     """The 0-based output page of the `occurrence`-th copy of a template page."""
     pages = fill._composed(xml, company_type="private", presenter=None,
-                           signed_on="", incorporated_on=INCORPORATED)
+                           submitted_on="", incorporated_on=INCORPORATED)
     seen = -1
     for index, (page, _values) in enumerate(pages.items):
         if page == template_page:
@@ -129,13 +129,17 @@ def test_a_made_up_date_cr_moved_is_one_change_across_every_page_it_is_on():
 
 
 def test_the_signature_date_never_counts_as_a_change():
-    """The client's copy is dated the day it was mailed and CR's copy the day
-    it is shown. Different by construction; not a particular of the company."""
+    """The date beside the signature is the day CR received the return, and
+    `compare_for` composes both sides undated so it can never differ there.
+    Pinned with two DIFFERENT dates anyway: this must stay inert if a caller
+    ever composes a dated copy, because the filing date is not a particular of
+    the company and reporting it would tell a reviewer the client's approved
+    return had changed when nothing about it had."""
     xml = build_xml()
     before = fill._composed(xml, company_type="private", presenter=None,
-                            signed_on="2026-09-01", incorporated_on=INCORPORATED)
+                            submitted_on="2026-09-01", incorporated_on=INCORPORATED)
     after = fill._composed(xml, company_type="private", presenter=None,
-                           signed_on="2026-09-18", incorporated_on=INCORPORATED)
+                           submitted_on="2026-09-18", incorporated_on=INCORPORATED)
     assert compare.compare_pages(before, after).changes == []
 
 
@@ -204,7 +208,7 @@ def test_every_box_the_composer_writes_is_indexed():
                     secretaries=2, corporate_secretaries=("S1", "S2"),
                     members=("M1", "M2", "M3"), share_classes=2)
     pages = fill._composed(xml, company_type="private", presenter=None,
-                           signed_on="", incorporated_on=INCORPORATED)
+                           submitted_on="", incorporated_on=INCORPORATED)
     written = {widget for _page, values in pages.items for widget in values}
     assert written - set(compare.INDEX) == set()
 

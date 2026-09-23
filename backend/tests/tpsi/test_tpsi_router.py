@@ -1506,6 +1506,110 @@ def test_pdf_dates_an_unvalidated_draft_from_the_incorporation_date(client):
     assert render.call_args.kwargs["incorporated_on"] == "2025-03-15"
 
 
+# --------------------------------------------------------------------------- #
+#  The date beside the signature: the day CR RECEIVED the return (Levi
+#  2026-09-22). `nar1_cases.filed_on` is left unpatched throughout — patching
+#  it would leave these tests asserting the mock's answer rather than the rule.
+# --------------------------------------------------------------------------- #
+
+def test_pdf_dates_the_signature_box_the_day_cr_received_the_return(client):
+    row = {"stage": "submitted", "form_code": "Nar1",
+           "validated_xml": "<filed/>", "nar1_case_id": "c1", "entity_id": "e1",
+           "signed_at": "2026-10-31T23:55:00+00:00",
+           "submitted_at": "2026-11-01T02:00:00+00:00"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_cases.entity_for", return_value={"id": "e1"}), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    assert response.status_code == 200
+    # NOT `signed_at`, which is the previous day here -- signing and submitting
+    # are separate CR calls and only the second one files anything.
+    assert render.call_args.kwargs["submitted_on"] == "2026-11-01T02:00:00+00:00"
+
+
+def test_pdf_leaves_the_date_box_empty_until_the_return_is_filed(client):
+    """A preview of an unfiled return is a preview of an unfiled return. This
+    used to print today, so the same document downloaded on two days showed two
+    different dates for one return."""
+    row = {"stage": "validated", "form_code": "Nar1",
+           "validated_xml": "<not-filed/>", "nar1_case_id": "c1",
+           "entity_id": "e1", "submitted_at": None}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_cases.entity_for", return_value={"id": "e1"}), \
+         patch("routers.tpsi.nar1_cases.get_case", return_value={"id": "c1"}), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.kwargs["submitted_on"] == ""
+
+
+def test_pdf_dates_an_OFF_PORTAL_filing_from_the_case(client):
+    """The manual path signs on paper and lodges at CR by hand, so it never
+    writes `tpsi_filings.submitted_at` -- the day lives on the case as
+    `manual_submitted_at`. Reading the filing row alone re-dated every manually
+    filed return to whatever day somebody downloaded it."""
+    row = {"stage": "validated", "form_code": "Nar1",
+           "validated_xml": "<filed-by-hand/>", "nar1_case_id": "c1",
+           "entity_id": "e1", "submitted_at": None}
+    case = {"id": "c1", "manual_submitted_at": "2026-11-01T09:00:00+00:00"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_cases.entity_for", return_value={"id": "e1"}), \
+         patch("routers.tpsi.nar1_cases.get_case", return_value=case) as get_case, \
+         patch("routers.tpsi.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    assert response.status_code == 200
+    get_case.assert_called_once_with("c1")
+    assert render.call_args.kwargs["submitted_on"] == "2026-11-01T09:00:00+00:00"
+
+
+def test_pdf_does_not_read_the_case_when_the_filing_answers_for_itself(client):
+    """An e-Signed filing carries its own `submitted_at`. A second round trip
+    to Supabase on every download of every filed return buys nothing."""
+    row = {"stage": "submitted", "form_code": "Nar1", "validated_xml": "<filed/>",
+           "nar1_case_id": "c1", "entity_id": "e1",
+           "submitted_at": "2026-11-01T02:00:00+00:00"}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_cases.entity_for", return_value={"id": "e1"}), \
+         patch("routers.tpsi.nar1_cases.get_case") as get_case, \
+         patch("routers.tpsi.nar1_form_fill.render", return_value=b"%PDF-1.4"), \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    get_case.assert_not_called()
+
+
+def test_pdf_still_renders_when_the_case_row_cannot_be_read(client):
+    """Same rule as the entity lookup beside it: the case is consulted only for
+    a date, and a preview must not 500 over the row that supplies one."""
+    row = {"stage": "validated", "form_code": "Nar1", "validated_xml": "<x/>",
+           "nar1_case_id": "c1", "entity_id": "e1", "submitted_at": None}
+    with _super(), \
+         patch("routers.tpsi.filings.get_filing", return_value=row), \
+         patch("routers.tpsi.nar1_cases.entity_for", return_value={"id": "e1"}), \
+         patch("routers.tpsi.nar1_cases.get_case",
+               side_effect=LookupError("no such case")), \
+         patch("routers.tpsi.nar1_form_fill.render",
+               return_value=b"%PDF-1.4") as render, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/filings/f1/pdf", headers=H)
+
+    assert response.status_code == 200
+    assert render.call_args.kwargs["submitted_on"] == ""
+
+
 def test_pdf_is_refused_when_there_is_no_return_at_all(client):
     """Neither payload. 409 not 404: the filing exists, it just carries nothing
     to draw."""

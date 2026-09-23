@@ -1479,14 +1479,16 @@ async def preview_verification(
 
     mailed = case.get("verification_xml")
     frozen = (filing or {}).get("validated_xml") or (filing or {}).get("request_xml")
+    # The day CR received this return, on every branch alike — blank until it
+    # has one. This used to date the mailed copy `verification_sent_at`, which
+    # reproduced the copy faithfully only because the copy itself was dated
+    # wrong: the client is asked to approve a return that has not been filed,
+    # and its Date box is CR's to fill. See `nar1_cases.filed_on`.
+    submitted_on = nar1_cases.filed_on(filing, case)
     if mailed:
         payload = mailed
-        # The mailed copy was dated the day it went out; reproducing it means
-        # dating it the same way, not today.
-        signed_on = case.get("verification_sent_at") or ""
     elif filing and frozen and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
         payload = frozen
-        signed_on = filing.get("signed_at") or ""
     else:
         year, _source = nar1_return_year.resolve(case, filing)
         if not year:
@@ -1498,7 +1500,6 @@ async def preview_verification(
                 "message": nar1_return_year.NO_YEAR[0].upper()
                            + nar1_return_year.NO_YEAR[1:] + ".",
                 "reason": "return_year_required"})
-        signed_on = ""
         try:
             payload = await nar1_prepare.build_form_xml(
                 entity_id=case["entity_id"],
@@ -1523,7 +1524,7 @@ async def preview_verification(
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
-            signed_on=signed_on,
+            submitted_on=submitted_on,
             # Section 4's date. CR only writes it on validation, and the return
             # previewed here usually has not been validated; see
             # `fill.made_up_date`.
@@ -1634,7 +1635,7 @@ async def validation_preview(
     """The NAR1 exactly as CR validated it, as CR's own Form NAR1.
 
     Rendered from `validated_xml` — CR's copy, the one that will be signed and
-    filed — dated the day CR's PIN signing succeeded where it has, else today.
+    filed — dated the day CR received it, and undated until CR has.
     With `highlight` (the default), every box that prints differently from the
     return the client approved is boxed in carrot; the list of what changed is
     `GET /validation/comparison`, computed by the same function.
@@ -1651,7 +1652,7 @@ async def validation_preview(
             filing["validated_xml"],
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")),
-            signed_on=filing.get("signed_at") or "",
+            submitted_on=nar1_cases.filed_on(filing, case),
             incorporated_on=entity.get("incorporation_date"),
             highlight=comparison.highlight if comparison else None,
         )
@@ -1914,11 +1915,13 @@ async def send_verification(
             company_type=nar1_form_fill.company_type_from_profile(
                 entity.get("company_type")
             ),
-            # The day CR's PIN signing succeeded, where it has. Before that
-            # there is no signing date and the renderer dates the copy today
-            # in Hong Kong -- what it must NOT do is leave the box empty, which
-            # is how every verification attachment went out until 2026-09-04.
-            signed_on=filing.get("signed_at") or "",
+            # EMPTY, always, on the copy the client approves: this return has
+            # not been filed -- that is what the client is being asked about --
+            # and CR dates that box the day it receives the form. Dating it
+            # today put 28 October in front of a director for a return CR would
+            # not see until 1 November (Levi 2026-09-22). Resolved rather than
+            # hardcoded so a resend after filing still tells the truth.
+            submitted_on=nar1_cases.filed_on(filing, case),
             # "Date to which this Return is Made Up". Not in `request_xml` --
             # CR writes it on validation, which at stage 1 has not happened --
             # so it is dated from the incorporation anniversary. Without this

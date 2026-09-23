@@ -730,3 +730,48 @@ def test_entity_for_selects_the_incorporation_date_the_return_is_dated_from():
     columns = sb.table.return_value.select.call_args.args[0].split(",")
     assert "incorporation_date" in columns
     assert row["incorporation_date"] == "2025-03-15"
+
+
+# ---- filed_on ---------------------------------------------------------
+#
+# The one answer to "when did CR receive this return?", and therefore the one
+# date the rendered NAR1 prints beside the signature (Levi 2026-09-22).
+#
+# PURE -- both rows are passed in, nothing is looked up. A DB read hidden in
+# here would run inside /tpsi/filings/{id}/pdf's refusal paths and inside every
+# router test that patches the renderer but not the Supabase client, which is
+# how a unit test ends up talking to DEV.
+
+
+def test_filed_on_is_the_filings_submission_instant():
+    """The e-Sign path. `submitted_at` is written by `filings.submit()` when CR
+    accepts the return, which is the moment CR actually has it."""
+    assert nar1_cases.filed_on({"submitted_at": "2026-11-01T02:00:00+00:00"},
+                               {}) == "2026-11-01T02:00:00+00:00"
+
+
+def test_filed_on_is_NOT_the_signing_instant():
+    """Signing and submitting are separate CR calls. A return signed at 23:55
+    and submitted at 00:10 was FILED the next day, and one signed but never
+    submitted was never filed at all -- CR holds nothing, so the date box has
+    nothing to say."""
+    assert nar1_cases.filed_on({"signed_at": "2026-10-31T23:55:00+00:00"},
+                               {}) == ""
+
+
+def test_filed_on_falls_back_to_the_off_portal_submission():
+    """The manual path never touches `tpsi_filings.submitted_at` -- the return
+    is signed on paper and lodged at CR by hand, and the only record of the day
+    that happened is `nar1_cases.manual_submitted_at`. Without this fallback a
+    manually filed return re-dated itself to today on every download."""
+    assert nar1_cases.filed_on(
+        {"signed_at": None, "submitted_at": None},
+        {"manual_submitted_at": "2026-11-01T09:00:00+00:00"},
+    ) == "2026-11-01T09:00:00+00:00"
+
+
+def test_filed_on_is_empty_before_anything_is_filed():
+    """Blank, never today: an unfiled return has no filing date, and printing
+    one is the misstatement this function exists to prevent."""
+    assert nar1_cases.filed_on({"stage": "validated"}, {"id": "c1"}) == ""
+    assert nar1_cases.filed_on(None, None) == ""

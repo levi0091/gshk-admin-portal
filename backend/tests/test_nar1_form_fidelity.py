@@ -12,8 +12,6 @@ The suite that existed before this one asserted that values reached the right
 FIELDS. These assert what the reader of the page actually sees.
 """
 import io
-import re
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -239,46 +237,55 @@ def test_the_signatory_name_is_on_the_name_line_not_in_the_date_box():
     fill_12_P.8 -- the Date box -- so every generated return showed the
     signatory floating above "日DD / 月MM / 年YYYY" and left "姓名 Name"
     blank."""
-    values = values_of(fill.render_fields(build_xml()))
+    # A FILED return, so both boxes carry something: the swap this test exists
+    # for is invisible on a copy whose date box is legitimately empty.
+    values = values_of(fill.render_fields(build_xml(),
+                                          submitted_on="2026-11-01"))
     assert values[fm.MEMBERS_AND_SIGNATURE["signed_name"]] == ["Wong Mei Ling"]
-    assert values[fm.MEMBERS_AND_SIGNATURE["signed_name"]] != \
-        values[fm.MEMBERS_AND_SIGNATURE["signed_date"]]
+    assert values[fm.MEMBERS_AND_SIGNATURE["signed_date"]] == ["01/11/2026"]
 
 
-def test_a_supplied_signing_date_lands_in_the_date_box():
+def test_a_submission_date_lands_in_the_date_box():
     """It is not in the validated XML -- CR does not hand one back -- so it is
     the caller's to supply."""
-    values = values_of(fill.render_fields(build_xml(), signed_on="2026-07-25"))
+    values = values_of(fill.render_fields(build_xml(),
+                                          submitted_on="2026-07-25"))
     assert values[fm.MEMBERS_AND_SIGNATURE["signed_date"]] == ["25/07/2026"]
 
 
-def test_the_date_box_is_never_left_empty():
-    """IT WAS EMPTY ON EVERY RETURN THE PORTAL HAS EVER PRODUCED (Levi
-    2026-09-04). `signed_on` defaulted to "" and neither caller passed one, so
-    the box beside the signature went to directors, and would have gone to CR,
-    blank -- while CR's own filed return has it filled. This reverses the rule
-    that a missing date should print as nothing."""
+def test_the_date_box_is_empty_until_the_return_has_been_FILED():
+    """THIS REVERSES "the box is never left empty" (Levi 2026-09-22).
+
+    That rule dated an unfiled copy TODAY, which made the date wrong in two
+    ways at once: a director approving on 28 October saw 28 October on a
+    return CR would not receive until 1 November, and a copy downloaded twice
+    on different days showed two different dates for one return. CR's box
+    carries the day the return was FILED -- so until CR has it, the portal
+    has no date to print and prints none.
+    """
     values = values_of(fill.render_fields(build_xml()))
-    printed = values[fm.MEMBERS_AND_SIGNATURE["signed_date"]]
-    assert printed == [fill.signature_date("")]
-    assert re.fullmatch(r"\d{2}/\d{2}/\d{4}", printed[0]), printed
+    assert fm.MEMBERS_AND_SIGNATURE["signed_date"] not in values
 
 
-def test_an_absent_date_is_todays_in_hong_kong_not_in_utc():
-    """Railway and Supabase both run UTC. A return generated at 02:00 in the
-    Hong Kong office is 18:00 the day before in UTC, and a statutory form
-    dated the day before it was made is a printed misstatement."""
-    hk_today = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime(
-        "%d/%m/%Y")
-    assert fill.signature_date("") == hk_today
+def test_an_absent_date_is_blank_rather_than_today():
+    """The unit behind the rendered form. Neither an empty string nor None is
+    "today": both mean nothing has been filed."""
+    assert fill.signature_date("") == ""
+    assert fill.signature_date(None) == ""
 
 
-def test_a_real_signing_timestamp_beats_todays_date():
-    """`tpsi_filings.signed_at` is what both routers pass once CR's PIN
-    signing has succeeded, so a return downloaded a week later carries the day
-    it was SIGNED rather than the day it was printed. It arrives as a UTC
-    timestamptz and is converted, not truncated: 17:00 UTC is the next day in
-    Hong Kong."""
+def test_a_value_no_date_can_be_read_out_of_prints_nothing():
+    """Falling back to today would print a date that is not the filing date
+    and cannot be distinguished from one that is. Blank is the honest
+    failure."""
+    assert fill.signature_date("whenever it was") == ""
+
+
+def test_a_submission_timestamp_is_converted_to_hong_kong_not_truncated():
+    """`tpsi_filings.submitted_at` arrives as a UTC timestamptz -- Railway and
+    Supabase both run UTC. A return filed at 01:00 in the Hong Kong office is
+    17:00 the previous day in UTC, and printing that day is a permanent
+    misstatement of when the return was filed."""
     assert fill.signature_date("2026-07-25T02:30:00+00:00") == "25/07/2026"
     assert fill.signature_date("2026-07-25T17:00:00+00:00") == "26/07/2026"
     assert fill.signature_date("2026-07-25T17:00:00Z") == "26/07/2026"
