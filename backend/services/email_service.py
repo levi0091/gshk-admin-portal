@@ -337,6 +337,44 @@ def _apply_test_cc_lock(cc, is_production):
     return [], bool(cc)
 
 
+def _apply_test_reply_to_lock(reply_to, is_production):
+    """Outside production the reply address is DROPPED too (Levi 2026-09-25).
+
+    Returns `(reply_to, dropped)`.
+
+    `reply_to` is a header and not a recipient -- nothing is ever delivered to
+    it -- so this is not the client-protection interlock that
+    `_apply_test_recipient_lock` is, and it was deliberately left unlocked when
+    the reply address became `renewal@getstarted.hk` earlier the same day. That
+    was wrong for a simpler reason: **`renewal@getstarted.hk` is a real GSHK
+    mailbox that a test deployment must not put in front of anybody.** A
+    tester who presses Reply on a DEV message would write, in good faith, to
+    the live renewals mailbox about a case that exists only on DEV; and the
+    address is PRINTED in every mail client beside From, so a screenshot of a
+    DEV send carries it whether or not anyone replies. The CC to the same
+    mailbox has been dropped outside production since it was introduced, and
+    leaving the other header pointing there made that drop half a measure.
+
+    DROPPED, not substituted with a test address. The four `TEST_RECIPIENTS`
+    are already on `to`, so a reply goes back to them by hitting Reply All;
+    and pointing `reply_to` somewhere merely to have it set would invent an
+    address that no production send would ever carry, which is the opposite of
+    what a test deployment is for.
+
+    A non-production message therefore has no reply address and falls back to
+    `no-reply@getstarted.hk`, which is correct: on DEV there is nobody to
+    reply to. The intended value is still reported, so the audit trail records
+    what a production send WOULD have carried.
+
+    An EMPTY LIST and not None, matching `_apply_test_cc_lock` and the promise
+    in `send()`'s docstring that these come back as lists always — a caller
+    must not have to learn the shape from the environment.
+    """
+    if is_production:
+        return reply_to, False
+    return [], bool(reply_to)
+
+
 @lru_cache(maxsize=1)
 def get_email_config() -> EmailConfig:
     """Resolve and VALIDATE the mail configuration.
@@ -412,15 +450,21 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
 
     `reply_to` steers the client's answer at a mailbox a human reads. The sender
     is `no-reply@`, so without this an email that ASKS for a reply would be
-    asking for one nobody receives.
+    asking for one nobody receives. It is an address the client SEES, which is
+    why the verification caller passes the shared renewals mailbox and never an
+    individual's (Levi 2026-09-25) — and it is subject to the same
+    non-production lock as `to` and `cc`, because the mailbox it names is a real
+    one that a test deployment must not put in front of anybody. See
+    _apply_test_reply_to_lock.
 
     `attachments` is a list of (filename, bytes). The caller keeps hold of the
     bytes; nothing here writes them anywhere.
 
-    `to`, `intended_to`, `cc` and `intended_cc` come back as LISTS, always — a
-    caller must not have to guess the shape from the count. The pairs differ
-    when a non-production send is redirected, so a redirect can never be
-    mistaken for a real delivery by whatever records it.
+    `to`, `intended_to`, `cc`, `intended_cc`, `reply_to` and
+    `intended_reply_to` come back as LISTS, always — a caller must not have to
+    guess the shape from the count. Each pair differs when a non-production
+    send is redirected, so a redirect can never be mistaken for a real delivery
+    by whatever records it.
     """
     config = get_email_config()
 
@@ -436,15 +480,20 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
     on_to = {a.casefold() for a in recipients}
     copies = [a for a in copies if a.casefold() not in on_to]
 
+    answer_to = _addresses(reply_to)
     intended_to = list(recipients)
     intended_cc = list(copies)
+    intended_reply_to = list(answer_to)
     redirected = False
 
     recipients, redirected = _apply_test_recipient_lock(
         recipients, config.is_production
     )
     copies, cc_dropped = _apply_test_cc_lock(copies, config.is_production)
-    redirected = redirected or cc_dropped
+    answer_to, reply_to_dropped = _apply_test_reply_to_lock(
+        answer_to, config.is_production
+    )
+    redirected = redirected or cc_dropped or reply_to_dropped
     if redirected:
         # Say who it was really for, in both the subject and the body: four
         # people share these mailboxes across every test case, and a message
@@ -461,8 +510,14 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
     # rather than mailing them. CC is checked too: a copied address is a
     # delivered address, and leaving it out of this check would leave the one
     # line of the message that the lock does not cover.
+    #
+    # AND `reply_to` (Levi 2026-09-25), for the same reason it is now locked:
+    # it is not delivered to, but it is PRINTED beside From in every mail
+    # client, so an address surviving to here is an address a test deployment
+    # shows to whoever opens the message. Checking only the two lines that are
+    # delivered would leave exactly the header this rule was asked about.
     if not config.is_production and (
-        set(recipients) - set(TEST_RECIPIENTS) or copies
+        set(recipients) - set(TEST_RECIPIENTS) or copies or answer_to
     ):
         raise EmailError(
             "refusing to send: this is not a production deployment and the "
@@ -478,9 +533,12 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
     }
     if copies:
         payload["cc"] = copies
-    if reply_to:
+    if answer_to:
         # Resend accepts a string or a list; a list keeps one shape for callers.
-        payload["reply_to"] = _addresses(reply_to)
+        # `answer_to` and not `reply_to`: the argument is what the caller asked
+        # for, this is what survived the non-production lock, and reading the
+        # argument here is exactly how the lock would come to be bypassed.
+        payload["reply_to"] = answer_to
     if attachments:
         payload["attachments"] = [
             {"filename": name,
@@ -532,6 +590,12 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
         "intended_to": intended_to,
         "cc": copies,
         "intended_cc": intended_cc,
+        # Both halves, exactly like `cc`/`intended_cc`: outside production the
+        # reply address is dropped, and a trail recording only the intention
+        # would claim the client was given a mailbox to answer that the message
+        # never actually named.
+        "reply_to": answer_to,
+        "intended_reply_to": intended_reply_to,
         "redirected": redirected,
     }
 
@@ -670,9 +734,11 @@ def verification_email(case: dict, entity: dict,
         no `sender_name` argument any more, and no "Account Manager" line;
       * it says in as many words that replies are not monitored, and names
         `renewal@getstarted.hk` as where changes go. `reply_to` is still set on
-        the message by the caller, so a client who replies anyway reaches the
-        case worker rather than a black hole — but the mailbox the letter TELLS
-        them to use is the one GSHK actually watches;
+        the message by the caller, so a client who replies anyway reaches a
+        human rather than a black hole — and since 2026-09-25 it is that SAME
+        mailbox, so the address the letter tells them to use, the address
+        copied, and the address their reply lands in are one and the same, and
+        none of the three is a person's;
       * the charge is for changes requested AFTER FILING, which is a different
         (and later) event than the "any amendments later" the old letter named.
 

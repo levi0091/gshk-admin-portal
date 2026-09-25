@@ -736,6 +736,30 @@ describe('Client Verification', () => {
       .not.toBeInTheDocument()
   })
 
+  it('says the REPLY ADDRESS is dropped in test too, not just the copy', async () => {
+    // Levi 2026-09-25. renewal@getstarted.hk is a real GSHK mailbox, and
+    // reply-to is PRINTED beside From — so a tester pressing Reply on a DEV
+    // message writes to the live renewals team about a case that only exists
+    // on DEV. Named rather than left implied by "nothing reaches the client":
+    // a header nobody is told about is a header nobody checks.
+    auth = { isTestEnv: true }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/the reply address are dropped/)).toBeInTheDocument()
+    expect(screen.getByText(/no reply address at all/)).toBeInTheDocument()
+  })
+
+  it('does not state the production CC rule flatly on a test deployment', async () => {
+    // The cc-note was just corrected for promising something untrue; asserting
+    // "a copy goes to renewal@" on DEV, where neither header goes out, is the
+    // same class of untruth. It reads as what production does instead.
+    auth = { isTestEnv: true }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    const note = document.querySelector('.cc-note')
+    expect(note.textContent).toContain('In production a copy goes to')
+  })
+
   it('fetches the PDF as a blob so the token never lands in a URL', async () => {
     renderIt()
     await waitFor(() => expect(blob).toHaveBeenCalled())
@@ -842,9 +866,12 @@ describe('Client Verification', () => {
     renderIt()
     await screen.findByText('chan@example.com')
     expect(screen.getByText('renewal@getstarted.hk')).toBeInTheDocument()
-    // The reply still comes back to the case worker — deliberately unchanged,
-    // and the reason both facts are still spelled out separately.
-    expect(screen.getByText(/still reaches you rather than/)).toBeInTheDocument()
+    // AND THE REPLY GOES THERE TOO NOW (Levi 2026-09-25). The note used to
+    // promise the operator that a client's reply "still reaches you"; it no
+    // longer does, and a page that kept saying so would have them watching an
+    // inbox nothing arrives in.
+    expect(screen.getByText(/replies go there too/)).toBeInTheDocument()
+    expect(screen.queryByText(/still reaches you rather than/)).toBeNull()
   })
 
   // The letter stopped ASKING for a reply (Levi 2026-09-08): it says replies
@@ -878,6 +905,18 @@ describe('Client Verification', () => {
     expect(note).toBeTruthy()
     expect(note.textContent).toContain('renewal@getstarted.hk')
     expect(note.textContent).not.toContain('levi@zenexflow.com')
+  })
+
+  it('states that the operator is on NO header of the message', async () => {
+    // Levi 2026-09-25, reported as the same fault a second time on a second
+    // header. The screen is the only place an operator learns what the client
+    // will see, so it has to say the whole answer rather than name the CC and
+    // leave reply-to to be discovered in the client's mail app.
+    auth = { isTestEnv: false, profile: { email: 'levi@zenexflow.com' } }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    const note = document.querySelector('.cc-note')
+    expect(note.textContent).toMatch(/not as sender, not copied, not as the reply address/)
   })
 
   // The letter stopped asking for a reply (Levi 2026-09-08). An operator who
