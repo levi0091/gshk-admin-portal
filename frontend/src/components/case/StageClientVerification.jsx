@@ -574,18 +574,24 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
 
             AND THE LETTER NOW SENDS THE CLIENT THERE TOO (Levi 2026-09-08): it
             says in as many words that replies are not monitored, and names this
-            mailbox for changes. reply-to is still you, so a client who replies
-            regardless is not shouting into a no-reply address — but an operator
-            who believes the letter ASKS for a reply will sit waiting for one
-            that was never requested, which is why both facts are spelled out
-            and which is now the more useful of the two. */}
+            mailbox for changes.
+
+            REPLY-TO IS NO LONGER YOU EITHER (Levi 2026-09-25). It was, so that
+            a stray reply reached a human who knew the case — but `reply-to` is
+            a header every mail client DISPLAYS, so your personal work address
+            was still printed on a letter about a client's statutory return,
+            and reply-all fixed it into the thread. renewal@ answers the
+            original objection instead of overriding it: it is staffed. This
+            note therefore stops promising the operator that replies reach
+            them, because they no longer do — an operator who kept believing
+            that would sit watching an inbox nothing arrives in. */}
         <div className="cc-note">
           <span className="cc-icon" aria-hidden="true">↩</span>
           <div>
-            A copy goes to <b>{CLIENT_CC}</b> — the same mailbox the letter
-            gives the client for changes, since it tells them replies are not
-            monitored. A client who replies anyway still reaches you rather
-            than the no-reply address.
+            A copy goes to <b>{CLIENT_CC}</b>, and replies go there too — the
+            same mailbox the letter gives the client for changes, since it
+            tells them replies are not monitored. Your own address is not on
+            the message: not as sender, not copied, not as the reply address.
           </div>
         </div>
 

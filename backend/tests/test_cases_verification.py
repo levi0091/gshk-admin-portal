@@ -845,15 +845,30 @@ def test_the_copy_is_on_EVERY_message_not_just_the_first(client):
     assert all(c.kwargs["cc"] == [CLIENT_CC] for c in send.call_args_list)
 
 
-def test_the_reply_address_is_the_case_worker_on_every_message(client):
-    """`reply_to` is the load-bearing half and is DELIBERATELY UNCHANGED by the
-    CC move. The message asks the client to reply and is sent from
-    no-reply@getstarted.hk, so the reply must reach a human who knows the case
-    — the copy going to the team while the answer goes to a person is the
-    intended split."""
+def test_the_reply_address_is_the_renewals_mailbox_on_every_message(client):
+    """REVERSES the 2026-09-08 split (Levi 2026-09-25). `reply_to` was the case
+    worker, which meant `reply-to` — a header every mail client displays —
+    still put an individual's personal work address on a letter about a
+    client's statutory return, and reply-all wired it into the thread for good.
+    That is the same fault the CC move fixed, surviving on the other header."""
     send, _ = _send_as_operator(client)
-    assert {c.kwargs["reply_to"] for c in send.call_args_list} == {
-        "levi@zenexflow.com"}
+    assert {c.kwargs["reply_to"] for c in send.call_args_list} == {CLIENT_CC}
+
+
+def test_NO_ADDRESS_ON_THE_MESSAGE_IS_AN_INDIVIDUALS(client):
+    """The actual requirement, asserted over every header at once rather than
+    inferred from the three equalities above: the operator signed in as
+    levi@zenexflow.com, and that address must appear on no `to`, no `cc` and no
+    `reply_to` of any message. THIS is the behaviour that was reported wrong,
+    twice, on a different header each time."""
+    send, response = _send_as_operator(client)
+    assert response.status_code == 200
+    for call in send.call_args_list:
+        addresses = [*(call.kwargs["to"] or []), *(call.kwargs["cc"] or []),
+                     *([call.kwargs["reply_to"]]
+                       if call.kwargs["reply_to"] else [])]
+        assert "levi@zenexflow.com" not in addresses
+        assert not any(a.endswith("@zenexflow.com") for a in addresses)
 
 
 def test_each_director_gets_their_OWN_approval_link(client):
@@ -870,11 +885,13 @@ def test_each_director_gets_their_OWN_approval_link(client):
     assert "tok-0" not in links[1]
 
 
-def test_the_clients_reply_is_aimed_at_the_person_who_sent_it(client):
-    """The message ASKS for a reply and is sent from no-reply@getstarted.hk.
-    Without reply_to, the one action it requests goes nowhere."""
+def test_the_clients_reply_is_aimed_at_a_mailbox_a_human_reads(client):
+    """The message is sent from no-reply@getstarted.hk. Without reply_to, a
+    client who replies — which the letter does not ask for, but which happens —
+    is shouting into an address nobody reads. The objection to dropping the
+    case worker is therefore ANSWERED, not overridden: renewal@ is staffed."""
     send, _ = _send_as_operator(client)
-    assert send.call_args.kwargs["reply_to"] == "levi@zenexflow.com"
+    assert send.call_args.kwargs["reply_to"] == CLIENT_CC
 
 
 def test_a_send_still_works_for_an_identity_carrying_no_address(client):
@@ -883,13 +900,12 @@ def test_a_send_still_works_for_an_identity_carrying_no_address(client):
     before the key existed."""
     send, response = _send_as_operator(client, user=SUPER)
     assert response.status_code == 200
-    # The COPY no longer depends on the identity at all, which is the point:
-    # an identity with no address used to mean the message went out with
-    # nobody copied. The renewals mailbox is copied either way.
+    # NEITHER HEADER DEPENDS ON THE IDENTITY ANY MORE, which is the point. An
+    # identity with no address used to mean a message with nobody copied and
+    # then, after the CC move, one whose reply went nowhere. Both are now
+    # constants, so the send is identical whatever the signed-in user carries.
     assert send.call_args.kwargs["cc"] == [CLIENT_CC]
-    # Only the reply address is still the operator's, and it is legitimately
-    # absent here — there is no address to aim the reply at.
-    assert send.call_args.kwargs["reply_to"] is None
+    assert send.call_args.kwargs["reply_to"] == CLIENT_CC
 
 
 def test_the_copy_is_recorded_in_the_audit_row(client):

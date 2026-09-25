@@ -1979,8 +1979,6 @@ async def send_verification(
                   f"{case_id}: {exc}", file=sys.stderr)
             link_base = None
 
-    operator = (user.get("email") or "").strip() or None
-
     sends = []
     for target in targets:
         approval_url = (
@@ -1999,8 +1997,10 @@ async def send_verification(
             # Limited", per docs/Auto email - NAR1 Review_v2.pdf — it is sent
             # unattended, so neither a director's given name nor the case
             # worker's belongs on it. The names still travel: `given_names`
-            # names the person on the approval token and in the audit trail,
-            # and `user` is still the reply-to below.
+            # names the person on the approval token and in the audit trail.
+            # The case worker no longer appears ANYWHERE on the message — not
+            # in the body, not on the CC, and since 2026-09-25 not on
+            # `reply_to` either.
         )
 
         try:
@@ -2025,24 +2025,34 @@ async def send_verification(
             # file's audit comment warns about a few lines down. renewal@ is a
             # record, so it gets the whole record.
             #
-            # `reply_to` is still the case worker, deliberately -- but it is
-            # now the SAFETY NET rather than the asked-for path. Since
-            # 2026-09-08 the letter states that replies are not monitored and
-            # names renewal@getstarted.hk for changes; it is still sent from
-            # no-reply@getstarted.hk, so a client who replies regardless must
-            # reach a human who knows the case rather than a black hole. A
-            # stray answer going to a person while the copy goes to the team is
-            # the intended split.
+            # AND `reply_to` IS THE SAME MAILBOX (Levi 2026-09-25). It used to
+            # be the case worker, on the reasoning that a stray reply should
+            # reach a human who knows the case rather than a black hole. That
+            # reasoning is answered by renewal@ — it is a real mailbox GSHK
+            # staff read, and it is the one the letter already tells the client
+            # to use — while the case worker's address carried a cost nobody
+            # had weighed: `reply-to` is displayed by every mail client, so the
+            # individual's personal work address appeared on a letter about a
+            # client's statutory return, and reply-all put it into a thread
+            # with the client for good. GSHK reported it as the same fault the
+            # CC move fixed in September, surviving on the other header.
             #
-            # Outside production `_apply_test_cc_lock` DROPS this, as it
-            # dropped the case worker: renewal@getstarted.hk is a real GSHK
-            # mailbox and is NOT one of the four TEST_RECIPIENTS, so a test
-            # deployment must not reach it.
+            # NO ADDRESS ON THIS MESSAGE IS NOW A PERSON'S: from no-reply@, to
+            # the director, copying renewal@, replying to renewal@. Nothing
+            # here reads the signed-in user, which is why `operator` is gone
+            # rather than left computed and unused.
+            #
+            # Outside production `_apply_test_cc_lock` DROPS the CC:
+            # renewal@getstarted.hk is a real GSHK mailbox and is NOT one of
+            # the four TEST_RECIPIENTS, so a test deployment must not reach it.
+            # `reply_to` is NOT dropped and does not need to be — it is a
+            # header, not a recipient; nothing is delivered to it, and a test
+            # message nobody replies to reaches renewal@ exactly never.
             sent = await asyncio.to_thread(
                 email_service.send,
                 to=[target["email"]],
                 cc=[email_service.CLIENT_CC],
-                reply_to=operator,
+                reply_to=email_service.CLIENT_CC,
                 subject=subject, html=html,
                 attachments=[(attachment_name, pdf)],
             )

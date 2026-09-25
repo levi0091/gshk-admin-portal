@@ -412,7 +412,11 @@ def send(*, to, subject: str, html: str, attachments=None, cc=None,
 
     `reply_to` steers the client's answer at a mailbox a human reads. The sender
     is `no-reply@`, so without this an email that ASKS for a reply would be
-    asking for one nobody receives.
+    asking for one nobody receives. It is a header rather than a recipient —
+    nothing is delivered to it — so the non-production lock does not touch it.
+    It is still an address the client SEES, which is why the verification
+    caller passes the shared renewals mailbox and never an individual's (Levi
+    2026-09-25).
 
     `attachments` is a list of (filename, bytes). The caller keeps hold of the
     bytes; nothing here writes them anywhere.
@@ -670,9 +674,11 @@ def verification_email(case: dict, entity: dict,
         no `sender_name` argument any more, and no "Account Manager" line;
       * it says in as many words that replies are not monitored, and names
         `renewal@getstarted.hk` as where changes go. `reply_to` is still set on
-        the message by the caller, so a client who replies anyway reaches the
-        case worker rather than a black hole — but the mailbox the letter TELLS
-        them to use is the one GSHK actually watches;
+        the message by the caller, so a client who replies anyway reaches a
+        human rather than a black hole — and since 2026-09-25 it is that SAME
+        mailbox, so the address the letter tells them to use, the address
+        copied, and the address their reply lands in are one and the same, and
+        none of the three is a person's;
       * the charge is for changes requested AFTER FILING, which is a different
         (and later) event than the "any amendments later" the old letter named.
 
