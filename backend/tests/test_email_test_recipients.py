@@ -15,6 +15,7 @@ The Client Verification screen still shows, and still lets an operator pick, the
 real director addresses: that fan-out is the thing under test. What changes is
 where the message lands.
 """
+import inspect
 import os
 from unittest.mock import patch
 
@@ -227,3 +228,93 @@ def test_the_guard_fires_even_if_the_redirect_is_somehow_bypassed():
             patch("httpx.post", side_effect=AssertionError("must not be called")):
         with pytest.raises(email_service.EmailError, match="refusing to send"):
             email_service.send(to=[CLIENT], subject="s", html="<p>h</p>")
+
+
+# ---------------------------------------------------------------------------
+# The reply address is not delivered to, but it IS displayed — same rule
+# (Levi 2026-09-25)
+# ---------------------------------------------------------------------------
+
+def _send_with_reply_to(**env):
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured.update(json)
+        return _Response()
+
+    with _env(**env), patch("httpx.post", side_effect=fake_post):
+        result = email_service.send(
+            to=[CLIENT], cc=[email_service.CLIENT_CC],
+            reply_to=email_service.CLIENT_CC,
+            subject="Annual Return", html="<p>hi</p>",
+        )
+    return result, captured
+
+
+def test_a_non_production_send_drops_the_reply_address_too():
+    """THE ASK (Levi 2026-09-25): renewal@getstarted.hk on DEV, on neither
+    header. It is not delivered to — so this is not the client-protection
+    interlock — but it is a real GSHK mailbox PRINTED beside From in every mail
+    client, so a tester who presses Reply writes to the live renewals team
+    about a case that exists only on DEV."""
+    result, payload = _send_with_reply_to(APP_ENV="dev", RESEND_API_KEY="re_x")
+    assert "reply_to" not in payload
+    assert "cc" not in payload
+    assert result["reply_to"] == []
+    # Still reported, so the trail records what production WOULD have carried.
+    assert result["intended_reply_to"] == [email_service.CLIENT_CC]
+
+
+def test_production_still_carries_the_renewals_mailbox_on_both_headers():
+    """The other half of the ask: this is a DEV/PROD difference, not a
+    withdrawal. A test asserting only the drop would pass just as well if the
+    reply address had been removed everywhere."""
+    result, payload = _send_with_reply_to(APP_ENV="prod", RESEND_API_KEY="re_x")
+    assert payload["reply_to"] == [email_service.CLIENT_CC]
+    assert payload["cc"] == [email_service.CLIENT_CC]
+    assert result["reply_to"] == [email_service.CLIENT_CC]
+
+
+def test_the_reply_address_is_DROPPED_not_pointed_at_a_test_mailbox():
+    """Substituting one of the four would invent an address no production send
+    ever carries. The four are already on `to`, so Reply All reaches them."""
+    _, payload = _send_with_reply_to(APP_ENV="dev", RESEND_API_KEY="re_x")
+    assert "reply_to" not in payload
+    assert not any(a in str(payload.get("reply_to", ""))
+                   for a in email_service.TEST_RECIPIENTS)
+
+
+@pytest.mark.parametrize("value", ["staging", "test", "development", "PRODUCTION"])
+def test_anything_that_is_not_exactly_prod_drops_the_reply_address(value):
+    """The same reading of APP_ENV as every other lock — `services/app_env.py`,
+    so this can never disagree with the `to` lock or the TEST badge. The same
+    list as `test_anything_that_is_not_exactly_prod_redirects` above, including
+    'PRODUCTION': it is not 'prod', so it is not production."""
+    _, payload = _send_with_reply_to(APP_ENV=value, RESEND_API_KEY="re_x")
+    assert "reply_to" not in payload
+
+
+def test_the_guard_fires_if_the_reply_address_survives_the_lock():
+    """Defence in depth, as for `to` and `cc`. The lock is the mechanism; this
+    asserts the mechanism ran. Checking only the two delivered lines would
+    leave uncovered exactly the header this rule was asked about."""
+    with _env(APP_ENV="dev", RESEND_API_KEY="re_x"), \
+            patch.object(email_service, "_apply_test_reply_to_lock",
+                         side_effect=lambda reply_to, *_: (reply_to, False)), \
+            patch("httpx.post", side_effect=AssertionError("must not be called")):
+        with pytest.raises(email_service.EmailError, match="refusing to send"):
+            email_service.send(to=[CLIENT], reply_to=email_service.CLIENT_CC,
+                               subject="s", html="<p>h</p>")
+
+
+def test_a_caller_cannot_bypass_the_lock_by_being_the_one_who_asks():
+    """The lock lives inside send(), BELOW every caller, exactly like the
+    recipient lock. routers/cases.py asks for the production shape
+    unconditionally and knows nothing about APP_ENV; if this ever moved up into
+    the router, a second caller would reintroduce the leak."""
+    _, payload = _send_with_reply_to(APP_ENV="dev", RESEND_API_KEY="re_x")
+    assert "reply_to" not in payload
+    src = inspect.getsource(email_service.send)
+    # The payload must be built from the LOCKED value, never the argument.
+    assert 'payload["reply_to"] = answer_to' in src
+    assert 'payload["reply_to"] = _addresses(reply_to)' not in src

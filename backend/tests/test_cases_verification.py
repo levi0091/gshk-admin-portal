@@ -8,6 +8,7 @@ caller can reach, which is the whole reason this flow has no security surface to
 get wrong.
 """
 import datetime as _dt
+import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
+from routers import cases
 from services import email_service
 
 #: The fixed copy on every client-facing message. Read from the module rather
@@ -860,7 +862,11 @@ def test_NO_ADDRESS_ON_THE_MESSAGE_IS_AN_INDIVIDUALS(client):
     inferred from the three equalities above: the operator signed in as
     levi@zenexflow.com, and that address must appear on no `to`, no `cc` and no
     `reply_to` of any message. THIS is the behaviour that was reported wrong,
-    twice, on a different header each time."""
+    twice, on a different header each time.
+
+    Levi 2026-09-25, restating it: *"the person who triggered the email sending
+    on g-flowdesk should not be in cc or reply-to... we only need the
+    renewal@getstarted.hk to be in the cc thats all."*"""
     send, response = _send_as_operator(client)
     assert response.status_code == 200
     for call in send.call_args_list:
@@ -869,6 +875,42 @@ def test_NO_ADDRESS_ON_THE_MESSAGE_IS_AN_INDIVIDUALS(client):
                        if call.kwargs["reply_to"] else [])]
         assert "levi@zenexflow.com" not in addresses
         assert not any(a.endswith("@zenexflow.com") for a in addresses)
+        # AND THE COPY IS renewal@ AND NOTHING ELSE. Asserting only the absence
+        # of the operator would still pass if a future change added some third
+        # address; "we only need the renewal@getstarted.hk to be in the cc
+        # thats all" is an exact list, not a prohibition on one name.
+        assert call.kwargs["cc"] == [CLIENT_CC]
+
+
+def test_the_senders_address_is_not_in_the_LETTER_either(client):
+    """Headers were the reported fault, but an address can be in a message
+    without being a header. The letter is signed by the company and carries no
+    Account Manager line, so the operator's address must not reach the client
+    in the body either — which is the whole claim "no user's email" makes."""
+    send, _ = _send_as_operator(client)
+    for call in send.call_args_list:
+        assert "levi@zenexflow.com" not in call.kwargs["html"]
+        assert "zenexflow.com" not in call.kwargs["html"]
+
+
+def test_the_send_path_does_not_read_the_signed_in_users_address_at_all(client):
+    """Structural, not behavioural, and deliberately so. The two tests above
+    prove the current code does not leak the address; this one removes the
+    variable it would leak FROM. `operator = user.get("email")` existed on this
+    path for both of the reported faults, and while it exists a later edit can
+    put it back on a header without anything failing until a client sees it."""
+    # CODE ONLY — the comments above the send explain at length why the case
+    # worker used to be on these headers, and matching prose would make this
+    # test fail on its own documentation.
+    code = "\n".join(
+        line for line in inspect.getsource(cases.send_verification).splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert 'user.get("email")' not in code
+    assert 'user["email"]' not in code
+    assert "operator =" not in code
+    # And the reply address is the constant, not something resolved per-send.
+    assert "reply_to=email_service.CLIENT_CC" in code
 
 
 def test_each_director_gets_their_OWN_approval_link(client):

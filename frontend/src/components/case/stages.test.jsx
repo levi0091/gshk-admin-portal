@@ -736,6 +736,30 @@ describe('Client Verification', () => {
       .not.toBeInTheDocument()
   })
 
+  it('says the REPLY ADDRESS is dropped in test too, not just the copy', async () => {
+    // Levi 2026-09-25. renewal@getstarted.hk is a real GSHK mailbox, and
+    // reply-to is PRINTED beside From — so a tester pressing Reply on a DEV
+    // message writes to the live renewals team about a case that only exists
+    // on DEV. Named rather than left implied by "nothing reaches the client":
+    // a header nobody is told about is a header nobody checks.
+    auth = { isTestEnv: true }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    expect(screen.getByText(/the reply address are dropped/)).toBeInTheDocument()
+    expect(screen.getByText(/no reply address at all/)).toBeInTheDocument()
+  })
+
+  it('does not state the production CC rule flatly on a test deployment', async () => {
+    // The cc-note was just corrected for promising something untrue; asserting
+    // "a copy goes to renewal@" on DEV, where neither header goes out, is the
+    // same class of untruth. It reads as what production does instead.
+    auth = { isTestEnv: true }
+    renderIt()
+    await screen.findByText('chan@example.com')
+    const note = document.querySelector('.cc-note')
+    expect(note.textContent).toContain('In production a copy goes to')
+  })
+
   it('fetches the PDF as a blob so the token never lands in a URL', async () => {
     renderIt()
     await waitFor(() => expect(blob).toHaveBeenCalled())

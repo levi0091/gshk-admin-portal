@@ -2042,12 +2042,14 @@ async def send_verification(
             # here reads the signed-in user, which is why `operator` is gone
             # rather than left computed and unused.
             #
-            # Outside production `_apply_test_cc_lock` DROPS the CC:
-            # renewal@getstarted.hk is a real GSHK mailbox and is NOT one of
-            # the four TEST_RECIPIENTS, so a test deployment must not reach it.
-            # `reply_to` is NOT dropped and does not need to be — it is a
-            # header, not a recipient; nothing is delivered to it, and a test
-            # message nobody replies to reaches renewal@ exactly never.
+            # OUTSIDE PRODUCTION BOTH ARE DROPPED. renewal@getstarted.hk is a
+            # real GSHK mailbox and is NOT one of the four TEST_RECIPIENTS, so
+            # a test deployment must not reach it and must not put it in front
+            # of anybody: `_apply_test_cc_lock` drops the copy and
+            # `_apply_test_reply_to_lock` drops the reply address, both inside
+            # send() and below this caller. Nothing here is conditional on the
+            # environment — this router asks for the production shape and the
+            # service is the one place that knows better.
             sent = await asyncio.to_thread(
                 email_service.send,
                 to=[target["email"]],
@@ -2121,6 +2123,8 @@ async def send_verification(
     intended = _across("intended_to") or [s["target"]["email"] for s in sends]
     copied = _across("cc")
     intended_cc = _across("intended_cc")
+    answered_to = _across("reply_to")
+    intended_reply_to = _across("intended_reply_to")
     message_ids = [s["sent"].get("id") for s in sends if s["sent"].get("id")]
 
     # WHICH message went to WHICH director, which `message_ids` alone cannot
@@ -2191,6 +2195,12 @@ async def send_verification(
                   # would claim the case worker was copied when they were not.
                   "cc": copied,
                   "intended_cc": intended_cc,
+                  # And the reply address, on the same both-halves rule: it is
+                  # dropped outside production too (Levi 2026-09-25), so a row
+                  # carrying only the intention would say the client was given
+                  # renewal@ to answer when the message named nobody.
+                  "reply_to": answered_to,
+                  "intended_reply_to": intended_reply_to,
                   "redirected": bool(sent.get("redirected")),
                   # Always 'resend' now that the console stub is gone, and kept
                   # so the trail stays self-describing: existing rows say

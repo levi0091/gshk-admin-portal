@@ -584,14 +584,30 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             original objection instead of overriding it: it is staffed. This
             note therefore stops promising the operator that replies reach
             them, because they no longer do — an operator who kept believing
-            that would sit watching an inbox nothing arrives in. */}
+            that would sit watching an inbox nothing arrives in.
+
+            IT IS WRITTEN IN THE FUTURE CONDITIONAL ON A TEST DEPLOYMENT, where
+            NEITHER header goes out (Levi 2026-09-25): the copy was already
+            dropped, and now the reply address is too. Stating the production
+            behaviour flatly on DEV is the same class of untruth this note was
+            just corrected for — it would have a tester believe renewal@ is on
+            a message that does not name it. The hint below says what a test
+            send really carries; this line stops asserting otherwise. */}
         <div className="cc-note">
           <span className="cc-icon" aria-hidden="true">↩</span>
           <div>
-            A copy goes to <b>{CLIENT_CC}</b>, and replies go there too — the
-            same mailbox the letter gives the client for changes, since it
-            tells them replies are not monitored. Your own address is not on
-            the message: not as sender, not copied, not as the reply address.
+            {isTestEnv ? (<>
+              In production a copy goes to <b>{CLIENT_CC}</b> and replies go
+              there too — the same mailbox the letter gives the client for
+              changes, since it tells them replies are not monitored. Your own
+              address is never on the message: not as sender, not copied, not
+              as the reply address.
+            </>) : (<>
+              A copy goes to <b>{CLIENT_CC}</b>, and replies go there too — the
+              same mailbox the letter gives the client for changes, since it
+              tells them replies are not monitored. Your own address is not on
+              the message: not as sender, not copied, not as the reply address.
+            </>)}
           </div>
         </div>
 
@@ -604,13 +620,23 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
             It used to be "you are already on that list", which was true of the
             case worker and is not true of renewal@getstarted.hk — that is a
             real GSHK mailbox and deliberately NOT one of the test recipients,
-            so a test deployment must not reach it either. */}
+            so a test deployment must not reach it either.
+
+            AND THE REPLY ADDRESS GOES WITH IT (Levi 2026-09-25). Same mailbox,
+            and a reason that survives it not being a recipient: reply-to is
+            PRINTED beside From, so a tester pressing Reply on a DEV message
+            writes to the live renewals team about a case that exists only on
+            DEV. Named here rather than left implied by "nothing reaches the
+            client", because a header nobody is told about is a header nobody
+            checks. */}
         {isTestEnv && (
           <div className="f-hint" style={{ marginTop: 10, lineHeight: 1.5 }}>
             This is a test environment, so nothing is delivered to the client —
             the message goes to the fixed internal test recipients instead, and
-            the copy to {CLIENT_CC} is dropped, because that is a real GSHK
-            mailbox and nothing sent from here may reach it.
+            both the copy to {CLIENT_CC} and the reply address are dropped,
+            because that is a real GSHK mailbox and nothing sent from here may
+            reach it or point anyone at it. A test message has no reply
+            address at all.
           </div>
         )}
 
