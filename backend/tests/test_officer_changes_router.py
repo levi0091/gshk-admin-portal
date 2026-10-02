@@ -343,6 +343,72 @@ def test_send_needs_a_reply_by_date(env):
     assert resp.status_code == 422
 
 
+# -- revisions (Levi 2026-10-02, migration 051) ---------------------------------------
+
+def _send_revision(env, *, send=None):
+    """POST a send with the collaborators patched; return (resp, issue, letter, sent)."""
+    sent = []
+
+    def fake_send(**kwargs):
+        sent.append(kwargs)
+        return {"id": f"m{len(sent)}", "to": kwargs["to"]}
+
+    issue = MagicMock(side_effect=lambda **kw: [
+        {**r, "token": "tok", "expires_at": kw["expires_at"], "revision": kw.get("revision")}
+        for r in kw["recipients"]])
+    letter = MagicMock(return_value=("s", "h"))
+    with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock, return_value="<x/>"), \
+         patch.object(oc.tpsi_filings, "create_filing", return_value={"id": "F1"}), \
+         patch.object(oc.nar1_router, "_undeliverable", new_callable=AsyncMock, return_value={}), \
+         patch.object(oc, "render_form", return_value=b"%PDF"), \
+         patch.object(oc.recipients_svc, "default_recipients", return_value=[]), \
+         patch.object(oc.nar1_router, "_approval_link_base", return_value="https://api.test"), \
+         patch.object(oc.nar1_approvals, "issue", new=issue), \
+         patch.object(oc.email_service, "send", side_effect=send or fake_send), \
+         patch.object(oc.emails, "officer_change_email", new=letter):
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["a@example.com"], "respond_by": "2099-01-01"})
+    return resp, issue, letter, sent
+
+
+def test_the_first_send_is_revision_one_and_its_file_is_unmarked(env):
+    env.case = {**CASE, "verification_revision": 0}
+    resp, issue, letter, sent = _send_revision(env)
+    assert resp.status_code == 200, resp.text
+    assert issue.call_args.kwargs["revision"] == 1
+    assert letter.call_args.kwargs["revision"] == 1
+    assert "-Rev" not in sent[0]["attachments"][0][0]
+    assert env.update.call_args.args[1]["verification_revision"] == 1
+
+
+def test_a_resend_after_a_restart_is_the_next_revision(env):
+    """A restart clears the send but not the count: the client still holds the
+    first email, so the next is Rev. 2 — in the letter, on the links, on the
+    file and on the case."""
+    env.case = {**CASE, "verification_sent_at": None, "verification_revision": 1}
+    resp, issue, letter, sent = _send_revision(env)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["revision"] == 2
+    assert issue.call_args.kwargs["revision"] == 2
+    assert letter.call_args.kwargs["revision"] == 2
+    assert sent[0]["attachments"][0][0].endswith("-Rev2.pdf")
+    assert env.update.call_args.args[1]["verification_revision"] == 2
+    email_row = next(c.kwargs for c in env.audit.await_args_list
+                     if c.kwargs["action_type"] == "EMAIL_SENT")
+    assert email_row["metadata"]["revision"] == 2
+
+
+def test_a_send_that_reached_nobody_does_not_use_up_a_revision(env):
+    env.case = {**CASE, "verification_revision": 1}
+
+    def refused(**_kwargs):
+        raise oc.email_service.EmailError("resend refused it")
+
+    resp, *_ = _send_revision(env, send=refused)
+    assert resp.status_code == 502
+    env.update.assert_not_called()
+
+
 def test_recording_an_answer_needs_a_sent_request(env):
     assert client.post("/officer-changes/K1/verification/response", headers=H,
                        json={"approved": True}).status_code == 409

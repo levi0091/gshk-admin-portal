@@ -11,6 +11,7 @@ import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageCrStatus from './StageCrStatus.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
+import StageClientVerification from './StageClientVerification.jsx'
 import { stageIndexFor, stageDone, deadlineText } from './workflow.js'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn(); const upload = vi.fn()
@@ -361,5 +362,33 @@ describe('StageCrStatus', () => {
     wrap(<StageCrStatus data={{ ...BASE, cr_status: { code: 'cr_rejected', label: 'Rejected by CR' },
       applied_at: 'x' }} reload={vi.fn()} can={ALL} />)
     expect(screen.getByRole('button', { name: 'Undo profile update' })).toBeInTheDocument()
+  })
+})
+
+describe('StageClientVerification — the revision the client holds (migration 051)', () => {
+  const stage = over => wrap(
+    <StageClientVerification data={{ ...BASE, client_approved: null, ...over }}
+                             reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+
+  it('a resend reads "Rev. 2 sent", matching the [Rev. 2] in the client\'s inbox', () => {
+    stage({ verification_sent_at: '2026-10-01T02:00:00Z', verification_revision: 2 })
+    expect(screen.getByText(/Rev\. 2 sent/)).toBeInTheDocument()
+  })
+
+  it('the first email is unmarked, as it is in the client\'s inbox', () => {
+    stage({ verification_sent_at: '2026-10-01T02:00:00Z', verification_revision: 1 })
+    expect(screen.queryByText(/Rev\. \d/)).not.toBeInTheDocument()
+  })
+
+  it('after a restart, says the next send is Rev. 2 and the earlier link dies', () => {
+    // Restart cleared verification_sent_at; the client still has the first email.
+    stage({ verification_sent_at: null, verification_revision: 1 })
+    expect(screen.getByText(/This goes out as Rev\. 2, and the Confirm link in the\s+earlier email stops working/))
+      .toBeInTheDocument()
+  })
+
+  it('a first send promises no revision', () => {
+    stage({ verification_sent_at: null, verification_revision: 0 })
+    expect(screen.queryByText(/goes out as Rev\./)).not.toBeInTheDocument()
   })
 })

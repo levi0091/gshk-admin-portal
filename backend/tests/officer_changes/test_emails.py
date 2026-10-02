@@ -103,3 +103,33 @@ def test_markup_is_table_based_with_no_style_block():
                                           respond_by=date(2026, 10, 10))
     assert "<style" not in body and "display:flex" not in body and "grid" not in body
     assert body.startswith("<table")
+
+
+# -- revisions (Levi 2026-10-02, migration 051) ---------------------------------
+
+def _letter(case=CASE, entries=None, **over):
+    return emails.officer_change_email(case, ENTITY, entries or _entries(),
+                                       approval_url="https://x.test/a",
+                                       respond_by=date(2026, 10, 10), **over)
+
+
+def test_the_first_letter_is_unchanged():
+    assert _letter(revision=1) == _letter()
+    assert "Revised draft" not in _letter()[1]
+
+
+def test_a_resend_says_which_revision_it_is_in_the_subject():
+    subject, _ = _letter(revision=2)
+    assert subject.startswith("[Action Required] [Rev. 2] ND2A Review & Confirmation")
+    nd2b, _ = _letter(case={**CASE, "form_code": "Nd2b"}, entries=_nd2b_entries(),
+                      revision=3)
+    assert nd2b.startswith("[Action Required] [Rev. 3] ND2B Review & Confirmation")
+
+
+def test_a_revised_letter_opens_with_nar1s_own_notice():
+    """The same words on all three forms — the notice is email_service's."""
+    _, body = _letter(revision=2)
+    assert email_service.revision_notice(2) in body
+    assert body.index("Revised draft") < body.index("Dear Client")
+    assert "&middot; Rev. 2</div>" in body
+    assert "Ref ND2A-2026-0001 · Rev. 2" in body

@@ -19,6 +19,13 @@ import { errorOf } from './workflow.js'
 export default function StageClientVerification({ data, reload, can, goTo }) {
   const sent = Boolean(data.verification_sent_at)
   const nd2b = data.form_code === 'Nd2b'
+  // How many verification emails have gone out (Levi 2026-10-02, migration
+  // 051) — the same count NAR1's stage reads. From the second on the client's
+  // email reads "[Rev. N]"; the first is unmarked, here as in their inbox. A
+  // restart does not reset it: the client still has the earlier email.
+  const sentRevision = Number(data.verification_revision) || 0
+  const nextRevision = sentRevision + 1
+  const revisionTag = sentRevision >= 2 ? `Rev. ${sentRevision}` : null
   const [recipients, setRecipients] = useState(null)
   const [to, setTo] = useState([])
   const [respondBy, setRespondBy] = useState(data.reply_by_default || '')
@@ -116,7 +123,8 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
           <div className={`alert ${data.client_approved === true ? 'al-success'
             : data.client_approved === false ? 'al-warn' : 'al-info'}`} style={{ marginTop: 12 }}>
             <div className="al-body">
-              Sent {formatDateTime(data.verification_sent_at)}.{' '}
+              {revisionTag ? `${revisionTag} sent` : 'Sent'}{' '}
+              {formatDateTime(data.verification_sent_at)}.{' '}
               {data.client_approved === true && <>Confirmed by the client
                 {data.client_approval?.name ? ` (${data.client_approval.name})` : ''}.</>}
               {data.client_approved === false && <>The client asked for changes. Correct the
@@ -146,6 +154,15 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
               </button>
             </div>
             {blocked && <div className="oc-locked-note">{blocked}</div>}
+            {/* Said BEFORE the press: the one consequence of a resend the
+                client notices is that the button in the email they already
+                have goes dead. */}
+            {nextRevision >= 2 && (
+              <div className="f-hint" style={{ marginTop: 8 }}>
+                This goes out as Rev. {nextRevision}, and the Confirm link in the
+                earlier email stops working.
+              </div>
+            )}
           </>
         )}
 

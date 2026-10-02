@@ -99,12 +99,24 @@ def _button(approval_url: str | None, label: str) -> str:
 
 
 def officer_change_email(case: dict, entity: dict, entries: list[dict], *,
-                         approval_url: str | None, respond_by) -> tuple[str, str]:
-    """`(subject, html)`."""
+                         approval_url: str | None, respond_by,
+                         revision=None) -> tuple[str, str]:
+    """`(subject, html)`.
+
+    `revision` is which verification email this is for the case (Levi
+    2026-10-02, migration 051). From the second on it reads exactly as NAR1's
+    does — "[Rev. N]" in the subject, "Rev. N" in the masthead and reference
+    line, and the shared notice above "Dear Client" that the earlier email's
+    Confirm button no longer works — through `email_service`'s own helpers, so
+    the three forms cannot word it differently. The first is unchanged.
+    """
     code, title, subject_title = _FORM.get(case.get("form_code"), _FORM["Nd2a"])
     company = (entity.get("company_name") or "").strip()
-    subject = (f"[Action Required] {subject_title} - {company}" if company
-               else f"[Action Required] {subject_title}")
+    rev = es.revision_label(revision)
+    subject = es.with_revision(
+        f"[Action Required] {subject_title} - {company}" if company
+        else f"[Action Required] {subject_title}",
+        revision)
     when = _as_date(respond_by) if not isinstance(respond_by, date) else respond_by
 
     bullets = "".join(
@@ -119,7 +131,8 @@ def officer_change_email(case: dict, entity: dict, entries: list[dict], *,
                if when else "Please let us know as soon as possible. ")
     reference = " · ".join(b for b in (
         entity.get("br_number") and f"BR {entity['br_number']}",
-        case.get("case_no") and f"Ref {case['case_no']}") if b)
+        case.get("case_no") and f"Ref {case['case_no']}",
+        rev) if b)
 
     body = (
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
@@ -131,11 +144,14 @@ def officer_change_email(case: dict, entity: dict, entries: list[dict], *,
         # Masthead: the form, then whose company — as CR's own form heads it.
         f'<tr><td bgcolor="{es._INDIGO}" style="background:{es._INDIGO};'
         f'padding:24px 32px"><div style="{es._LABEL}color:{es._ON_INDIGO};'
-        f'padding-bottom:7px">Form {code} &middot; {_html.escape(title)}</div>'
+        f'padding-bottom:7px">Form {code} &middot; {_html.escape(title)}'
+        f'{f" &middot; {_html.escape(rev)}" if rev else ""}</div>'
         f'<div style="font-family:{es._FONT};font-size:20px;font-weight:600;'
         f'color:#FFFFFF;line-height:1.25">{_html.escape(company) or code}</div>'
         f"</td></tr>"
         f'<tr><td bgcolor="{es._SHEET}" style="background:{es._SHEET};padding:32px">'
+        # Empty on the first email; on a revision, the first thing read.
+        + es.revision_notice(revision)
         + _para("Dear Client,", top=0)
         + _para(f"A draft Form {code} for {_html.escape(company) or 'your company'} "
                 "is ready for your review. It reports the following changes to "

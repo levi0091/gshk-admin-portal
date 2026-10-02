@@ -62,6 +62,29 @@ def test_each_page_refuses_the_other_forms_token(path, case):
     assert post.status_code == 200
 
 
+def test_an_earlier_revisions_officer_change_link_is_dead():
+    """Migration 051, on the ND2 page: after Rev. 2 went out, a Rev. 1 link that
+    the supersede missed neither shows the form nor records an approval — and
+    says "this form", never "this Annual Return"."""
+    resent = {**ND2A, "verification_revision": 2}
+    with _Stack(*_world(approval=row(revision=1), case=resent)) as patches:
+        get = client.get(ND2_PATH)
+        post = client.post(ND2_PATH)
+    for resp in (get, post):
+        assert "no longer available" in resp.text
+        assert "Confirm &amp; File</button>" not in resp.text
+        assert "Annual Return" not in resp.text
+    patches[4].assert_not_called()      # claim
+    patches[3].assert_not_called()      # update_case
+
+
+def test_the_current_revisions_officer_change_link_still_asks():
+    resent = {**ND2A, "verification_revision": 2}
+    with _Stack(*_world(approval=row(revision=2), case=resent)):
+        resp = client.get(ND2_PATH)
+    assert "Confirm &amp; File</button>" in resp.text
+
+
 def test_an_already_confirmed_officer_change_never_says_annual_return():
     # One link per director: everyone after the first lands on "already
     # confirmed", and it must name the form they were asked about.

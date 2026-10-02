@@ -516,7 +516,13 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         pdf = await _render(case, xml, filing, public_only=True)
     except FormFillError as exc:
         raise HTTPException(422, {"message": f"The form could not be rendered: {exc}"})
-    attachment = f"{case['form_code'].upper()}-{case.get('case_no') or case_id}.pdf"
+    # Which verification email this is (Levi 2026-10-02, migration 051): the
+    # client sees "[Rev. 2]" and up from the second send, exactly as on NAR1.
+    # Stored only once something has gone out (the patch below), so a send
+    # that reached nobody does not use a number up.
+    revision = nar1_approvals.next_revision(case)
+    attachment = (f"{case['form_code'].upper()}-{case.get('case_no') or case_id}"
+                  f"{f'-Rev{revision}' if revision >= 2 else ''}.pdf")
 
     board = {(r.get("email") or "").lower(): r
              for r in recipients_svc.default_recipients(case, entries) if r.get("email")}
@@ -525,8 +531,11 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     link_base = nar1_router._approval_link_base(request)
     if link_base:
         try:
+            # Supersedes every outstanding link first — the earlier revision's
+            # Confirm button dies here — and stamps this revision on the new
+            # ones, the second lock (nar1_approvals.is_stale).
             targets = nar1_approvals.issue(case_id=case_id, recipients=targets,
-                                           expires_at=deadline_at)
+                                           expires_at=deadline_at, revision=revision)
         except Exception as exc:  # noqa: BLE001 — links are a convenience; the reply path remains
             print(f"[officer_changes] approval tokens not issued for {case_id}: {exc}",
                   file=sys.stderr)
@@ -539,7 +548,8 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         url = (f"{link_base}/public/officer-change-approval/{target['token']}"
                if link_base and target.get("token") else None)
         subject, html = emails.officer_change_email(case, entity, data["entries"],
-                                                    approval_url=url, respond_by=respond_day)
+                                                    approval_url=url, respond_by=respond_day,
+                                                    revision=revision)
         try:
             sent = await asyncio.to_thread(
                 email_service.send, to=[target["email"]], cc=[email_service.CLIENT_CC],
@@ -557,7 +567,10 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
 
     sent_at = datetime.now(timezone.utc).isoformat()
     previous = case.get("client_approved")
-    patch = {"verification_sent_at": sent_at, "verification_xml": xml}
+    # The revision the client now holds; from this write on an earlier one's
+    # link is refused even if superseding it failed.
+    patch = {"verification_sent_at": sent_at, "verification_xml": xml,
+             "verification_revision": revision}
     if previous is not None or case.get("client_response_at"):
         patch.update(client_approved=None, client_response_at=None,
                      client_approval_source=None, client_approval_person_id=None,
@@ -591,6 +604,8 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         # A re-send after validation superseded the CR filing that froze the
         # previous form (the CR steps start again).
         "filings_superseded": superseded,
+        # Which email about this form — the "[Rev. N]" the client saw.
+        "revision": revision,
         "case_no": case.get("case_no")})
     for record in sends:
         target = record["target"]
@@ -602,6 +617,7 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
                                   "person_id": target.get("person_id"),
                                   "expires_at": expires.isoformat()
                                   if hasattr(expires, "isoformat") else expires,
+                                  "revision": revision,
                                   "case_no": case.get("case_no")})
     if "client_approved" in patch:
         await audit(case, user, ev.CASE_STATUS_CHANGED,
@@ -609,6 +625,7 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
                     new_value="awaiting_client",
                     metadata={"reason": "a fresh verification superseded the previous answer"})
     return {"sent_at": sent_at, "to": delivered, "intended_to": intended,
+            "revision": revision,
             "redirected": any(d["redirected"] for d in deliveries),
             "message_ids": message_ids, "deliveries": deliveries,
             "failed_to": [f["email"] for f in failures], "failed": failures,
