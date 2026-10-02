@@ -53,28 +53,41 @@ def test_it_revises_049_leaving_050_to_the_officer_changes_branch():
 def test_the_backfill_runs_with_the_updated_at_trigger_off():
     """Left on, `trg_set_updated_at` would stamp every case ever mailed with the
     moment this migration ran, and the dashboard's Last Updated column would
-    rank them by when the schema changed (044's trap, from the other side)."""
+    rank them by when the schema changed (044's trap, from the other side).
+
+    `upgrade()` runs `_backfill_statements()` and nothing else for the
+    backfill, so the DB test below exercises the very statements it runs."""
     m = _migration()
-    calls = re.findall(r"op\.execute\(([^\n]+)", _source().split("def upgrade")[1]
-                       .split("def downgrade")[0])
-    order = [c.strip() for c in calls]
-    disable = next(i for i, c in enumerate(order) if "DISABLE TRIGGER" in c)
-    backfill = order.index("_BACKFILL)")
-    # "ENABLE TRIGGER" is a substring of "DISABLE TRIGGER", hence the second test.
-    enable = next(i for i, c in enumerate(order)
-                  if "ENABLE TRIGGER" in c and "DISABLE" not in c)
-    assert disable < backfill < enable
-    assert m._TRIGGER == "trg_set_updated_at"
+    disable, backfill, enable = m._backfill_statements()
+    assert "DISABLE TRIGGER trg_set_updated_at" in disable
+    assert backfill is m._BACKFILL
+    assert "ENABLE TRIGGER trg_set_updated_at" in enable and "DISABLE" not in enable
+    upgrade = _source().split("def upgrade")[1].split("def downgrade")[0]
+    assert "for sql in _backfill_statements():" in upgrade
+    assert "_BACKFILL" not in upgrade
 
 
-def test_the_backfill_takes_the_most_the_record_supports():
+def test_the_trail_counts_first_and_token_batches_only_without_one():
+    """A token batch is written BEFORE its send, so a send that reached nobody
+    leaves one behind; counting batches alongside the trail would start a case
+    with two real emails at "Rev. 4". Batches stand in only where there is no
+    trail at all."""
     sql = _normalise(_migration()._BACKFILL)
-    # The trail, the token batches, and "sent at least once".
-    assert "action_type = 'EMAIL_SENT'" in sql
-    assert "entity_type = 'nar1_case'" in sql
-    assert "count(DISTINCT sent_at)" in sql
+    assert "a.action_type = 'EMAIL_SENT'" in sql
+    assert "a.entity_type = 'nar1_case'" in sql
+    assert "CASE WHEN s.n > 0 THEN s.n ELSE b.n END" in sql
+    assert "count(DISTINCT t.sent_at)" in sql
     assert "WHEN c2.verification_sent_at IS NOT NULL THEN 1" in sql
-    assert "GREATEST(" in sql
+
+
+def test_the_trail_is_read_through_its_entity_index():
+    """`audit_log` is ~720 MB and `action_type` has no index, while ADD COLUMN
+    holds `nar1_cases` locked. Correlating on `entity_id` uses
+    idx_audit_log_entity (migration 010) instead of scanning the table."""
+    sql = _normalise(_migration()._BACKFILL)
+    assert "LEFT JOIN LATERAL" in sql
+    assert "a.entity_id = c2.id::text" in sql
+    assert "GROUP BY entity_id" not in sql
 
 
 def test_legacy_links_are_not_given_a_guessed_revision():
@@ -198,14 +211,77 @@ def test_the_backfill_counts_every_send_on_the_trail(conn):
 
 
 @db
-def test_the_backfill_counts_token_batches_when_the_trail_is_short(conn):
-    """Audit writes are best-effort; a batch of tokens is a send all the same."""
+def test_the_backfill_counts_token_batches_when_there_is_no_trail(conn):
+    """Audit writes are best-effort; with no trail at all, a batch of tokens is
+    the only record of a send."""
     with conn.cursor() as cur:
         case_id = _case(cur)
         _token(cur, case_id, "2026-09-01T00:00:00Z")
         _token(cur, case_id, "2026-09-01T00:00:00Z")   # same send, 2nd director
         _token(cur, case_id, "2026-09-05T00:00:00Z")
         assert _backfilled(cur, case_id) == 2
+
+
+@db
+def test_a_failed_sends_token_batch_does_not_outvote_the_trail(conn):
+    """Two real emails on the trail, three token batches — the third from a
+    send Resend refused for everybody, whose tokens were written before it
+    failed. The client has seen two emails, so the next must be Rev. 3, not 4."""
+    with conn.cursor() as cur:
+        case_id = _case(cur, verification_sent_at="2026-09-05T00:00:00Z")
+        _sent(cur, case_id)
+        _sent(cur, case_id)
+        for day in ("01", "05", "09"):
+            _token(cur, case_id, f"2026-09-{day}T00:00:00Z")
+        assert _backfilled(cur, case_id) == 2
+
+
+#: A date the migration cannot produce — `now()` is the TRANSACTION timestamp,
+#: so a test comparing it with itself proves nothing (CLAUDE.md, 044).
+_LONG_AGO = "2020-01-15T00:00:00+00:00"
+
+
+def _seed_mailed_case_dated_long_ago(cur) -> str:
+    case_id = _case(cur, verification_sent_at="2026-09-01T00:00:00Z",
+                    updated_at=_LONG_AGO)
+    _sent(cur, case_id)
+    cur.execute("SELECT updated_at FROM nar1_cases WHERE id = %s", (case_id,))
+    assert cur.fetchone()[0].year == 2020   # the seed itself held
+    cur.execute("UPDATE nar1_cases SET verification_revision = 0 WHERE id = %s "
+                "RETURNING 1", (case_id,))
+    # That UPDATE fired the trigger; put the old date back with it off, so the
+    # backfill below is the only write under test.
+    cur.execute("ALTER TABLE nar1_cases DISABLE TRIGGER trg_set_updated_at")
+    cur.execute("UPDATE nar1_cases SET updated_at = %s WHERE id = %s",
+                (_LONG_AGO, case_id))
+    cur.execute("ALTER TABLE nar1_cases ENABLE TRIGGER trg_set_updated_at")
+    return case_id
+
+
+@db
+def test_the_backfill_as_upgrade_runs_it_does_not_redate_the_case(conn):
+    """The statements `upgrade()` runs, in its order: revision filled in, Last
+    Updated untouched."""
+    with conn.cursor() as cur:
+        case_id = _seed_mailed_case_dated_long_ago(cur)
+        for sql in _migration()._backfill_statements():
+            cur.execute(sql)
+        cur.execute("SELECT verification_revision, updated_at FROM nar1_cases "
+                    "WHERE id = %s", (case_id,))
+        revision, updated_at = cur.fetchone()
+        assert revision == 1
+        assert updated_at.year == 2020
+
+
+@db
+def test_without_the_trigger_off_the_same_backfill_WOULD_redate_it(conn):
+    """The control that makes the test above mean something: the trigger is
+    live and fires on this UPDATE, so its being off is what saved the date."""
+    with conn.cursor() as cur:
+        case_id = _seed_mailed_case_dated_long_ago(cur)
+        cur.execute(_migration()._BACKFILL)
+        cur.execute("SELECT updated_at FROM nar1_cases WHERE id = %s", (case_id,))
+        assert cur.fetchone()[0].year != 2020
 
 
 @db

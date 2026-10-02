@@ -60,6 +60,9 @@ from services.audit_service import log_event
 # named a different one — or that still said "reply to the email" — would send
 # a client somewhere nobody is reading.
 from services.email_service import RENEWAL_MAILBOX
+# The same "Rev. N" the email printed, from the same function, so the page and
+# the inbox cannot spell a revision differently.
+from services.email_service import revision_label
 from services import audit_subject
 
 router = APIRouter()
@@ -287,7 +290,7 @@ _WARNING_MARK = (
 
 
 def _ask(*, company: str, br_number: str, period: str, case_no: str,
-         deadline: str) -> HTMLResponse:
+         deadline: str, revision: str = "") -> HTMLResponse:
     """The confirmation page, carrying the approved warning panel.
 
     THE WARNING IS SHOWN ON ARRIVAL, not behind a first press. The mock draws
@@ -303,8 +306,12 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
     worse answer to "something is wrong" than the note below, which names the
     mailbox that reads it.
     """
+    # "Revision" only from Rev. 2 (`revision` is "" before that, and the row
+    # is skipped like any other empty one): with two emails in the inbox, it
+    # says which one this page is confirming.
     rows = [("Company", company), ("Business Registration No.", br_number),
-            ("Return period", period), ("Our reference", case_no)]
+            ("Return period", period), ("Our reference", case_no),
+            ("Revision", revision)]
     ledger = "".join(
         f"<dt>{html.escape(label)}</dt><dd>{html.escape(str(value))}</dd>"
         for label, value in rows if value
@@ -457,6 +464,8 @@ async def show_approval(token: str, request: Request):
         period=str(case.get("ar_period_year") or ""),
         case_no=case.get("case_no") or "",
         deadline=_hkt(row.get("expires_at")),
+        # The LINK's revision, from its own row — a stale one never gets here.
+        revision=revision_label(row.get("revision")),
     )
 
 
