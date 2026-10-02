@@ -244,7 +244,11 @@ def _officer_for_secretary(case: dict, secretary_id: str) -> tuple[dict, bool]:
 
 
 def _party_of(officer: dict) -> dict:
-    corporate = bool(officer.get("corporate_entity_id")) and not officer.get("person_id")
+    # `party_type` first: a Viewpoint corporate row may carry only a
+    # corporate_name, with no corporate_entity_id — counting it as a natural
+    # person would let it satisfy "a natural-person director remains".
+    corporate = not officer.get("person_id") and (
+        officer.get("party_type") == "corporate" or bool(officer.get("corporate_entity_id")))
     return {"party_type": "corporate" if corporate else "individual",
             "person_id": officer.get("person_id"),
             "corporate_entity_id": officer.get("corporate_entity_id") if corporate else None,
@@ -623,22 +627,39 @@ def _summary(entry: dict) -> str:
     return f"{capacity} · {len(filed)} of {len(entry['items'])} change(s) to file"
 
 
+def _signatory_party(entity_id: str) -> tuple[str, bool]:
+    """`(name, is_corporate)` of whoever signs, in the ORDER the XML takes them
+    (`nar1_mapper._signatory_candidates`): the secretary REGISTER first, a
+    GSHK-flagged row before any other, then a secretary on the officer list.
+
+    Reading the officer list alone named nobody for a company whose secretary
+    is on the register only — and offered a natural-person secretary CR's Body
+    Corporate capacities, a value that does not fit the signer the XML then
+    names."""
+    sb = get_supabase()
+    register = (sb.table("company_secretaries").select("*").eq("entity_id", entity_id)
+                .eq("is_current", True).execute().data) or []
+    register.sort(key=lambda r: not r.get("is_gshk"))
+    officers = (sb.table("entity_officers").select("*").eq("entity_id", entity_id)
+                .eq("role", "company_secretary").eq("is_current", True).execute().data) or []
+    candidates = register + officers
+    people = _by_id("persons", [r.get("person_id") for r in candidates])
+    corps = _by_id("entities", [r.get("corporate_entity_id") for r in candidates])
+    for row in candidates:
+        person = people.get(row.get("person_id") or "")
+        if person:
+            return person.get("full_name") or person.get("full_name_zh") or "", False
+        name = (row.get("secretary_name") or row.get("corporate_name")
+                or (corps.get(row.get("corporate_entity_id") or "") or {}).get("company_name"))
+        if name:
+            return name, True
+    return "", True
+
+
 def _signatory(entity_id: str, case: dict) -> dict:
     """Who signs the form-level declaration: the company secretary, as NAR1's
     `_signatory_block` derives it — for nearly every GSHK client, GSHK Ltd."""
-    sb = get_supabase()
-    secs = (sb.table("entity_officers").select("*").eq("entity_id", entity_id)
-            .eq("role", "company_secretary").eq("is_current", True).execute().data) or []
-    name, is_corporate = "", True
-    if secs:
-        sec = secs[0]
-        if sec.get("person_id"):
-            is_corporate = False
-            name = (_by_id("persons", [sec["person_id"]]).get(sec["person_id"]) or {}).get("full_name") or ""
-        else:
-            corp = _by_id("entities", [sec.get("corporate_entity_id")]).get(
-                sec.get("corporate_entity_id") or "") or {}
-            name = corp.get("company_name") or sec.get("corporate_name") or ""
+    name, is_corporate = _signatory_party(entity_id)
     choices = sorted(CAPACITY_BODY_CORPORATE if is_corporate else CAPACITY_INDIVIDUAL)
     return {"name": name, "is_corporate": is_corporate, "capacities": choices,
             "default_capacity": default_capacity(is_corporate=is_corporate),

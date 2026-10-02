@@ -88,10 +88,28 @@ def test_put_credential_first_time_without_password_is_400(db, admin, audit):
     audit.assert_not_awaited()
 
 
-def test_put_credential_refuses_unknown_fields(db, admin):
+def test_put_credential_refuses_unknown_fields_naming_the_key_not_the_value(db, admin):
     resp = client.put("/persons/P1/eservice-credential", headers=H, json={
         "eservice_user_id": "ER1", "eservice_person_name": "A", "pin": "1234"})
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert "pin" in resp.json()["detail"] and "1234" not in resp.text
+
+
+@pytest.mark.parametrize("payload", [
+    # A missing name: pydantic's 422 used to echo the whole input, password included.
+    {"eservice_user_id": "ER1", "password": SECRET},
+    # A stale key: extra="forbid" echoed the value under `input`.
+    {"eservice_user_id": "ER1", "eservice_person_name": "A", "eservice_password": SECRET},
+    # Not an object at all.
+    [SECRET],
+    SECRET,
+    {"eservice_user_id": "ER1", "eservice_person_name": "A", "password": [SECRET]},
+])
+def test_no_refusal_ever_repeats_the_password(db, admin, audit, payload):
+    resp = client.put("/persons/P1/eservice-credential", headers=H, json=payload)
+    assert resp.status_code == 400
+    assert SECRET not in resp.text
+    audit.assert_not_awaited()
 
 
 def test_delete_credential_removes_and_audits(db, admin, audit):

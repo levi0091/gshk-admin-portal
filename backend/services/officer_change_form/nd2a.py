@@ -296,9 +296,20 @@ def _assert_nothing_dropped(ceased, natural, corporate, pi, pages, public_only) 
                     out.append(name)
         return sorted(out)
 
-    want_ceased = sorted(_get(b, "indvEngSname") or _get(b, "corpEngName") for b in ceased)
-    got_ceased = placed({m.MAIN_1["surname_en"], m.SHEET_A["surname_en"],
-                         m.MAIN_1["corp_name_en"], m.SHEET_A["corp_name_en"]})
+    # A cessation is counted by the FIRST name it carries, surname or not: a
+    # mononym, or a Viewpoint row holding only given names, has no surname, and
+    # counting surnames alone reported a correctly placed officer as dropped.
+    ces_bean = ("indvEngSname", "indvEngOname", "indvChiName", "corpEngName", "corpChiName")
+    ces_box = ("surname_en", "other_names_en", "name_zh", "corp_name_en", "corp_name_zh")
+
+    def first(values, keys):
+        return next((values[k] for k in keys if values.get(k) and values[k] != _DASH), None)
+
+    want_ceased = sorted(first({k: _get(b, k) for k in ces_bean}, ces_bean) or "" for b in ceased)
+    groups = {m.PAGE_MAIN_1: m.MAIN_1, m.PAGE_SHEET_A: m.SHEET_A}
+    got_ceased = sorted(
+        name for page, values, _sheet in pages if page in groups
+        for name in [first(values, [groups[page][k] for k in ces_box])] if name)
     want_natural = sorted(_get(b, "indvEngSname") for b in natural)
     got_natural = placed({m.MAIN_2["surname_en"], m.SHEET_B["surname_en"]})
     want_corp = sorted(_get(b, "corpEngName") or _get(b, "selectPersonName") for b in corporate)

@@ -141,6 +141,18 @@ def test_esign_cannot_be_chosen_while_a_consent_credential_is_missing(env):
     assert "HO New" in resp.json()["detail"]["message"]
 
 
+def test_the_signatory_capacity_must_fit_the_signer(env):
+    # A natural-person secretary signs with an Individual capacity; a Body
+    # Corporate one would be accepted by CR's schema and refused after filing.
+    with patch.object(oc.svc, "_signatory_party", return_value=("CHAN Tai Man", False)):
+        bad = client.patch("/officer-changes/K1", headers=H, json={
+            "signatory_capacity": "Director of the Company Secretary (Body Corporate)"})
+        good = client.patch("/officer-changes/K1", headers=H,
+                            json={"signatory_capacity": "Company Secretary"})
+    assert bad.status_code == 400 and "natural person" in bad.json()["detail"]
+    assert good.status_code == 200
+
+
 def test_restart_revokes_links_supersedes_filings_and_reopens_the_list(env):
     env.case = {**CASE, "verification_sent_at": "2026-10-01T00:00:00Z", "client_approved": True}
     with patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=2) as links, \
@@ -297,6 +309,30 @@ def test_send_mails_each_recipient_with_their_own_officer_change_link(env):
     email_row = next(c.kwargs for c in env.audit.await_args_list
                      if c.kwargs["action_type"] == "EMAIL_SENT")
     assert email_row["metadata"]["deliveries"][0]["email"] == "a@example.com"
+
+
+@pytest.mark.parametrize("stage, supersedes", [
+    ("validated", True), ("signed", True), ("draft", False), ("validation_failed", False)])
+def test_a_re_send_after_cr_validation_starts_the_cr_steps_again(env, stage, supersedes):
+    # The client must never approve one document while CR's frozen copy of an
+    # earlier one is what gets signed and filed.
+    with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock, return_value="<x/>"), \
+         patch.object(oc.nar1_cases, "current_filing", return_value={"id": "F0", "stage": stage}), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=1) as supersede, \
+         patch.object(oc.tpsi_filings, "create_filing", return_value={"id": "F1"}) as create, \
+         patch.object(oc.tpsi_filings, "rebuild_draft", return_value={"id": "F0"}) as rebuild, \
+         patch.object(oc.nar1_router, "_undeliverable", new_callable=AsyncMock, return_value={}), \
+         patch.object(oc, "render_form", return_value=b"%PDF"), \
+         patch.object(oc.recipients_svc, "default_recipients", return_value=[]), \
+         patch.object(oc.nar1_router, "_approval_link_base", return_value=None), \
+         patch.object(oc.email_service, "send",
+                      side_effect=lambda **k: {"id": "m1", "to": k["to"]}), \
+         patch.object(oc.emails, "officer_change_email", return_value=("s", "h")):
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["a@example.com"], "respond_by": "2099-01-01"})
+    assert resp.status_code == 200, resp.text
+    assert supersede.called is supersedes
+    assert create.called is supersedes and rebuild.called is not supersedes
 
 
 def test_send_needs_a_reply_by_date(env):

@@ -166,9 +166,14 @@ async def patch_case(case_id: str, body: CasePatchIn,
             patch["signing_method"] = body.signing_method
     if body.signatory_capacity is not None:
         capacity = body.signatory_capacity.strip()
-        if capacity and capacity not in (CAPACITY_BODY_CORPORATE | CAPACITY_INDIVIDUAL):
-            raise HTTPException(400, f"signatory_capacity {capacity!r} is not in CR's "
-                                     "capacity vocabulary")
+        # The vocabulary of THIS signer: CR takes any string here and refuses a
+        # capacity of the wrong kind only after the form is submitted.
+        _, is_corporate = svc._signatory_party(case["entity_id"])
+        valid = CAPACITY_BODY_CORPORATE if is_corporate else CAPACITY_INDIVIDUAL
+        if capacity and capacity not in valid:
+            kind = "a body corporate" if is_corporate else "a natural person"
+            raise HTTPException(400, f"signatory_capacity {capacity!r} is not one of CR's "
+                                     f"capacities for {kind} signing")
         if capacity != (case.get("signatory_capacity") or ""):
             patch["signatory_capacity"] = capacity or None
     for field, new in patch.items():
@@ -482,11 +487,19 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         raise _problems(exc)
 
     filing = nar1_cases.current_filing(case_id)
+    superseded = 0
+    if filing is not None and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
+        # A re-send after CR validated (or signed) the form. That filing froze
+        # the XML CR checked; mailing a freshly built form and leaving it live
+        # would have the client approve one document while the old one is
+        # signed and filed. The re-send starts the CR steps again instead.
+        superseded = tpsi_filings.supersede_all_for_case(case_id)
+        filing = None
     if filing is None:
         filing = tpsi_filings.create_filing(entity_id=case["entity_id"],
                                             form_code=case["form_code"], form_xml=xml,
                                             user_id=user["id"], nar1_case_id=case_id)
-    elif filing.get("stage") in tpsi_filings.REBUILDABLE_STAGES:
+    else:
         filing = tpsi_filings.rebuild_draft(filing["id"], xml) or filing
 
     deadline_at = nar1_router._deadline_from(body.respond_by)
@@ -575,6 +588,9 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         "reply_to": across("reply_to"), "intended_reply_to": across("intended_reply_to"),
         "redirected": any(d["redirected"] for d in deliveries),
         "transport": sends[0]["sent"].get("transport", "resend"),
+        # A re-send after validation superseded the CR filing that froze the
+        # previous form (the CR steps start again).
+        "filings_superseded": superseded,
         "case_no": case.get("case_no")})
     for record in sends:
         target = record["target"]

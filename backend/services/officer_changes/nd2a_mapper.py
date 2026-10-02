@@ -141,24 +141,40 @@ def tcsp(prefix: str, licence: str, reason: str, problems: list[str], where: str
 
 
 def _cessation(graph: dict, entry: dict, problems: list[str]) -> dict:
+    """The officer as CR HOLDS them: the ND2B baseline when there is one (an
+    edit on the profile that no ND2B has filed is not on CR's register), else
+    the profile — which, with no baseline, has not changed since CR was told."""
     bean = {"cpty": _CPTY[entry["capacity"]]}
+    held = (graph.get("baselines") or {}).get(
+        entry.get("person_id") or entry.get("corporate_entity_id")) or None
     if entry.get("person_id"):
         person = (graph.get("persons") or {}).get(entry["person_id"]) or {}
         where = f"cessation of {person.get('full_name') or entry['person_id']}"
-        surname, given = english_name(person)
-        bean.update({"indvChiName": _s(person.get("full_name_zh")),
-                     "indvEngSname": surname, "indvEngOname": given})
-        hkid, passport = documents(graph, entry["person_id"])
-        bean.update(partial_ids((hkid or {}).get("id_number"),
-                                (passport or {}).get("id_number"), problems, where))
+        if held and held.get("party_type") == "individual":
+            name = held.get("name_en") or {}
+            surname, given = _s(name.get("surname")), _s(name.get("given_names"))
+            chinese = _s(held.get("name_zh"))
+            hkid_no = _s(held.get("hkid"))
+            passport_no = _s((held.get("passport") or {}).get("number"))
+        else:
+            surname, given = english_name(person)
+            chinese = _s(person.get("full_name_zh"))
+            hkid, passport = documents(graph, entry["person_id"])
+            hkid_no = (hkid or {}).get("id_number")
+            passport_no = (passport or {}).get("id_number")
+        bean.update({"indvChiName": chinese, "indvEngSname": surname, "indvEngOname": given})
+        bean.update(partial_ids(hkid_no, passport_no, problems, where))
         if entry.get("cessation_reason") not in ("R", "D"):
             problems.append(f"{where}: CR needs the reason for cessation")
         bean["rsnCes"] = entry.get("cessation_reason") or ""
     else:
         corp = (graph.get("entities") or {}).get(entry.get("corporate_entity_id")) or {}
         where = f"cessation of {corp.get('company_name') or entry.get('corporate_entity_id')}"
-        bean.update({"corpChiName": _s(corp.get("company_name_zh")),
-                     "corpEngName": _s(corp.get("company_name"))})
+        name = (held or {}).get("name") if (held or {}).get("party_type") == "corporate" else None
+        bean.update({"corpChiName": _s((name or {}).get("name_zh") if name
+                                       else corp.get("company_name_zh")),
+                     "corpEngName": _s((name or {}).get("name") if name
+                                       else corp.get("company_name"))})
         if not bean["corpEngName"]:
             problems.append(f"{where}: the body corporate has no name on record")
     bean["dtResign"] = cr_date(entry.get("effective_date"), problems, f"{where}: date")
@@ -244,9 +260,11 @@ def _corporate_appointment(graph, entry, bean_id, problems, for_esign) -> dict:
         if not _s(entry.get("consent_capacity")):
             problems.append(f"{where}: the consent signer's capacity is missing")
         bean["associatedCapacityDesc"] = _s(entry.get("consent_capacity"))
-        if not bean["corpBrNo"]:
-            problems.append(f"{where}: CR identifies a body corporate director by its "
-                            "BR number, and none is on record")
+        # NOT a problem when empty. CR's worksheet marks corpBrNo and
+        # selectAssoBrNo Mandatory = N, and its printed ND2A says the BR box is
+        # "only applicable to body corporate registered in Hong Kong" — an
+        # overseas holding company has none. Empty values are left out of the
+        # XML by `form_xml._emit`, and the body corporate is named instead.
         bean["selectAssoBrNo"] = bean["corpBrNo"]
         bean["selectPersonName"] = bean["corpEngName"]
     return bean

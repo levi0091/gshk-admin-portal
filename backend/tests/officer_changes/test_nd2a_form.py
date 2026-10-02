@@ -49,6 +49,42 @@ def test_every_example_renders_flat_on_crs_pages(path):
     assert "None" not in text
 
 
+def test_a_ceasing_officer_with_no_english_surname_still_renders():
+    # A mononym (or a Viewpoint row with only given names): mapping passes, so
+    # the renderer's drop guard must count the block by the name it does carry.
+    leaver = next(p for p in fx.files("ND2A") if "Cease Individual Director" in p.name)
+
+    def mononym(graph, entries):
+        # Copies, never in place: the fixture worlds share their person rows.
+        leaving = {e["person_id"] for e in entries if e.get("person_id")}
+        graph["persons"] = {
+            pid: ({**p, "surname": "", "given_names": "MADONNA", "full_name": ""}
+                  if pid in leaving else p)
+            for pid, p in graph["persons"].items()}
+
+    xml = _xml(leaver, mutate=mononym)
+    text = "\n".join(_text(render("Nd2a", xml, company_name=COMPANY)))
+    assert "MADONNA" in text
+
+
+def test_an_overseas_body_corporate_director_needs_no_br_number():
+    # CR's worksheet: corpBrNo and selectAssoBrNo are Mandatory = N, and the
+    # printed form's BR box is "only applicable to body corporate registered
+    # in Hong Kong". Its absence must not block the form on any route.
+    path = next(p for p in fx.files("ND2A") if "Appoint Corporate Director" in p.name)
+    graph, entries = fx.build_world(path)
+    for entry in entries:
+        if entry.get("corporate_entity_id"):
+            graph["entities"][entry["corporate_entity_id"]]["br_number"] = ""
+    xml = form_xml.build("Nd2a", nd2a_mapper.map_case(graph, entries))
+    assert "corpBrNo" not in xml and "selectAssoBrNo" not in xml
+    assert "corpEngName" in xml
+    try:   # the e-Sign route may refuse for other reasons; never for this one
+        nd2a_mapper.map_case(graph, entries, for_esign=True)
+    except nd2a_mapper.nm.MappingError as exc:
+        assert "BR number" not in str(exc)
+
+
 def test_an_appointment_adds_its_pi_sheet_and_a_cessation_does_not():
     director = next(p for p in fx.files("ND2A") if "Appoint Individual Director" in p.name)
     leaver = next(p for p in fx.files("ND2A") if "Cease Individual Director" in p.name)

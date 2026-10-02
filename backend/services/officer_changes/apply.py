@@ -125,6 +125,8 @@ def _apply_cessation(sb, case, entry) -> dict:
 
 def _apply_appointment(sb, case, entry, user) -> dict:
     corporate = entry.get("party_type") == "corporate"
+    party = _party(entry)
+    before = particulars.baseline(case["entity_id"], **party)
     row = sb.table("entity_officers").insert({
         "entity_id": case["entity_id"],
         "person_id": None if corporate else entry.get("person_id"),
@@ -134,17 +136,45 @@ def _apply_appointment(sb, case, entry, user) -> dict:
         "role": entry["capacity"], "appointed_date": entry.get("effective_date"),
         "is_current": True,
     }).execute().data[0]
-    party = _party(entry)
-    before = particulars.baseline(case["entity_id"], **party)
-    snapshot = particulars.registered_view(case["entity_id"], **party) \
-        if before is None else before
-    if not corporate and entry.get("correspondence_same_as_residential") is False:
-        snapshot = {**snapshot, "correspondence_address": entry.get("correspondence_address")}
-    particulars.set_baseline(case["entity_id"], particulars=snapshot, source="nd2a_filed",
-                             user_id=user["id"], **party)
-    sb.table("officer_change_entries").update({"officer_id": row["id"]}) \
+    record = {"officer_id": row["id"], "baseline_before": before}
+    # Recorded the moment the row exists, before anything else can fail: an
+    # inserted officer with no `applied` record is one Undo cannot find, and a
+    # retry would insert them a second time.
+    sb.table("officer_change_entries").update({
+        "officer_id": row["id"], "applied": {**record, "partial": True}}) \
         .eq("id", entry["id"]).execute()
-    return {"officer_id": row["id"], "baseline_before": before}
+    particulars.set_baseline(case["entity_id"],
+                             particulars=_filed_view(case, entry, before, row["id"]),
+                             source="nd2a_filed", user_id=user["id"], **party)
+    return record
+
+
+def _filed_view(case: dict, entry: dict, before: dict | None, new_officer_id: str) -> dict:
+    """What CR holds about the appointee once the ND2A is filed.
+
+    The ND2A filed the party's CURRENT particulars, so that is the baseline —
+    unless the party still holds another current appointment in this company,
+    whose baseline (with its unfiled changes) CR already holds for the same
+    person and which the new appointment must not silently overwrite. A
+    baseline left behind by an appointment that has since CEASED is not "what
+    CR holds" any more: re-appointing someone files them afresh."""
+    party = _party(entry)
+    keep = before is not None and _holds_another_appointment(case, party, new_officer_id)
+    snapshot = before if keep else particulars.snapshot_current(**party)
+    if entry.get("party_type") != "corporate" \
+            and entry.get("correspondence_same_as_residential") is False:
+        snapshot = {**snapshot, "correspondence_address": entry.get("correspondence_address")}
+    return snapshot
+
+
+def _holds_another_appointment(case: dict, party: dict, new_officer_id: str) -> bool:
+    """A current officer row for the party in this company, other than the one
+    this filing just inserted."""
+    key, value = next(iter(party.items()))
+    rows = (get_supabase().table("entity_officers").select("*")
+            .eq("entity_id", case["entity_id"]).eq(key, value).eq("is_current", True)
+            .execute().data) or []
+    return any(r.get("id") != new_officer_id for r in rows)
 
 
 def _apply_change(sb, case, entry, user) -> dict:
@@ -162,7 +192,26 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
     applied, errors = [], []
     texts = {r["entry_id"]: r["text"] for r in plan(case, entries)}
     for entry in entries:
-        if entry.get("applied"):
+        record = entry.get("applied") or {}
+        if record and not record.get("partial"):
+            continue
+        if record.get("partial") and entry["kind"] == "appointment":
+            # A retry after the officer row went in but the baseline did not:
+            # finish THAT row rather than insert the appointee a second time.
+            try:
+                party = _party(entry)
+                particulars.set_baseline(
+                    case["entity_id"], source="nd2a_filed", user_id=user["id"],
+                    particulars=_filed_view(case, entry, record.get("baseline_before"),
+                                            record["officer_id"]), **party)
+                done = {k: v for k, v in record.items() if k != "partial"}
+                sb.table("officer_change_entries").update(
+                    {"applied": {**done, "applied_at": _now()}}).eq("id", entry["id"]).execute()
+                applied.append({"entry_id": entry["id"], "text": texts.get(entry["id"], "")})
+            except Exception as exc:  # noqa: BLE001
+                print(f"officer change apply retry failed for {entry.get('id')}: {exc!r}",
+                      file=sys.stderr)
+                errors.append(f"{_name(entry)}: {exc}")
             continue
         try:
             if entry["kind"] == "cessation":

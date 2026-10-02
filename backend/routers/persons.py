@@ -7,7 +7,7 @@ roll-up (read-only from the link tables), and document history.
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from pydantic import BaseModel
 
 from middleware.auth import require_permission, has_permission
@@ -1154,14 +1154,32 @@ async def upload_person_document(
 #  comes back out of any route — not even masked (spec B-9).
 # --------------------------------------------------------------------------- #
 
-class EServiceCredentialIn(BaseModel):
-    class Config:
-        extra = "forbid"
+_ESERVICE_FIELDS = ("eservice_user_id", "eservice_person_name", "password")
 
-    eservice_user_id: str
-    eservice_person_name: str
-    # Absent = keep the stored one. Never echoed, never logged.
-    password: Optional[str] = None
+
+async def _eservice_body(request: Request) -> dict:
+    """The PUT body, read by hand: NO PYDANTIC MODEL, ON PURPOSE.
+
+    FastAPI's 422 echoes the rejected input, so a model refusing a missing name
+    or a stale key (`eservice_password`) answered with the password in the
+    response body — the leak `tpsi.SignIn` documents. Every refusal here is a
+    fixed sentence naming at most a FIELD, never a value."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — any unreadable body is the same answer
+        raise HTTPException(400, "Send the account as a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Send the account as a JSON object")
+    unknown = sorted(k for k in body if k not in _ESERVICE_FIELDS)
+    if unknown:
+        raise HTTPException(400, f"Unknown field(s): {', '.join(map(str, unknown))}. "
+                                 f"Send {', '.join(_ESERVICE_FIELDS)}.")
+    for key in ("eservice_user_id", "eservice_person_name"):
+        if not isinstance(body.get(key), str):
+            raise HTTPException(400, f"{key} is required and must be text")
+    if body.get("password") is not None and not isinstance(body["password"], str):
+        raise HTTPException(400, "password must be text")
+    return body
 
 
 async def _audit_person(sb, user: dict, person_id: str, action: str, **fields):
@@ -1184,16 +1202,18 @@ async def get_eservice_credential(person_id: str, user=Depends(live_person("read
 @router.put("/{person_id}/eservice-credential")
 async def put_eservice_credential(
     person_id: str,
-    body: EServiceCredentialIn,
+    request: Request,
     user=Depends(live_person("write")),
 ):
+    body = await _eservice_body(request)
+    password = body.get("password")
     sb = get_supabase()
     before = eservice.metadata(person_id)
     try:
         meta = eservice.save(
-            person_id, eservice_user_id=body.eservice_user_id,
-            eservice_person_name=body.eservice_person_name,
-            password=body.password if body.password is not None else eservice.UNSET,
+            person_id, eservice_user_id=body["eservice_user_id"],
+            eservice_person_name=body["eservice_person_name"],
+            password=password if password is not None else eservice.UNSET,
             user_id=user["id"])
     except ValueError as exc:
         # The message names the field, never the value (eservice.save).
@@ -1203,7 +1223,7 @@ async def put_eservice_credential(
         old_value=before.get("eservice_user_id"), new_value=meta["eservice_user_id"],
         # The account, never the password, its length or a hint of it.
         metadata={"eservice_user_id": meta["eservice_user_id"],
-                  "password_changed": body.password is not None,
+                  "password_changed": password is not None,
                   "first_set": not before["configured"]})
     return meta
 

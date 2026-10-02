@@ -120,6 +120,28 @@ def test_nd2b_part_a_is_the_registered_name_not_the_profile():
     assert bean["indvEngSname"] == "OLD"
 
 
+def test_a_cessation_names_the_officer_as_cr_holds_them():
+    # Renamed and re-documented on the profile, no ND2B filed: CR's register
+    # still has the old name and HKID, so that is how the leaver is identified.
+    path = next(p for p in fx.files("ND2A") if "Cease Individual Director" in p.name)
+    graph, entries = fx.build_world(path)
+    pid = entries[0]["person_id"]
+    graph["baselines"] = {pid: {
+        "party_type": "individual", "name_en": {"surname": "OLD", "given_names": "NAME"},
+        "name_zh": "舊名", "hkid": "A1234563", "passport": None}}
+    data = nd2a_mapper.map_case(graph, entries)
+    beans = next(v for k, v in data.items() if isinstance(v, list) and v
+                 and "rsnCes" in v[0])
+    bean = beans[0]
+    assert bean["indvEngSname"] == "OLD" and bean["indvEngOname"] == "NAME"
+    assert bean["indvChiName"] == "舊名" and bean["indvHkidPartial"] == "A123"
+    # With no baseline the profile is CR's view, unchanged.
+    graph["baselines"] = {}
+    beans = next(v for k, v in nd2a_mapper.map_case(graph, entries).items()
+                 if isinstance(v, list) and v and "rsnCes" in v[0])
+    assert beans[0]["indvEngSname"] != "OLD"
+
+
 def test_form_xml_refuses_overlong_values_and_unknown_fields():
     with pytest.raises(FormValidationError) as caught:
         form_xml.build("Nd2a", {"language": "E", "brNo": "1" * 21, "bogus": "x"})

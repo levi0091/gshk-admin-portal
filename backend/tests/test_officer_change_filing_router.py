@@ -35,6 +35,7 @@ def env():
                       return_value={"id": "K1", "entries": []}), \
          patch.object(ocf.svc, "list_entries", return_value=[]), \
          patch.object(ocf.nar1_cases, "current_filing", side_effect=lambda cid: m.filing), \
+         patch.object(ocf.nar1_cases, "blocking_filing", side_effect=lambda cid: m.filing), \
          patch.object(ocf.nar1_cases, "update_case") as update, \
          patch.object(ocf.tpsi_router, "client_for", side_effect=no_cr) as cr, \
          patch("routers.officer_changes.log_event", new_callable=AsyncMock) as audit:
@@ -92,10 +93,22 @@ def test_a_cr_fault_on_validate_comes_back_as_its_fault_list(env):
 
 # -- sign ----------------------------------------------------------------------------
 
-def test_sign_refuses_any_body_without_echoing_it(env):
-    resp = client.post("/officer-changes/K1/sign", headers=H,
-                       json={"eservice_password": SECRET})
+@pytest.mark.parametrize("payload", [
+    {"eservice_password": SECRET},
+    # Not an object: a declared `dict` body answered these with FastAPI's 422,
+    # which echoes the input.
+    [SECRET],
+    SECRET,
+])
+def test_sign_refuses_any_body_without_echoing_it(env, payload):
+    resp = client.post("/officer-changes/K1/sign", headers=H, json=payload)
     assert resp.status_code == 400 and SECRET not in resp.text
+
+
+def test_sign_accepts_an_empty_object_as_an_empty_body(env):
+    # `{}` is what the frontend sends; it must reach the gates, not the refusal.
+    resp = client.post("/officer-changes/K1/sign", headers=H, json={})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "not_validated"
 
 
 def test_sign_needs_a_validated_filing_and_the_users_own_credential(env):
@@ -244,8 +257,86 @@ def test_undo_only_after_a_cr_rejection(env):
                        json={"confirm": True}).json()["detail"]["reason"] == "not_rejected"
     env.case = {**CASE, "cr_doc_status_code": "cr_rejected",
                 "changes_applied_at": "2026-10-01T00:00:00Z"}
-    with patch.object(ocf.apply, "undo_changes", new_callable=AsyncMock,
+    applied = {"id": "K1", "entries": [{"id": "N1", "kind": "cessation",
+                                        "applied": {"officer": {"id": "O1", "before": {}}}}]}
+    with patch.object(ocf.svc, "composite", new_callable=AsyncMock, return_value=applied), \
+         patch.object(ocf.apply, "undo_changes", new_callable=AsyncMock,
                       return_value={"applied": [{"entry_id": "N1"}], "errors": []}):
         resp = client.post("/officer-changes/K1/undo", headers=H, json={"confirm": True})
     assert resp.status_code == 200
     assert _actions(env.audit) == ["OFFICER_CHANGES_UNDONE"]
+
+
+def test_undo_reaches_a_write_back_that_stopped_part_way(env):
+    # changes_applied_at is set only when EVERY entry applied; an ND2A whose
+    # appointment failed after its cessation applied must still be undoable.
+    env.case = {**CASE, "cr_doc_status_code": "cr_rejected", "changes_applied_at": None}
+    partial = {"id": "K1", "entries": [
+        {"id": "N1", "kind": "cessation", "applied": {"officer": {"id": "O1", "before": {}}}},
+        {"id": "N2", "kind": "appointment", "applied": None}]}
+    with patch.object(ocf.svc, "composite", new_callable=AsyncMock, return_value=partial), \
+         patch.object(ocf.apply, "undo_changes", new_callable=AsyncMock,
+                      return_value={"applied": [{"entry_id": "N1"}], "errors": []}) as undo:
+        resp = client.post("/officer-changes/K1/undo", headers=H, json={"confirm": True})
+    assert resp.status_code == 200 and undo.await_count == 1
+
+
+def test_undo_with_nothing_applied_is_refused(env):
+    env.case = {**CASE, "cr_doc_status_code": "cr_rejected"}
+    resp = client.post("/officer-changes/K1/undo", headers=H, json={"confirm": True})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "nothing_to_undo"
+
+
+# -- retrying an unfinished profile update -------------------------------------------------
+
+def test_retry_completes_an_unfinished_write_back_of_a_filed_form(env):
+    env.case = {**CASE, "manual_receipt": {"caseNo": "1"}, "changes_applied_at": None}
+    with patch.object(ocf.apply, "apply_changes", new_callable=AsyncMock,
+                      return_value={"applied": [{"entry_id": "N2"}], "errors": []}) as apply, \
+         patch.object(ocf.documents, "file_to_profiles", new_callable=AsyncMock, return_value=[]):
+        resp = client.post("/officer-changes/K1/apply", headers=H, json={"confirm": True})
+    assert resp.status_code == 200 and resp.json()["write_back"]["errors"] == []
+    apply.assert_awaited_once()
+    assert _actions(env.audit) == ["OFFICER_CHANGES_APPLIED"]
+
+
+@pytest.mark.parametrize("case, reason", [
+    ({}, "not_filed"),
+    ({"manual_receipt": {"caseNo": "1"}, "changes_applied_at": "2026-10-01"}, "already_applied"),
+    ({"manual_receipt": {"caseNo": "1"}, "changes_undone_at": "2026-10-02"}, "undone"),
+])
+def test_retry_is_refused_unless_filed_and_unfinished(env, case, reason):
+    env.case = {**CASE, **case}
+    resp = client.post("/officer-changes/K1/apply", headers=H, json={"confirm": True})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == reason
+
+
+def test_a_failed_re_read_after_filing_still_answers_200(env):
+    env.cr.side_effect = None
+    env.filing = {"id": "F1", "stage": "signed"}
+    with patch.object(ocf.signing, "submit", return_value={"receipt": {"caseNo": "9"}}), \
+         patch.object(ocf.apply, "apply_changes", new_callable=AsyncMock,
+                      return_value={"applied": [], "errors": []}), \
+         patch.object(ocf.documents, "file_to_profiles", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ocf, "respond", new_callable=AsyncMock, side_effect=RuntimeError("db")):
+        resp = client.post("/officer-changes/K1/submit", headers=H, json={"confirm": True})
+    assert resp.status_code == 200 and resp.json()["filed"] is True
+
+
+# -- the e-filing / manual conflict ---------------------------------------------------------
+
+def test_record_filing_is_refused_when_cr_already_holds_the_e_filing(env):
+    env.case = {**CASE, "manual_signed_document_id": "D1", "manual_receipt_document_id": "D2"}
+    env.filing = {"id": "F1", "stage": "submitted"}
+    body = {"receipt": {"caseNo": "1", "transactionDate": "01/09/2026"}, "confirm": True}
+    with patch.object(ocf.nar1_cases, "claim_manual_submission") as claim:
+        resp = client.post("/officer-changes/K1/record-filing", headers=H, json=body)
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "efiling_conflict"
+    claim.assert_not_called()
+
+
+def test_a_recorded_receipt_cannot_be_replaced(env):
+    env.case = {**CASE, "manual_receipt": {"caseNo": "1"}}
+    resp = client.post("/officer-changes/K1/receipt", headers=H,
+                       files={"file": ("r.pdf", b"%PDF", "application/pdf")})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "already_filed"

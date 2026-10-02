@@ -268,8 +268,15 @@ def test_only_unanswered_tokens_past_their_expiry_are_selected():
         filters.append(("lt", column, value))
         return table
 
+    def eq(column, value):
+        filters.append(("eq", column, value))
+        return table
+
+    selected = []
+    table.select.side_effect = lambda cols: (selected.append(cols), table)[1]
     table.is_.side_effect = is_
     table.lt.side_effect = lt
+    table.eq.side_effect = eq
     sb = MagicMock()
     sb.table.return_value = table
 
@@ -279,6 +286,10 @@ def test_only_unanswered_tokens_past_their_expiry_are_selected():
     assert ("is", "outcome", None) in filters
     assert ("lt", "expires_at", NOW.isoformat()) in filters
     sb.table.assert_called_with("nar1_client_approvals")
+    # ND2A/ND2B tokens are never approved on silence and never leave the
+    # queue on their own; selecting them would let them fill the page.
+    assert ("eq", "nar1_cases.form_code", "Nar1") in filters
+    assert "nar1_cases!inner(form_code)" in selected[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -324,6 +335,7 @@ def test_the_query_states_its_own_ceiling():
     limits = []
     table.select.return_value = table
     table.is_.return_value = table
+    table.eq.return_value = table
     table.lt.return_value = table
     table.order.return_value = table
     table.limit.side_effect = lambda n: (limits.append(n), table)[1]
@@ -364,6 +376,7 @@ def test_the_oldest_overdue_cases_are_taken_first():
     ordered = []
     table.select.return_value = table
     table.is_.return_value = table
+    table.eq.return_value = table
     table.lt.return_value = table
     table.order.side_effect = lambda col, **kw: (ordered.append((col, kw)), table)[1]
     table.limit.return_value = table

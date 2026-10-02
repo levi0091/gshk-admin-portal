@@ -1130,6 +1130,31 @@ async def filing_pdf(
     )
 
 
+#: Forms whose filings belong to /officer-changes (migration 050).
+_OFFICER_CHANGE_FORMS = {"nd2a", "nd2b"}
+
+
+def _refuse_officer_change_filing(filing_id: str) -> None:
+    """An ND2A / ND2B filing is driven from its own routes, never these.
+
+    Those routes check what these cannot: that the client approved, that each
+    new director's consent is PIN-signed with their own account, and they run
+    the profile write-back after filing. Reached through here, a tpsi:submit
+    user could file a form the client never confirmed and leave the profiles
+    unchanged, with nothing to Undo. An unreadable filing passes: the route's
+    own read then fails in its own terms."""
+    try:
+        form = (filings.get_filing(filing_id).get("form_code") or "").lower()
+    except Exception:  # noqa: BLE001
+        return
+    if form in _OFFICER_CHANGE_FORMS:
+        raise HTTPException(409, {
+            "message": ("This filing is an officer change (ND2A / ND2B); drive it from "
+                        "its case page, which checks the client's approval and the "
+                        "consent signatures."),
+            "reason": "wrong_form"})
+
+
 @router.post("/filings/{filing_id}/validate")
 async def validate_filing(
     filing_id: str, user=Depends(require_permission("tpsi", "read"))
@@ -1147,6 +1172,7 @@ async def validate_filing(
     when either date is unknown, exactly as the submit gate does: CR, which
     has its own register, stays the check for what we cannot compute.
     """
+    _refuse_officer_change_filing(filing_id)
     try:
         early = filings.before_return_date(filings.get_filing(filing_id))
     except Exception:  # noqa: BLE001 — fail open; `validate` below reads the
@@ -1227,6 +1253,7 @@ async def sign_filing(
             "Send an empty body. If you meant to sign as someone else, they "
             "must sign in themselves.",
         )
+    _refuse_officer_change_filing(filing_id)
 
     # credentials.load_eservice lives INSIDE the try now, not before it: a
     # None it returns must map to a clean 400 via _handle like every other
@@ -1278,6 +1305,7 @@ async def sign_filing(
 async def edrive_filing(
     filing_id: str, user=Depends(require_permission("tpsi", "write"))
 ):
+    _refuse_officer_change_filing(filing_id)
     try:
         result = filings.upload_edrive(client_for(user), filing_id)
     except filings.CaseClosedInterlock as exc:
@@ -1404,6 +1432,7 @@ async def submit_filing(
     # credential (LookupError/RuntimeError from load_for_use) must reach the
     # caller as a clean 400/502 via _handle, not an unhandled 500 — _deposit_
     # account's own HTTPException(400) passes through _handle unchanged.
+    _refuse_officer_change_filing(filing_id)
     try:
         shared = None if body.deposit_account else shared_credentials.load_for_use()
         account = _deposit_account(body.deposit_account, shared)

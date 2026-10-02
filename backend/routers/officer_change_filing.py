@@ -21,7 +21,7 @@ import re
 import sys
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from middleware.auth import require_permission
@@ -55,9 +55,24 @@ def _refuse_if_filed(case: dict) -> None:
                                   "reason": "already_filed"})
 
 
-async def _write_back(case_id: str, user: dict) -> tuple[dict, list[dict]]:
-    """Profiles, then supporting documents. Never raises (module docstring)."""
-    case = svc.get_case(case_id)
+def _refuse_manual_conflict(case_id: str, *, step: str) -> None:
+    """`nar1_cases.manual_conflict` against the filing that decides it."""
+    reason = nar1_cases.manual_conflict(nar1_cases.blocking_filing(case_id), step=step)
+    if reason:
+        raise HTTPException(409, {"message": reason[0].upper() + reason[1:] + ".",
+                                  "reason": "efiling_conflict"})
+
+
+async def _write_back(case_id: str, user: dict, case: dict | None = None
+                      ) -> tuple[dict, list[dict]]:
+    """Profiles, then supporting documents. Never raises (module docstring) —
+    including the re-read of the case, which falls back to the row the caller
+    already holds."""
+    try:
+        case = svc.get_case(case_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[officer_change_filing] re-read failed for {case_id}: {exc!r}", file=sys.stderr)
+        case = case or {"id": case_id}
     try:
         data = await svc.composite(case_id, user=user)
         result = await apply.apply_changes(case, data["entries"], user=user)
@@ -129,16 +144,25 @@ async def validate(case_id: str, user=Depends(require_permission("tpsi", "write"
     return await respond(case_id, user)
 
 
+_EMPTY_BODY_ONLY = ("Send an empty body: the form is signed with your own e-Service "
+                    "account, and each new director's consent with their own stored "
+                    "e-Registry account.")
+
+
 @router.post("/{case_id}/sign")
-async def sign(case_id: str, body: dict | None = None,
+async def sign(case_id: str, request: Request,
                user=Depends(require_permission("tpsi", "write"))):
     """Empty body. The overall signature is the signed-in user's own e-Service
     account; each new director's consent is THEIR stored e-Registry account
-    (answer 8). Any key in the body is refused without echoing it."""
-    if body:
-        raise HTTPException(400, "Send an empty body: the form is signed with your own "
-                                 "e-Service account, and each new director's consent "
-                                 "with their own stored e-Registry account.")
+    (answer 8).
+
+    The body is read raw, not declared: a declared `dict` answered a JSON list
+    or string with FastAPI's 422, which echoes the input — a password sent
+    here by mistake would have come straight back. Anything but nothing, or
+    `{}`, gets one fixed sentence."""
+    raw = (await request.body()).strip()
+    if raw and raw not in (b"{}", b"null"):
+        raise HTTPException(400, _EMPTY_BODY_ONLY)
     case = load_case(case_id)
     refuse_if_closed(case, "signing it")
     _require_approved(case)
@@ -225,9 +249,52 @@ async def submit(case_id: str, body: ConfirmIn,
     await audit(case, user, ev.TPSI_SUBMISSION_SUCCESS, new_value=receipt.get("caseNo"),
                 metadata={"filing_id": filing["id"], "case_no_cr": receipt.get("caseNo"),
                           "ref_no": receipt.get("refNo")})
-    write_back, filed_docs = await _write_back(case_id, user)
-    return {**await respond(case_id, user), "write_back": {"errors": write_back["errors"]},
-            "documents_filed": filed_docs}
+    write_back, filed_docs = await _write_back(case_id, user, case)
+    return await _filed_response(case_id, user, case, write_back, filed_docs)
+
+
+async def _filed_response(case_id: str, user: dict, case: dict, write_back: dict,
+                          filed_docs: list[dict]) -> dict:
+    """The answer to a form that IS filed. It must not become a 500: CR has the
+    form whatever happens next, so a failure to re-read the case is reported
+    beside the filing rather than in place of it."""
+    extra = {"write_back": {"errors": write_back["errors"]}, "documents_filed": filed_docs}
+    try:
+        return {**await respond(case_id, user), **extra}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[officer_change_filing] composite after filing failed for {case_id}: {exc!r}",
+              file=sys.stderr)
+        return {**case, **extra, "filed": True,
+                "problems": ["The form is filed. The case could not be re-read just now; "
+                             "reload the page."]}
+
+
+@router.post("/{case_id}/apply")
+async def retry_write_back(case_id: str, body: ConfirmIn,
+                           user=Depends(require_permission("tpsi", "submit"))):
+    """Re-run the profile update of a FILED form whose write-back did not finish.
+
+    The write-back is per entry and idempotent (an entry already applied is
+    skipped), so this completes exactly what is missing. Same permission as the
+    filing that would have run it."""
+    if body.confirm is not True:
+        raise HTTPException(400, "Confirm the profile update")
+    case = load_case(case_id)
+    filing = nar1_cases.blocking_filing(case_id)
+    filed = case.get("manual_receipt") or (
+        filing and filing.get("stage") in nar1_cases.CR_FILED_STAGES)
+    if not filed:
+        raise HTTPException(409, {"message": "The form has not been filed yet.",
+                                  "reason": "not_filed"})
+    if case.get("changes_undone_at"):
+        raise HTTPException(409, {"message": "The profile update was undone after CR "
+                                             "rejected the form; it is not re-applied.",
+                                  "reason": "undone"})
+    if case.get("changes_applied_at"):
+        raise HTTPException(409, {"message": "The profiles are already up to date.",
+                                  "reason": "already_applied"})
+    write_back, filed_docs = await _write_back(case_id, user, case)
+    return await _filed_response(case_id, user, case, write_back, filed_docs)
 
 
 # -- manual route (CR portal) -----------------------------------------------------------
@@ -285,6 +352,13 @@ async def upload_receipt(case_id: str, file: UploadFile = File(...),
     """CR's receipt, kept on the CASE (NAR1's owner kind `receipt`)."""
     case = load_case(case_id)
     refuse_if_closed(case, "recording a CR receipt")
+    # Once a filing is recorded its receipt is evidence, not a draft: replacing
+    # the pointer would leave the recorded case number beside a different paper.
+    if case.get("manual_receipt"):
+        raise HTTPException(409, {"message": "A filing is already recorded for this case; "
+                                             "its receipt cannot be replaced.",
+                                  "reason": "already_filed"})
+    _refuse_manual_conflict(case_id, step="sign")
     content = await file.read()
     if not content:
         raise HTTPException(400, "The file is empty")
@@ -350,6 +424,11 @@ async def record_filing(case_id: str, body: RecordFilingIn,
     if not case.get("manual_receipt_document_id"):
         raise HTTPException(409, {"message": "Attach CR's receipt first.",
                                   "reason": "no_receipt"})
+    # NAR1's gate, for the same reason: an e-filing CR already holds, or a
+    # CR-signed one waiting to be submitted, would make this a second filing of
+    # one form — and after a rejected e-filing was Undone, it would re-apply
+    # the rejected changes to the profiles.
+    _refuse_manual_conflict(case_id, step="submit")
     case_no = body.receipt.caseNo.strip()
     if not case_no:
         raise HTTPException(400, "Enter the CR case number from the receipt")
@@ -365,9 +444,8 @@ async def record_filing(case_id: str, body: RecordFilingIn,
                                   "reason": "already_filed"})
     await audit(case, user, ev.OFFICER_FILING_RECORDED, new_value=case_no,
                 after_state={"manual_receipt": receipt})
-    write_back, filed_docs = await _write_back(case_id, user)
-    return {**await respond(case_id, user), "write_back": {"errors": write_back["errors"]},
-            "documents_filed": filed_docs}
+    write_back, filed_docs = await _write_back(case_id, user, case)
+    return await _filed_response(case_id, user, case, write_back, filed_docs)
 
 
 @router.post("/{case_id}/undo")
@@ -381,10 +459,13 @@ async def undo(case_id: str, body: ConfirmIn,
         raise HTTPException(409, {"message": "Undo is only for a change the Companies "
                                              "Registry has rejected.",
                                   "reason": "not_rejected"})
-    if not case.get("changes_applied_at") or case.get("changes_undone_at"):
+    data = await svc.composite(case_id, user=user)
+    # Gated on what was actually applied, entry by entry — not on
+    # `changes_applied_at`, which a write-back that stopped part-way never
+    # sets, and which would then leave the applied half impossible to undo.
+    if case.get("changes_undone_at") or not any(e.get("applied") for e in data["entries"]):
         raise HTTPException(409, {"message": "There is no applied change to undo.",
                                   "reason": "nothing_to_undo"})
-    data = await svc.composite(case_id, user=user)
     result = await apply.undo_changes(case, data["entries"], user=user)
     await audit(case, user, ev.OFFICER_CHANGES_UNDONE,
                 new_value=f"{len(result['applied'])} change(s)",

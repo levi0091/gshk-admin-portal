@@ -417,6 +417,34 @@ def test_a_register_name_no_company_answers_to_is_refused_by_name(db, nd2a):
     assert not [o for o in db.tables["entity_officers"] if o["role"] == "company_secretary"]
 
 
+def test_the_signatory_is_read_in_the_xmls_order_register_first(db, nd2a):
+    # The officer list names GSHK; the register names a natural person. The
+    # XML (nar1_mapper._signatory_candidates) takes the register first, so the
+    # card must too — and offer that person the Individual capacities.
+    db.tables["company_secretaries"].append({
+        "id": "S1", "entity_id": "E1", "is_gshk": False, "is_current": True,
+        "person_id": "P1", "secretary_name": None})
+    view = cases._signatory("E1", nd2a)
+    assert view["name"] == "CHAN Tai Man" and view["is_corporate"] is False
+    assert "Company Secretary" in view["capacities"]
+
+
+def test_a_register_only_corporate_secretary_is_named_as_the_signatory(db, nd2a):
+    _register_only(db)
+    view = cases._signatory("E1", nd2a)
+    assert view["name"] == "Get Started HK Limited" and view["is_corporate"] is True
+
+
+def test_a_corporate_row_with_only_a_name_is_not_a_natural_person():
+    # A Viewpoint corporate director with no corporate_entity_id must not count
+    # towards "a natural-person director remains".
+    row = {"id": "O9", "role": "director", "party_type": "corporate",
+           "person_id": None, "corporate_entity_id": None, "corporate_name": "OLD CO"}
+    assert cases._party_of(row)["party_type"] == "corporate"
+    assert cases._party_of({**row, "party_type": "individual", "person_id": "P1"})[
+        "party_type"] == "individual"
+
+
 def test_a_register_row_of_another_company_is_refused(db, nd2a):
     _register_only(db, entity_id="E-OTHER")
     with pytest.raises(ValueError, match="not a current secretary of this company"):

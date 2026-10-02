@@ -171,6 +171,12 @@ def _snapshot(person_id, corporate_entity_id) -> dict:
     return snapshot_corporate(corporate_entity_id)
 
 
+def snapshot_current(*, person_id: str | None = None,
+                     corporate_entity_id: str | None = None) -> dict:
+    """The party's profile as it stands now — what an ND2A appointment files."""
+    return _snapshot(person_id, corporate_entity_id)
+
+
 # -- comparing --------------------------------------------------------------------
 
 def _norm_text(value, *, fold: bool) -> str:
@@ -202,6 +208,14 @@ def _norm(key: str, value):
             return None
         return tuple(sorted((k, _norm_text(v, fold=fold)) for k, v in value.items()))
     return _norm_text(value, fold=fold)
+
+
+#: Baseline key: the explicit correspondence address on this baseline is not
+#: one the officer gave (that is set by the appointing ND2A and never reported,
+#: spec B-15) but the old residential address CR still holds because an ND2B
+#: filed (d) and omitted (e). It keeps following the residential address, so
+#: (e) stays pending until it is filed.
+FOLLOWS_RESIDENTIAL = "correspondence_follows_residential"
 
 
 def _effective_correspondence(snapshot: dict):
@@ -263,9 +277,10 @@ def diff(baseline: dict, current: dict, *, capacity: str) -> list[dict]:
         if only_for and only_for != capacity:
             continue
         if key == "correspondence_address":
-            if baseline.get("correspondence_address") is not None:
+            explicit = baseline.get("correspondence_address")
+            if explicit is not None and not baseline.get(FOLLOWS_RESIDENTIAL):
                 continue
-            old = baseline.get("residential_address")
+            old = explicit if explicit is not None else baseline.get("residential_address")
             new = _effective_correspondence(current)
         else:
             old, new = baseline.get(key), current.get(key)
@@ -282,15 +297,39 @@ def _party_filter(query, person_id, corporate_entity_id):
     return query.eq("corporate_entity_id", corporate_entity_id)
 
 
+def _register_rows_naming(sb, corporate_entity_id: str) -> list[dict]:
+    """Current secretary-register rows that name this body corporate.
+
+    Matched on the normalised name, and only when no OTHER live company has
+    that name: the rule `nar1_source._resolve_secretary_entities` applies to
+    the same rows. A name two companies share belongs to neither."""
+    rows = sb.table("entities").select("*").eq("id", corporate_entity_id).execute().data
+    name = " ".join(str((rows or [{}])[0].get("company_name") or "").split())
+    if not name:
+        return []
+    norm = lambda v: " ".join(str(v or "").split()).casefold()  # noqa: E731
+    pattern = "%".join(w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                       for w in name.split())
+    namesakes = [e for e in (sb.table("entities").select("*").ilike("company_name", pattern)
+                             .execute().data or [])
+                 if not e.get("deleted_at") and norm(e.get("company_name")) == norm(name)]
+    if any(e.get("id") != corporate_entity_id for e in namesakes):
+        return []
+    register = (sb.table("company_secretaries").select("*").is_("person_id", "null")
+                .eq("is_current", True).ilike("secretary_name", pattern)
+                .execute().data) or []
+    return [r for r in register if norm(r.get("secretary_name")) == norm(name)]
+
+
 def _appointments(person_id=None, corporate_entity_id=None) -> list[dict]:
     """Every CURRENT directorship and secretaryship of the party:
     `[{entity_id, capacity, officer_id}]`.
 
-    A person's secretaryships are read from `company_secretaries` as well as
-    `entity_officers`, because the NAR1 mapper reads that register first and
-    most of GSHK's secretaries live only there. `company_secretaries` carries no
-    corporate party id (migration 007), so a body corporate's appointments come
-    from `entity_officers` alone.
+    Secretaryships are read from `company_secretaries` as well as
+    `entity_officers`, because the NAR1 mapper reads that register first. The
+    register holds a body corporate by NAME only (no corporate party id,
+    migration 007), so a body corporate's register rows are matched by its
+    name — and only while that name belongs to it alone (`_register_rows_naming`).
     """
     sb = get_supabase()
     officers = _party_filter(sb.table("entity_officers").select("*"),
@@ -308,6 +347,9 @@ def _appointments(person_id=None, corporate_entity_id=None) -> list[dict]:
     if person_id:
         secs = (sb.table("company_secretaries").select("*")
                 .eq("person_id", person_id).eq("is_current", True).execute().data) or []
+    else:
+        secs = _register_rows_naming(sb, corporate_entity_id)
+    if secs:
         for row in secs:
             key = (row["entity_id"], "company_secretary")
             if key not in seen:
@@ -469,7 +511,8 @@ def _keep_correspondence(old: dict | None, new: dict) -> dict:
     """A new baseline taken from the profile keeps the old explicit
     correspondence address: the profile has none to give, and dropping it would
     make CR's registered address silently 'follow' the residential one."""
-    if old and old.get("correspondence_address") is not None:
+    if old and old.get("correspondence_address") is not None \
+            and not old.get(FOLLOWS_RESIDENTIAL):
         return {**new, "correspondence_address": old["correspondence_address"]}
     return new
 
@@ -509,13 +552,26 @@ def advance(entity_id: str, *, person_id: str | None = None,
                     corporate_entity_id=corporate_entity_id)
     base = dict(held) if held is not None else _snapshot(person_id, corporate_entity_id)
     correspondence = None
+    residential_filed = False
     for item in items:
         if item.get("omitted"):
             continue
         if item["key"] == "correspondence_address":
             correspondence = item
             continue
+        if item["key"] == "residential_address":
+            residential_filed = True
         base[item["key"]] = item["new"]
+    if (residential_filed and correspondence is None
+            and held is not None and held.get("correspondence_address") is None):
+        # (d) filed, (e) not: CR now holds the NEW residential address and still
+        # the OLD correspondence one. While the baseline says "correspondence
+        # follows residential", moving the residential would silently move the
+        # correspondence too — and the omitted (e) would vanish from the next
+        # diff while CR still holds the old address. Pin it explicitly, marked
+        # as following the residential address so `diff` keeps reporting (e).
+        base["correspondence_address"] = held.get("residential_address")
+        base[FOLLOWS_RESIDENTIAL] = True
     if correspondence is not None:
         new = correspondence["new"]
         if capacity == "company_secretary" and base.get("correspondence_address") is None:
@@ -523,8 +579,18 @@ def advance(entity_id: str, *, person_id: str | None = None,
         elif _norm("residential_address", new) == _norm(
                 "residential_address", base.get("residential_address")):
             base["correspondence_address"] = None
+            base.pop(FOLLOWS_RESIDENTIAL, None)
         else:
             base["correspondence_address"] = new
+            # The profile has no correspondence address of its own, so what was
+            # just filed IS "the residential one": it keeps following it.
+            base[FOLLOWS_RESIDENTIAL] = True
+    if base.get(FOLLOWS_RESIDENTIAL) and _norm(
+            "residential_address", base.get("correspondence_address")) == _norm(
+            "residential_address", base.get("residential_address")):
+        # Caught up: CR holds the same address in both slots again.
+        base["correspondence_address"] = None
+        base.pop(FOLLOWS_RESIDENTIAL, None)
     set_baseline(entity_id, person_id=person_id,
                  corporate_entity_id=corporate_entity_id, particulars=base,
                  source="nd2b_filed", user_id=user_id)

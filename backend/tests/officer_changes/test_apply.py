@@ -137,6 +137,56 @@ def test_a_partial_failure_is_reported_and_a_rerun_duplicates_nothing(db, monkey
     assert db.rows("nar1_cases")[0]["changes_applied_at"]
 
 
+def test_an_appointment_failing_after_its_insert_is_recorded_and_finished_on_retry(db, monkeypatch):
+    # The officer row went in, then the baseline write failed. The row must be
+    # findable (Undo deletes it) and a retry must finish it, not insert again.
+    entries = _entries(db, APPOINT)
+    real = particulars.set_baseline
+    monkeypatch.setattr(particulars, "set_baseline",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("timeout")))
+    out = _run(apply.apply_changes, CASE, entries)
+    assert out["errors"] == ["HO New: timeout"]
+    entry = db.rows("officer_change_entries")[0]
+    new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
+    assert entry["applied"] == {"officer_id": new["id"], "baseline_before": None, "partial": True}
+    monkeypatch.setattr(particulars, "set_baseline", real)
+    out = _run(apply.apply_changes, CASE, db.rows("officer_change_entries"))
+    assert out["errors"] == [] and [a["entry_id"] for a in out["applied"]] == ["N3"]
+    assert len([o for o in db.rows("entity_officers") if o.get("person_id") == "P9"]) == 1
+    assert "partial" not in db.rows("officer_change_entries")[0]["applied"]
+    assert particulars.baseline("E1", person_id="P9") is not None
+    assert db.rows("nar1_cases")[0]["changes_applied_at"]
+
+
+def test_a_re_appointment_files_todays_particulars_not_a_ceased_ones_baseline(db):
+    # P9 was a director once, was edited (baseline captured), then ceased. The
+    # baseline of that ended appointment is not what CR holds any more: the
+    # ND2A re-appointing them filed their CURRENT particulars.
+    db.tables["officer_cr_particulars"].append({
+        "id": "B1", "entity_id": "E1", "person_id": "P9", "corporate_entity_id": None,
+        "particulars": {"party_type": "individual",
+                        "name_en": {"surname": "HO", "given_names": "Old"},
+                        "email": "old@example.com", "correspondence_address": None}})
+    entries = _entries(db, {**APPOINT, "correspondence_same_as_residential": True,
+                            "correspondence_address": None})
+    _run(apply.apply_changes, CASE, entries)
+    base = particulars.baseline("E1", person_id="P9")
+    assert base["name_en"]["given_names"] == "New" and base["email"] == "p9@example.com"
+    assert particulars.pending_for_officer("E1", person_id="P9", capacity="director") == []
+
+
+def test_a_second_appointment_keeps_the_baseline_cr_holds_for_the_first(db):
+    # P1 is a sitting director with an unfiled change; appointing them secretary
+    # too must not silently mark that change as told to CR.
+    particulars.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["persons"][0]["email"] = "new@example.com"
+    entries = _entries(db, {**APPOINT, "id": "N5", "capacity": "company_secretary",
+                            "person_id": "P1", "correspondence_same_as_residential": True,
+                            "correspondence_address": None, "party": {"name": "CHAN Tai Man"}})
+    _run(apply.apply_changes, CASE, entries)
+    assert particulars.baseline("E1", person_id="P1")["email"] == "p1@example.com"
+
+
 def test_undo_reverses_exactly_what_was_applied(db):
     entries = _entries(db, CEASE_DIRECTOR, CEASE_SECRETARY, APPOINT)
     _run(apply.apply_changes, CASE, entries)

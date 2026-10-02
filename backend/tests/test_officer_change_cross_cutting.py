@@ -62,6 +62,29 @@ def test_each_page_refuses_the_other_forms_token(path, case):
     assert post.status_code == 200
 
 
+def test_an_already_confirmed_officer_change_never_says_annual_return():
+    # One link per director: everyone after the first lands on "already
+    # confirmed", and it must name the form they were asked about.
+    done = row(outcome="approved", recipient_name="CHAN Tai Man",
+               responded_at="2026-10-01T02:00:00Z")
+    with _Stack(*_world(approval=done, case=ND2A)):
+        get = client.get(ND2_PATH)
+        post = client.post(ND2_PATH)
+    for resp in (get, post):
+        assert "Form ND2A has already been confirmed" in resp.text
+        assert "Annual Return" not in resp.text and "for a return" not in resp.text
+
+
+def test_an_unavailable_officer_change_link_says_this_form_for_every_miss():
+    expired = row(expires_at="2020-01-01T00:00:00Z")
+    with _Stack(*_world(approval=expired, case=ND2A)):
+        stale = client.get(ND2_PATH)
+    unknown = client.get("/public/officer-change-approval/" + "x" * 43)
+    for resp in (stale, unknown):
+        assert "If you still need to confirm this form" in resp.text
+        assert "Annual Return" not in resp.text
+
+
 def test_nar1_write_routes_refuse_an_officer_change_case():
     admin = {"id": "U1", "display_name": "A", "role_name": "super_admin", "role_id": "r"}
     with patch("middleware.auth._resolve_user", return_value=admin), \
@@ -72,6 +95,30 @@ def test_nar1_write_routes_refuse_an_officer_change_case():
                             json={"reason": "x"})
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "wrong_form"
     assert close.status_code == 409 and close.json()["detail"]["reason"] == "wrong_form"
+
+
+@pytest.mark.parametrize("path, body", [
+    ("/tpsi/filings/F9/validate", None),
+    ("/tpsi/filings/F9/sign", {}),
+    ("/tpsi/filings/F9/edrive", None),
+    ("/tpsi/filings/F9/submit", {"confirm": True}),
+])
+def test_the_nar1_filing_routes_refuse_an_officer_change_filing(path, body):
+    # Those routes check neither the client's approval nor the consent
+    # signatures, and run no profile write-back; an ND2 filing must not be
+    # driven through them.
+    admin = {"id": "U1", "display_name": "A", "role_name": "super_admin", "role_id": "r"}
+    with patch("middleware.auth._resolve_user", return_value=admin), \
+         patch("routers.tpsi.filings.get_filing",
+               return_value={"id": "F9", "form_code": "Nd2a", "nar1_case_id": "c1"}), \
+         patch("routers.tpsi.log_event", new_callable=AsyncMock) as audit, \
+         patch("routers.tpsi.filings.submit") as submit, \
+         patch("routers.tpsi.filings.validate") as validate:
+        kwargs = {"json": body} if body is not None else {}
+        resp = client.post(path, headers={"Authorization": "Bearer t"}, **kwargs)
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "wrong_form"
+    submit.assert_not_called() and validate.assert_not_called()
+    audit.assert_not_awaited()
 
 
 def test_auto_approval_never_approves_an_officer_change():

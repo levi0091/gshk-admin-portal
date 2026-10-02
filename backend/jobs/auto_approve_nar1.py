@@ -71,11 +71,20 @@ def due_tokens(now: datetime | None = None,
     Oldest first, so a run that does hit the ceiling clears the most overdue
     cases and the next night's run takes the remainder. The job is idempotent,
     so catching up over two nights costs nothing but a day.
+
+    ANNUAL RETURNS ONLY, IN THE QUERY (migration 050). ND2A/ND2B links share
+    this table and are never approved on silence, so their expired tokens keep
+    `outcome` NULL forever. Skipped in the loop instead, they would sort first
+    every night and, once there were enough of them, fill the whole page — and
+    NAR1 cases whose 14 days had run out would never be reached. `skip_reason`
+    keeps its own check as the second lock.
     """
     moment = (now or _now()).isoformat()
     return (
         get_supabase().table("nar1_client_approvals")
-        .select("id,nar1_case_id,recipient_email,recipient_name,expires_at")
+        .select("id,nar1_case_id,recipient_email,recipient_name,expires_at,"
+                "nar1_cases!inner(form_code)")
+        .eq("nar1_cases.form_code", "Nar1")
         .is_("outcome", None)
         .lt("expires_at", moment)
         .order("expires_at")

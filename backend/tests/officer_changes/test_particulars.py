@@ -317,11 +317,52 @@ def test_advance_of_a_secretarys_correspondence_keeps_it_following_residential(d
     assert pt.pending_for_officer("E2", person_id="P1", capacity="company_secretary") == []
 
 
+def test_a_directors_omitted_correspondence_line_stays_pending_after_d_is_filed(db):
+    # Spec §4: "a line the operator omitted is still pending afterwards". With
+    # correspondence following residential, filing (d) alone must not drag the
+    # correspondence address CR holds along with it.
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["addresses"][0].update(line1="Flat Z, 1/F")
+    items = pt.pending_for_officer("E1", person_id="P1", capacity="director")
+    assert _keys(items) == ["residential_address", "correspondence_address"]
+    filed = [i for i in items if i["key"] == "residential_address"]
+    pt.advance("E1", person_id="P1", items=filed, user_id="U1", capacity="director")
+    base = pt.baseline("E1", person_id="P1")
+    assert base["residential_address"]["line1"] == "Flat Z, 1/F"
+    assert base["correspondence_address"]["line1"] == "Flat A, 10/F"
+    left = pt.pending_for_officer("E1", person_id="P1", capacity="director")
+    assert _keys(left) == ["correspondence_address"]
+    # Filing (e) later puts the director back to "follows residential".
+    pt.advance("E1", person_id="P1", items=left, user_id="U1", capacity="director")
+    assert pt.baseline("E1", person_id="P1")["correspondence_address"] is None
+    assert pt.pending_for_officer("E1", person_id="P1", capacity="director") == []
+
+
 def test_registered_view_falls_back_to_the_profile(db):
     assert pt.registered_view("E1", person_id="P1")["email"] == "tm@example.com"
     pt.capture_before_edit(person_id="P1", user_id="U1")
     _person(db, email="changed@example.com")
     assert pt.registered_view("E1", person_id="P1")["email"] == "tm@example.com"
+
+
+def test_a_corporate_secretary_on_the_register_only_is_tracked_by_its_name(db):
+    # C1 is E2's secretary on the register only (no officer row): its edits must
+    # still raise an ND2B for E2, with the register id to start it from.
+    db.tables["company_secretaries"].append({
+        "id": "S9", "entity_id": "E2", "person_id": None, "is_current": True,
+        "secretary_name": "corp  director limited"})
+    assert pt.capture_before_edit(corporate_entity_id="C1", user_id="U1") == 2
+    db.tables["entities"][2]["email"] = "new-corp@example.com"
+    e2 = next(r for r in pt.pending_for_corporate("C1") if r["entity_id"] == "E2")
+    assert e2["capacity"] == "company_secretary" and e2["secretary_id"] == "S9"
+
+
+def test_a_register_name_two_companies_share_belongs_to_neither(db):
+    db.tables["entities"].append({"id": "C2", "company_name": "Corp Director Limited"})
+    db.tables["company_secretaries"].append({
+        "id": "S9", "entity_id": "E2", "person_id": None, "is_current": True,
+        "secretary_name": "Corp Director Limited"})
+    assert pt.capture_before_edit(corporate_entity_id="C1", user_id="U1") == 1
 
 
 def test_corporate_pending_and_dismiss(db):
