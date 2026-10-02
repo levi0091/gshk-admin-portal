@@ -60,6 +60,7 @@ ROUTES = [
     ("put", "/officer-changes/K1/entries/N1/effective-date", {"effective_date": "2026-10-01"}),
     ("patch", "/officer-changes/K1/documents/D1", {"send_with_email": True}),
     ("get", "/officer-changes/K1/resolution", None),
+    ("post", "/officer-changes/K1/entries/N1/econsent-pdf", None),
     ("get", "/officer-changes/K1/preview", None),
     ("get", "/officer-changes/K1/verification/recipients", None),
     ("post", "/officer-changes/K1/verification/send", {"respond_by": "2026-10-10"}),
@@ -626,3 +627,70 @@ def test_preview_public_audience_is_public_only(env):
         assert render.call_args.kwargs["public_only"] is True
         client.get("/officer-changes/K1/preview?audience=client", headers=H)
         assert render.call_args.kwargs["public_only"] is False
+
+
+
+# -- e-consent links (Jacqueline A2) ----------------------------------------------
+
+def test_send_issues_consent_links_and_audits(env):
+    sent = []
+    stack, _r, letter = _send_patches(sent)
+    stack.enter_context(patch.object(oc.nar1_router, "_approval_link_base",
+                                     return_value="https://api.test"))
+    stack.enter_context(patch.object(oc.nar1_approvals, "issue", return_value=[
+        {"email": "lee@example.com", "person_id": "P9", "name": "LEE Ka Ho",
+         "token": "tokA", "expires_at": None}]))
+    stack.enter_context(patch.object(oc.svc, "list_entries", return_value=[
+        {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"}]))
+    stack.enter_context(patch.object(oc.eservice, "metadata_for", return_value={}))
+    issue = stack.enter_context(patch.object(oc.econsent, "issue",
+                                             return_value={"N1": "consentTok"}))
+    with stack:
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
+    assert resp.status_code == 200, resp.text
+    assert [e["id"] for e in issue.call_args.args[1]] == ["N1"]
+    consent = letter.call_args.kwargs["consent"]
+    assert consent["mode"] == "econsent"
+    assert consent["url"] == "https://api.test/public/officer-consent/consentTok"
+    assert _actions(env.audit).count("OFFICER_ECONSENT_LINK_SENT") == 1
+
+
+def test_restart_supersedes_consent_links(env):
+    env.case = {**CASE, "verification_sent_at": "2026-10-01T00:00:00Z"}
+    with patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=0), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=0), \
+         patch.object(oc.econsent, "supersede", return_value=1) as gone:
+        resp = client.patch("/officer-changes/K1", headers=H,
+                            json={"restart_verification": True})
+    assert resp.status_code == 200
+    gone.assert_called_once_with("K1")
+
+
+def test_close_supersedes_consent_links(env):
+    with patch.object(oc.nar1_cases, "close_case", return_value={"id": "K1"}), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=0), \
+         patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=0), \
+         patch.object(oc.econsent, "supersede", return_value=1) as gone:
+        resp = client.post("/officer-changes/K1/close", headers=H, json={"reason": "x"})
+    assert resp.status_code == 200
+    gone.assert_called_once_with("K1")
+
+
+
+def test_econsent_pdf_regenerates_and_audits(env):
+    with patch.object(oc.svc, "list_entries", return_value=[
+            {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"}]), \
+         patch.object(oc.econsent, "regenerate", new_callable=AsyncMock, return_value="DOC-2"):
+        resp = client.post("/officer-changes/K1/entries/N1/econsent-pdf", headers=H)
+    assert resp.status_code == 200, resp.text
+    assert env.audit.await_args.kwargs["action_type"] == "OFFICER_SUPPORT_DOC_UPLOADED"
+
+
+def test_econsent_pdf_without_a_signature_is_409(env):
+    with patch.object(oc.svc, "list_entries", return_value=[
+            {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"}]), \
+         patch.object(oc.econsent, "regenerate", new_callable=AsyncMock,
+                      side_effect=LookupError("no signed consent")):
+        resp = client.post("/officer-changes/K1/entries/N1/econsent-pdf", headers=H)
+    assert resp.status_code == 409

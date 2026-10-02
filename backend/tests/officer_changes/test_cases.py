@@ -623,3 +623,21 @@ def test_manual_checks_open_names_the_leaver(db, nd2a, monkeypatch):
                            "cessation_reason": "R"}, user_id="U1")
     assert cases.manual_checks_open(nd2a, route="manual") == [
         "Resignation letter on file — CHAN Tai Man", "Signed written resolution on file"]
+
+
+
+def test_composite_says_how_each_new_director_consents(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    monkeypatch.setattr(cases.econsent, "status_for", lambda cid: {})
+
+    async def plan(case, entries):
+        return [{"entry_id": e["id"], "ready": False, "reason": "no account"}
+                for e in entries if e.get("kind") == "appointment"]
+
+    monkeypatch.setattr(cases.prepare, "consent_plan", plan)
+    db.tables["persons"][2]["email"] = "ho@example.com"
+    entry = cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                   "person_id": "P9", "capacity": "director"}, user_id="U1")
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    view = next(e for e in data["entries"] if e["id"] == entry["id"])
+    assert view["consent_mode"] == "econsent" and view["econsent"] is None
