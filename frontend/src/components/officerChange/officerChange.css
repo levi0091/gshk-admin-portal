@@ -1,0 +1,136 @@
+/* The officer-change case page (ND2A / ND2B).
+ *
+ * Brand tokens only (index.css :root). The page reuses the NAR1 case page's
+ * header, stepper, alerts, cards and modals; what is its own is the Leaving /
+ * Joining board — the one thing an operator reads first on an ND2A, because it
+ * IS the form: who comes off the register, who goes on, and what the board
+ * looks like afterwards. Everything else stays as quiet as the NAR1 page.
+ */
+
+/* -- the board ---------------------------------------------------------------- */
+.oc-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+}
+.oc-lane {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px; border-radius: var(--r-lg);
+  border: 1px solid var(--border); background: var(--indigo-5);
+  min-height: 132px;
+}
+.oc-lane-join { background: var(--bang-10); border-color: #CFE3DA; }
+.oc-lane-hd {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 700; color: var(--t-head);
+}
+.oc-lane-mark {
+  width: 22px; height: 22px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1; font-weight: 700; color: #fff;
+  background: var(--indigo-60);
+}
+.oc-lane-join .oc-lane-mark { background: var(--bang); }
+.oc-lane-count { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--t-muted); }
+.oc-lane-empty { font-size: 12.5px; color: var(--t-muted); padding: 6px 2px; }
+.oc-arrow {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--indigo-20); font-size: 22px; user-select: none;
+}
+
+.oc-officer {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 10px 12px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px;
+}
+.oc-officer-name { font-size: 14px; font-weight: 600; color: var(--t-head); overflow-wrap: anywhere; }
+.oc-officer-meta { font-size: 12px; color: var(--t-muted); grid-column: 1 / 2; }
+.oc-officer-acts { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 6px; align-items: start; }
+.oc-officer-warn {
+  grid-column: 1 / -1; font-size: 12px; color: #8A3B12;
+  background: var(--carrot-10); border-radius: var(--r-sm); padding: 6px 8px;
+}
+.oc-officer-warn a { color: inherit; font-weight: 600; }
+
+.oc-after {
+  margin-top: 12px; padding: 10px 14px; border-radius: var(--r);
+  border: 1px dashed var(--indigo-20); font-size: 13px; color: var(--t-body);
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+}
+.oc-after b { color: var(--t-head); }
+
+@media (max-width: 760px) {
+  .oc-board { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .oc-arrow { display: none; }
+}
+
+/* -- rules ------------------------------------------------------------------------ */
+.oc-rules { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.oc-rule { display: flex; gap: 8px; font-size: 13px; color: var(--t-body); align-items: baseline; }
+.oc-rule-mark { width: 16px; flex: none; font-weight: 700; text-align: center; }
+.oc-rule.ok .oc-rule-mark { color: var(--bang); }
+.oc-rule.bad .oc-rule-mark { color: #B91C1C; }
+.oc-rule.notice .oc-rule-mark { color: var(--peridot-ink); }
+.oc-rule.bad { color: #7F1D1D; font-weight: 600; }
+
+/* -- ND2B: one card per officer, changed items only -------------------------------- */
+.oc-pc { border: 1px solid var(--border); border-radius: var(--r); padding: 12px 14px; }
+.oc-pc + .oc-pc { margin-top: 10px; }
+.oc-pc-hd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.oc-pc-name { font-weight: 600; color: var(--t-head); font-size: 14px; }
+.oc-pc-items { width: 100%; border-collapse: collapse; font-size: 13px; }
+.oc-pc-items th {
+  text-align: left; font-size: 11.5px; font-weight: 600; color: var(--t-muted);
+  padding: 4px 8px 6px 0; border-bottom: 1px solid var(--border);
+}
+.oc-pc-items td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--indigo-10); vertical-align: top; }
+.oc-pc-items tr:last-child td { border-bottom: none; }
+.oc-pc-items tr.omitted td { color: var(--t-muted); }
+.oc-pc-items tr.omitted .oc-new { text-decoration: line-through; }
+.oc-old { color: var(--t-muted); overflow-wrap: anywhere; }
+.oc-new { color: var(--t-head); font-weight: 600; overflow-wrap: anywhere; }
+.oc-pc-items input[type="date"] { height: 32px; font-size: 13px; }
+
+/* -- the side drawer (add / edit an entry) ------------------------------------------ */
+.oc-drawer-wrap {
+  position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end;
+  background: rgba(26, 32, 80, .32);
+}
+.oc-drawer {
+  width: min(520px, 100%); height: 100%; background: var(--bg-card);
+  box-shadow: var(--sh-md); display: flex; flex-direction: column;
+}
+.oc-drawer-hd { padding: 18px 22px 12px; border-bottom: 1px solid var(--border); }
+.oc-drawer-title { font-size: 17px; font-weight: 700; color: var(--t-head); }
+.oc-drawer-sub { font-size: 12.5px; color: var(--t-muted); margin-top: 2px; }
+.oc-drawer-body { padding: 16px 22px; overflow-y: auto; flex: 1; display: grid; gap: 14px; align-content: start; }
+.oc-drawer-ft {
+  padding: 12px 22px; border-top: 1px solid var(--border);
+  display: flex; justify-content: flex-end; gap: 8px;
+}
+.oc-seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+.oc-seg button {
+  border: none; background: var(--bg-card); padding: 7px 14px; font: 600 13px var(--font);
+  color: var(--t-body); cursor: pointer;
+}
+.oc-seg button[aria-pressed="true"] { background: var(--indigo); color: #fff; }
+.oc-results { border: 1px solid var(--border); border-radius: var(--r-sm); max-height: 220px; overflow-y: auto; }
+.oc-result {
+  display: block; width: 100%; text-align: left; border: none; background: none;
+  padding: 8px 10px; font: 13px var(--font); color: var(--t-body); cursor: pointer;
+  border-bottom: 1px solid var(--indigo-10);
+}
+.oc-result:hover, .oc-result:focus-visible { background: var(--indigo-5); outline: none; }
+.oc-result[aria-selected="true"] { background: var(--indigo-10); font-weight: 600; }
+.oc-readonly { background: var(--indigo-5); border-radius: var(--r); padding: 10px 12px; font-size: 13px; }
+.oc-readonly dl { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 4px 10px; margin: 0; }
+.oc-readonly dt { color: var(--t-muted); }
+.oc-readonly dd { margin: 0; color: var(--t-head); overflow-wrap: anywhere; }
+
+/* -- page header extras ---------------------------------------------------------------- */
+.oc-deadline-over { color: #B91C1C; font-weight: 600; }
+.oc-send-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-top: 12px; }
+.oc-locked-note { font-size: 12.5px; color: var(--t-muted); margin-top: 8px; }
+
+.oc-page :focus-visible, .oc-drawer :focus-visible { outline: 2px solid var(--carrot); outline-offset: 2px; }

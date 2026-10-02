@@ -160,6 +160,17 @@ describe('CaseWorkflowPage — shell', () => {
     render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
     expect(await screen.findByText(/Failed to load this case: nope/)).toBeInTheDocument()
   })
+
+  it('hands an ND2A / ND2B case to its own screen rather than drawing it as a NAR1', async () => {
+    routeGet(caseAt({ form_code: 'Nd2a', case_no: 'ND2A-2026-0001' }))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/officer-changes/c1', { replace: true }))
+  })
+
+  it('keeps a NAR1 on this screen', async () => {
+    await renderPage(caseAt({ form_code: 'Nar1' }))
+    expect(navigate).not.toHaveBeenCalledWith('/officer-changes/c1', expect.anything())
+  })
 })
 
 describe('CaseWorkflowPage — the stage gate is enforced, not just drawn', () => {
