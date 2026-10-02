@@ -6,12 +6,32 @@ import AppointmentDrawer from './AppointmentDrawer.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
+/**
+ * How a new director's consent to act is given (Jacqueline A2, A5, AQ6): GSHK
+ * applies it from the e-Registry account it set up with them; they sign it in
+ * G-FlowDesk from their email (no account yet — e-Reg takes two business days,
+ * and the draft is usually sent before); or it is collected on paper.
+ */
+function consentLine(entry) {
+  if (entry.kind !== 'appointment' || entry.capacity !== 'director' || !entry.consent_mode) return null
+  if (entry.consent_mode === 'esign') return 'Consent: e-Sign — e-Registry account on file'
+  if (entry.consent_mode === 'econsent') {
+    if (entry.econsent?.signed_at) return 'Consent: signed in G-FlowDesk'
+    return entry.econsent?.sent
+      ? 'Consent: link sent — the director signs in G-FlowDesk from their email'
+      : 'Consent: the director signs in G-FlowDesk from their email (no e-Registry account yet)'
+  }
+  return 'Consent: on paper — signed and uploaded at Data Verification'
+}
+
 function OfficerRow({ entry, editable, onEdit, onRemove }) {
   const missing = entry.party?.missing || []
+  const consent = consentLine(entry)
   return (
     <div className="oc-officer" data-testid={`entry-${entry.id}`}>
       <div className="oc-officer-name">{entry.party?.name}</div>
       <div className="oc-officer-meta">{entry.summary}</div>
+      {consent && <div className="oc-officer-meta">{consent}</div>}
       {editable && (
         <div className="oc-officer-acts">
           <button className="btn btn-ghost btn-sm" onClick={() => onEdit(entry)}>Edit</button>

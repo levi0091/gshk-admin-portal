@@ -41,6 +41,17 @@ export const officerChangeApi = {
       document_type_code: documentTypeCode,
     }),
   removeDocument: (id, docId) => api.del(`${base(id)}/documents/${docId}`),
+  // A document for the whole form — the written resolution, or anything else
+  // sent with the client email (Jacqueline A3).
+  uploadCaseDocument: (id, file, documentTypeCode, sendWithEmail) =>
+    upload(`${base(id)}/documents`, {
+      file,
+      document_type_code: documentTypeCode,
+      send_with_email: sendWithEmail ? 'true' : 'false',
+    }),
+  setSendWithEmail: (id, docId, value) =>
+    api.patch(`${base(id)}/documents/${docId}`, { send_with_email: Boolean(value) }),
+  resolutionPdf: (id) => api.blob(`${base(id)}/resolution`),
   documentUrl: (id, docId) => api.get(`${base(id)}/documents/${docId}/download`),
 
   // A Blob; the caller makes and revokes the object URL.
@@ -51,9 +62,19 @@ export const officerChangeApi = {
   send: (id, body) => api.post(`${base(id)}/verification/send`, body),
   delivery: (id) => api.get(`${base(id)}/verification/delivery`),
   recordResponse: (id, body) => api.post(`${base(id)}/verification/response`, body),
+  // ND2B only: file without the client's confirmation, with the reason (BQ1).
+  proceed: (id, reason) => api.post(`${base(id)}/verification/proceed`, { reason }),
+  // Fill in a date left blank when the client was sent the form (A1).
+  setEffectiveDate: (id, entryId, date, itemKey) =>
+    api.put(`${base(id)}/entries/${entryId}/effective-date`,
+      { effective_date: date, ...(itemKey ? { item_key: itemKey } : {}) }),
+  regenerateConsentPdf: (id, entryId) => api.post(`${base(id)}/entries/${entryId}/econsent-pdf`, {}),
 
   validate: (id) => api.post(`${base(id)}/validate`, {}),
-  markChecked: (id) => api.post(`${base(id)}/mark-checked`, {}),
+  // `signingMethod` 'esign' leaves Data Verification with a date still blank:
+  // CR validates at Signing then (Jacqueline A1).
+  markChecked: (id, signingMethod) =>
+    api.post(`${base(id)}/mark-checked`, signingMethod ? { signing_method: signingMethod } : {}),
   sign: (id) => api.post(`${base(id)}/sign`, {}),
   uploadSignedForm: (id, file) => upload(`${base(id)}/signed-form`, { file }),
   submit: (id) => api.post(`${base(id)}/submit`, { confirm: true }),

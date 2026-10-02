@@ -918,6 +918,10 @@ async def composite(case_id: str, *, user: dict) -> dict:
         # Jacqueline A1: what Signing must still ask for before anything is
         # signed or filed.
         "dates_missing": rules.dates_missing(view),
+        # Jacqueline B1: the date a new ND2B line starts on, for the card to say.
+        "anniversary_default": (_soft(problems, "The anniversary date",
+                                      lambda: _nd2b_default_date(case), None)
+                                if case["form_code"] == "Nd2b" else None),
         # Jacqueline A4: the checklist Data Verification shows and gates on.
         "manual_checks": checks.manual_checks(
             case, view, docs, route=case.get("signing_method") or ("esign" if esign

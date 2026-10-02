@@ -683,3 +683,13 @@ def test_other_open_cases_never_raises(monkeypatch):
         raise RuntimeError("database down")
     monkeypatch.setattr(nar1_cases, "get_supabase", boom)
     assert nar1_cases.other_open_cases("E1", exclude="K1") == []
+
+
+def test_nd2b_composite_names_the_anniversary_default(db, monkeypatch):
+    """Jacqueline B1: the card says which date the lines start on, and why."""
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    db.tables["entities"][0]["incorporation_date"] = "2019-09-01"
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    case, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
+    data = asyncio.run(cases.composite(case["id"], user=USER))
+    assert data["anniversary_default"] == "2026-09-01"

@@ -4,8 +4,30 @@ import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 import { officerRef } from './CessationDrawer.jsx'
 import { formatDate } from '../../lib/format.js'
+import { crAddressLines } from '../../lib/crAddress.js'
+import { useLookups } from '../../lib/lookups.js'
 
 const ROLE = { director: 'Director', company_secretary: 'Company Secretary' }
+const ADDRESS_KEYS = new Set(['residential_address', 'correspondence_address', 'address'])
+
+/**
+ * An address in CR's five labelled lines (Jacqueline B3: "Please list the
+ * address format"), "(blank)" where a line is empty — so the operator sees
+ * which line moved, not two run-on strings to compare by eye.
+ */
+function AddressValue({ value, lookups }) {
+  if (!value) return <span className="oc-blank">—</span>
+  return (
+    <dl className="oc-addr">
+      {crAddressLines(value, lookups).map(line => (
+        <div key={line.label} style={{ display: 'contents' }}>
+          <dt>{line.label}</dt>
+          <dd>{line.value || <span className="oc-blank">(blank)</span>}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
 
 /**
  * ND2B (answer 14): the operator does NOT type changes here. Each officer's
@@ -25,6 +47,7 @@ export default function ParticularsChangeCard({ data, reload, can }) {
     const who = ref.startsWith('cs:') ? { secretary_id: ref.slice(3) } : { officer_id: ref }
     run(officerChangeApi.addEntry(data.id, { kind: 'change', ...who }))
   }
+  const lookups = useLookups()
   const [adding, setAdding] = useState('')
   const [omitting, setOmitting] = useState(null)
   const [removing, setRemoving] = useState(null)
@@ -63,6 +86,16 @@ export default function ParticularsChangeCard({ data, reload, can }) {
         )}
       </div>
 
+      {data.anniversary_default && entries.some(e => (e.items || []).some(
+        i => !i.omitted && i.effective_date === data.anniversary_default)) && (
+        // Jacqueline B1: dated the anniversary unless there is a special request,
+        // so the ND2B and the NAR1 made up to that date say the same thing.
+        <div className="f-hint" style={{ marginBottom: 10 }}>
+          Dated the anniversary, {formatDate(data.anniversary_default)}, so this ND2B matches the
+          NAR1 made up to that date. Change a line's date if the client asked for another.
+        </div>
+      )}
+
       {entries.length === 0 && (
         <div className="empty-state" style={{ padding: 16 }}>Add the officer whose particulars changed.</div>
       )}
@@ -88,8 +121,10 @@ export default function ParticularsChangeCard({ data, reload, can }) {
                 {entry.items.map(item => (
                   <tr key={item.key} className={item.omitted ? 'omitted' : ''}>
                     <td>({item.cr_item}) {item.label}</td>
-                    <td className="oc-old">{item.old_text}</td>
-                    <td className="oc-new">{item.new_text}</td>
+                    <td className="oc-old">{ADDRESS_KEYS.has(item.key)
+                      ? <AddressValue value={item.old} lookups={lookups} /> : item.old_text}</td>
+                    <td className="oc-new">{ADDRESS_KEYS.has(item.key)
+                      ? <AddressValue value={item.new} lookups={lookups} /> : item.new_text}</td>
                     <td>
                       {/* A role that may not edit sees the date, not a dead input. */}
                       {editable ? (

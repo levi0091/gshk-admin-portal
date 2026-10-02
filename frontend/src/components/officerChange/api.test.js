@@ -5,6 +5,7 @@ const api = vi.hoisted(() => ({
   post: vi.fn(() => Promise.resolve({})),
   patch: vi.fn(() => Promise.resolve({})),
   del: vi.fn(() => Promise.resolve({})),
+  put: vi.fn(() => Promise.resolve({})),
   upload: vi.fn(() => Promise.resolve({})),
   blob: vi.fn(() => Promise.resolve(new Blob())),
 }))
@@ -55,6 +56,12 @@ describe('officerChangeApi', () => {
     ['retryApply', () => oc.retryApply('c1'), 'post', '/officer-changes/c1/apply'],
     ['close', () => oc.close('c1', 'x'), 'post', '/officer-changes/c1/close'],
     ['refreshCrStatus', () => oc.refreshCrStatus('c1'), 'post', '/tpsi/cases/c1/refresh-status'],
+    // Jacqueline's feedback (1 Oct 2026)
+    ['setSendWithEmail', () => oc.setSendWithEmail('c1', 'd1', true), 'patch', '/officer-changes/c1/documents/d1'],
+    ['resolutionPdf', () => oc.resolutionPdf('c1'), 'blob', '/officer-changes/c1/resolution'],
+    ['proceed', () => oc.proceed('c1', 'why'), 'post', '/officer-changes/c1/verification/proceed'],
+    ['setEffectiveDate', () => oc.setEffectiveDate('c1', 'n1', '2026-10-01'), 'put', '/officer-changes/c1/entries/n1/effective-date'],
+    ['regenerateConsentPdf', () => oc.regenerateConsentPdf('c1', 'n1'), 'post', '/officer-changes/c1/entries/n1/econsent-pdf'],
   ])('%s calls %s', async (_name, call, verb, path) => {
     await call()
     expect(api[verb].mock.calls.at(-1)[0]).toBe(path)
@@ -80,10 +87,25 @@ describe('officerChangeApi', () => {
       '/officer-changes/c1/signed-form', ['file']],
     ['uploadReceipt', () => oc.uploadReceipt('c1', new Blob(['x'])),
       '/officer-changes/c1/receipt', ['file']],
+    ['uploadCaseDocument', () => oc.uploadCaseDocument('c1', new Blob(['x']), 'board_resolution', true),
+      '/officer-changes/c1/documents', ['file', 'document_type_code', 'send_with_email']],
   ])('%s posts multipart to its route', async (_name, call, path, fields) => {
     await call()
     const [calledPath, form] = api.upload.mock.calls.at(-1)
     expect(calledPath).toBe(path)
     fields.forEach((field) => expect(form.has(field)).toBe(true))
+  })
+})
+
+describe('officerChangeApi — bodies added for Jacqueline\'s feedback', () => {
+  it('sends the ND2B line key only when there is one, and the route for mark-checked', async () => {
+    await oc.setEffectiveDate('c1', 'n1', '2026-10-01', 'email')
+    expect(api.put).toHaveBeenLastCalledWith('/officer-changes/c1/entries/n1/effective-date',
+      { effective_date: '2026-10-01', item_key: 'email' })
+    await oc.markChecked('c1', 'esign')
+    expect(api.post).toHaveBeenLastCalledWith('/officer-changes/c1/mark-checked',
+      { signing_method: 'esign' })
+    await oc.markChecked('c1')
+    expect(api.post).toHaveBeenLastCalledWith('/officer-changes/c1/mark-checked', {})
   })
 })

@@ -68,7 +68,8 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
     }
   }
 
-  const ready = (editing || officerId) && date && (!individual || reason)
+  // The date may wait until Signing (Jacqueline A1).
+  const ready = (editing || officerId) && (!individual || reason)
   return (
     <Drawer title={editing ? 'Edit cessation' : 'Add cessation'}
             sub="An officer leaving the company. CR is told the date and, for a person, the reason."
@@ -120,9 +121,13 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
       )}
 
       <div className="f-group">
-        <label className="f-label" htmlFor="oc-ces-date">Date of cessation <span className="f-req">*</span></label>
+        <label className="f-label" htmlFor="oc-ces-date">Date of cessation</label>
         <input id="oc-ces-date" type="date" className="f-input" value={date}
                onChange={e => setDate(e.target.value)} />
+        <div className="f-hint">
+          Optional. Leave blank to fill in the most recent date at Signing — the
+          Companies Registry must receive the form within 15 days of the change.
+        </div>
       </div>
 
       {error && <div className="alert al-danger" role="alert"><div className="al-body">{error}</div></div>}

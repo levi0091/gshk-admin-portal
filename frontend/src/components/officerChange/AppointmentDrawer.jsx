@@ -121,7 +121,8 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
     }
   }
 
-  const ready = party && date && (sameAddress || !natural || (address.line1 && address.country))
+  // The date may wait until Signing (Jacqueline A1).
+  const ready = party && (sameAddress || !natural || (address.line1 && address.country))
     && (!corporateDirector || signer) && (!naturalSecretary || section5)
 
   return (
@@ -160,9 +161,13 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
       </fieldset>
 
       <div className="f-group">
-        <label className="f-label" htmlFor="oc-app-date">Date of appointment <span className="f-req">*</span></label>
+        <label className="f-label" htmlFor="oc-app-date">Date of appointment</label>
         <input id="oc-app-date" type="date" className="f-input" value={date}
                onChange={e => setDate(e.target.value)} />
+        <div className="f-hint">
+          Optional. Leave blank to fill in the most recent date at Signing — the
+          Companies Registry must receive the form within 15 days of the change.
+        </div>
       </div>
 
       {natural && (

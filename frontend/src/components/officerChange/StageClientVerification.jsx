@@ -6,15 +6,22 @@ import { formatDate, formatDateTime } from '../../lib/format.js'
 import ChangesCard from './ChangesCard.jsx'
 import ParticularsChangeCard from './ParticularsChangeCard.jsx'
 import RulesPanel from './RulesPanel.jsx'
+import AttachmentsCard from './AttachmentsCard.jsx'
+import CloseCaseModal from '../case/CloseCaseModal.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
+/** Jacqueline A7: the reason a case is closed when no director would remain. */
+export const NO_DIRECTOR_REASON = 'Pending further instructions — no director would remain after ' +
+  'these changes. The client has been told they may file Form ND4 themselves.'
+
 /**
  * Stage 1 (spec §5): the change list, the company rules, and the client's copy
- * — CR's own form, public pages only — sent with a Confirm link to each
- * recipient. The reply-by date defaults to five days before CR's deadline and
- * is the operator's to change. There is no auto-approval: nothing here says
- * that silence will be taken as consent, because it will not.
+ * — CR's full form, PI sheets included since Jacqueline's A8 — sent with a
+ * Confirm link to each recipient, and anything else ticked to go with it (A3).
+ * The reply-by date defaults to five days before CR's deadline and is the
+ * operator's to change. Nothing is approved on silence; an ND2B may proceed
+ * without the client's confirmation when someone says why (BQ1).
  */
 export default function StageClientVerification({ data, reload, can, goTo }) {
   const sent = Boolean(data.verification_sent_at)
@@ -40,6 +47,12 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
   const [delivery, setDelivery] = useState(null)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  const [closing, setClosing] = useState(false)
+  const [waiving, setWaiving] = useState(false)
+  const [waiveReason, setWaiveReason] = useState('')
+  const noDirector = data.form_code === 'Nd2a' && Array.isArray(data.rules?.board?.directors)
+    && data.rules.board.directors.length === 0 && (data.entries || []).length > 0
+  const waived = data.client_approval?.source === 'staff_waiver'
   const preview = usePdfBlob(
     (data.entries || []).length ? `/officer-changes/${data.id}/preview?audience=client` : null,
     data.updated_at)
@@ -80,6 +93,14 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
     }
   }
 
+  async function proceed() {
+    setError(null)
+    try {
+      await reload(await officerChangeApi.proceed(data.id, waiveReason.trim()))
+      setWaiving(false); setWaiveReason('')
+    } catch (e) { setError(errorOf(e)) }
+  }
+
   async function answer(approved) {
     setError(null)
     try { await reload(await officerChangeApi.recordResponse(data.id, { approved })) }
@@ -91,14 +112,31 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
       {nd2b ? <ParticularsChangeCard data={data} reload={reload} can={can} />
         : <ChangesCard data={data} reload={reload} can={can} />}
       <RulesPanel rules={data.rules} />
+      {noDirector && (
+        <div className="oc-nodir" role="status">
+          <p>
+            No director would remain after these changes. GSHK does not file the
+            director's resignation (ND4) on the company's behalf; the client may file
+            it themselves. If the client is deciding what to do, close this case
+            pending their instructions.
+          </p>
+          {can.write && (
+            <button className="btn btn-outline" onClick={() => setClosing(true)}>
+              Close case — pending further instructions
+            </button>
+          )}
+        </div>
+      )}
+      <AttachmentsCard data={data} reload={reload} can={can} />
 
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-hdr">
           <div>
             <div className="card-title">Send for verification</div>
             <div className="card-sub">
-              The client receives CR's form — the public pages only — and confirms it with one
-              press. Personal identity numbers and residential addresses are not included.
+              The client receives CR's full form, including the protected-information sheets
+              (identity numbers and residential addresses) for them to check, and confirms it
+              with one press.
             </div>
           </div>
         </div>
@@ -115,7 +153,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
         {(data.entries || []).length > 0 && (
           <PdfFrame url={preview.url} error={preview.error}
                     fileName={`${data.case_type}-${data.case_no}.pdf`}
-                    pills={[{ label: 'Client copy — public pages', tone: '' }]}
+                    pills={[{ label: 'Client copy — full form incl. PI', tone: '' }]}
                     label="draft form" />
         )}
 
@@ -125,7 +163,10 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
             <div className="al-body">
               {revisionTag ? `${revisionTag} sent` : 'Sent'}{' '}
               {formatDateTime(data.verification_sent_at)}.{' '}
-              {data.client_approved === true && <>Confirmed by the client
+              {data.client_approved === true && waived && <>Proceeding without the client's
+                confirmation{data.client_approval?.reason ? ` — ${data.client_approval.reason}` : ''}.
+                The client can still confirm from their email.</>}
+              {data.client_approved === true && !waived && <>Confirmed by the client
                 {data.client_approval?.name ? ` (${data.client_approval.name})` : ''}.</>}
               {data.client_approved === false && <>The client asked for changes. Correct the
                 record, then restart verification from the header.</>}
@@ -171,6 +212,13 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
             <span className="f-hint">Client answered by email or phone?</span>
             <button className="btn btn-outline" onClick={() => answer(true)}>Client approved</button>
             <button className="btn btn-outline" onClick={() => answer(false)}>Client declined</button>
+            {nd2b && (
+              // Jacqueline BQ1: "We usually submit the ND2B even if the client has
+              // not confirmed the form." Never offered on an ND2A.
+              <button className="btn btn-outline" onClick={() => setWaiving(true)}>
+                Proceed without confirmation
+              </button>
+            )}
           </div>
         )}
 
@@ -200,6 +248,35 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
         )}
       </div>
 
+      {closing && (
+        <CloseCaseModal caseRow={data} closePath={`/officer-changes/${data.id}/close`}
+                        initialReason={NO_DIRECTOR_REASON}
+                        onClose={() => setClosing(false)}
+                        onClosed={async () => { setClosing(false); await reload() }} />
+      )}
+      {waiving && (
+        <div className="overlay" onClick={e => { if (e.target === e.currentTarget) setWaiving(false) }}>
+          <div className="modal modal-sm" role="dialog" aria-label="Proceed without the client's confirmation">
+            <div className="modal-hdr">
+              <div className="modal-title">Proceed without the client's confirmation?</div>
+              <button className="modal-close" onClick={() => setWaiving(false)} aria-label="Cancel">×</button>
+            </div>
+            <div className="modal-body">
+              <p className="f-hint" style={{ marginTop: 0 }}>
+                The ND2B moves on to Data Verification now. The client's Confirm link keeps
+                working, and a confirmation that arrives later is recorded in place of this one.
+              </p>
+              <label className="f-label" htmlFor="oc-waive-reason">Why is this ND2B going ahead without the client?</label>
+              <textarea id="oc-waive-reason" className="f-input f-textarea" rows={3} value={waiveReason}
+                        onChange={e => setWaiveReason(e.target.value)} />
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-outline" onClick={() => setWaiving(false)}>Cancel</button>
+              <button className="btn btn-primary" disabled={!waiveReason.trim()} onClick={proceed}>Proceed</button>
+            </div>
+          </div>
+        </div>
+      )}
       {delivery && (
         <VerificationDeliveryModal caseId={data.id} deliveries={delivery.deliveries}
                                    phase={delivery.phase}

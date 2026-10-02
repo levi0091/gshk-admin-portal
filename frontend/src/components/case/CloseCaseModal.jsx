@@ -32,8 +32,11 @@ export default function CloseCaseModal({
   caseRow: c, onClose, onClosed,
   // An officer-change case closes through its own route (same rules, same body).
   closePath = `/cases/${c.id}/close`,
+  // A reason the screen already knows (Jacqueline A7: "closed pending further
+  // instructions"). Still editable, still required.
+  initialReason = '',
 }) {
-  const [reason, setReason] = useState('')
+  const [reason, setReason] = useState(initialReason)
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
