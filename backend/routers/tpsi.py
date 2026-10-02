@@ -754,6 +754,14 @@ async def prepare_filing(
     except Exception as exc:
         raise _handle(exc)
 
+    # This route prepares an ANNUAL RETURN. An ND2A/ND2B case (migration 050)
+    # opens its own filings through /officer-changes/{id}/validate.
+    if (case.get("form_code") or "Nar1") != "Nar1":
+        raise HTTPException(409, {
+            "message": (f"case {case.get('case_no') or case.get('id')} files form "
+                        f"{case.get('form_code')}; prepare it from its own page"),
+            "reason": "wrong_form"})
+
     # The one door `filings._refuse_if_case_finished` cannot cover: it guards a
     # filing that already exists, and this route makes a new one. Closing a case
     # supersedes every live filing, so without this a closed case could be given

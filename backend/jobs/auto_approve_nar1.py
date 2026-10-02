@@ -99,6 +99,11 @@ def skip_reason(case: dict) -> str | None:
     # explicitly asked to stop, and put it in an insert-only trail.
     if case.get("closed_at"):
         return "the case was closed"
+    # An officer change is NEVER approved on silence (spec §5): telling CR who
+    # runs a company is not something a client consents to by not replying.
+    # The approval tokens share this table, so the job sees those cases too.
+    if (case.get("form_code") or "Nar1") != "Nar1":
+        return "an officer change is never approved on silence"
     if case.get("client_approved") is not None:
         return "the client already answered"
     if not case.get("verification_sent_at"):

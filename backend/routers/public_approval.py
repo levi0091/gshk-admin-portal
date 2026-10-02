@@ -343,8 +343,17 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
 #  Routes
 # --------------------------------------------------------------------------- #
 
-def _resolve(token: str, request: Request):
-    """(approval_row, case) or None. Every failure returns None identically."""
+#: Which forms each page confirms. The approval tokens share one table, so a
+#: token is only good on the page for its own form: an ND2A link opened on the
+#: NAR1 page would show a director annual-return wording about an officer
+#: change, and confirm it in those words.
+_NAR1_FORMS = ("Nar1",)
+_OFFICER_CHANGE_FORMS = ("Nd2a", "Nd2b")
+
+
+def _resolve(token: str, request: Request, forms=_NAR1_FORMS):
+    """(approval_row, case) or None. Every failure returns None identically,
+    a token for another form's page included."""
     if not _TOKEN.match(token or ""):
         return None
     if _rate_limited(f"t:{token}", f"ip:{_client_ip(request) or 'unknown'}"):
@@ -359,6 +368,8 @@ def _resolve(token: str, request: Request):
     try:
         case = nar1_cases.get_case(row["nar1_case_id"])
     except Exception:  # noqa: BLE001 — LookupError, or a database fault
+        return None
+    if (case.get("form_code") or "Nar1") not in forms:
         return None
     return row, case
 
@@ -407,7 +418,97 @@ async def show_approval(token: str, request: Request):
     A mail-security scanner fetching this link must leave the case exactly as it
     found it, including its audit trail.
     """
-    resolved = _resolve(token, request)
+    return await _show(token, request, forms=_NAR1_FORMS, ask=lambda case, entity, row: _ask(
+        company=entity.get("company_name") or "",
+        br_number=entity.get("br_number") or "",
+        period=str(case.get("ar_period_year") or ""),
+        case_no=case.get("case_no") or "",
+        deadline=_hkt(row.get("expires_at"))))
+
+
+@router.post("/nar1-approval/{token}", response_class=HTMLResponse)
+async def record_approval(token: str, request: Request):
+    """The only mutating half. Takes NO body — there is nothing to supply."""
+    return await _record(token, request, forms=_NAR1_FORMS, confirmed=_confirmed)
+
+
+# --------------------------------------------------------------------------- #
+#  ND2A / ND2B — the same guarantees, an officer change's words (spec §5)
+#
+#  Same token table, same first-approval-wins claim, same no-script page and
+#  the same GET-mutates-nothing rule. There is NO auto-approval behind these
+#  links (spec §5), so the page never says silence will be taken as consent.
+# --------------------------------------------------------------------------- #
+
+_FORM_TITLES = {"Nd2a": ("ND2A", "the change of company secretary and directors"),
+                "Nd2b": ("ND2B", "the change in particulars of your company officers")}
+
+
+def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no: str,
+                        deadline: str) -> HTMLResponse:
+    code, what = _FORM_TITLES.get(form_code, _FORM_TITLES["Nd2a"])
+    rows = [("Company", company), ("Business Registration No.", br_number),
+            ("Form", f"Form {code}"), ("Our reference", case_no)]
+    ledger = "".join(f"<dt>{html.escape(label)}</dt><dd>{html.escape(str(value))}</dd>"
+                     for label, value in rows if value)
+    body = (
+        f"<dl>{ledger}</dl>"
+        '<form method="post"><div class="warn">'
+        f'<div class="warn-top"><div class="warn-ico">{_WARNING_MARK}</div>'
+        '<div><p class="warn-h">Warning</p>'
+        '<p class="warn-t">By clicking <strong>Confirm &amp; File</strong>, you '
+        f"confirm that you have reviewed the draft Form {code} and that the changes "
+        "it reports are correct. It will then be arranged for submission to the "
+        "Companies Registry without further confirmation.</p></div></div>"
+        '<div class="warn-foot"><button type="submit">Confirm &amp; File</button>'
+        "</div></div></form>"
+        '<p class="note">If anything is wrong, do not press Confirm &amp; File '
+        f"— email {html.escape(RENEWAL_MAILBOX)} instead and tell us what needs "
+        "changing."
+        + (f" Please let us know by {html.escape(deadline)}." if deadline else "")
+        + "</p>"
+    )
+    return _render(title=f"Confirm Form {code}",
+                   heading=f"Please confirm {what}",
+                   sub="Check the details below against the form attached to our email.",
+                   body=body)
+
+
+def _confirmed_officer_change(case: dict):
+    code, _what = _FORM_TITLES.get(case.get("form_code"), _FORM_TITLES["Nd2a"])
+
+    def page(company: str) -> HTMLResponse:
+        return _render(
+            title="Confirmed", heading="Thank you — your confirmation is recorded",
+            sub=(f"We will file Form {code} for {company}." if company
+                 else f"We will file Form {code}."),
+            body='<p class="done">Confirmation recorded.</p>'
+                 '<p class="note">You do not need to do anything else. If you later '
+                 f"notice something wrong, email {html.escape(RENEWAL_MAILBOX)} as "
+                 "soon as you can.</p>")
+    return page
+
+
+@router.get("/officer-change-approval/{token}", response_class=HTMLResponse)
+async def show_officer_change_approval(token: str, request: Request):
+    """WRITES NOTHING, exactly as the NAR1 page."""
+    return await _show(
+        token, request, forms=_OFFICER_CHANGE_FORMS,
+        ask=lambda case, entity, row: _ask_officer_change(
+            company=entity.get("company_name") or "",
+            br_number=entity.get("br_number") or "",
+            form_code=case.get("form_code"), case_no=case.get("case_no") or "",
+            deadline=_hkt(row.get("expires_at"))))
+
+
+@router.post("/officer-change-approval/{token}", response_class=HTMLResponse)
+async def record_officer_change_approval(token: str, request: Request):
+    return await _record(token, request, forms=_OFFICER_CHANGE_FORMS,
+                         confirmed=None)
+
+
+async def _show(token: str, request: Request, *, forms, ask) -> HTMLResponse:
+    resolved = _resolve(token, request, forms)
     if resolved is None:
         return _unavailable()
     row, case = resolved
@@ -426,20 +527,12 @@ async def show_approval(token: str, request: Request):
     if settled is not None:
         return settled
 
-    entity = _entity_or_empty(case)
-    return _ask(
-        company=entity.get("company_name") or "",
-        br_number=entity.get("br_number") or "",
-        period=str(case.get("ar_period_year") or ""),
-        case_no=case.get("case_no") or "",
-        deadline=_hkt(row.get("expires_at")),
-    )
+    return ask(case, _entity_or_empty(case), row)
 
 
-@router.post("/nar1-approval/{token}", response_class=HTMLResponse)
-async def record_approval(token: str, request: Request):
+async def _record(token: str, request: Request, *, forms, confirmed) -> HTMLResponse:
     """The only mutating half. Takes NO body — there is nothing to supply."""
-    resolved = _resolve(token, request)
+    resolved = _resolve(token, request, forms)
     if resolved is None:
         return _unavailable()
     row, case = resolved
@@ -527,7 +620,8 @@ async def record_approval(token: str, request: Request):
         },
     )
 
-    return _confirmed(entity.get("company_name") or "")
+    page = confirmed or _confirmed_officer_change(case)
+    return page(entity.get("company_name") or "")
 
 
 def _entity_or_empty(case: dict) -> dict:

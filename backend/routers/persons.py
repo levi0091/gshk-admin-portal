@@ -20,6 +20,7 @@ from services import (
 )
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
+from services.officer_changes import eservice, particulars
 from services.tpsi.forms.cr_vocabularies import resolve_country
 
 router = APIRouter()
@@ -504,6 +505,11 @@ async def update_person(
     if not current:
         raise HTTPException(status_code=404, detail="Person not found")
 
+    # What CR holds, taken BEFORE the write (spec §4): the first edit of a
+    # tracked particular is what an ND2B will later be diffed against.
+    if particulars.TRACKED_PERSON_FIELDS & updates.keys():
+        particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
+
     updated = (
         sb.table("persons").update(updates).eq("id", person_id).execute()
     ).data[0]
@@ -792,6 +798,9 @@ async def update_identity_document(
         updates["issuing_country"] = _clean_issuing_country(
             updates["issuing_country"])
 
+    # An identity number is ND2B items (g)/(h): baseline first (spec §4).
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
+
     updated = (
         sb.table("person_identity_documents").update(updates)
         .eq("id", document_id).execute()
@@ -884,6 +893,9 @@ async def save_identity_document(
     ).data
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
+
+    # A new or replaced HKID / passport is ND2B item (g)/(h): baseline first.
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
 
     held = (
         sb.table("person_identity_documents").select("*")
@@ -1001,6 +1013,9 @@ async def delete_identity_document(
 
     person = _person_subject(sb, person_id)
 
+    # Removing a number CR holds is an ND2B item too: baseline first.
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
+
     # The scan first. If Storage or the documents table refuses, the identity
     # row is still here and the operator retries one action — rather than
     # finding the number gone and the file still listed as current.
@@ -1070,6 +1085,9 @@ async def update_residential_address(
             .eq("id", current["residential_address_id"]).single().execute()
         ).data
 
+    # ND2B items (d) and (e): the address as CR holds it, before it moves.
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
+
     try:
         result = address_service.save(
             sb,
@@ -1126,3 +1144,113 @@ async def upload_person_document(
         document_type_code=document_type_code, file_name=file.filename,
         content=content, mime_type=file.content_type, title=title, user=user,
     )
+
+
+# --------------------------------------------------------------------------- #
+#  The person's own CR e-Registry account (Levi 2026-09-30, answers 1, 2, 8)
+#
+#  GSHK sets up a new director's e-Registry account and keeps it, so the ND2A
+#  consent signature can be applied from it. The password goes in and never
+#  comes back out of any route — not even masked (spec B-9).
+# --------------------------------------------------------------------------- #
+
+class EServiceCredentialIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    eservice_user_id: str
+    eservice_person_name: str
+    # Absent = keep the stored one. Never echoed, never logged.
+    password: Optional[str] = None
+
+
+async def _audit_person(sb, user: dict, person_id: str, action: str, **fields):
+    person = _person_subject(sb, person_id)
+    await log_event(
+        case_id=None, user_id=user["id"], user_display_name=user["display_name"],
+        action_type=action, event_code=action,
+        company_name=person.get("full_name"),
+        **audit_subject.for_person(
+            person, id_number=audit_subject.primary_id_number(sb, person_id)),
+        entity_type="person", entity_id=str(person_id), **fields,
+    )
+
+
+@router.get("/{person_id}/eservice-credential")
+async def get_eservice_credential(person_id: str, user=Depends(live_person("read"))):
+    return eservice.metadata(person_id)
+
+
+@router.put("/{person_id}/eservice-credential")
+async def put_eservice_credential(
+    person_id: str,
+    body: EServiceCredentialIn,
+    user=Depends(live_person("write")),
+):
+    sb = get_supabase()
+    before = eservice.metadata(person_id)
+    try:
+        meta = eservice.save(
+            person_id, eservice_user_id=body.eservice_user_id,
+            eservice_person_name=body.eservice_person_name,
+            password=body.password if body.password is not None else eservice.UNSET,
+            user_id=user["id"])
+    except ValueError as exc:
+        # The message names the field, never the value (eservice.save).
+        raise HTTPException(status_code=400, detail=str(exc))
+    await _audit_person(
+        sb, user, person_id, audit_events.PERSON_ESERVICE_CRED_SET,
+        old_value=before.get("eservice_user_id"), new_value=meta["eservice_user_id"],
+        # The account, never the password, its length or a hint of it.
+        metadata={"eservice_user_id": meta["eservice_user_id"],
+                  "password_changed": body.password is not None,
+                  "first_set": not before["configured"]})
+    return meta
+
+
+@router.delete("/{person_id}/eservice-credential")
+async def delete_eservice_credential(person_id: str, user=Depends(live_person("write"))):
+    sb = get_supabase()
+    before = eservice.metadata(person_id)
+    removed = eservice.clear(person_id)
+    if removed:
+        await _audit_person(
+            sb, user, person_id, audit_events.PERSON_ESERVICE_CRED_SET,
+            old_value=before.get("eservice_user_id"), new_value="removed",
+            metadata={"eservice_user_id": before.get("eservice_user_id"),
+                      "removed": True})
+    return {"removed": removed, **eservice.metadata(person_id)}
+
+
+# --------------------------------------------------------------------------- #
+#  "Changed on the profile, CR not told yet" (spec §4, answers 14 and 16)
+# --------------------------------------------------------------------------- #
+
+def _change_rows(rows: list[dict]) -> list[dict]:
+    """The pending rows as the alert reads them: items carry no dates yet."""
+    return [{**row, "items": [
+        {k: v for k, v in item.items() if k not in ("effective_date", "omitted")}
+        for item in row["items"]]} for row in rows]
+
+
+@router.get("/{person_id}/particulars-changes")
+async def get_particulars_changes(person_id: str, user=Depends(live_person("read"))):
+    return {"changes": _change_rows(particulars.pending_for_person(person_id))}
+
+
+@router.post("/{person_id}/particulars-changes/dismiss")
+async def dismiss_particulars_changes(person_id: str, user=Depends(live_person("write"))):
+    """'This was data loading, not a real-world change' (answer 16). Moves the
+    baseline for every appointment; the trail keeps what was dismissed."""
+    sb = get_supabase()
+    pending = particulars.pending_for_person(person_id)
+    dismissed = particulars.dismiss(person_id=person_id, user_id=user["id"])
+    if dismissed:
+        await _audit_person(
+            sb, user, person_id, audit_events.OFFICER_PARTICULARS_DISMISSED,
+            new_value=f"{dismissed} appointment(s)",
+            metadata={"appointments": dismissed, "dismissed": [
+                {"entity_id": r["entity_id"], "company_name": r.get("company_name"),
+                 "capacity": r["capacity"],
+                 "items": [i["label"] for i in r["items"]]} for r in pending]})
+    return {"dismissed": dismissed}

@@ -7,7 +7,7 @@ load_dotenv()
 
 from routers import (auth, users, roles, cases, cases_audit, audit, companies,
                      persons, documents, form_contract, lookups,
-                     public_approval, tpsi)
+                     officer_change_filing, officer_changes, public_approval, tpsi)
 from services.app_env import is_production
 from services import api_errors
 
@@ -44,6 +44,12 @@ app.include_router(documents.router, prefix="/documents", tags=["documents"])
 app.include_router(lookups.router, prefix="/lookups", tags=["lookups"])
 app.include_router(form_contract.router, prefix="/form-contract", tags=["form-contract"])
 app.include_router(tpsi.router, prefix="/tpsi", tags=["tpsi"])
+# ND2A / ND2B (migration 050). Two routers under one prefix: the case work
+# (`officer_changes:*`) and the CR steps (`tpsi:*`).
+app.include_router(officer_changes.router, prefix="/officer-changes",
+                   tags=["officer-changes"])
+app.include_router(officer_change_filing.router, prefix="/officer-changes",
+                   tags=["officer-changes"])
 # THE ONLY UNAUTHENTICATED ROUTER (spec §5). Mounted under its own prefix so
 # `/public/...` is visibly separate from everything require_permission guards --
 # a route added to any router above inherits that router's gate, and a route
