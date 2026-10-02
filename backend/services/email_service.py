@@ -769,7 +769,9 @@ def revision_notice(revision) -> str:
         f'<div style="{_LABEL}padding-bottom:4px">Revised draft &middot; '
         f"{_html.escape(label)}</div>"
         f'<div style="font-family:{_FONT};font-size:14px;line-height:1.55;'
-        f'color:{_T_BODY}">This email replaces the one we sent you earlier '
+        # "ANY earlier email", not "the one we sent you": a director added to
+        # the board since, or whose earlier send failed, never had one.
+        f'color:{_T_BODY}">This email replaces any earlier email we sent you '
         f"about this form. Please review the draft attached here; the Confirm "
         f"button in any earlier email no longer works.</div>"
         f"</td></tr></table>"

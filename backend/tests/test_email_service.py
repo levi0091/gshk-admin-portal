@@ -373,6 +373,11 @@ def test_a_revised_letter_says_so_before_anything_else():
     assert notice < html.index("Dear Client")
     assert "Rev. 2" in html[notice:notice + 200]
     assert "no longer works" in html
+    # "ANY earlier email", not "the one we sent you": a director added to the
+    # board since, or whose earlier send failed, never received one, and a
+    # notice telling them otherwise is the first thing they read.
+    assert "replaces any earlier email we sent you about this form" in html
+    assert "the one we sent you earlier" not in html
 
 
 def test_the_masthead_and_the_reference_carry_the_revision():

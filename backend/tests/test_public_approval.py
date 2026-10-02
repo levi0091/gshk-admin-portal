@@ -631,6 +631,24 @@ def test_once_the_new_revision_is_approved_an_old_link_says_so(client):
     assert "BO LEE" in response.text
 
 
+def test_the_page_names_the_revision_it_is_confirming(client):
+    """With two emails in the inbox, "check against the form attached to our
+    email" is ambiguous; the page says which one. From the link's own row,
+    never from the request."""
+    with _Stack(*_world(approval=row(revision=2), case=RESENT)):
+        response = client.get(PATH)
+    assert "<dt>Revision</dt><dd>Rev. 2</dd>" in response.text
+
+
+@pytest.mark.parametrize("revision", [1, None])
+def test_a_first_email_or_legacy_link_page_names_no_revision(client, revision):
+    with _Stack(*_world(approval=row(revision=revision),
+                        case={**CASE, "verification_revision": 1})):
+        response = client.get(PATH)
+    assert ">Confirm &amp; File</button>" in response.text
+    assert "<dt>Revision</dt>" not in response.text
+
+
 def test_a_link_ahead_of_the_case_still_works_on_the_page(client):
     """The job skips such a link (nar1_approvals.is_ahead); the page must not.
     A send that went out and then failed to write the case leaves the client

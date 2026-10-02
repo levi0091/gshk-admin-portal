@@ -25,6 +25,8 @@ class _Table:
         self.rows = rows if rows is not None else []
         self.inserted = []
         self.updated = None
+        #: Every update payload in order — `issue` makes more than one.
+        self.updates = []
         self.filters = []
 
     # -- builder ---------------------------------------------------------- #
@@ -37,6 +39,7 @@ class _Table:
 
     def update(self, payload):
         self.updated = payload
+        self.updates.append(payload)
         return self
 
     def eq(self, column, value):
@@ -170,6 +173,51 @@ def test_each_link_records_the_revision_it_was_mailed_with():
                                  revision=3)
     assert table.inserted[0][0]["revision"] == 3
     assert issued[0]["revision"] == 3
+
+
+def test_a_new_revision_dates_the_links_issued_before_revisions_existed():
+    """A director who approved through a pre-051 link, on a case re-sent since,
+    was still told "already confirmed" — the lock skips NULL. At the moment
+    revision N is issued every link already on the case belongs to an EARLIER
+    send, so stamping the NULL ones N-1 is exact, not inferred, and makes them
+    stale the moment Rev. N is recorded."""
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}], revision=3)
+    supersede, dating = table.updates
+    assert supersede["outcome"] == "superseded"
+    assert dating == {"revision": 2}
+    assert ("is", "revision", None) in table.filters
+    assert ("eq", "nar1_case_id", "c1") in table.filters
+    # The new rows carry their own revision, so the NULL filter cannot reach
+    # them whichever order the writes happen in.
+    assert all(r["revision"] == 3 for r in table.inserted[0])
+
+
+@pytest.mark.parametrize("revision", [None, 1])
+def test_nothing_is_dated_when_there_can_be_no_earlier_send(revision):
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                        revision=revision)
+    assert {"revision": 0} not in table.updates
+    assert len(table.updates) == 1          # the supersede only
+
+
+def test_a_dating_write_that_fails_does_not_stop_the_links_going_out():
+    """Best-effort: without it the case behaves exactly as before 051 for those
+    old links. Letting it raise would send the email with no Confirm button."""
+    class _Refusing(_Table):
+        def update(self, payload):
+            if "revision" in payload:
+                raise RuntimeError("store unavailable")
+            return super().update(payload)
+
+    table = _Refusing()
+    with _sb(table):
+        issued = approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                                 revision=2)
+    assert issued[0]["token"] and len(table.inserted) == 1
 
 
 def test_a_caller_naming_no_revision_writes_the_row_it_always_did():

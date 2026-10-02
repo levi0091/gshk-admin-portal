@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import sys
 from datetime import datetime, timedelta, timezone
 
 from db.supabase import get_supabase
@@ -160,6 +161,10 @@ def issue(*, case_id: str, recipients: list[dict],
     expires = expires_at or (sent + timedelta(days=APPROVAL_WINDOW_DAYS))
 
     supersede_outstanding(case_id)
+    # Only ever reaches older rows: it matches `revision IS NULL`, and every
+    # row inserted below carries `revision`.
+    if revision is not None and revision >= 2:
+        _date_legacy_links(case_id, revision - 1)
 
     issued = []
     rows = []
@@ -185,6 +190,34 @@ def issue(*, case_id: str, recipients: list[dict],
     if rows:
         get_supabase().table(_TABLE).insert(rows).execute()
     return issued
+
+
+def _date_legacy_links(case_id: str, earlier: int) -> None:
+    """Give this case's pre-051 links (revision NULL) the revision `earlier`.
+
+    EXACT, NOT INFERRED. Called as revision `earlier + 1` is being issued, when
+    every link already on the case belongs to an earlier send — so `earlier` is
+    a true upper bound for all of them, and once the new revision is recorded
+    they are stale. Migration 051 left them NULL on purpose, because numbering
+    them from history alone could come out one low and refuse a current link;
+    at this moment there is no current link left among them to refuse.
+
+    It closes the one case the NULL exemption left open: a director who
+    approved through a pre-051 link, on a case re-sent since, being told the
+    return was "already confirmed" while the new revision waited for them.
+
+    BEST-EFFORT. If it does not land, those links behave exactly as they did
+    before 051; letting it raise would send the email with no Confirm button.
+    """
+    try:
+        (get_supabase().table(_TABLE)
+         .update({"revision": earlier})
+         .eq("nar1_case_id", case_id)
+         .is_("revision", None)
+         .execute())
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        print(f"[nar1_approvals] WARN: could not date the pre-revision links on "
+              f"case {case_id}: {exc}", file=sys.stderr)
 
 
 def supersede_outstanding(case_id: str, *, exclude_id: str | None = None) -> int:

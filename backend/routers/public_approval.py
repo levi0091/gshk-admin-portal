@@ -60,6 +60,9 @@ from services.audit_service import log_event
 # named a different one — or that still said "reply to the email" — would send
 # a client somewhere nobody is reading.
 from services.email_service import RENEWAL_MAILBOX
+# The same "Rev. N" the email printed, from the same function, so the page and
+# the inbox cannot spell a revision differently.
+from services.email_service import revision_label
 from services import audit_subject
 
 router = APIRouter()
@@ -301,7 +304,7 @@ _WARNING_MARK = (
 
 
 def _ask(*, company: str, br_number: str, period: str, case_no: str,
-         deadline: str) -> HTMLResponse:
+         deadline: str, revision: str = "") -> HTMLResponse:
     """The confirmation page, carrying the approved warning panel.
 
     THE WARNING IS SHOWN ON ARRIVAL, not behind a first press. The mock draws
@@ -317,8 +320,12 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
     worse answer to "something is wrong" than the note below, which names the
     mailbox that reads it.
     """
+    # "Revision" only from Rev. 2 (`revision` is "" before that, and the row
+    # is skipped like any other empty one): with two emails in the inbox, it
+    # says which one this page is confirming.
     rows = [("Company", company), ("Business Registration No.", br_number),
-            ("Return period", period), ("Our reference", case_no)]
+            ("Return period", period), ("Our reference", case_no),
+            ("Revision", revision)]
     ledger = "".join(
         f"<dt>{html.escape(label)}</dt><dd>{html.escape(str(value))}</dd>"
         for label, value in rows if value
@@ -446,7 +453,9 @@ async def show_approval(token: str, request: Request):
         br_number=entity.get("br_number") or "",
         period=str(case.get("ar_period_year") or ""),
         case_no=case.get("case_no") or "",
-        deadline=_hkt(row.get("expires_at"))))
+        deadline=_hkt(row.get("expires_at")),
+        # The LINK's revision, from its own row — a stale one never gets here.
+        revision=revision_label(row.get("revision"))))
 
 
 @router.post("/nar1-approval/{token}", response_class=HTMLResponse)
@@ -468,10 +477,12 @@ _FORM_TITLES = {"Nd2a": ("ND2A", "the change of company secretary and directors"
 
 
 def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no: str,
-                        deadline: str) -> HTMLResponse:
+                        deadline: str, revision: str = "") -> HTMLResponse:
     code, what = _FORM_TITLES.get(form_code, _FORM_TITLES["Nd2a"])
+    # "Revision" from Rev. 2 only, exactly as NAR1's page (`_ask`).
     rows = [("Company", company), ("Business Registration No.", br_number),
-            ("Form", f"Form {code}"), ("Our reference", case_no)]
+            ("Form", f"Form {code}"), ("Our reference", case_no),
+            ("Revision", revision)]
     ledger = "".join(f"<dt>{html.escape(label)}</dt><dd>{html.escape(str(value))}</dd>"
                      for label, value in rows if value)
     body = (
@@ -521,7 +532,8 @@ async def show_officer_change_approval(token: str, request: Request):
             company=entity.get("company_name") or "",
             br_number=entity.get("br_number") or "",
             form_code=case.get("form_code"), case_no=case.get("case_no") or "",
-            deadline=_hkt(row.get("expires_at"))))
+            deadline=_hkt(row.get("expires_at")),
+            revision=revision_label(row.get("revision"))))
 
 
 @router.post("/officer-change-approval/{token}", response_class=HTMLResponse)

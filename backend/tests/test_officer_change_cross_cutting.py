@@ -85,6 +85,18 @@ def test_the_current_revisions_officer_change_link_still_asks():
     assert "Confirm &amp; File</button>" in resp.text
 
 
+def test_the_officer_change_page_names_the_revision_from_rev_2():
+    resent = {**ND2A, "verification_revision": 2}
+    with _Stack(*_world(approval=row(revision=2), case=resent)):
+        rev2 = client.get(ND2_PATH)
+    with _Stack(*_world(approval=row(revision=1),
+                        case={**ND2A, "verification_revision": 1})):
+        rev1 = client.get(ND2_PATH)
+    assert "<dt>Revision</dt><dd>Rev. 2</dd>" in rev2.text
+    assert "<dt>Revision</dt>" not in rev1.text
+    assert "Confirm &amp; File</button>" in rev1.text
+
+
 def test_an_already_confirmed_officer_change_never_says_annual_return():
     # One link per director: everyone after the first lands on "already
     # confirmed", and it must name the form they were asked about.
