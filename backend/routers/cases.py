@@ -1711,6 +1711,29 @@ async def send_verification(
     if refusal:
         raise HTTPException(409, refusal)
 
+    # SEND AGAIN RE-SENDS THE FROZEN COPY (Levi 2026-10-03: "when they click
+    # send to client multiple times it will send the same frozen snapshot until
+    # they actually click restart verification"). A case already sent and not
+    # restarted mails `verification_xml` — the copy the client already holds and
+    # the one this screen shows — under the SAME revision. Until then a draft
+    # case was REBUILT from the live company record on every send while the
+    # screen went on showing the previous copy, so a client could be mailed a
+    # document the operator had never been shown. A correction now goes out
+    # only through Restart verification, which clears the copy, so the next
+    # send builds afresh as the next revision.
+    resend = bool(case.get("verification_sent_at"))
+    frozen_xml = case.get("verification_xml") if resend else None
+    if resend and not frozen_xml:
+        # Sent before the portal kept the mailed copy (migration 046). There is
+        # nothing to re-send unchanged, and rebuilding instead would break the
+        # promise the screen makes beside the button.
+        raise HTTPException(409, {
+            "message": ("Nothing was sent: this return was sent before the "
+                        "portal kept a copy of what was mailed, so it cannot be "
+                        "sent again unchanged. Restart verification to send a "
+                        "fresh one."),
+            "reason": "no_frozen_copy"})
+
     # THE YEAR THIS RETURN IS FOR (Levi 2026-09-18). From this send on the
     # client is approving the return for one year, so the case will hold that
     # year. Checked HERE, read-only, so a year another live case of this
@@ -1739,7 +1762,11 @@ async def send_verification(
     # whole verification flow exists to prevent. Only `draft` and
     # `validation_failed` move, which `filings.rebuild_draft` enforces inside
     # the UPDATE rather than trusting this test.
-    if filing is None or filing.get("stage") in tpsi_filings.REBUILDABLE_STAGES:
+    #
+    # NEVER ON A SEND AGAIN: that mails the frozen copy, and rebuilding the
+    # draft underneath it is exactly what let the email and the screen differ.
+    if not resend and (filing is None
+                       or filing.get("stage") in tpsi_filings.REBUILDABLE_STAGES):
         try:
             form_xml = await nar1_prepare.build_form_xml(
                 entity_id=case["entity_id"],
@@ -1894,7 +1921,11 @@ async def send_verification(
     # it is also what will be filed. `validated_xml` is still preferred on a
     # case CR has already validated -- there the two agree on every particular
     # and CR's own copy is the more authoritative record of the document.
-    mailed_xml = filing.get("validated_xml") or filing.get("request_xml")
+    #
+    # And on a send again, neither: the frozen copy, whatever CR or the record
+    # have done since. See `resend` above.
+    mailed_xml = (frozen_xml or (filing or {}).get("validated_xml")
+                  or (filing or {}).get("request_xml"))
     if not mailed_xml:
         raise HTTPException(
             409, "this filing carries no return to show the client; open the "
@@ -1939,7 +1970,11 @@ async def send_verification(
     # STORED only once something has actually gone out (the patch below): a
     # send Resend refused entirely reached nobody, and the retry must carry the
     # same number rather than skip one.
-    revision = nar1_approvals.next_revision(case)
+    #
+    # A SEND AGAIN REPEATS THE REVISION (Levi 2026-10-03): same document, same
+    # number, same wording. Only a send after a restart is the next one.
+    revision = (nar1_approvals.current_revision(case) if resend
+                else nar1_approvals.next_revision(case))
 
     # The revision is in the file name too, so a client who has downloaded
     # both PDFs is not left with "NAR1-….pdf" and "NAR1-… (1).pdf".
@@ -1985,7 +2020,7 @@ async def send_verification(
             # stamped on these is the second lock (nar1_approvals.is_stale).
             targets = nar1_approvals.issue(
                 case_id=case_id, recipients=targets, expires_at=deadline_at,
-                revision=revision)
+                revision=revision, new_revision=not resend)
         except Exception as exc:  # noqa: BLE001
             # A token store that will not write must not stop the return going
             # out. Without links the message is exactly the one that shipped
@@ -2190,6 +2225,9 @@ async def send_verification(
                   "return_year": case.get("ar_period_year"),
                   # And which email about it — the "[Rev. N]" the client saw.
                   "revision": revision,
+                  # True when this re-sent the frozen copy unchanged (a send
+                  # again) rather than a return built for this send.
+                  "resent_unchanged": resend,
                   # The first, kept so existing readers of this key still
                   # resolve to a real message; `message_ids` is the whole set,
                   # because there is now one message per director.
@@ -2277,6 +2315,7 @@ async def send_verification(
     return {"sent_at": sent_at, "to": delivered, "intended_to": intended,
             # The revision just sent, so the screen can say "Rev. 2 sent".
             "revision": revision,
+            "resent_unchanged": resend,
             "cc": copied, "intended_cc": intended_cc,
             "redirected": any(bool(s["sent"].get("redirected")) for s in sends),
             "transport": sends[0]["sent"].get("transport", "resend"),

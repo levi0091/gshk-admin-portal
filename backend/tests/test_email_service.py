@@ -371,13 +371,97 @@ def test_a_revised_letter_says_so_before_anything_else():
     _, html = _letter(revision=2)
     notice = html.index("Revised draft")
     assert notice < html.index("Dear Client")
-    assert "Rev. 2" in html[notice:notice + 200]
+    # The box's label is "Revised draft" alone (Levi 2026-10-03) — the subject,
+    # the masthead and the reference line already carry the number.
+    assert "Revised draft</div>" in html
+    assert "Revised draft &middot;" not in html
     assert "no longer works" in html
     # "ANY earlier email", not "the one we sent you": a director added to the
     # board since, or whose earlier send failed, never received one, and a
     # notice telling them otherwise is the first thing they read.
     assert "replaces any earlier email we sent you about this form" in html
     assert "the one we sent you earlier" not in html
+
+
+#: `G-FlowDesk - revised NAR1 draft v.2.pdf` (Levi 2026-10-03), paragraph by
+#: paragraph, with the deadline slotted in where the sample has XXXXXXX.
+REVISED_WORDING = [
+    "Further to an update of the Director’s particulars (passport and/or "
+    "address information), we enclose a revised draft of the NAR1 for your review.",
+    "We should be grateful if you would examine the draft carefully, with "
+    "particular attention to the following:",
+    "If the details are correct, kindly click Confirm below. No signature is needed.",
+    "If we do not receive a response by 28 August 2026, the draft will be deemed "
+    "confirmed and proceed with the NAR1 filing.",
+    "Changes requested after filing will incur a HK$1,000 service fee.",
+    "To request changes, please do not click Confirm and email "
+    "renewal@getstarted.hk before the deadline.",
+]
+
+
+def _text(html):
+    """What a reader sees: tags out, entities decoded, whitespace collapsed."""
+    import html as _h
+    import re as _re
+    return _re.sub(r"\s+", " ", _h.unescape(_re.sub(r"<[^>]+>", " ", html))).strip()
+
+
+def _paragraph_in(paragraph, html):
+    # Tags split a sentence where it is bolded; collapse the gaps they leave.
+    import re as _re
+    flat = _re.sub(r" ([,.:;])", r"\1", _text(html))
+    return paragraph in flat
+
+
+def test_a_revised_letter_is_the_revised_samples_wording_verbatim():
+    _, html = _letter(revision=2)
+    for paragraph in REVISED_WORDING:
+        assert _paragraph_in(paragraph, html), paragraph
+
+
+def test_a_revised_letter_bolds_what_the_sample_bolds():
+    _, html = _letter(revision=2)
+    assert "<strong>revised draft of the NAR1</strong>" in html
+    assert "kindly click <strong>Confirm</strong> below" in html
+    assert "<strong>do not click Confirm</strong>" in html
+    assert "<strong>28 August 2026</strong>" in html
+
+
+def test_a_revised_letter_drops_the_first_letters_sentences():
+    _, html = _letter(revision=2)
+    text = _text(html)
+    assert "Your draft NAR1 is now available for review" not in text
+    assert "Any changes requested after filing" not in text
+    assert "please review the attached draft carefully" not in text.lower()
+
+
+def test_a_revised_letter_changes_nothing_but_the_wording():
+    """The checklist, the button, the sign-off, the unmonitored notice and the
+    footer are the first letter's, exactly."""
+    _, first = _letter()
+    _, revised = _letter(revision=2)
+    for part in ("Dear Client,", "Kind regards,", "Get Started HK Limited",
+                 ">Confirm NAR1</a>", "Replies to this email are not monitored",
+                 "Page 5", "Continuation Sheet C", "GET STARTED HK LIMITED",
+                 "Explod Limited NAR1 2026.pdf"):
+        assert part in first and part in revised, part
+
+
+def test_a_revised_letter_with_no_link_asks_for_a_reply_as_the_first_does():
+    _, html = _letter(revision=2, approval_url=None)
+    text = _text(html)
+    assert "If the details are correct, kindly reply to this email to confirm. " \
+           "No signature is needed." in text
+    assert "To request changes, please email renewal@getstarted.hk before the " \
+           "deadline." in text
+    assert "do not click Confirm" not in text
+    assert "kindly click" not in text
+
+
+def test_a_revised_letter_with_no_date_keeps_the_sentence_without_one():
+    _, html = _letter(revision=2, deadline=None)
+    assert ("If we do not receive a response, the draft will be deemed confirmed "
+            "and proceed with the NAR1 filing.") in _text(html)
 
 
 def test_the_masthead_and_the_reference_carry_the_revision():

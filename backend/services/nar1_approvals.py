@@ -83,6 +83,16 @@ def next_revision(case: dict) -> int:
     return max(sent, 0) + 1
 
 
+def current_revision(case: dict) -> int:
+    """The revision the client already holds — what a SEND AGAIN repeats.
+
+    A case that has been sent and not restarted re-sends its frozen copy under
+    the same number (Levi 2026-10-03). At least 1: such a case has been sent,
+    and a count of 0 there can only be a case mailed before anything counted.
+    """
+    return max(next_revision(case) - 1, 1)
+
+
 def is_stale(row: dict, case: dict) -> bool:
     """Was this link mailed with a revision the case has since moved past?
 
@@ -132,7 +142,8 @@ def is_ahead(row: dict, case: dict) -> bool:
 def issue(*, case_id: str, recipients: list[dict],
           sent_at: datetime | None = None,
           expires_at: datetime | None = None,
-          revision: int | None = None) -> list[dict]:
+          revision: int | None = None,
+          new_revision: bool = True) -> list[dict]:
     """One fresh token per recipient. Returns the PLAINTEXT tokens.
 
     The plaintext is returned to the caller once, to put in that person's email,
@@ -163,7 +174,11 @@ def issue(*, case_id: str, recipients: list[dict],
     supersede_outstanding(case_id)
     # Only ever reaches older rows: it matches `revision IS NULL`, and every
     # row inserted below carries `revision`.
-    if revision is not None and revision >= 2:
+    #
+    # And only when this IS a new revision. A send again repeats the client's
+    # current one (`new_revision=False`), and a pre-051 link may BE that
+    # revision's — dating it N-1 would be a guess, the thing 051 refused to do.
+    if new_revision and revision is not None and revision >= 2:
         _date_legacy_links(case_id, revision - 1)
 
     issued = []

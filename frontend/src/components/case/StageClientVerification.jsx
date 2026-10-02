@@ -45,6 +45,16 @@ export function describeSendError(err) {
     case 403:
       return { message, hint: 'Your role does not allow sending client verification for this case.' }
     case 409:
+      // A send again re-sends the copy the client was mailed (Levi
+      // 2026-10-03), and a case sent before the portal kept that copy has
+      // none to re-send. Its way on is a restart, not "the case is finished".
+      if (err?.reason === 'no_frozen_copy') {
+        return {
+          message,
+          hint: 'Nothing was sent. Restart verification first — it builds a '
+            + 'fresh return, which you can then send.',
+        }
+      }
       // What state, and what to do about it — not the bare fact that the case
       // is in the wrong one. "Not in a state that allows this" is a sentence
       // an operator can do nothing with (Levi 2026-09-03).
@@ -514,6 +524,12 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
               {revisionTag ? `${revisionTag} sent` : 'Sent'}{' '}
               {formatDateTime(caseRow.verification_sent_at)}.
               {!answered && ' Waiting on the client\'s reply.'}
+              {/* Levi 2026-10-03. Here, not in the note beside the button:
+                  this line is on screen whenever the case has been sent,
+                  while that note only reaches its last line once every
+                  field above is filled. */}
+              {' '}Send again re-sends this same frozen copy — to send a
+              corrected return, restart verification first.
             </div>
           </div>
         )}
@@ -695,7 +711,9 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
                           // Said BEFORE the press, because it is the one
                           // consequence of a resend the client notices: the
                           // button in the email they already have goes dead.
-                          + (nextRevision >= 2
+                          // Only after a RESTART: a send again repeats the
+                          // client's current Rev. (Levi 2026-10-03).
+                          + (!sent && nextRevision >= 2
                             ? ` It goes out as Rev. ${nextRevision}, and the `
                               + 'Confirm link in the earlier email stops working.'
                             : '')}
