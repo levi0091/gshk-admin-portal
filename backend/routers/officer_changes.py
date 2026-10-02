@@ -28,7 +28,7 @@ from services import (
 from services.audit_service import log_event
 from services.officer_change_form import FormFillError, render as render_form
 from services.officer_changes import (
-    cases as svc, documents, emails, prepare, recipients as recipients_svc,
+    cases as svc, documents, emails, prepare, recipients as recipients_svc, resolution,
 )
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms.cr_vocabularies import CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL
@@ -141,6 +141,8 @@ class CasePatchIn(BaseModel):
     signing_method: str | None = None
     signatory_capacity: str | None = None
     restart_verification: bool | None = None
+    #: Attach the generated written resolution to the client email (A3).
+    attach_resolution: bool | None = None
 
 
 @router.patch("/{case_id}")
@@ -176,6 +178,12 @@ async def patch_case(case_id: str, body: CasePatchIn,
                                      f"capacities for {kind} signing")
         if capacity != (case.get("signatory_capacity") or ""):
             patch["signatory_capacity"] = capacity or None
+    if body.attach_resolution is not None:
+        if case.get("form_code") != "Nd2a" and body.attach_resolution:
+            raise HTTPException(409, {"message": "A written resolution goes with an ND2A.",
+                                      "reason": "nd2a_only"})
+        if bool(body.attach_resolution) != bool(case.get("attach_resolution")):
+            patch["attach_resolution"] = bool(body.attach_resolution)
     for field, new in patch.items():
         await audit(case, user, ev.CASE_FIELD_UPDATED, old_value=case.get(field),
                     new_value=new, metadata={"field": field, "case_no": case.get("case_no")})
@@ -364,6 +372,71 @@ async def upload_document(case_id: str, entry_id: str, file: UploadFile = File(.
                 metadata={"document_id": row["id"], "document_type_code": document_type_code,
                           **_entry_metadata(entry)})
     return await respond(case_id, user)
+
+
+@router.post("/{case_id}/documents")
+async def upload_case_document(case_id: str, file: UploadFile = File(...),
+                               document_type_code: str = Form(...),
+                               send_with_email: str = Form("false"),
+                               user=Depends(require_permission(MODULE, "write"))):
+    """A document for the whole form — the written resolution, or anything else
+    GSHK sends with the client email (Jacqueline A3). Held on the case; filed to
+    the company's profile when the form is filed."""
+    case = load_case(case_id)
+    refuse_if_closed(case, "uploading to it")
+    send = str(send_with_email).strip().lower() in ("true", "1", "yes", "on")
+    content = await file.read()
+    try:
+        row = await documents.upload(case, None, document_type_code=document_type_code,
+                                     file_name=file.filename or "file", content=content,
+                                     mime_type=file.content_type, user=user,
+                                     send_with_email=send)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    await audit(case, user, ev.OFFICER_SUPPORT_DOC_UPLOADED, new_value=row["file_name"],
+                metadata={"document_id": row["id"], "document_type_code": document_type_code,
+                          "entry_id": None, "send_with_email": send,
+                          "case_no": case.get("case_no")})
+    return await respond(case_id, user)
+
+
+class DocumentPatchIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    send_with_email: bool
+
+
+@router.patch("/{case_id}/documents/{doc_id}")
+async def patch_document(case_id: str, doc_id: str, body: DocumentPatchIn,
+                         user=Depends(require_permission(MODULE, "write"))):
+    """Tick or untick a document to go with the client email."""
+    case = load_case(case_id)
+    refuse_if_closed(case, "changing its attachments")
+    try:
+        row = documents.set_send_with_email(case, doc_id, body.send_with_email)
+    except LookupError:
+        raise HTTPException(404, "Document not found on this case")
+    await audit(case, user, ev.CASE_FIELD_UPDATED, new_value=body.send_with_email,
+                metadata={"field": "send_with_email", "document_id": doc_id,
+                          "file_name": row.get("file_name"), "case_no": case.get("case_no")})
+    return await respond(case_id, user)
+
+
+@router.get("/{case_id}/resolution")
+async def resolution_preview(case_id: str,
+                             user=Depends(require_permission(MODULE, "read"))):
+    """The generated written resolution (ND2A), as it would be attached."""
+    case = load_case(case_id)
+    if case.get("form_code") != "Nd2a":
+        raise HTTPException(409, {"message": "A written resolution goes with an ND2A.",
+                                  "reason": "nd2a_only"})
+    data = await svc.composite(case_id, user=user)
+    entity = nar1_cases.entity_for(case["entity_id"]) or {}
+    pdf = await asyncio.to_thread(resolution.render, case, entity, data.get("entries") or [],
+                                  data.get("officers") or [])
+    return Response(pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f'inline; filename="{resolution.file_name(case)}"'})
 
 
 @router.delete("/{case_id}/documents/{doc_id}")

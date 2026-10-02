@@ -26,6 +26,19 @@ from services import document_service
 
 SUPPORT_TYPES = ("resignation_letter", "board_resolution", "consent_to_act",
                  "officer_change_support")
+#: A CASE-level document (Jacqueline A3) — the written resolution, or anything
+#: else GSHK sends with the client email — belongs to the form, not to one
+#: officer, and is filed to the COMPANY's profile.
+CASE_TYPES = ("board_resolution", "officer_change_support")
+SOURCES = ("upload", "econsent", "generated")
+
+
+class AttachmentError(RuntimeError):
+    """A document ticked to go with the email could not be read from storage."""
+
+    def __init__(self, file_name: str):
+        self.file_name = file_name
+        super().__init__(f"{file_name} could not be read from storage")
 _TABLE = "officer_change_documents"
 _SIGNED_URL_TTL = 3600
 
@@ -49,8 +62,26 @@ def _labels() -> dict[str, str]:
     return out
 
 
-def destination(entry: dict) -> dict:
-    """`{owner_kind: "person" | "entity", owner_id, name}` — the officer's own profile."""
+def _company_of(case: dict | None, case_id: str | None = None) -> dict:
+    """`{owner_kind: "entity", owner_id, name}` for the case's company."""
+    entity_id = (case or {}).get("entity_id")
+    if not entity_id and case_id:
+        rows = (get_supabase().table("nar1_cases").select("*").eq("id", case_id)
+                .execute().data) or []
+        entity_id = rows[0].get("entity_id") if rows else None
+    name = None
+    if entity_id:
+        rows = (get_supabase().table("entities").select("*").eq("id", entity_id)
+                .execute().data) or []
+        name = rows[0].get("company_name") if rows else None
+    return {"owner_kind": "entity", "owner_id": entity_id, "name": name or "the company"}
+
+
+def destination(entry: dict | None, *, case: dict | None = None) -> dict:
+    """`{owner_kind: "person" | "entity", owner_id, name}` — the officer's own
+    profile, or the company's for a case-level document."""
+    if entry is None:
+        return _company_of(case)
     name = ((entry.get("party") or {}).get("name")) or None
     if entry.get("person_id"):
         if name is None:
@@ -67,42 +98,64 @@ def destination(entry: dict) -> dict:
             "name": name or "(unnamed body corporate)"}
 
 
-async def upload(case: dict, entry: dict, *, document_type_code: str, file_name: str,
-                 content: bytes, mime_type: str | None, user: dict) -> dict:
-    if document_type_code not in SUPPORT_TYPES:
+async def upload(case: dict, entry: dict | None, *, document_type_code: str,
+                 file_name: str, content: bytes, mime_type: str | None, user: dict | None,
+                 send_with_email: bool = False, source: str = "upload",
+                 uploaded_by_name: str | None = None) -> dict:
+    """Hold a file on the case. `entry` None is a CASE-level document; `user`
+    None is a consent signed in G-FlowDesk, named by `uploaded_by_name`."""
+    if entry is None:
+        if document_type_code not in CASE_TYPES:
+            raise ValueError("A document for the whole form is a written resolution "
+                             "or other")
+    elif document_type_code not in SUPPORT_TYPES:
         raise ValueError("A supporting document is a resignation letter, a board "
                          "resolution, a consent to act, or other")
+    if source not in SOURCES:
+        raise ValueError(f"unknown document source {source!r}")
     if not content:
         raise ValueError("The file is empty")
     if _filed(case):
         raise ValueError("This form has been filed; its supporting documents are on "
                          "the officers' profiles now")
-    if entry.get("case_id") != case["id"]:
+    if entry is not None and entry.get("case_id") != case["id"]:
         raise ValueError("That entry is not on this case")
     sb = get_supabase()
     safe = (file_name or "file").replace("/", "_")
-    path = f"officer-change/{case['id']}/{entry['id']}/{uuid.uuid4().hex[:12]}-{safe}"
+    folder = entry["id"] if entry is not None else "case"
+    path = f"officer-change/{case['id']}/{folder}/{uuid.uuid4().hex[:12]}-{safe}"
     document_service._upload_bytes(sb, path, content, mime_type)
     return sb.table(_TABLE).insert({
-        "case_id": case["id"], "entry_id": entry["id"],
+        "case_id": case["id"], "entry_id": entry["id"] if entry is not None else None,
         "document_type_code": document_type_code, "file_name": safe,
         "storage_bucket": document_service.BUCKET, "storage_path": path,
         "mime_type": mime_type, "file_size_bytes": len(content),
         "checksum_sha256": hashlib.sha256(content).hexdigest(),
-        "uploaded_by": user["id"], "uploaded_at": _now(),
+        "uploaded_by": (user or {}).get("id"), "uploaded_at": _now(),
+        "send_with_email": bool(send_with_email), "source": source,
+        "uploaded_by_name": uploaded_by_name,
     }).execute().data[0]
 
 
-def _view(row: dict, entries_by_id: dict[str, dict], labels: dict[str, str]) -> dict:
-    entry = entries_by_id.get(row["entry_id"]) or {"person_id": None,
-                                                   "corporate_entity_id": None}
+def _view(row: dict, entries_by_id: dict[str, dict], labels: dict[str, str],
+          company: dict | None = None) -> dict:
+    entry = entries_by_id.get(row.get("entry_id")) or {"person_id": None,
+                                                        "corporate_entity_id": None}
+    if row.get("entry_id") is None:
+        where = company
+    elif entry.get("person_id") or entry.get("corporate_entity_id"):
+        where = destination(entry)
+    else:
+        where = None
     return {
-        "id": row["id"], "entry_id": row["entry_id"],
+        "id": row["id"], "entry_id": row.get("entry_id"),
         "document_type_code": row["document_type_code"],
         "type_label": labels.get(row["document_type_code"], row["document_type_code"]),
         "file_name": row["file_name"], "uploaded_at": row.get("uploaded_at"),
-        "destination": destination(entry) if (entry.get("person_id")
-                                              or entry.get("corporate_entity_id")) else None,
+        "send_with_email": bool(row.get("send_with_email")),
+        "source": row.get("source") or "upload",
+        "uploaded_by_name": row.get("uploaded_by_name"),
+        "destination": where,
         "filed": row.get("filed_at") is not None,
         "filed_document_id": row.get("filed_document_id"),
         "filed_document_version": row.get("filed_document_version"),
@@ -127,7 +180,39 @@ def list_for_case(case_id: str, entries: list[dict] | None = None) -> list[dict]
         return []
     by_id = {e["id"]: e for e in (entries if entries is not None else _entries(case_id))}
     labels = _labels()
-    return [_view(r, by_id, labels) for r in rows]
+    company = (_company_of(None, case_id) if any(r.get("entry_id") is None for r in rows)
+               else None)
+    return [_view(r, by_id, labels, company) for r in rows]
+
+
+def set_send_with_email(case: dict, doc_id: str, value: bool) -> dict:
+    """Tick or untick a case document to go with the verification email."""
+    doc = get(case["id"], doc_id)
+    if doc is None:
+        raise LookupError(f"no document {doc_id} on case {case['id']}")
+    return (get_supabase().table(_TABLE).update({"send_with_email": bool(value)})
+            .eq("id", doc_id).execute().data[0])
+
+
+def email_attachments(case_id: str) -> list[tuple[str, bytes]]:
+    """`[(file_name, bytes)]` for every document ticked to go with the email.
+
+    Raises `AttachmentError` naming the first file that cannot be read: the
+    send must stop rather than mail a letter missing what it promises."""
+    out = []
+    sb = get_supabase()
+    for row in _rows(case_id):
+        if not row.get("send_with_email"):
+            continue
+        try:
+            content = sb.storage.from_(row.get("storage_bucket")
+                                       or document_service.BUCKET).download(row["storage_path"])
+        except Exception as exc:  # noqa: BLE001 — named, then refused
+            print(f"officer_change_documents: attachment {row['storage_path']} "
+                  f"unreadable: {exc!r}", file=sys.stderr)
+            raise AttachmentError(row["file_name"]) from exc
+        out.append((row["file_name"], content))
+    return out
 
 
 def get(case_id: str, doc_id: str) -> dict | None:
@@ -177,15 +262,19 @@ async def file_to_profiles(case: dict, entries: list[dict], *, user: dict) -> li
     by_id = {e["id"]: e for e in entries}
     sb = get_supabase()
     for row in rows:
-        view = _view(row, by_id, labels)
+        company = _company_of(case) if row.get("entry_id") is None else None
+        view = _view(row, by_id, labels, company)
         if row.get("filed_at"):
             out.append({**view, "error": None})
             continue
         try:
-            entry = by_id.get(row["entry_id"])
-            if entry is None:
-                raise LookupError("its entry is no longer on the case")
-            dest = destination(entry)
+            if row.get("entry_id") is None:
+                dest = company
+            else:
+                entry = by_id.get(row["entry_id"])
+                if entry is None:
+                    raise LookupError("its entry is no longer on the case")
+                dest = destination(entry)
             content = sb.storage.from_(row.get("storage_bucket")
                                        or document_service.BUCKET).download(row["storage_path"])
             title = f"{case.get('case_no') or 'Officer change'} — {view['type_label']}"
@@ -197,7 +286,7 @@ async def file_to_profiles(case: dict, entries: list[dict], *, user: dict) -> li
                      "filed_document_version": doc.get("current_version"),
                      "filed_at": _now()}
             sb.table(_TABLE).update(stamp).eq("id", row["id"]).execute()
-            out.append({**_view({**row, **stamp}, by_id, labels), "error": None})
+            out.append({**_view({**row, **stamp}, by_id, labels, company), "error": None})
         except Exception as exc:  # noqa: BLE001 — see docstring
             detail = getattr(exc, "detail", None) or str(exc)
             print(f"officer_change_documents: filing {row['id']} failed: {detail}",

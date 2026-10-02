@@ -57,6 +57,8 @@ ROUTES = [
     ("delete", "/officer-changes/K1/entries/N1", None),
     ("post", "/officer-changes/K1/entries/N1/kyc", {"cleared": True}),
     ("put", "/officer-changes/K1/entries/N1/effective-date", {"effective_date": "2026-10-01"}),
+    ("patch", "/officer-changes/K1/documents/D1", {"send_with_email": True}),
+    ("get", "/officer-changes/K1/resolution", None),
     ("get", "/officer-changes/K1/preview", None),
     ("get", "/officer-changes/K1/verification/recipients", None),
     ("post", "/officer-changes/K1/verification/send", {"respond_by": "2026-10-10"}),
@@ -475,3 +477,67 @@ def test_put_effective_date_bad_value_is_a_400(env):
         resp = client.put("/officer-changes/K1/entries/N1/effective-date", headers=H,
                           json={"effective_date": "2099-01-01"})
     assert resp.status_code == 400
+
+
+
+# -- case documents, attachments and the written resolution (Jacqueline A3) ---------
+
+def test_case_document_upload_holds_it_on_the_case_and_audits(env):
+    row = {"id": "D1", "file_name": "resolution.pdf"}
+    with patch.object(oc.documents, "upload", new_callable=AsyncMock, return_value=row) as up:
+        resp = client.post("/officer-changes/K1/documents", headers=H,
+                           data={"document_type_code": "board_resolution",
+                                 "send_with_email": "true"},
+                           files={"file": ("resolution.pdf", b"%PDF", "application/pdf")})
+    assert resp.status_code == 200, resp.text
+    assert up.await_args.args[1] is None and up.await_args.kwargs["send_with_email"] is True
+    meta = env.audit.await_args.kwargs["metadata"]
+    assert env.audit.await_args.kwargs["action_type"] == "OFFICER_SUPPORT_DOC_UPLOADED"
+    assert meta["entry_id"] is None and meta["send_with_email"] is True
+
+
+def test_case_document_upload_403_without_write():
+    with patch("middleware.auth._resolve_user", return_value=STAFF), \
+         patch("middleware.auth.get_supabase") as msb:
+        chain = msb.return_value.table.return_value.select.return_value
+        chain.eq.return_value.eq.return_value.execute.return_value.data = []
+        chain.eq.return_value.execute.return_value.data = []
+        resp = client.post("/officer-changes/K1/documents", headers=H,
+                           data={"document_type_code": "board_resolution"},
+                           files={"file": ("r.pdf", b"%PDF", "application/pdf")})
+    assert resp.status_code == 403
+
+
+def test_patch_document_send_with_email_audits_the_field(env):
+    with patch.object(oc.documents, "set_send_with_email",
+                      return_value={"id": "D1", "file_name": "r.pdf",
+                                    "send_with_email": True}):
+        resp = client.patch("/officer-changes/K1/documents/D1", headers=H,
+                            json={"send_with_email": True})
+    assert resp.status_code == 200
+    row = env.audit.await_args.kwargs
+    assert row["action_type"] == "CASE_FIELD_UPDATED"
+    assert row["metadata"]["field"] == "send_with_email"
+
+
+def test_patch_attach_resolution_audits_field(env):
+    resp = client.patch("/officer-changes/K1", headers=H, json={"attach_resolution": True})
+    assert resp.status_code == 200, resp.text
+    assert env.update.call_args.args[1] == {"attach_resolution": True}
+    row = env.audit.await_args.kwargs
+    assert row["metadata"]["field"] == "attach_resolution" and row["new_value"] is True
+
+
+def test_resolution_preview_is_a_pdf(env):
+    env.composite.return_value = {**COMPOSITE, "officers": [], "entries": []}
+    with patch.object(oc.resolution, "render", return_value=b"%PDF-res") as render:
+        resp = client.get("/officer-changes/K1/resolution", headers=H)
+    assert resp.status_code == 200 and resp.content == b"%PDF-res"
+    assert resp.headers["content-type"] == "application/pdf"
+    render.assert_called_once()
+
+
+def test_resolution_is_nd2a_only(env):
+    env.case = {**CASE, "form_code": "Nd2b"}
+    resp = client.get("/officer-changes/K1/resolution", headers=H)
+    assert resp.status_code == 409

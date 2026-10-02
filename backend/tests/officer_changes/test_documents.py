@@ -20,10 +20,12 @@ JOINER = {"id": "N2", "case_id": "K1", "kind": "appointment", "person_id": None,
 def db(monkeypatch):
     fake = FakeSupabase({
         "officer_change_documents": [], "officer_change_entries": [LEAVER, JOINER],
+        "nar1_cases": [CASE],
         "document_types": [{"code": "resignation_letter", "label": "Resignation letter"},
                            {"code": "board_resolution", "label": "Board resolution"}],
         "persons": [{"id": "P1", "full_name": "CHAN Tai Man"}],
-        "entities": [{"id": "C9", "company_name": "Corp Director Limited"}],
+        "entities": [{"id": "C9", "company_name": "Corp Director Limited"},
+                     {"id": "E1", "company_name": "Sample Trading Limited"}],
     })
     monkeypatch.setattr(documents, "get_supabase", lambda: fake)
     return fake
@@ -125,3 +127,64 @@ def test_filing_never_raises_even_when_the_table_cannot_be_read(monkeypatch):
     monkeypatch.setattr(documents, "get_supabase", boom)
     out = asyncio.run(documents.file_to_profiles(CASE, [], user=USER))
     assert out and "database down" in out[0]["error"]
+
+
+
+# -- case-level documents and the email (Jacqueline A3) ---------------------------
+
+def _case_upload(code="board_resolution", send=True, name="resolution.pdf"):
+    return asyncio.run(documents.upload(CASE, None, document_type_code=code,
+                                        file_name=name, content=b"%PDF-R",
+                                        mime_type="application/pdf", user=USER,
+                                        send_with_email=send))
+
+
+def test_case_level_upload_has_no_entry(db):
+    row = _case_upload()
+    assert row["entry_id"] is None and row["send_with_email"] is True
+    assert row["storage_path"].startswith("officer-change/K1/case/")
+
+
+def test_case_level_upload_takes_only_a_resolution_or_other(db):
+    with pytest.raises(ValueError, match="written resolution"):
+        _case_upload(code="resignation_letter")
+
+
+def test_case_level_document_lists_and_files_to_the_company(db, monkeypatch):
+    _case_upload()
+    rows = documents.list_for_case("K1")
+    assert rows[0]["destination"] == {"owner_kind": "entity", "owner_id": "E1",
+                                      "name": "Sample Trading Limited"}
+    assert rows[0]["send_with_email"] is True and rows[0]["entry_id"] is None
+    calls = []
+
+    async def fake_upload(**kwargs):
+        calls.append(kwargs)
+        return {"id": "DOC-1", "current_version": 1}
+
+    monkeypatch.setattr(documents.document_service, "upload_document", fake_upload)
+    out = asyncio.run(documents.file_to_profiles(CASE, [LEAVER, JOINER], user=USER))
+    assert calls[0]["owner_kind"] == "entity" and calls[0]["owner_id"] == "E1"
+    assert out[0]["error"] is None
+
+
+def test_set_send_with_email_toggles(db):
+    row = _upload()
+    out = documents.set_send_with_email(CASE, row["id"], True)
+    assert out["send_with_email"] is True
+
+
+def test_email_attachments_returns_only_ticked_docs(db):
+    _case_upload(name="resolution.pdf")
+    _case_upload(code="officer_change_support", send=False, name="memo.pdf")
+    assert documents.email_attachments("K1") == [("resolution.pdf", b"%PDF-R")]
+
+
+def test_email_attachments_raises_naming_the_file_on_download_failure(db):
+    """Review Focus 4: a letter that promises an attachment it lacks is worse
+    than no letter."""
+    row = _case_upload(name="resolution.pdf")
+    db.storage.fail_paths.add(row["storage_path"])
+    with pytest.raises(documents.AttachmentError) as caught:
+        documents.email_attachments("K1")
+    assert caught.value.file_name == "resolution.pdf"
