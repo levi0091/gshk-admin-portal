@@ -35,11 +35,19 @@ export default function StageConfirmation({ data, reload, can, goTo }) {
         <div className="card-title">Filed with the Companies Registry</div>
         <div className="kv-row"><span className="kv-key">CR case number</span>
           <span className="kv-val">{receipt.caseNo || '—'}</span></div>
-        <div className="kv-row"><span className="kv-key">Transaction date</span>
-          <span className="kv-val">{receipt.transactionDate || '—'}
-            {receipt.transactionTime ? ` ${receipt.transactionTime}` : ''}</span></div>
-        {receipt.refNo && <div className="kv-row"><span className="kv-key">Document reference</span>
-          <span className="kv-val">{receipt.refNo}</span></div>}
+        {/* A FREE form's receipt has no payment block (CR TEST, case 141946253):
+            no transaction date, time or refNo. The date is then when this portal
+            filed it, and the reference is the one CR printed in the barcode. */}
+        <div className="kv-row"><span className="kv-key">{receipt.transactionDate ? 'Transaction date' : 'Filed'}</span>
+          <span className="kv-val">
+            {receipt.transactionDate
+              ? `${receipt.transactionDate}${receipt.transactionTime ? ` ${receipt.transactionTime}` : ''}`
+              : (data.filing?.submitted_at ? formatDateTime(data.filing.submitted_at) : '—')}
+          </span></div>
+        {(receipt.refNo || receipt.documentRefNo) && (
+          <div className="kv-row"><span className="kv-key">Document reference</span>
+            <span className="kv-val">{receipt.refNo || receipt.documentRefNo}</span></div>
+        )}
         <div className="kv-row"><span className="kv-key">Route</span>
           <span className="kv-val">{data.signing_method === 'manual' ? 'Manual (CR portal)' : 'e-Sign via CR'}</span></div>
         {data.applied_at && <div className="kv-row"><span className="kv-key">Profiles updated</span>

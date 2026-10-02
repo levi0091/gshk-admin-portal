@@ -359,6 +359,18 @@ What CR TEST taught, now in the code (`officer_change_filing._CR_HINTS`):
 - CR's sample signer ids are refused ("Please check selectPersonId field."):
   the signer must be a real account associated with the company.
 
-Still not verified: `submitForm` (it would change CR TEST's shared register),
-`docStatusEnquiry` on an ND2 case number, and the two PostgREST queries noted in
-the final review (the auto-approval job's inner join, the register name match).
+**One filing submitted, approved by Levi (2026-10-02, ~15:05 HKT).** An ND2B
+changing ONLY the test Director's email on T0001137 (effective 01/10/2026),
+signed by the test Secretary: validated, signed, `submitForm` once. CR TEST
+receipt: case **141946253**, document **ND2B (T0022892651)**. `docStatusEnquiry`
+by that case number listed it **immediately** as `Lodged` ("(E)FND2B - Notice of
+Change in Particulars of Company Secretary and Director") — on TEST, unlike the
+same-day silence measured on PROD for NAR1.
+
+**A free form's receipt has no payment block:** `refNo`, `transactionDate`,
+`transactionTime` and `totalAmount` all come back empty, and the document
+reference is only in `docCodesWithBarcode`. `signing.with_document_ref` lifts it
+into `documentRefNo`, and Confirmation shows the portal's own filing time.
+
+Still not verified: the two PostgREST queries noted in the final review (the
+auto-approval job's inner join, the register name match), which need DEV.

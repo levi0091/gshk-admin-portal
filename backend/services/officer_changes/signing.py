@@ -150,6 +150,23 @@ def sign(client, filing_id: str, *, signatory_user_id: str, eservice_password: s
     return {"filing_id": filing_id, "result": result, "consents": len(consents)}
 
 
+_DOC_REF = re.compile(r"\(\s*([A-Z0-9]+)\s*\)")
+
+
+def with_document_ref(receipt: dict) -> dict:
+    """CR's receipt, verbatim, plus the document reference where CR put it.
+
+    MEASURED on CR TEST (2026-10-02, case 141946253): a FREE form's receipt
+    carries no payment block, so `refNo`, `transactionDate`, `transactionTime`
+    and `totalAmount` all come back empty, and the document reference exists
+    only inside `docCodesWithBarcode` — "ND2B (T0022892651)". It is lifted into
+    `documentRefNo` (an added key: CR's own fields are never rewritten)."""
+    if receipt.get("refNo") or receipt.get("documentRefNo"):
+        return receipt
+    match = _DOC_REF.search(receipt.get("docCodesWithBarcode") or "")
+    return {**receipt, "documentRefNo": match.group(1)} if match else receipt
+
+
 def submit(client, filing_id: str, *, confirm: bool) -> dict:
     """submitForm{Code} for a signed filing. Returns the filing row's receipt."""
     filing = filings.get_filing(filing_id)
@@ -160,7 +177,7 @@ def submit(client, filing_id: str, *, confirm: bool) -> dict:
         raise ValueError("filing must be signed before it can be submitted")
     try:
         raw = client.post_form("submitForm", filing["form_code"], filing["signed_xml"])
-        receipt = filings.parse_receipt(raw)
+        receipt = with_document_ref(filings.parse_receipt(raw))
     except TpsiError as exc:
         filings._update(filing_id, {
             "stage": filings.STAGE_SUBMISSION_FAILED,

@@ -316,6 +316,17 @@ describe('StageConfirmation — an unfinished profile update', () => {
     await waitFor(() => expect(reload).toHaveBeenCalled())
   })
 
+  it("shows a free form's receipt as CR TEST returned it: barcode reference, filing time", () => {
+    const esign = { ...BASE, signing_method: 'esign', applied_at: 'x', profile_changes: [],
+      documents: [], filing: { stage: 'submitted', submitted_at: '2026-10-02T07:05:00Z' },
+      receipt: { caseNo: '141946253', docCodesWithBarcode: 'ND2B (T0022892651)',
+        documentRefNo: 'T0022892651', transactionDate: null, refNo: null } }
+    wrap(<StageConfirmation data={esign} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText('141946253')).toBeInTheDocument()
+    expect(screen.getByText('T0022892651')).toBeInTheDocument()
+    expect(screen.getByText('Filed')).toBeInTheDocument()
+  })
+
   it('offers nothing once the update is complete, or undone after a rejection', () => {
     const { unmount } = wrap(<StageConfirmation data={{ ...filed, applied_at: 'x' }}
                                                 reload={vi.fn()} can={ALL} goTo={vi.fn()} />)

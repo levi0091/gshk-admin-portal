@@ -156,3 +156,31 @@ def test_submit_refusal_marks_submission_failed(chain):
 def test_submit_needs_a_signed_filing(chain):
     with pytest.raises(ValueError):
         signing.submit(FakeClient(), "F1", confirm=True)
+
+
+# -- the receipt of a free form (measured on CR TEST, 2026-10-02) ----------------
+
+#: CR TEST's real receipt for ND2B case 141946253: no payment block, so no refNo,
+#: transaction date, time or amount — the document reference is only in the
+#: barcode field.
+CR_TEST_RECEIPT = {
+    "caseNo": "141946253", "brNo": "T0001137", "accNo": None,
+    "chiCoyName": "二六零七二七一零零一一六測試有限公司",
+    "engCoyName": "CGAHCHBAABBG TEST COMPANY LIMITED",
+    "docCodesWithBarcode": "ND2B (T0022892651)", "pymtNo": None, "pymtRefNo": None,
+    "pymtMtd": None, "transactionDate": None, "transactionTime": None,
+    "totalAmount": None, "refNo": None, "paymentRcptList": [],
+}
+
+
+def test_a_free_forms_receipt_gains_its_document_reference_and_keeps_crs_fields():
+    out = signing.with_document_ref(CR_TEST_RECEIPT)
+    assert out["documentRefNo"] == "T0022892651"
+    assert {k: out[k] for k in CR_TEST_RECEIPT} == CR_TEST_RECEIPT
+
+
+def test_a_receipt_that_names_its_reference_is_left_alone():
+    receipt = {**CR_TEST_RECEIPT, "refNo": "R1"}
+    assert signing.with_document_ref(receipt) == receipt
+    no_barcode = {**CR_TEST_RECEIPT, "docCodesWithBarcode": None}
+    assert signing.with_document_ref(no_barcode) == no_barcode
