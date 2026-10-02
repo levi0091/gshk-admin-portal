@@ -40,7 +40,7 @@ async function fillRequired(user) {
   await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
   await selectCompanyType(user)
   // The address is now the separate lines CR receives, not one free-text box.
-  await user.type(screen.getByLabelText(/Flat \/ Floor \/ Block/), '1 Harbour View St')
+  await user.type(screen.getByLabelText(/Flat\/Floor\/Block/), '1 Harbour View St')
   await user.type(screen.getByLabelText(/Company Phone/), '3500 1234')
 }
 
@@ -265,7 +265,7 @@ describe('AddCompanyModal — newly required fields (UAT F-5)', () => {
     await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
     await user.selectOptions(screen.getByLabelText(/Status/), 'pre_incorporation')
     await selectCompanyType(user)
-    await user.type(screen.getByLabelText(/Flat \/ Floor \/ Block/), '1 Harbour View St')
+    await user.type(screen.getByLabelText(/Flat\/Floor\/Block/), '1 Harbour View St')
     await user.click(screen.getByRole('button', { name: 'Create Company' }))
     expect(await screen.findByText('Company phone is required')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()
