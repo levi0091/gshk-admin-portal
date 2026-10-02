@@ -631,6 +631,15 @@ def test_once_the_new_revision_is_approved_an_old_link_says_so(client):
     assert "BO LEE" in response.text
 
 
+def test_a_link_ahead_of_the_case_still_works_on_the_page(client):
+    """The job skips such a link (nar1_approvals.is_ahead); the page must not.
+    A send that went out and then failed to write the case leaves the client
+    holding exactly this — a genuine link one revision ahead."""
+    with _Stack(*_world(approval=row(revision=3), case=RESENT)):
+        response = client.get(PATH)
+    assert ">Confirm &amp; File</button>" in response.text
+
+
 def test_a_link_issued_before_revisions_existed_still_works(client):
     """NULL revision: the lock does not apply, and the outcome still governs."""
     with _Stack(*_world(approval=row(revision=None), case=RESENT)):

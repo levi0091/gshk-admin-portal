@@ -204,9 +204,24 @@ def test_the_current_revisions_link_is_not_stale():
 
 
 def test_a_link_ahead_of_the_case_is_not_stale():
-    """Issued for a send that then failed outright, so the case never moved to
-    that number. Nobody holds it, and the retry supersedes it."""
+    """Issued for a send that never recorded itself on the case — usually one
+    that failed outright, rarely one that went out and then could not write
+    the case. The PUBLIC PAGE must keep honouring it, because in the second
+    path the client holds a genuine link. The auto-approval job treats it
+    differently — see is_ahead."""
     assert not approvals.is_stale({"revision": 3}, {"verification_revision": 2})
+
+
+def test_a_link_ahead_of_the_case_belongs_to_a_send_never_recorded():
+    """What the auto-approval job refuses to read silence from."""
+    assert approvals.is_ahead({"revision": 3}, {"verification_revision": 2})
+    assert not approvals.is_ahead({"revision": 2}, {"verification_revision": 2})
+    assert not approvals.is_ahead({"revision": 1}, {"verification_revision": 2})
+
+
+def test_a_legacy_link_is_never_ahead():
+    assert not approvals.is_ahead({"revision": None}, {"verification_revision": 0})
+    assert not approvals.is_ahead({}, {})
 
 
 def test_a_link_issued_before_revisions_existed_is_never_stale():

@@ -318,6 +318,23 @@ async def test_a_stale_link_does_not_hide_the_current_revisions_link_behind_it()
 
 
 @pytest.mark.asyncio
+async def test_silence_on_a_send_that_never_went_out_is_not_consent():
+    """Tokens are issued BEFORE the send loop, so a send Resend refused for
+    every recipient leaves Rev. 3 links outstanding while the case stays at
+    Rev. 2 — and `verification_sent_at` from the Rev. 2 send lets every other
+    exclusion pass. At the failed send's deadline the job would approve the
+    case on silence about an email nobody received."""
+    failed_resend = case(verification_revision=2)
+    with _Stack(*_world(tokens=[token(revision=3)], cases=[failed_resend])) as entered:
+        report = await job.run(NOW)
+    update_case = entered[3]
+    assert report["approved"] == 0
+    assert report["skipped_detail"] == [
+        ("c1", "the link belongs to a send that never went out")]
+    update_case.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_a_link_issued_before_revisions_existed_is_judged_as_before():
     with _Stack(*_world(tokens=[token(revision=None)],
                         cases=[case(verification_revision=3)])):
