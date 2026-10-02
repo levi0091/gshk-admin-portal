@@ -156,13 +156,26 @@ def test_a_secretary_has_no_registered_residential_address_only_correspondence()
         "correspondence_address"]
 
 
-def test_an_explicit_correspondence_address_is_never_reported_as_moved():
+def test_an_explicit_correspondence_address_held_by_the_appointment_does_not_move():
+    """The appointment still gives the same correspondence address CR holds, so
+    a residential move is (d) alone."""
     base = _base_person()
     base["correspondence_address"] = dict(OFFICE)
     now = copy.deepcopy(base)
     now["residential_address"] = {**HOME, "line1": "Flat B, 20/F"}
-    now["correspondence_address"] = None
     assert _keys(pt.diff(base, now, capacity="director")) == ["residential_address"]
+
+
+def test_an_explicit_correspondence_address_set_back_to_residential_is_e():
+    """Jacqueline AQ5/B4: the appointment's correspondence address is editable
+    now, so 'same as residential' after an explicit one is a change CR must hear."""
+    base = _base_person()
+    base["correspondence_address"] = dict(OFFICE)
+    now = copy.deepcopy(base)
+    now["correspondence_address"] = None
+    items = pt.diff(base, now, capacity="director")
+    assert _keys(items) == ["correspondence_address"]
+    assert items[0]["new"] == base["residential_address"]
 
 
 def test_tcsp_is_a_secretary_item_only():
@@ -285,6 +298,7 @@ def test_dismiss_moves_every_baseline_to_now(db):
 
 
 def test_dismiss_keeps_an_explicit_correspondence_address(db):
+    db.tables["entity_officers"][0]["correspondence_address_id"] = "A2"
     pt.set_baseline("E1", person_id="P1",
                     particulars={**pt.snapshot_person("P1"),
                                  "correspondence_address": dict(OFFICE)},
@@ -373,3 +387,61 @@ def test_corporate_pending_and_dismiss(db):
     assert _keys(pending[0]["items"]) == ["email"]
     assert pt.dismiss(corporate_entity_id="C1", user_id="U1") == 1
     assert pt.pending_for_corporate("C1") == []
+
+
+
+# -- the correspondence address belongs to the appointment (Jacqueline AQ5, B4) --------
+
+def _two_directorships(db):
+    db.tables["entity_officers"][2]["is_current"] = True  # O3: P1 director of E2
+
+
+def test_capture_records_the_appointments_own_correspondence(db):
+    db.tables["entity_officers"][0]["correspondence_address_id"] = "A2"
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    assert pt.baseline("E1", person_id="P1")["correspondence_address"]["line1"] == "Room 1201"
+    assert pt.baseline("E2", person_id="P1")["correspondence_address"] is None
+
+
+def test_editing_one_appointments_correspondence_raises_e_for_that_company_only(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["entity_officers"][0]["correspondence_address_id"] = "A2"
+    rows = {r["entity_id"]: r for r in pt.pending_for_person("P1")}
+    assert set(rows) == {"E1"}
+    assert _keys(rows["E1"]["items"]) == ["correspondence_address"]
+    assert rows["E1"]["items"][0]["new"]["line1"] == "Room 1201"
+    assert _keys(pt.pending_for_officer("E1", person_id="P1", capacity="director")) == [
+        "correspondence_address"]
+
+
+def test_explicit_baseline_equal_to_the_appointment_is_not_pending(db):
+    db.tables["entity_officers"][0]["correspondence_address_id"] = "A2"
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    assert pt.pending_for_officer("E1", person_id="P1", capacity="director") == []
+
+
+def test_capture_for_one_company_only(db):
+    _two_directorships(db)
+    assert pt.capture_before_edit(person_id="P1", user_id="U1", entity_id="E1") == 1
+    assert pt.baseline("E2", person_id="P1") is None
+
+
+def test_dismiss_for_one_company_moves_only_that_baseline(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, email="changed@example.com")
+    assert pt.dismiss(person_id="P1", user_id="U2", entity_id="E1") == 1
+    left = pt.pending_for_person("P1")
+    # E2 is two appointments (director, and secretary on the register).
+    assert {r["entity_id"] for r in left} == {"E2"}
+
+
+def test_dismiss_for_a_company_without_a_baseline_is_zero(db):
+    assert pt.dismiss(person_id="P1", user_id="U2", entity_id="E9") == 0
+
+
+def test_appointment_correspondence_reads_the_officer_row(db):
+    db.tables["entity_officers"][0]["correspondence_address_id"] = "A2"
+    out = pt.appointment_correspondence("P1")
+    assert out[0]["officer_id"] == "O1" and out[0]["address"]["line1"] == "Room 1201"

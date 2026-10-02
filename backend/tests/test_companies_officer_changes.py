@@ -53,7 +53,7 @@ def test_dismiss_for_a_body_corporate_audits_and_returns_count(db, admin):
          patch("routers.companies.log_event", new_callable=AsyncMock) as audit:
         resp = client.post("/companies/C1/particulars-changes/dismiss", headers=H)
     assert resp.json() == {"dismissed": 1}
-    dismiss.assert_called_once_with(corporate_entity_id="C1", user_id="admin-1")
+    dismiss.assert_called_once_with(corporate_entity_id="C1", user_id="admin-1", entity_id=None)
     assert audit.await_args.kwargs["action_type"] == "OFFICER_PARTICULARS_DISMISSED"
 
 

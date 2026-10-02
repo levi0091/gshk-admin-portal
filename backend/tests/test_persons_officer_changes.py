@@ -31,6 +31,7 @@ def db():
     })
     with patch("routers.persons.get_supabase", return_value=fake), \
          patch("services.officer_changes.eservice.get_supabase", return_value=fake), \
+         patch("services.officer_changes.particulars.get_supabase", return_value=fake), \
          patch("services.officer_changes.eservice.encrypt", side_effect=lambda p: "enc:" + p[::-1]), \
          patch("services.officer_changes.eservice.decrypt", side_effect=lambda c: c[4:][::-1]):
         yield fake
@@ -157,6 +158,7 @@ def test_delete_credential_removes_and_audits(db, admin, audit):
     ("delete", "/persons/P1/eservice-credential"),
     ("get", "/persons/P1/particulars-changes"),
     ("post", "/persons/P1/particulars-changes/dismiss"),
+    ("put", "/persons/P1/appointments/O1/correspondence-address"),
 ])
 def test_routes_need_persons_permission(db, method, path):
     with patch("middleware.auth._resolve_user", return_value=REGULAR):
@@ -206,7 +208,7 @@ def test_dismiss_moves_the_baseline_and_audits_labels_not_values(db, admin, audi
          patch("services.officer_changes.particulars.dismiss", return_value=1) as dismiss:
         resp = client.post("/persons/P1/particulars-changes/dismiss", headers=H)
     assert resp.json() == {"dismissed": 1}
-    dismiss.assert_called_once_with(person_id="P1", user_id="admin-1")
+    dismiss.assert_called_once_with(person_id="P1", user_id="admin-1", entity_id=None)
     kwargs = audit.await_args.kwargs
     assert kwargs["action_type"] == "OFFICER_PARTICULARS_DISMISSED"
     assert kwargs["metadata"]["dismissed"][0]["items"] == ["Email address"]
@@ -263,3 +265,76 @@ def test_a_residential_address_change_captures_first(db, admin):
             "line1": "Flat A", "city": "CENTRAL", "country": "HK"})
     assert resp.status_code == 200, resp.text
     assert order == ["capture", "save"]
+
+
+
+# -- correspondence address per appointment, dismiss per company (Jacqueline AQ5, B4, BQ2)
+
+def _with_appointment(db):
+    db.tables.setdefault("entity_officers", []).append(
+        {"id": "O1", "entity_id": "E1", "person_id": "P1", "role": "director",
+         "is_current": True, "correspondence_address_id": None})
+    db.tables.setdefault("entities", []).append({"id": "E1", "company_name": "Sample Ltd"})
+    db.tables.setdefault("addresses", [])
+
+
+ADDRESS = {"line1": "Room 1201", "line2": "Tower 2", "line3": "8 Connaught Place",
+           "city": "CENTRAL", "country": "HK"}
+
+
+def test_put_correspondence_address_writes_the_appointment_and_captures_first(db, admin, audit):
+    _with_appointment(db)
+    with patch("routers.persons.particulars.capture_before_edit") as capture:
+        resp = client.put("/persons/P1/appointments/O1/correspondence-address",
+                          headers=H, json=ADDRESS)
+    assert resp.status_code == 200, resp.text
+    capture.assert_called_once()
+    assert capture.call_args.kwargs["entity_id"] == "E1"
+    officer = db.tables["entity_officers"][0]
+    assert officer["correspondence_address_id"]
+    assert audit.await_args.kwargs["metadata"]["field"] == "correspondence_address"
+
+
+def test_same_as_residential_clears_the_appointments_address(db, admin, audit):
+    _with_appointment(db)
+    db.tables["entity_officers"][0]["correspondence_address_id"] = "AX"
+    db.tables["addresses"].append({"id": "AX", **ADDRESS})
+    resp = client.put("/persons/P1/appointments/O1/correspondence-address", headers=H,
+                      json={"same_as_residential": True})
+    assert resp.status_code == 200, resp.text
+    assert db.tables["entity_officers"][0]["correspondence_address_id"] is None
+
+
+def test_correspondence_address_of_another_persons_appointment_is_404(db, admin, audit):
+    _with_appointment(db)
+    db.tables["entity_officers"][0]["person_id"] = "P2"
+    resp = client.put("/persons/P1/appointments/O1/correspondence-address", headers=H,
+                      json=ADDRESS)
+    assert resp.status_code == 404
+
+
+def test_get_correspondence_addresses(db, admin):
+    _with_appointment(db)
+    resp = client.get("/persons/P1/correspondence-addresses", headers=H)
+    assert resp.status_code == 200
+    row = resp.json()["correspondence_addresses"][0]
+    assert row["officer_id"] == "O1" and row["company_name"] == "Sample Ltd"
+    assert row["address"] is None
+
+
+def test_dismiss_for_one_company_names_it(db, admin, audit):
+    with patch("routers.persons.particulars.pending_for_person", return_value=[]), \
+         patch("routers.persons.particulars.dismiss", return_value=1) as dismiss:
+        resp = client.post("/persons/P1/particulars-changes/dismiss", headers=H,
+                           json={"entity_id": "E1"})
+    assert resp.status_code == 200 and resp.json()["dismissed"] == 1
+    assert dismiss.call_args.kwargs["entity_id"] == "E1"
+    assert audit.await_args.kwargs["metadata"]["entity_id"] == "E1"
+
+
+def test_dismiss_for_a_company_without_a_baseline_is_zero_and_unaudited(db, admin, audit):
+    """Review Focus 5."""
+    resp = client.post("/persons/P1/particulars-changes/dismiss", headers=H,
+                       json={"entity_id": "E9"})
+    assert resp.status_code == 200 and resp.json()["dismissed"] == 0
+    audit.assert_not_awaited()

@@ -1284,19 +1284,128 @@ async def get_particulars_changes(person_id: str, user=Depends(live_person("read
     return {"changes": _change_rows(particulars.pending_for_person(person_id))}
 
 
+class DismissIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    #: One company only (Jacqueline BQ2); absent means every appointment.
+    entity_id: Optional[str] = None
+
+
 @router.post("/{person_id}/particulars-changes/dismiss")
-async def dismiss_particulars_changes(person_id: str, user=Depends(live_person("write"))):
+async def dismiss_particulars_changes(person_id: str, body: Optional[DismissIn] = None,
+                                      user=Depends(live_person("write"))):
     """'This was data loading, not a real-world change' (answer 16). Moves the
-    baseline for every appointment; the trail keeps what was dismissed."""
+    baseline for every appointment — or, given `entity_id`, for that company's
+    only (Jacqueline BQ2: "we would not assume that the change applies to all
+    the companies"). The trail keeps what was dismissed."""
     sb = get_supabase()
-    pending = particulars.pending_for_person(person_id)
-    dismissed = particulars.dismiss(person_id=person_id, user_id=user["id"])
+    entity_id = body.entity_id if body else None
+    pending = [r for r in particulars.pending_for_person(person_id)
+               if not entity_id or r["entity_id"] == entity_id]
+    dismissed = particulars.dismiss(person_id=person_id, user_id=user["id"],
+                                    entity_id=entity_id)
     if dismissed:
         await _audit_person(
             sb, user, person_id, audit_events.OFFICER_PARTICULARS_DISMISSED,
             new_value=f"{dismissed} appointment(s)",
-            metadata={"appointments": dismissed, "dismissed": [
+            metadata={"appointments": dismissed, "entity_id": entity_id, "dismissed": [
                 {"entity_id": r["entity_id"], "company_name": r.get("company_name"),
                  "capacity": r["capacity"],
                  "items": [i["label"] for i in r["items"]]} for r in pending]})
     return {"dismissed": dismissed}
+
+
+# --------------------------------------------------------------------------- #
+#  The correspondence address belongs to each appointment (Jacqueline AQ5, B4)
+# --------------------------------------------------------------------------- #
+
+def _correspondence_rows(sb, person_id: str) -> list[dict]:
+    rows = particulars.appointment_correspondence(person_id)
+    ids = sorted({r["entity_id"] for r in rows})
+    names = {}
+    if ids:
+        names = {e["id"]: e.get("company_name") for e in (
+            sb.table("entities").select("id, company_name").in_("id", ids)
+            .execute().data or [])}
+    return [{**r, "company_name": names.get(r["entity_id"])} for r in rows]
+
+
+def _address_line(address: Optional[dict]) -> Optional[str]:
+    if not address:
+        return None
+    return ", ".join(str(address.get(k)) for k in
+                     ("line1", "line2", "line3", "city", "state_region", "postal_code",
+                      "country") if address.get(k))
+
+
+@router.get("/{person_id}/correspondence-addresses")
+async def get_correspondence_addresses(person_id: str, user=Depends(live_person("read"))):
+    """Each current directorship's and secretaryship's correspondence address —
+    None meaning "same as the residential address"."""
+    return {"correspondence_addresses": _correspondence_rows(get_supabase(), person_id)}
+
+
+@router.put("/{person_id}/appointments/{officer_id}/correspondence-address")
+async def put_correspondence_address(person_id: str, officer_id: str, request: Request,
+                                     user=Depends(live_person("write"))):
+    """Set one appointment's correspondence address, or `{"same_as_residential":
+    true}`. The ND2B baseline for THAT company is captured first, so the change
+    is reported as item (e) on that company only.
+
+    Always written to a NEW address row: `address_service.count_references`
+    does not count officer rows, and a Viewpoint correspondence id may share
+    the person's residential row — editing that in place would move their home
+    address too."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Send the address as a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Send the address as a JSON object")
+    sb = get_supabase()
+    rows = (sb.table("entity_officers").select("*").eq("id", officer_id)
+            .execute().data) or []
+    officer = rows[0] if rows else None
+    if (not officer or officer.get("person_id") != person_id
+            or officer.get("is_current") is False
+            or officer.get("role") not in ("director", "company_secretary")):
+        raise HTTPException(404, "That is not a current appointment of this person")
+    before = None
+    if officer.get("correspondence_address_id"):
+        found = (sb.table("addresses").select("*")
+                 .eq("id", officer["correspondence_address_id"]).execute().data) or []
+        before = found[0] if found else None
+    same = body.get("same_as_residential") is True
+    if same and len(body) != 1:
+        raise HTTPException(400, "Send either the address or same_as_residential, not both")
+    payload = None
+    if not same:
+        try:
+            payload = AddressIn(**body).model_dump()
+        except Exception:  # noqa: BLE001 — pydantic's message names the fields
+            raise HTTPException(422, "Send the address fields line1, line2, line3, city, "
+                                     "state_region, postal_code and country")
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"],
+                                    entity_id=officer["entity_id"])
+    if same:
+        sb.table("entity_officers").update({"correspondence_address_id": None}) \
+            .eq("id", officer_id).execute()
+        after = None
+    else:
+        try:
+            result = address_service.save(
+                sb, owner_table="entity_officers", owner_id=officer_id,
+                owner_column="correspondence_address_id", current_address_id=None,
+                payload=payload)
+        except address_service.AddressError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        after = result["address"]
+    await _audit_person(
+        sb, user, person_id, audit_events.CASE_FIELD_UPDATED,
+        old_value=_address_line(before) or "same as residential address",
+        new_value=_address_line(after) or "same as residential address",
+        metadata={"field": "correspondence_address", "officer_id": officer_id,
+                  "entity_id": officer["entity_id"], "role": officer.get("role"),
+                  "same_as_residential": after is None})
+    return {"correspondence_addresses": _correspondence_rows(sb, person_id)}

@@ -127,6 +127,15 @@ def _apply_appointment(sb, case, entry, user) -> dict:
     corporate = entry.get("party_type") == "corporate"
     party = _party(entry)
     before = particulars.baseline(case["entity_id"], **party)
+    # The appointment's own correspondence address, when it differs from the
+    # residential one — so the profile shows what CR was told (Jacqueline B4).
+    correspondence_id = None
+    if not corporate and entry.get("correspondence_same_as_residential") is False \
+            and isinstance(entry.get("correspondence_address"), dict):
+        address = {k: entry["correspondence_address"].get(k) for k in
+                   ("line1", "line2", "line3", "city", "state_region", "postal_code",
+                    "country")}
+        correspondence_id = sb.table("addresses").insert(address).execute().data[0]["id"]
     row = sb.table("entity_officers").insert({
         "entity_id": case["entity_id"],
         "person_id": None if corporate else entry.get("person_id"),
@@ -134,7 +143,7 @@ def _apply_appointment(sb, case, entry, user) -> dict:
         "party_type": "corporate" if corporate else "individual",
         "corporate_name": _name(entry) if corporate else None,
         "role": entry["capacity"], "appointed_date": entry.get("effective_date"),
-        "is_current": True,
+        "is_current": True, "correspondence_address_id": correspondence_id,
     }).execute().data[0]
     record = {"officer_id": row["id"], "baseline_before": before}
     # Recorded the moment the row exists, before anything else can fail: an

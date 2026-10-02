@@ -199,3 +199,23 @@ def test_undo_reverses_exactly_what_was_applied(db):
     assert particulars.baseline("E1", person_id="P9") is None
     assert all(e["applied"] is None for e in db.rows("officer_change_entries"))
     assert db.rows("nar1_cases")[0]["changes_undone_at"]
+
+
+def test_nd2a_filing_writes_correspondence_address_id(db):
+    """The appointment's own correspondence address reaches the officer row, so
+    the profile shows what CR was told (Jacqueline B4) and a later edit of it is
+    compared against the right value."""
+    entries = _entries(db, APPOINT)
+    _run(apply.apply_changes, CASE, entries)
+    new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
+    address = next(a for a in db.rows("addresses") if a["id"] == new["correspondence_address_id"])
+    assert address["line1"] == "Room 1" and address["country"] == "HK"
+    assert particulars.pending_for_officer("E1", person_id="P9", capacity="director") == []
+
+
+def test_same_as_residential_writes_no_correspondence_address(db):
+    entries = _entries(db, {**APPOINT, "correspondence_same_as_residential": True,
+                            "correspondence_address": None})
+    _run(apply.apply_changes, CASE, entries)
+    new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
+    assert not new.get("correspondence_address_id")

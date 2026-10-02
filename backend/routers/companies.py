@@ -1757,12 +1757,23 @@ async def get_particulars_changes(company_id: str, user=Depends(live_company("re
     return {"changes": _change_rows(particulars.pending_for_corporate(company_id))}
 
 
+class DismissIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    #: The company the body corporate is an officer OF (Jacqueline BQ2).
+    entity_id: Optional[str] = None
+
+
 @router.post("/{company_id}/particulars-changes/dismiss")
-async def dismiss_particulars_changes(company_id: str,
+async def dismiss_particulars_changes(company_id: str, body: Optional[DismissIn] = None,
                                       user=Depends(live_company("write"))):
     sb = get_supabase()
-    pending = particulars.pending_for_corporate(company_id)
-    dismissed = particulars.dismiss(corporate_entity_id=company_id, user_id=user["id"])
+    entity_id = body.entity_id if body else None
+    pending = [r for r in particulars.pending_for_corporate(company_id)
+               if not entity_id or r["entity_id"] == entity_id]
+    dismissed = particulars.dismiss(corporate_entity_id=company_id, user_id=user["id"],
+                                    entity_id=entity_id)
     if dismissed:
         rows = (sb.table("entities").select("id, company_name, br_number")
                 .eq("id", company_id).execute().data) or [{"id": company_id}]
@@ -1775,7 +1786,7 @@ async def dismiss_particulars_changes(company_id: str,
             **audit_subject.for_company(rows[0]),
             entity_type="entity", entity_id=str(company_id),
             new_value=f"{dismissed} appointment(s)",
-            metadata={"appointments": dismissed, "dismissed": [
+            metadata={"appointments": dismissed, "entity_id": entity_id, "dismissed": [
                 {"entity_id": r["entity_id"], "company_name": r.get("company_name"),
                  "capacity": r["capacity"],
                  "items": [i["label"] for i in r["items"]]} for r in pending]})

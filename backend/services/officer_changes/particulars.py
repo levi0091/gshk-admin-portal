@@ -265,11 +265,13 @@ def _item(key, cr_item, label, old, new) -> dict:
 def diff(baseline: dict, current: dict, *, capacity: str) -> list[dict]:
     """Pure. C-2 items for what differs, in CR's item order.
 
-    The correspondence rule (plan C-2): a baseline with no explicit
-    correspondence address files the residential one in that slot, so a moved
-    residential address is item (e) as well — and also (d) for a director, the
-    only officer whose residential address CR holds. An explicit one is never
-    reported, because nothing on the profile edits it (spec B-15).
+    The correspondence rule: either side with no explicit correspondence
+    address files the residential one in that slot, so a moved residential
+    address is item (e) as well — and also (d) for a director, the only officer
+    whose residential address CR holds. `current["correspondence_address"]` is
+    the APPOINTMENT's own (`entity_officers.correspondence_address_id`), which
+    the Person Profile edits since Jacqueline's AQ5/B4 — so an explicit one is
+    compared like any other value (it used to be skipped: nothing edited it).
     """
     corporate = baseline.get("party_type") == "corporate"
     out = []
@@ -277,10 +279,7 @@ def diff(baseline: dict, current: dict, *, capacity: str) -> list[dict]:
         if only_for and only_for != capacity:
             continue
         if key == "correspondence_address":
-            explicit = baseline.get("correspondence_address")
-            if explicit is not None and not baseline.get(FOLLOWS_RESIDENTIAL):
-                continue
-            old = explicit if explicit is not None else baseline.get("residential_address")
+            old = _effective_correspondence(baseline)
             new = _effective_correspondence(current)
         else:
             old, new = baseline.get(key), current.get(key)
@@ -343,7 +342,8 @@ def _appointments(person_id=None, corporate_entity_id=None) -> list[dict]:
         if key not in seen:
             seen.add(key)
             out.append({"entity_id": row["entity_id"], "capacity": row["role"],
-                        "officer_id": row.get("id")})
+                        "officer_id": row.get("id"),
+                        "correspondence_address_id": row.get("correspondence_address_id")})
     if person_id:
         secs = (sb.table("company_secretaries").select("*")
                 .eq("person_id", person_id).eq("is_current", True).execute().data) or []
@@ -360,6 +360,52 @@ def _appointments(person_id=None, corporate_entity_id=None) -> list[dict]:
                             "capacity": "company_secretary", "officer_id": None,
                             "secretary_id": row["id"]})
     return out
+
+
+def _correspondence_by_entity(appointments: list[dict]) -> dict[str, dict | None]:
+    """entity_id -> the appointment's own correspondence address (or None,
+    "same as residential"). A party holding two roles in one company gives CR
+    one correspondence address there, so the first explicit one wins."""
+    ids = sorted({a["correspondence_address_id"] for a in appointments
+                  if a.get("correspondence_address_id")})
+    rows = {}
+    if ids:
+        rows = {r["id"]: r for r in (get_supabase().table("addresses").select("*")
+                                     .in_("id", ids).execute().data or [])}
+    out: dict[str, dict | None] = {}
+    for a in appointments:
+        address = _address(rows.get(a.get("correspondence_address_id") or ""))
+        if out.get(a["entity_id"]) is None:
+            out[a["entity_id"]] = address
+    return out
+
+
+def _current_for(current: dict, entity_id: str, corr: dict) -> dict:
+    """The party's snapshot as ONE appointment files it (a person's correspondence
+    address is the appointment's)."""
+    if current.get("party_type") == "corporate":
+        return current
+    return {**current, "correspondence_address": corr.get(entity_id)}
+
+
+def appointment_correspondence(person_id: str) -> list[dict]:
+    """`[{officer_id, entity_id, role, address}]` for each current directorship and
+    secretaryship on the officer list — what the Person Profile shows and edits
+    (Jacqueline B4: "the correspondence address part and residential address
+    part are not shown separately")."""
+    sb = get_supabase()
+    rows = [r for r in (sb.table("entity_officers").select("*").eq("person_id", person_id)
+                        .eq("is_current", True).execute().data or [])
+            if r.get("role") in _ROLES]
+    ids = sorted({r["correspondence_address_id"] for r in rows
+                  if r.get("correspondence_address_id")})
+    found = {}
+    if ids:
+        found = {a["id"]: a for a in (sb.table("addresses").select("*").in_("id", ids)
+                                      .execute().data or [])}
+    return [{"officer_id": r["id"], "entity_id": r["entity_id"], "role": r["role"],
+             "address": _address(found.get(r.get("correspondence_address_id") or ""))}
+            for r in rows]
 
 
 def _baseline_row(entity_id, person_id=None, corporate_entity_id=None) -> dict | None:
@@ -397,15 +443,20 @@ def set_baseline(entity_id: str, *, person_id: str | None = None,
 
 def capture_before_edit(*, person_id: str | None = None,
                         corporate_entity_id: str | None = None,
-                        user_id: str | None) -> int:
+                        user_id: str | None, entity_id: str | None = None) -> int:
     """Store a baseline for every current appointment of the party that has
-    none, from the profile as it stands BEFORE the edit. Returns how many.
+    none, from the profile as it stands BEFORE the edit — each with that
+    appointment's own correspondence address. `entity_id` limits it to one
+    company (an edit of one appointment's correspondence address). Returns how
+    many.
 
     Never raises: it runs in front of an ordinary profile edit, and losing an
     ND2B alert is a smaller failure than refusing to save a phone number.
     """
     try:
         appointments = _appointments(person_id, corporate_entity_id)
+        if entity_id:
+            appointments = [a for a in appointments if a["entity_id"] == entity_id]
         if corporate_entity_id and len(appointments) > MAX_APPOINTMENTS_CAPTURED:
             print(f"officer_cr_particulars: {corporate_entity_id} holds "
                   f"{len(appointments)} appointments; not captured (spec B-16)",
@@ -419,13 +470,14 @@ def capture_before_edit(*, person_id: str | None = None,
         if not missing:
             return 0
         snapshot = _snapshot(person_id, corporate_entity_id)
+        corr = _correspondence_by_entity(appointments)
         now = _now()
         sb.table(_TABLE).insert([
-            {"entity_id": entity_id, "person_id": person_id,
+            {"entity_id": company, "person_id": person_id,
              "corporate_entity_id": corporate_entity_id,
-             "particulars": snapshot, "source": "first_edit",
+             "particulars": _current_for(snapshot, company, corr), "source": "first_edit",
              "captured_by": user_id, "captured_at": now}
-            for entity_id in missing
+            for company in missing
         ]).execute()
         return len(missing)
     except Exception as exc:  # noqa: BLE001 — see docstring
@@ -448,7 +500,12 @@ def pending_for_officer(entity_id: str, *, person_id: str | None = None,
                     corporate_entity_id=corporate_entity_id)
     if held is None:
         return []
-    return diff(held, _snapshot(person_id, corporate_entity_id), capacity=capacity)
+    current = _snapshot(person_id, corporate_entity_id)
+    if person_id:
+        corr = _correspondence_by_entity(
+            [a for a in _appointments(person_id, None) if a["entity_id"] == entity_id])
+        current = _current_for(current, entity_id, corr)
+    return diff(held, current, capacity=capacity)
 
 
 def _open_nd2b_cases(person_id=None, corporate_entity_id=None) -> dict[str, dict]:
@@ -477,12 +534,14 @@ def _pending(person_id=None, corporate_entity_id=None) -> list[dict]:
     if not held:
         return []
     current = _snapshot(person_id, corporate_entity_id)
+    corr = _correspondence_by_entity(appointments)
     rows = []
     for appointment in appointments:
         base = held.get(appointment["entity_id"])
         if base is None:
             continue
-        items = diff(base, current, capacity=appointment["capacity"])
+        items = diff(base, _current_for(current, appointment["entity_id"], corr),
+                     capacity=appointment["capacity"])
         if items:
             rows.append({**appointment, "items": items})
     if not rows:
@@ -518,18 +577,25 @@ def _keep_correspondence(old: dict | None, new: dict) -> dict:
 
 
 def dismiss(*, person_id: str | None = None, corporate_entity_id: str | None = None,
-            user_id) -> int:
-    """Baseline := current for every appointment that has one (spec B-11)."""
+            user_id, entity_id: str | None = None) -> int:
+    """Baseline := current for every appointment that has one (spec B-11) —
+    or, with `entity_id`, for that company's appointment only (Jacqueline BQ2:
+    "we would not assume that the change applies to all the companies")."""
     sb = get_supabase()
     rows = _party_filter(sb.table(_TABLE).select("*"),
                          person_id, corporate_entity_id).execute().data or []
+    if entity_id:
+        rows = [r for r in rows if r.get("entity_id") == entity_id]
     if not rows:
         return 0
     current = _snapshot(person_id, corporate_entity_id)
+    corr = (_correspondence_by_entity(_appointments(person_id, None)) if person_id else {})
     now = _now()
     for row in rows:
+        new = (_current_for(current, row["entity_id"], corr) if person_id
+               else _keep_correspondence(row["particulars"], current))
         sb.table(_TABLE).update({
-            "particulars": _keep_correspondence(row["particulars"], current),
+            "particulars": new,
             "source": "dismissed", "captured_by": user_id, "captured_at": now,
         }).eq("id", row["id"]).execute()
     return len(rows)
