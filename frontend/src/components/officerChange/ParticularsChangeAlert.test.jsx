@@ -104,3 +104,18 @@ describe('ParticularsChangeAlert', () => {
     await waitFor(() => expect(screen.queryByText('Kanenas Holding Limited')).not.toBeInTheDocument())
   })
 })
+
+describe('ParticularsChangeAlert — one company at a time (Jacqueline BQ2)', () => {
+  it('dismisses for one company only, after confirming', async () => {
+    post.mockResolvedValue({ dismissed: 1 })
+    const user = userEvent.setup()
+    wrap(<ParticularsChangeAlert kind="person" id="p1" caps={ALL} />)
+    await screen.findByText('Kanenas Holding Limited')
+    await user.click(screen.getAllByRole('button', { name: 'Not for this company' })[0])
+    await user.click(screen.getByRole('button', { name: 'Dismiss for this company' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/persons/p1/particulars-changes/dismiss', { entity_id: 'e1' }))
+    expect(screen.queryByText('Kanenas Holding Limited')).not.toBeInTheDocument()
+    expect(screen.getByText('Skyline Capital')).toBeInTheDocument()
+  })
+})

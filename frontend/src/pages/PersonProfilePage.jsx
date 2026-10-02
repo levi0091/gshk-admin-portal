@@ -12,6 +12,7 @@ import {
 } from '../components/DocumentSections.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import AddressBlock from '../components/AddressBlock.jsx'
+import CorrespondenceAddressCard from '../components/CorrespondenceAddressCard.jsx'
 import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
 import { useFormContract, fieldWarning } from '../lib/formContract.js'
@@ -612,12 +613,19 @@ export default function PersonProfilePage() {
                       : displayValue(f, person[f.key], lookups)}
                   </Kv>
                 ))}
-                {/* The lines CR receives, not a joined string. */}
-                <AddressBlock value={person.residential_address} readOnly
+                {/* The lines CR receives, not a joined string — headed, because
+                    a correspondence address is a different fact (Jacqueline B4:
+                    "the correspondence address part and residential address part
+                    are not shown separately"). */}
+                <div className="tile-sec-lbl" style={{ marginTop: 14 }}>Residential Address</div>
+                <AddressBlock value={person.residential_address} readOnly lookups={lookups}
                               warnings={addressWarnings} />
               </div>
             )}
           </div>
+
+          {/* One correspondence address per appointment (Jacqueline B4, AQ5). */}
+          <CorrespondenceAddressCard personId={personId} canEdit={canWrite} lookups={lookups} />
 
           {/* The person's own e-Registry account (answers 1, 8): beside their
               particulars, because it is set up when they are, by GSHK. */}

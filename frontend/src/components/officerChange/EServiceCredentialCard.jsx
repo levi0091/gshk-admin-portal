@@ -23,7 +23,7 @@ import './entryPoints.css'
 export default function EServiceCredentialCard({ personId, canEdit }) {
   const [meta, setMeta] = useState(null)
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState({ user: '', name: '', password: '' })
+  const [draft, setDraft] = useState({ user: '', name: '', password: '', idType: '', idNumber: '' })
   const [saving, setSaving] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [error, setError] = useState(null)
@@ -38,7 +38,9 @@ export default function EServiceCredentialCard({ personId, canEdit }) {
   useEffect(() => { load() }, [load])
 
   function edit() {
-    setDraft({ user: meta?.eservice_user_id || '', name: meta?.eservice_person_name || '', password: '' })
+    setDraft({ user: meta?.eservice_user_id || '', name: meta?.eservice_person_name || '',
+               password: '', idType: meta?.registered_id_type || '',
+               idNumber: meta?.registered_id_number || '' })
     setError(null); setSaved(null); setEditing(true)
   }
 
@@ -47,6 +49,11 @@ export default function EServiceCredentialCard({ personId, canEdit }) {
     try {
       const body = { eservice_user_id: draft.user.trim(), eservice_person_name: draft.name.trim() }
       if (draft.password) body.password = draft.password
+      // Sent only when there is something to say: a document now, or one to clear.
+      if (draft.idType || meta?.registered_id_type) {
+        body.registered_id_type = draft.idType || null
+        body.registered_id_number = draft.idType ? draft.idNumber.trim() : null
+      }
       const next = await api.put(`/persons/${personId}/eservice-credential`, body)
       setMeta(next)
       setEditing(false)
@@ -122,6 +129,27 @@ export default function EServiceCredentialCard({ personId, canEdit }) {
                    onChange={e => setDraft(d => ({ ...d, password: e.target.value }))} />
             <span className="f-hint">Stored encrypted. It is never shown again, here or anywhere.</span>
           </div>
+          {/* Jacqueline, note 1 (2026-10-01): e-Reg keeps the document an
+              account was opened with and CR's register does not update it, so
+              a renewed passport makes CR refuse the consent later. Recorded
+              here so the portal can say so before signing. */}
+          <div className="f-group">
+            <label className="f-label" htmlFor="es-idtype">Opened with</label>
+            <select id="es-idtype" className="f-select" value={draft.idType}
+                    onChange={e => setDraft(d => ({ ...d, idType: e.target.value }))}>
+              <option value="">Not recorded</option>
+              <option value="hkid">HKID</option>
+              <option value="passport">Passport</option>
+            </select>
+          </div>
+          {draft.idType && (
+            <div className="f-group">
+              <label className="f-label" htmlFor="es-idnum">Document number</label>
+              <input id="es-idnum" className="f-input" autoComplete="off" value={draft.idNumber}
+                     onChange={e => setDraft(d => ({ ...d, idNumber: e.target.value }))} />
+              <span className="f-hint">The identity document used to register this e-Registry account.</span>
+            </div>
+          )}
           <div className="ep-cred-actions">
             <button className="btn btn-outline" onClick={() => setEditing(false)} disabled={saving}>Cancel</button>
             <button className="btn btn-action" onClick={save} disabled={!ready || saving}>
@@ -145,9 +173,20 @@ export default function EServiceCredentialCard({ personId, canEdit }) {
                 {meta.has_password ? 'Password stored' : 'No password stored'}
               </span>
             </span></div>
+          <div className="kv-row"><span className="kv-key">Opened with</span>
+            <span className="kv-val">
+              {meta.registered_id_type
+                ? `${meta.registered_id_type === 'hkid' ? 'HKID' : 'Passport'} ${meta.registered_id_number || ''}`
+                : <span className="td-muted">Not recorded</span>}
+            </span></div>
           {meta.updated_at && (
             <div className="kv-row"><span className="kv-key">Last changed</span>
               <span className="kv-val">{formatDateTime(meta.updated_at)}</span></div>
+          )}
+          {meta.registered_id_mismatch && (
+            <div className="alert al-warn" role="alert" style={{ marginTop: 10 }}>
+              <div className="al-body">{meta.registered_id_mismatch}</div>
+            </div>
           )}
         </div>
       ) : (

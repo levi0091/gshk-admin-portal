@@ -94,3 +94,27 @@ describe('EServiceCredentialCard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Enter the e-Registry user ID')
   })
 })
+
+describe('EServiceCredentialCard — the identity document behind the account (Jacqueline note 1)', () => {
+  it('saves the document the account was opened with', async () => {
+    get.mockResolvedValue({ ...STORED })
+    put.mockResolvedValue({ ...STORED, registered_id_type: 'passport', registered_id_number: 'X1234567' })
+    const user = userEvent.setup()
+    render(<EServiceCredentialCard personId="p9" canEdit />)
+    await screen.findByText('ER123456')
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    await user.selectOptions(screen.getByLabelText(/Opened with/), 'passport')
+    await user.type(screen.getByLabelText(/Document number/), 'X1234567')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(put.mock.calls[0][1]).toMatchObject({ registered_id_type: 'passport',
+      registered_id_number: 'X1234567' })
+  })
+
+  it('warns when the profile no longer holds that document', async () => {
+    get.mockResolvedValue({ ...STORED, registered_id_type: 'passport', registered_id_number: 'X1234567',
+      registered_id_mismatch: "HO New's e-Registry account was opened with passport X123…; the profile now holds passport Y765…." })
+    render(<EServiceCredentialCard personId="p9" canEdit />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('opened with passport X123')
+  })
+})

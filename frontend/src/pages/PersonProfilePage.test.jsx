@@ -992,3 +992,23 @@ describe('PersonProfilePage — soft delete (migration 049)', () => {
       .toHaveAttribute('href', '/persons')
   })
 })
+
+describe('PersonProfilePage — residential and correspondence shown apart (Jacqueline B4)', () => {
+  it('labels the residential address and lists each appointment\'s correspondence address', async () => {
+    api.get.mockImplementation(url => {
+      if (url === '/lookups') return Promise.resolve(LOOKUPS)
+      if (url === '/form-contract') return Promise.resolve(CONTRACT)
+      if (url.startsWith('/documents/sections')) return Promise.resolve(SECTIONS)
+      if (url === '/persons/p1/correspondence-addresses') {
+        return Promise.resolve({ correspondence_addresses: [
+          { officer_id: 'o1', entity_id: 'e1', role: 'director', company_name: 'Skyline Capital',
+            address: null }] })
+      }
+      return Promise.resolve(PERSON)
+    })
+    renderPage()
+    expect(await screen.findByText('Residential Address')).toBeInTheDocument()
+    expect(await screen.findByText('Correspondence Address')).toBeInTheDocument()
+    expect(screen.getByText('Same as residential address')).toBeInTheDocument()
+  })
+})
