@@ -365,3 +365,104 @@ def test_badge_from_row_carries_the_closed_code_through():
     badge = st.badge_from_row({"workflow_status": st.CLOSED})
     assert badge == {"code": st.CLOSED, "label": "Closed",
                      "off_portal": False, "overdue": False, "cr_text": None}
+
+
+# --------------------------------------------------------------------------- #
+#  Officer-change cases (migration 050) — ND2A and ND2B share this badge
+# --------------------------------------------------------------------------- #
+
+def nd2(**over):
+    """An officer-change case the client has approved, on the MANUAL route.
+
+    The route is what matters here: on it nothing is ever sent to CR, so there
+    is no filing stage for the badge to follow.
+    """
+    return case(form_code="Nd2a", signing_method="manual", **APPROVED, **over)
+
+
+def test_an_officer_change_on_the_esign_route_follows_the_filing_like_a_nar1():
+    """e-Sign goes through validate -> sign -> submit exactly as an annual
+    return does, so the badge must read the same off the same stages."""
+    c = case(form_code="Nd2b", signing_method="esign", **APPROVED)
+    assert st.derive(c, None)["code"] == "data_verification"
+    assert st.derive(c, filing("validated"))["code"] == "signing"
+    assert st.derive(c, filing("signed"))["code"] == "submission"
+    assert st.derive(c, filing("submitted"))["code"] == "cr_not_checked"
+
+
+def test_the_manual_route_leaves_data_verification_when_it_is_marked_checked():
+    """CR will not validate an ND2A appointing a director without that
+    director's e-Registry ID, so a case with none cannot be validated at all.
+    `data_checked_at` is what stands in for it."""
+    assert st.derive(nd2(), None)["code"] == "data_verification"
+    assert st.derive(nd2(data_checked_at="2026-09-20T02:00:00Z"),
+                     None)["code"] == "signing"
+
+
+def test_the_manual_route_reaches_submission_once_the_signed_form_is_uploaded():
+    c = nd2(data_checked_at="2026-09-20T02:00:00Z",
+            manual_signed_document_id="doc-1")
+    assert st.derive(c, None)["code"] == "submission"
+
+
+def test_the_manual_route_ignores_a_stale_filing_stage():
+    """An operator who validated with CR and then switched to the manual route
+    must not be shown `signing` off a filing they have abandoned."""
+    assert st.derive(nd2(), filing("validated"))["code"] == "data_verification"
+
+
+def test_a_recorded_cr_portal_filing_finishes_a_manual_officer_change():
+    c = nd2(data_checked_at="2026-09-20T02:00:00Z",
+            manual_signed_document_id="doc-1",
+            manual_receipt={"caseNo": "180256934"})
+    assert st.derive(c, None)["code"] == "cr_not_checked"
+
+
+def test_the_client_still_comes_first_on_an_officer_change():
+    c = case(form_code="Nd2a", signing_method="manual",
+             data_checked_at="2026-09-20T02:00:00Z")
+    assert st.derive(c, None)["code"] == "client_verification"
+
+
+def test_a_nar1_on_the_manual_path_is_untouched_by_the_officer_change_branch():
+    """NAR1's manual path still goes through CR's validation, so its badge
+    follows the filing stage. The new branch is gated on the form."""
+    c = case(signing_method="manual", data_checked_at="2026-09-20T02:00:00Z",
+             manual_signed_document_id="doc-1", **APPROVED)
+    assert st.derive(c, None)["code"] == "data_verification"
+    assert st.derive(c, filing("validated"))["code"] == "signing"
+
+
+def test_an_officer_change_is_overdue_the_day_after_its_deadline():
+    """15 days, not NAR1's 42 — and measured from the change, not from an
+    anniversary. `days_to_deadline` is signed like `days_to_anniversary`."""
+    assert st.derive(nd2(days_to_deadline=0), None)["overdue"] is False
+    assert st.derive(nd2(days_to_deadline=-1), None)["overdue"] is True
+    assert st.derive(nd2(days_to_deadline=None), None)["overdue"] is False
+
+
+def test_the_anniversary_never_makes_an_officer_change_overdue():
+    """The company's anniversary belongs to its annual return. A company 90
+    days past it has a late NAR1, not a late resignation notice. The view nulls
+    the column on these rows; this holds even for a caller that did not."""
+    assert st.derive(nd2(days_to_anniversary=-90, days_to_deadline=5),
+                     None)["overdue"] is False
+
+
+def test_a_nar1_is_never_overdue_by_a_filing_deadline_it_does_not_have():
+    c = case(days_to_deadline=-30, days_to_anniversary=10, **APPROVED)
+    assert st.derive(c, None)["overdue"] is False
+
+
+def test_a_filed_or_closed_officer_change_is_never_overdue():
+    filed = nd2(days_to_deadline=-9, manual_receipt={"caseNo": "1"})
+    assert st.derive(filed, None)["overdue"] is False
+    closed = nd2(days_to_deadline=-9, closed_at="2026-09-21T00:00:00Z")
+    assert st.derive(closed, None)["overdue"] is False
+
+
+@pytest.mark.parametrize("form_code,expected", [
+    (None, False), ("Nar1", False), ("Nd2a", True), ("Nd2b", True),
+])
+def test_is_officer_change_reads_the_form_code(form_code, expected):
+    assert st.is_officer_change({"form_code": form_code}) is expected
