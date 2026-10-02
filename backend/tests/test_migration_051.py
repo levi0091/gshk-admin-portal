@@ -58,7 +58,9 @@ def test_the_officer_changes_migration_follows_this_one_in_a_single_line():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["050"]
+    # 052 (Jacqueline's ND2 feedback) follows 050, still one line.
+    assert script.get_heads() == ["052"]
+    assert script.get_revision("052").down_revision == "050"
     assert script.get_revision("050").down_revision == "051"
     assert script.get_revision("051").down_revision == "049"
 
