@@ -530,12 +530,37 @@ async def record_officer_change_approval(token: str, request: Request):
                          confirmed=None)
 
 
+def _earlier_revision(row: dict, case: dict, forms) -> HTMLResponse | None:
+    """The page for a link from a revision the client has since been re-sent,
+    or None when this link is the current one (Levi 2026-10-02; migration 051).
+
+    ASKED FIRST, ahead of the link's own outcome, because that outcome describes
+    a form that has been replaced. A director who approved Rev. 1 and opens
+    that email again after Rev. 2 went out used to be told it had already been
+    confirmed — true of a document nobody is filing any more, and false of the
+    one awaiting them in the newer email.
+
+    Otherwise the same answers as a superseded link: if the CASE has since been
+    settled, say so; if not, the one "no longer available" page, whose sub-line
+    already says a newer request may have replaced it. No more specific than
+    that, by the rule at the top of this file — the page does not describe a
+    client's case to whoever holds a link. One function for NAR1, ND2A and
+    ND2B, because `_show` and `_record` serve all three.
+    """
+    if not nar1_approvals.is_stale(row, case):
+        return None
+    return _decided(case) or _unavailable(_miss_for(forms))
+
+
 async def _show(token: str, request: Request, *, forms, ask) -> HTMLResponse:
     resolved = _resolve(token, request, forms)
     if resolved is None:
         return _unavailable(_miss_for(forms))
     row, case = resolved
 
+    stale = _earlier_revision(row, case, forms)
+    if stale is not None:
+        return stale
     if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
         return _already(row.get("recipient_name") or "",
                         _hkt(row.get("responded_at")), case)
@@ -560,6 +585,12 @@ async def _record(token: str, request: Request, *, forms, confirmed) -> HTMLResp
         return _unavailable(_miss_for(forms))
     row, case = resolved
 
+    # Before the claim, and before the idempotent replay below: a link from an
+    # earlier revision must not record an approval of a form the client has
+    # since been sent a corrected version of.
+    stale = _earlier_revision(row, case, forms)
+    if stale is not None:
+        return stale
     if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
         # Idempotent: the same director pressing twice, or a browser replaying
         # the POST, sees what they saw the first time rather than an error.
@@ -640,6 +671,9 @@ async def _record(token: str, request: Request, *, forms, confirmed) -> HTMLResp
             "user_agent": claimed.get("user_agent"),
             "responded_at": responded,
             "channel": "self_service",
+            # Which emailed revision the director confirmed. NULL for a link
+            # issued before migration 051.
+            "revision": claimed.get("revision", row.get("revision")),
         },
     )
 

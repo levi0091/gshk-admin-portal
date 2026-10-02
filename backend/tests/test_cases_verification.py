@@ -58,12 +58,15 @@ def _approval_tokens():
     The stub returns a deterministic token per recipient so the link that lands
     in the email body is assertable, and keeps the shape `issue` returns.
     """
-    def issue(*, case_id, recipients, sent_at=None, expires_at=None):
+    def issue(*, case_id, recipients, sent_at=None, expires_at=None,
+              revision=None):
         # ECHOES `expires_at` BACK. The route now passes the operator's chosen
         # deadline down, and a stub that ignored it would let the email print a
-        # date nobody picked while every test still passed.
+        # date nobody picked while every test still passed. `revision` is
+        # echoed for the same reason (migration 051).
         return [{**r, "token": f"tok-{i}",
-                 "expires_at": expires_at or "2026-09-15T00:00:00+00:00"}
+                 "expires_at": expires_at or "2026-09-15T00:00:00+00:00",
+                 "revision": revision}
                 for i, r in enumerate(recipients)]
 
     with patch("routers.cases.nar1_approvals.issue", side_effect=issue),          patch("routers.cases.nar1_approvals.supersede_outstanding",
@@ -1580,7 +1583,8 @@ def test_the_chosen_deadline_is_what_the_tokens_expire_on(client):
     does not honour."""
     issued = {}
 
-    def issue(*, case_id, recipients, sent_at=None, expires_at=None):
+    def issue(*, case_id, recipients, sent_at=None, expires_at=None,
+              revision=None):
         issued["expires_at"] = expires_at
         return [{**r, "token": "tok", "expires_at": expires_at}
                 for r in recipients]
@@ -2094,3 +2098,91 @@ def test_send_drives_the_real_renderer_and_the_real_transport(client, monkeypatc
     assert payload["attachments"][0]["filename"] == "NAR1-NAR-2026-0041.pdf"
 
     email_service.get_email_config.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Revisions (Levi 2026-10-02, migration 051): "[Rev. 2] or [Rev. 3] ... for
+# each email we send for confirmation", and the previous revision's link dead.
+# ---------------------------------------------------------------------------
+
+
+def _send_revision(client, case, *, send=None):
+    """Send for `case`; return (transport, issue, update_case, log_event, response)."""
+    issued = MagicMock(side_effect=lambda **kw: [
+        {**r, "token": f"tok-{i}", "expires_at": kw["expires_at"],
+         "revision": kw.get("revision")}
+        for i, r in enumerate(kw["recipients"])])
+    with _super(), _Stack(*_sendable(case=case)), \
+         patch("routers.cases.nar1_approvals.issue", new=issued), \
+         patch("routers.cases.email_service.send",
+               **(send or {"return_value": {"id": "m1"}})) as transport, \
+         patch("routers.cases.nar1_cases.update_case",
+               return_value=case) as update, \
+         patch("routers.cases.log_event", new=AsyncMock()) as log:
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+    return transport, issued, update, log, response
+
+
+def test_the_first_send_is_revision_one_and_unmarked(client):
+    transport, issued, update, _, response = _send_revision(client, CASE)
+    assert response.status_code == 200
+    subject = transport.call_args.kwargs["subject"]
+    assert "[Rev." not in subject
+    assert issued.call_args.kwargs["revision"] == 1
+    assert update.call_args.args[1]["verification_revision"] == 1
+    assert response.json()["revision"] == 1
+    assert transport.call_args.kwargs["attachments"][0][0] == \
+        "NAR1-NAR-2026-0041.pdf"
+
+
+def test_a_resend_is_the_next_revision_everywhere_the_client_looks(client):
+    """Subject, letter and file name — a client with both PDFs downloaded must
+    be able to tell them apart without opening either."""
+    resent = {**CASE, "verification_sent_at": "2026-09-30T02:00:00+00:00",
+              "verification_revision": 1}
+    transport, issued, update, _, response = _send_revision(client, resent)
+    assert response.status_code == 200
+    kwargs = transport.call_args.kwargs
+    assert kwargs["subject"].startswith("[Action Required] [Rev. 2] ")
+    assert "Revised draft" in kwargs["html"]
+    assert kwargs["attachments"][0][0] == "NAR1-NAR-2026-0041-Rev2.pdf"
+    assert response.json()["revision"] == 2
+
+
+def test_the_new_links_carry_the_new_revision_so_the_old_ones_can_be_refused(client):
+    """issue() supersedes the outstanding links (the first lock); the revision
+    stamped on the new ones is the second — nar1_approvals.is_stale."""
+    after_restart = {**CASE, "verification_revision": 2}
+    _, issued, update, _, _ = _send_revision(client, after_restart)
+    assert issued.call_args.kwargs["revision"] == 3
+    assert update.call_args.args[1]["verification_revision"] == 3
+
+
+def test_a_restarted_case_still_counts_on_from_its_last_email(client):
+    """A restart clears verification_sent_at but the client still HAS the
+    earlier email — so the next one is a later revision of it, not Rev. 1."""
+    restarted = {**CASE, "verification_sent_at": None, "verification_revision": 1}
+    transport, *_ = _send_revision(client, restarted)
+    assert "[Rev. 2]" in transport.call_args.kwargs["subject"]
+
+
+def test_a_send_that_reached_nobody_does_not_use_up_a_revision(client):
+    """Nothing is written, so the retry carries the SAME number. A client must
+    never receive Rev. 3 having never seen a Rev. 2."""
+    resent = {**CASE, "verification_revision": 1}
+    _, _, update, _, response = _send_revision(
+        client, resent,
+        send={"side_effect": email_service.EmailError("resend refused it")})
+    assert response.status_code == 502
+    update.assert_not_called()
+
+
+def test_the_trail_records_which_revision_was_sent(client):
+    resent = {**CASE, "verification_revision": 1}
+    _, _, _, log, _ = _send_revision(client, resent)
+    by_code = {}
+    for call in log.call_args_list:
+        by_code.setdefault(call.kwargs["action_type"], []).append(call.kwargs)
+    assert by_code["EMAIL_SENT"][0]["metadata"]["revision"] == 2
+    assert all(row["metadata"]["revision"] == 2
+               for row in by_code["CLIENT_APPROVAL_LINK_SENT"])

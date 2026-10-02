@@ -79,13 +79,20 @@ REVERSIBLE, because CI's migrations job runs `downgrade base`. It REFUSES while
 any officer-change case exists: dropping `form_code` would leave those rows
 reading as annual returns, which is a worse outcome than a downgrade that stops.
 
+REVISES 051, NOT 049 (2026-10-02). 051 — verification revisions, `[Rev. N]`
+on every resend — reached `dev` while this branch was in progress and was
+numbered 051 to leave 050 to this migration, which had been applied nowhere.
+So the chain runs 049 -> 051 -> 050: out of numeric order, in the order the
+two actually reach a database. Nothing here depends on 051's columns, and 051
+touches neither the view nor anything this restates.
+
 Revision ID: 050
-Revises: 049
+Revises: 051
 """
 from alembic import op
 
 revision = "050"
-down_revision = "049"
+down_revision = "051"
 branch_labels = None
 depends_on = None
 

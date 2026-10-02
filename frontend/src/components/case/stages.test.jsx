@@ -2547,6 +2547,49 @@ describe('Client Verification is frozen once the client has the return', () => {
   })
 })
 
+describe('Client Verification names the revision the client holds (migration 051)', () => {
+  const renderIt = over => render(
+    <StageClientVerification caseRow={at(over)} canWrite onWarn={onWarn}
+                             onChanged={onChanged} onError={onError} />)
+
+  it('a resend reads "Rev. 2 sent", matching the [Rev. 2] in the client\'s inbox', async () => {
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z',
+               verification_revision: 2 })
+    expect(screen.getByText(/Rev\. 2 sent/)).toBeInTheDocument()
+    // The pill is drawn once the preview has loaded.
+    expect(await screen.findByText('As sent to the client · Rev. 2')).toBeInTheDocument()
+  })
+
+  it('the first email is unmarked, as it is in the client\'s inbox', async () => {
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z',
+               verification_revision: 1 })
+    expect(await screen.findByText('As sent to the client')).toBeInTheDocument()
+    expect(screen.queryByText(/Rev\. \d/)).toBeNull()
+  })
+
+  it('before a resend, says which revision it will be and that the old link dies', async () => {
+    // A restart cleared verification_sent_at, but the client still holds the
+    // first email — so the next one is Rev. 2, not a fresh Rev. 1.
+    const user = userEvent.setup()
+    renderIt({ verification_sent_at: null, verification_revision: 1 })
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
+    expect(screen.getByText(/It goes out as Rev\. 2, and the Confirm link in the earlier email stops working/))
+      .toBeInTheDocument()
+  })
+
+  it('a first send promises no revision at all', async () => {
+    const user = userEvent.setup()
+    renderIt({ verification_sent_at: null, verification_revision: 0 })
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
+    expect(screen.getByText(/The return will be attached as a PDF/)).toBeInTheDocument()
+    expect(screen.queryByText(/goes out as Rev\./)).toBeNull()
+  })
+})
+
 describe('Data Verification — the return CR validated', () => {
   const renderIt = (over = {}) => render(
     <StageDataVerification caseRow={at({ validated_at: '2026-10-10T03:00:00Z',

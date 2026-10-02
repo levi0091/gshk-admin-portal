@@ -158,6 +158,65 @@ def test_no_recipients_writes_nothing():
 
 
 # --------------------------------------------------------------------------- #
+#  Revisions (Levi 2026-10-02, migration 051)
+# --------------------------------------------------------------------------- #
+
+def test_each_link_records_the_revision_it_was_mailed_with():
+    """What makes an earlier revision's link refusable even when the supersede
+    did not land — see is_stale."""
+    table = _Table()
+    with _sb(table):
+        issued = approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                                 revision=3)
+    assert table.inserted[0][0]["revision"] == 3
+    assert issued[0]["revision"] == 3
+
+
+def test_a_caller_naming_no_revision_writes_the_row_it_always_did():
+    """NULL, which the revision lock leaves alone — not a guessed number."""
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}])
+    assert "revision" not in table.inserted[0][0]
+
+
+@pytest.mark.parametrize("sent, expected", [
+    (None, 1), (0, 1), (1, 2), (2, 3), ("4", 5),
+    # Unreadable or negative is "never sent" rather than an exception: a
+    # letter must not fail to go out over its own revision number.
+    ("x", 1), (-3, 1),
+])
+def test_the_next_revision_is_one_more_than_the_emails_already_sent(sent, expected):
+    assert approvals.next_revision({"verification_revision": sent}) == expected
+
+
+def test_a_case_never_mailed_sends_revision_one():
+    assert approvals.next_revision({}) == 1
+    assert approvals.next_revision(None) == 1
+
+
+def test_a_link_from_an_earlier_revision_is_stale():
+    assert approvals.is_stale({"revision": 1}, {"verification_revision": 2})
+
+
+def test_the_current_revisions_link_is_not_stale():
+    assert not approvals.is_stale({"revision": 2}, {"verification_revision": 2})
+
+
+def test_a_link_ahead_of_the_case_is_not_stale():
+    """Issued for a send that then failed outright, so the case never moved to
+    that number. Nobody holds it, and the retry supersedes it."""
+    assert not approvals.is_stale({"revision": 3}, {"verification_revision": 2})
+
+
+def test_a_link_issued_before_revisions_existed_is_never_stale():
+    """Its send can only be numbered by inference, and an inference one too low
+    would refuse a director's CURRENT link. Its outcome still governs it."""
+    assert not approvals.is_stale({"revision": None}, {"verification_revision": 5})
+    assert not approvals.is_stale({}, {"verification_revision": 5})
+
+
+# --------------------------------------------------------------------------- #
 #  find_by_token()
 # --------------------------------------------------------------------------- #
 

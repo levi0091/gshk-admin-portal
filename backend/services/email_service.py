@@ -707,6 +707,75 @@ NAR1_CHECK_POINTS = (
 #: costs GSHK a second submission.
 AMENDMENT_FEE = "HK$1,000"
 
+#: The tag every verification email carries from its second revision on
+#: (Levi 2026-10-02). Kept as the one place the spelling lives, because it is
+#: printed in the subject, the masthead, the notice and the reference line, and
+#: a client comparing two emails must see the same words in all four.
+_ACTION_REQUIRED = "[Action Required] "
+
+
+def revision_label(revision) -> str:
+    """"Rev. 2" from the second verification email on, and "" for the first.
+
+    THE FIRST EMAIL IS UNMARKED, on purpose. It is the approved sample letter
+    verbatim, subject included, and "Rev. 1" on a message that has no
+    predecessor tells the client nothing — the label exists to distinguish a
+    resend from the email it replaces. Anything that is not a whole number
+    above 1 reads as a first email rather than raising: a letter must not fail
+    to go out over its own revision tag.
+    """
+    try:
+        number = int(revision)
+    except (TypeError, ValueError):
+        return ""
+    return f"Rev. {number}" if number >= 2 else ""
+
+
+def with_revision(subject: str, revision) -> str:
+    """The subject with `[Rev. N]` added — after `[Action Required]`, not before.
+
+    Placed second so the inbox still leads with what the client has to do, and
+    early so a mail client that truncates long subjects in its list view still
+    shows which revision this is. Unchanged for the first email.
+    """
+    label = revision_label(revision)
+    if not label:
+        return subject
+    if subject.startswith(_ACTION_REQUIRED):
+        return f"{_ACTION_REQUIRED}[{label}] {subject[len(_ACTION_REQUIRED):]}"
+    return f"[{label}] {subject}"
+
+
+def revision_notice(revision) -> str:
+    """The box that opens a revised letter, or "" on the first.
+
+    The client now holds two emails about one return, and the earlier one has
+    a Confirm button that no longer works (`nar1_approvals.issue` supersedes it,
+    `is_stale` refuses it). Saying so at the top is what stops them reviewing
+    the wrong PDF, or pressing a dead button and writing in to ask why.
+
+    NOT IN THE SAMPLE LETTER, and therefore only on a revision — the first
+    email stays the approved wording byte for byte. Shared by every form's
+    letter (NAR1, ND2A, ND2B) so the three say it the same way.
+    """
+    label = revision_label(revision)
+    if not label:
+        return ""
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" style="margin:0 0 22px">'
+        f'<tr><td bgcolor="{_GROUND}" style="background:{_GROUND};'
+        f'border:1px solid {_BORDER};border-radius:6px;padding:12px 16px">'
+        f'<div style="{_LABEL}padding-bottom:4px">Revised draft &middot; '
+        f"{_html.escape(label)}</div>"
+        f'<div style="font-family:{_FONT};font-size:14px;line-height:1.55;'
+        f'color:{_T_BODY}">This email replaces the one we sent you earlier '
+        f"about this form. Please review the draft attached here; the Confirm "
+        f"button in any earlier email no longer works.</div>"
+        f"</td></tr></table>"
+    )
+
+
 # Where a client sends changes is `RENEWAL_MAILBOX`, defined beside CLIENT_CC
 # at the top of this module because it is the same mailbox: the letter names it
 # and the copy of the letter goes to it. NOT the reply address -- this message
@@ -718,7 +787,7 @@ AMENDMENT_FEE = "HK$1,000"
 def verification_email(case: dict, entity: dict,
                        attachment_name: str | None = None,
                        approval_url: str | None = None,
-                       deadline=None) -> tuple[str, str]:
+                       deadline=None, revision=None) -> tuple[str, str]:
     """The client-verification message: subject and HTML body.
 
     THE WORDING IS `docs/Auto email - NAR1 Review_v2.pdf`, VERBATIM (Levi
@@ -768,15 +837,24 @@ def verification_email(case: dict, entity: dict,
     operator entered on the Client Verification screen, stored as the approval
     token's `expires_at` and read back from it here, so the email, the approval
     page and the job can never state different dates.
+
+    `revision` is which verification email this is for the case (Levi
+    2026-10-02; `nar1_approvals.next_revision`). From the second on, "[Rev. N]"
+    goes in the subject, "Rev. N" in the masthead and the reference line, and a
+    notice above "Dear Client" says this email replaces the earlier one and
+    that its Confirm button no longer works. The FIRST is the sample letter
+    exactly as before — see `revision_label`.
     """
     company = (entity.get("company_name") or "").strip()
     case_no = (case.get("case_no") or "").strip()
     br_number = (entity.get("br_number") or "").strip()
+    rev = revision_label(revision)
 
-    # The sample's own subject line.
-    subject = (
+    # The sample's own subject line, and its revision from the second send on.
+    subject = with_revision(
         f"[Action Required] NAR1 Review & Confirmation - {company}"
-        if company else "[Action Required] NAR1 Review & Confirmation"
+        if company else "[Action Required] NAR1 Review & Confirmation",
+        revision,
     )
 
     bullets = "".join(
@@ -832,7 +910,8 @@ def verification_email(case: dict, entity: dict,
     reference = ""
     reference_bits = [b for b in (br_number and f"BR {br_number}",
                                   year and f"Annual return {year}",
-                                  case_no and f"Ref {case_no}") if b]
+                                  case_no and f"Ref {case_no}",
+                                  rev) if b]
     if reference_bits:
         reference = (
             f'<div style="font-family:{_FONT};font-size:12px;color:{_T_MUTED};'
@@ -855,7 +934,8 @@ def verification_email(case: dict, entity: dict,
         f'<tr><td bgcolor="{_INDIGO}" style="background:{_INDIGO};'
         f'padding:24px 32px">'
         f'<div style="{_LABEL}color:{_ON_INDIGO};padding-bottom:7px">'
-        f"Form NAR1 &middot; Annual Return</div>"
+        f"Form NAR1 &middot; Annual Return"
+        f'{f" &middot; {_html.escape(rev)}" if rev else ""}</div>'
         f'<div style="font-family:{_FONT};font-size:20px;font-weight:600;'
         f'color:#FFFFFF;line-height:1.25;letter-spacing:-0.01em">'
         f'{_html.escape(company) or "Annual Return"}</div>'
@@ -863,6 +943,9 @@ def verification_email(case: dict, entity: dict,
 
         # The letter.
         f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
+
+        # Empty on the first email; on a revision, the first thing read.
+        f"{revision_notice(revision)}"
 
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
         f'color:{_T_BODY};padding-bottom:16px">Dear Client,</div>'
