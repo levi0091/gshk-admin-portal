@@ -1154,7 +1154,10 @@ async def upload_person_document(
 #  comes back out of any route — not even masked (spec B-9).
 # --------------------------------------------------------------------------- #
 
-_ESERVICE_FIELDS = ("eservice_user_id", "eservice_person_name", "password")
+_ESERVICE_FIELDS = ("eservice_user_id", "eservice_person_name", "password",
+                    # The identity document the account was opened with
+                    # (Jacqueline, note 1 of 1 Oct 2026). Optional.
+                    "registered_id_type", "registered_id_number")
 
 
 async def _eservice_body(request: Request) -> dict:
@@ -1179,6 +1182,14 @@ async def _eservice_body(request: Request) -> dict:
             raise HTTPException(400, f"{key} is required and must be text")
     if body.get("password") is not None and not isinstance(body["password"], str):
         raise HTTPException(400, "password must be text")
+    kind = body.get("registered_id_type")
+    if kind is not None and (not isinstance(kind, str)
+                             or (kind.strip() and kind.strip().lower()
+                                 not in eservice.REGISTERED_ID_TYPES)):
+        raise HTTPException(400, "registered_id_type must be hkid or passport")
+    if body.get("registered_id_number") is not None \
+            and not isinstance(body["registered_id_number"], str):
+        raise HTTPException(400, "registered_id_number must be text")
     return body
 
 
@@ -1194,9 +1205,20 @@ async def _audit_person(sb, user: dict, person_id: str, action: str, **fields):
     )
 
 
+def _with_mismatch(sb, person_id: str, meta: dict) -> dict:
+    """The metadata plus whether the profile still holds the identity document
+    the account was opened with (Jacqueline, note 1)."""
+    try:
+        docs = (sb.table("person_identity_documents").select("*")
+                .eq("person_id", person_id).execute().data) or []
+    except Exception:  # noqa: BLE001 — a warning is decoration, never a 500
+        docs = []
+    return {**meta, "registered_id_mismatch": eservice.identity_mismatch(meta, docs)}
+
+
 @router.get("/{person_id}/eservice-credential")
 async def get_eservice_credential(person_id: str, user=Depends(live_person("read"))):
-    return eservice.metadata(person_id)
+    return _with_mismatch(get_supabase(), person_id, eservice.metadata(person_id))
 
 
 @router.put("/{person_id}/eservice-credential")
@@ -1214,7 +1236,9 @@ async def put_eservice_credential(
             person_id, eservice_user_id=body["eservice_user_id"],
             eservice_person_name=body["eservice_person_name"],
             password=password if password is not None else eservice.UNSET,
-            user_id=user["id"])
+            user_id=user["id"],
+            registered_id_type=body.get("registered_id_type", eservice.UNSET),
+            registered_id_number=body.get("registered_id_number", eservice.UNSET))
     except ValueError as exc:
         # The message names the field, never the value (eservice.save).
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1222,10 +1246,12 @@ async def put_eservice_credential(
         sb, user, person_id, audit_events.PERSON_ESERVICE_CRED_SET,
         old_value=before.get("eservice_user_id"), new_value=meta["eservice_user_id"],
         # The account, never the password, its length or a hint of it.
+        # Nor the registered identity NUMBER: only which kind of document.
         metadata={"eservice_user_id": meta["eservice_user_id"],
                   "password_changed": password is not None,
-                  "first_set": not before["configured"]})
-    return meta
+                  "first_set": not before["configured"],
+                  "registered_id_type": meta.get("registered_id_type")})
+    return _with_mismatch(sb, person_id, meta)
 
 
 @router.delete("/{person_id}/eservice-credential")

@@ -24,6 +24,7 @@ def test_nothing_stored_reads_as_not_configured(db):
     assert eservice.metadata("P1") == {
         "configured": False, "eservice_user_id": None,
         "eservice_person_name": None, "has_password": False, "updated_at": None,
+        "registered_id_type": None, "registered_id_number": None,
     }
     assert eservice.load_for_signing("P1") is None
 
@@ -88,3 +89,48 @@ def test_clear_removes_the_row(db):
     assert eservice.clear("P1") is True
     assert eservice.clear("P1") is False
     assert eservice.metadata("P1")["configured"] is False
+
+
+
+# -- the identity document the account was opened with (Jacqueline, note 1) ----------
+
+def test_save_keeps_the_registered_identity_document(db):
+    meta = eservice.save("P1", eservice_user_id="ER1", eservice_person_name="A",
+                         password=SECRET, user_id="U1", registered_id_type="passport",
+                         registered_id_number=" x1234567 ")
+    assert meta["registered_id_type"] == "passport"
+    assert meta["registered_id_number"] == "X1234567"
+
+
+def test_save_leaves_the_registered_document_alone_when_not_mentioned(db):
+    eservice.save("P1", eservice_user_id="ER1", eservice_person_name="A", password=SECRET,
+                  user_id="U1", registered_id_type="hkid", registered_id_number="A1234563")
+    meta = eservice.save("P1", eservice_user_id="ER2", eservice_person_name="A", user_id="U1")
+    assert meta["registered_id_number"] == "A1234563"
+
+
+def test_save_refuses_an_unknown_document_type(db):
+    with pytest.raises(ValueError, match="registered_id_type"):
+        eservice.save("P1", eservice_user_id="ER1", eservice_person_name="A",
+                      password=SECRET, user_id="U1", registered_id_type="licence",
+                      registered_id_number="1")
+
+
+def test_identity_mismatch_names_partial_numbers():
+    meta = {"eservice_person_name": "LEE, KA HO", "registered_id_type": "passport",
+            "registered_id_number": "X1234567"}
+    docs = [{"id_type": "passport", "id_number": "Y7654321"}]
+    msg = eservice.identity_mismatch(meta, docs, name="LEE Ka Ho")
+    assert "X123" in msg and "Y765" in msg and "X1234567" not in msg
+    assert "CR does not update e-Registry" in msg
+
+
+def test_no_mismatch_when_the_number_is_still_held():
+    meta = {"registered_id_type": "passport", "registered_id_number": "X1234567"}
+    docs = [{"id_type": "passport", "id_number": "X1234567"},
+            {"id_type": "passport", "id_number": "Y7654321"}]
+    assert eservice.identity_mismatch(meta, docs) is None
+
+
+def test_no_mismatch_without_a_registered_document():
+    assert eservice.identity_mismatch({}, [{"id_type": "hkid", "id_number": "A1"}]) is None

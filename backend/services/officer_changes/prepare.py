@@ -14,7 +14,9 @@ from __future__ import annotations
 from db.supabase import get_supabase
 from services.officer_changes import eservice, form_xml, nd2a_mapper, nd2b_mapper, source
 from services.tpsi.forms import nar1_mapper
-from services.tpsi.forms.cr_vocabularies import default_capacity
+from services.tpsi.forms.cr_vocabularies import (
+    HKG, default_capacity, display_country, resolve_country,
+)
 from services.tpsi.forms.nar1_mapper import MappingError
 
 __all__ = ["MappingError", "build_form_xml", "mapping_problems", "consent_plan"]
@@ -75,11 +77,18 @@ async def consent_plan(case: dict, entries: list[dict]) -> list[dict]:
     signers = [e.get("consent_person_id") or e.get("person_id") for e in directors]
     accounts = eservice.metadata_for([s for s in signers if s])
     names = _names([s for s in signers if s])
+    corps = _corporates([e.get("corporate_entity_id") for e in directors
+                         if not e.get("person_id")])
+    docs = _identity_documents([s for s in signers if s])
     plan = []
     for n, (entry, signer) in enumerate(zip(directors, signers), 1):
         account = accounts.get(signer) or {}
         name = names.get(signer) or "the consent signer"
-        if not signer:
+        corp_id = None if entry.get("person_id") else entry.get("corporate_entity_id")
+        overseas = _not_hong_kong(corps.get(corp_id) or {"id": corp_id}) if corp_id else None
+        if overseas:
+            reason = overseas
+        elif not signer:
             reason = "Choose who signs the body corporate's consent"
         elif not account.get("eservice_user_id"):
             reason = f"{name} has no e-Registry account stored on their profile"
@@ -94,8 +103,54 @@ async def consent_plan(case: dict, entries: list[dict]) -> list[dict]:
             "signer_name": name, "eservice_user_id": account.get("eservice_user_id"),
             "ready": reason is None, "reason": reason,
             "signed_at": entry.get("consent_signed_at"),
+            # A warning, not a refusal: CR decides (Jacqueline, note 1).
+            "id_mismatch": eservice.identity_mismatch(
+                account, docs.get(signer, []), name=name) if signer else None,
         })
     return plan
+
+
+def is_hong_kong_company(corp: dict) -> bool:
+    """e-Registry takes a body-corporate director's consent only for a Hong
+    Kong company (Brian, 2026-10-01: "the concept is similar to the authorised
+    signer of NAR1"). Its country of incorporation, else — with none recorded —
+    a CR number, which only a Hong Kong company has."""
+    place = (corp or {}).get("incorporation_place")
+    if place and str(place).strip():
+        return resolve_country(str(place)) == HKG
+    return bool(str((corp or {}).get("cr_number") or "").strip())
+
+
+def _not_hong_kong(corp: dict) -> str | None:
+    if is_hong_kong_company(corp):
+        return None
+    name = corp.get("company_name") or "this body corporate"
+    place = str(corp.get("incorporation_place") or "").strip()
+    where = (f"is incorporated in {display_country(resolve_country(place) or place)}"
+             if place else "has no country of incorporation recorded")
+    return (f"e-Registry accepts a body-corporate director's consent only for a Hong "
+            f"Kong company — {name} {where}. File this ND2A on the manual route.")
+
+
+def _corporates(entity_ids: list[str]) -> dict[str, dict]:
+    ids = sorted({i for i in entity_ids if i})
+    if not ids:
+        return {}
+    rows = (get_supabase().table("entities").select("*").in_("id", ids)
+            .execute().data) or []
+    return {r["id"]: r for r in rows}
+
+
+def _identity_documents(person_ids: list[str]) -> dict[str, list[dict]]:
+    ids = sorted({i for i in person_ids if i})
+    if not ids:
+        return {}
+    rows = (get_supabase().table("person_identity_documents").select("*")
+            .in_("person_id", ids).execute().data) or []
+    out: dict[str, list[dict]] = {}
+    for row in rows:
+        out.setdefault(row["person_id"], []).append(row)
+    return out
 
 
 def _names(person_ids: list[str]) -> dict[str, str]:

@@ -420,3 +420,11 @@ def test_mark_checked_defaults_to_the_manual_route(env):
     resp = client.post("/officer-changes/K1/mark-checked", headers=H)
     assert resp.status_code == 200
     assert env.update.call_args.args[1]["signing_method"] == "manual"
+
+
+def test_signer_mismatch_hint_mentions_a_stale_eregistry_account():
+    """Jacqueline, note 1: e-Reg and CR's register do not sync."""
+    from fastapi import HTTPException
+    exc = ocf._explain(HTTPException(422, {"message": "x",
+                                           "problems": ["signer does not match with officer"]}))
+    assert any("e-Registry account still holds" in h for h in exc.detail["hints"])

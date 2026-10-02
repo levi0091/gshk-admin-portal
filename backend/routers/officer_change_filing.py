@@ -72,7 +72,9 @@ _CR_HINTS = (
      "A new director's particulars on this form must match their e-Registry account "
      "exactly: English and Chinese names, HKID or passport. A Chinese name the account "
      "holds but the profile does not is enough for CR to refuse. Correct the profile, "
-     "or file this form on the manual route."),
+     "or file this form on the manual route. Or the e-Registry account still holds an "
+     "old passport or HKID — CR does not update e-Registry when the register changes, "
+     "so update the account itself."),
     ("no matched individual offic",   # CR spells it "officier"
      "CR cannot find the officer on its register under the name and partial identity "
      "number on this form. A ceasing or changing officer is identified as CR holds "

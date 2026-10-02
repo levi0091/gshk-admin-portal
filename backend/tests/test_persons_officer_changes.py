@@ -80,6 +80,36 @@ def test_put_credential_stores_it_and_audits_the_account_only(db, admin, audit):
     assert SECRET not in str(db.rows("person_eservice_credentials"))
 
 
+def test_put_credential_stores_registered_id_and_never_audits_the_number(db, admin, audit):
+    resp = client.put("/persons/P1/eservice-credential", headers=H, json={
+        "eservice_user_id": "ER1", "eservice_person_name": "CHAN Tai Man",
+        "password": SECRET, "registered_id_type": "passport",
+        "registered_id_number": "X1234567"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["registered_id_number"] == "X1234567"
+    assert "X1234567" not in str(audit.await_args)
+    assert audit.await_args.kwargs["metadata"]["registered_id_type"] == "passport"
+
+
+def test_get_credential_reports_an_identity_mismatch(db, admin, audit):
+    db.tables["person_identity_documents"].append(
+        {"person_id": "P1", "id_type": "passport", "id_number": "Y7654321"})
+    client.put("/persons/P1/eservice-credential", headers=H, json={
+        "eservice_user_id": "ER1", "eservice_person_name": "CHAN Tai Man",
+        "password": SECRET, "registered_id_type": "passport",
+        "registered_id_number": "X1234567"})
+    body = client.get("/persons/P1/eservice-credential", headers=H).json()
+    assert "Y765" in body["registered_id_mismatch"]
+
+
+def test_put_credential_refuses_a_bad_registered_id_type(db, admin, audit):
+    resp = client.put("/persons/P1/eservice-credential", headers=H, json={
+        "eservice_user_id": "ER1", "eservice_person_name": "A", "password": SECRET,
+        "registered_id_type": "licence", "registered_id_number": "1"})
+    assert resp.status_code == 400 and "registered_id_type" in resp.json()["detail"]
+    assert SECRET not in resp.text
+
+
 def test_put_credential_first_time_without_password_is_400(db, admin, audit):
     resp = client.put("/persons/P1/eservice-credential", headers=H, json={
         "eservice_user_id": "ER1", "eservice_person_name": "A"})
