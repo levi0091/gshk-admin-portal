@@ -13,6 +13,7 @@ only reads it back. `manual_receipt` — CR's own receipt — is the precedent.
 """
 import asyncio
 import re
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -799,6 +800,41 @@ def _company_deleted(entity_id) -> bool:
         return False
 
 
+_CASE_TYPE = {"Nar1": "NAR1", "Nd2a": "ND2A", "Nd2b": "ND2B"}
+
+
+def other_open_cases(entity_id: str | None, *, exclude: str) -> list[dict]:
+    """The company's OTHER cases that are neither closed nor filed.
+
+    Jacqueline, 1 Oct 2026 (AQ3): "Can you confirm again whether there will be
+    an alert when there is an open ND2A/NAR1 case pending as a reminder when we
+    submit anything to CR?" — and (BQ1) NAR1 and ND2B are usually filed
+    together. The Submission stage of every form names these.
+
+    Never raises: it decorates a case that has already been read."""
+    if not entity_id:
+        return []
+    try:
+        rows = (get_supabase().table(_TABLE).select("*").eq("entity_id", entity_id)
+                .execute().data) or []
+        out = []
+        for row in sorted(rows, key=lambda r: r.get("case_no") or ""):
+            if (row.get("id") == exclude or row.get("closed_at") or row.get("manual_receipt")
+                    or row.get("changes_applied_at")):
+                continue
+            filing = current_filing(row["id"])
+            if filing and filing.get("stage") in CR_FILED_STAGES:
+                continue
+            code = row.get("form_code") or "Nar1"
+            out.append({"id": row["id"], "case_no": row.get("case_no"), "form_code": code,
+                        "case_type": _CASE_TYPE.get(code, code.upper()),
+                        "workflow_status": nar1_case_status.derive(row, filing)})
+        return out
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        print(f"[nar1_cases] other_open_cases({entity_id}) failed: {exc!r}", file=sys.stderr)
+        return []
+
+
 def composite(case_id: str) -> dict:
     """The case plus BOTH statuses — the shape the v11 case header needs."""
     case = get_case(case_id)
@@ -875,6 +911,9 @@ def composite(case_id: str) -> dict:
         # the case, which never carried it, so the banner said "frozen" with no
         # time.
         "validated_at": (filing or {}).get("validated_at"),
+        # The company's other open filings (Jacqueline AQ3/BQ1), named on the
+        # Submission stage of every form.
+        "other_open_cases": other_open_cases(case.get("entity_id"), exclude=case_id),
     }
 
 

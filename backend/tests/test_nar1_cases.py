@@ -775,3 +775,15 @@ def test_filed_on_is_empty_before_anything_is_filed():
     one is the misstatement this function exists to prevent."""
     assert nar1_cases.filed_on({"stage": "validated"}, {"id": "c1"}) == ""
     assert nar1_cases.filed_on(None, None) == ""
+
+
+def test_nar1_composite_carries_other_open_cases():
+    """Jacqueline AQ3: the NAR1's Submission stage names an open ND2A/ND2B."""
+    case_row = {"id": "c1", "entity_id": "e1", "manual_receipt": None}
+    sb = _sb_with(case_row, [])
+    others = [{"id": "k2", "case_no": "ND2B-2026-0003", "case_type": "ND2B"}]
+    with patch("services.nar1_cases.get_supabase", return_value=sb), \
+         patch("services.nar1_cases.other_open_cases", return_value=others) as other:
+        result = nar1_cases.composite("c1")
+    assert result["other_open_cases"] == others
+    other.assert_called_once_with("e1", exclude="c1")

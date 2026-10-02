@@ -60,7 +60,8 @@ def _tables():
 @pytest.fixture
 def db(monkeypatch):
     fake = FakeSupabase(_tables())
-    for module in (cases, particulars, nar1_cases):
+    from services.officer_changes import econsent
+    for module in (cases, particulars, nar1_cases, econsent):
         monkeypatch.setattr(module, "get_supabase", lambda: fake)
     monkeypatch.setattr(cases.soft_delete, "is_deleted", lambda sb, t, i: False)
     return fake
@@ -641,3 +642,44 @@ def test_composite_says_how_each_new_director_consents(db, nd2a, monkeypatch):
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
     view = next(e for e in data["entries"] if e["id"] == entry["id"])
     assert view["consent_mode"] == "econsent" and view["econsent"] is None
+
+
+# -- other open cases for the company (Jacqueline AQ3, BQ1) -------------------------
+
+def _seed_open_cases(db):
+    db.tables["nar1_cases"] += [
+        {"id": "N-OPEN", "entity_id": "E1", "form_code": "Nar1", "case_no": "NAR-2026-0042"},
+        {"id": "N-CLOSED", "entity_id": "E1", "form_code": "Nar1", "case_no": "NAR-2025-0001",
+         "closed_at": "2026-01-01T00:00:00Z"},
+        {"id": "N-FILED", "entity_id": "E1", "form_code": "Nd2b", "case_no": "ND2B-2026-0001",
+         "manual_receipt": {"caseNo": "1"}},
+        {"id": "N-OTHERCO", "entity_id": "E2", "form_code": "Nar1", "case_no": "NAR-2026-0099"},
+    ]
+
+
+def test_other_open_cases_excludes_self_closed_filed_and_other_companies(db, nd2a):
+    _seed_open_cases(db)
+    rows = nar1_cases.other_open_cases("E1", exclude=nd2a["id"])
+    assert [(r["case_no"], r["case_type"]) for r in rows] == [("NAR-2026-0042", "NAR1")]
+    assert rows[0]["workflow_status"]["code"]
+
+
+def test_other_open_cases_excludes_a_cr_filed_return(db, nd2a):
+    _seed_open_cases(db)
+    db.tables["tpsi_filings"].append({"id": "F1", "nar1_case_id": "N-OPEN",
+                                      "stage": "submitted", "created_at": "2026-10-01"})
+    assert nar1_cases.other_open_cases("E1", exclude=nd2a["id"]) == []
+
+
+def test_nd2_composite_carries_other_open_cases(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    _seed_open_cases(db)
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    assert [r["case_no"] for r in data["other_open_cases"]] == ["NAR-2026-0042"]
+
+
+def test_other_open_cases_never_raises(monkeypatch):
+    def boom():
+        raise RuntimeError("database down")
+    monkeypatch.setattr(nar1_cases, "get_supabase", boom)
+    assert nar1_cases.other_open_cases("E1", exclude="K1") == []
