@@ -494,15 +494,16 @@ async def _render(case: dict, xml: str, filing: dict | None, *, public_only: boo
 @router.get("/{case_id}/preview")
 async def preview(case_id: str, audience: str = Query("client"),
                   user=Depends(require_permission(MODULE, "read"))):
-    """The PDF. `client` (default) is what the client is sent — public pages
-    only; `staff` adds the PI sheets."""
-    if audience not in ("client", "staff"):
-        raise HTTPException(400, "audience is 'client' or 'staff'")
+    """The PDF. `client` (default) and `staff` are CR's full form, PI sheets
+    included — since Jacqueline's A8/B2 the client is sent the PI pages to check
+    too; `public` is the public pages only."""
+    if audience not in ("client", "staff", "public"):
+        raise HTTPException(400, "audience is 'client', 'staff' or 'public'")
     case = load_case(case_id)
     filing = nar1_cases.current_filing(case_id)
     try:
         xml = await _form_xml(case, filing)
-        pdf = await _render(case, xml, filing, public_only=audience == "client")
+        pdf = await _render(case, xml, filing, public_only=audience == "public")
     except prepare.MappingError as exc:
         raise _problems(exc)
     except FormFillError as exc:
@@ -625,7 +626,8 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
                                  + "; ".join(f"{f['email']} ({f['reason']})"
                                              for f in failures) + ")")
     try:
-        pdf = await _render(case, xml, filing, public_only=True)
+        # The FULL form (Jacqueline A8/B2): the client checks the PI sheets too.
+        pdf = await _render(case, xml, filing, public_only=False)
     except FormFillError as exc:
         raise HTTPException(422, {"message": f"The form could not be rendered: {exc}"})
     # Which verification email this is (Levi 2026-10-02, migration 051): the
@@ -635,6 +637,22 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     revision = nar1_approvals.next_revision(case)
     attachment = (f"{case['form_code'].upper()}-{case.get('case_no') or case_id}"
                   f"{f'-Rev{revision}' if revision >= 2 else ''}.pdf")
+    # Everything that goes with the letter, gathered BEFORE any link is issued
+    # (Jacqueline A3: one email, not two). A file that cannot be read stops the
+    # send: a letter must not promise an attachment it does not carry.
+    files = [(attachment, pdf)]
+    if case.get("attach_resolution") and case["form_code"] == "Nd2a":
+        entity_row = nar1_cases.entity_for(case["entity_id"]) or {}
+        files.append((resolution.file_name(case), await asyncio.to_thread(
+            resolution.render, case, entity_row, data.get("entries") or [],
+            data.get("officers") or [])))
+    try:
+        files += documents.email_attachments(case_id)
+    except documents.AttachmentError as exc:
+        raise HTTPException(502, f"The email was not sent: {exc.file_name} could not be "
+                                 "read from storage.")
+    names = [name for name, _ in files]
+    consents = await _consent_wording(case, entries)
 
     board = {(r.get("email") or "").lower(): r
              for r in recipients_svc.default_recipients(case, entries) if r.get("email")}
@@ -659,14 +677,15 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     for target in targets:
         url = (f"{link_base}/public/officer-change-approval/{target['token']}"
                if link_base and target.get("token") else None)
-        subject, html = emails.officer_change_email(case, entity, data["entries"],
-                                                    approval_url=url, respond_by=respond_day,
-                                                    revision=revision)
+        subject, html = emails.officer_change_email(
+            case, entity, data["entries"], approval_url=url, respond_by=respond_day,
+            revision=revision, attachments=names,
+            consent=consents.get(target.get("person_id")))
         try:
             sent = await asyncio.to_thread(
                 email_service.send, to=[target["email"]], cc=[email_service.CLIENT_CC],
                 reply_to=email_service.CLIENT_CC, subject=subject, html=html,
-                attachments=[(attachment, pdf)])
+                attachments=files)
         except email_service.EmailError as exc:
             failures.append({"email": target["email"], "reason": str(exc)})
             continue
@@ -725,6 +744,8 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         "filings_superseded": superseded,
         # Which email about this form — the "[Rev. N]" the client saw.
         "revision": revision,
+        # What went with it (Jacqueline A3).
+        "attachments": names,
         "case_no": case.get("case_no")})
     for record in sends:
         target = record["target"]
@@ -749,6 +770,27 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
             "message_ids": message_ids, "deliveries": deliveries,
             "failed_to": [f["email"] for f in failures], "failed": failures,
             "respond_by": deadline_at.isoformat(), "approval_links": bool(link_base)}
+
+
+async def _consent_wording(case: dict, entries: list[dict]) -> dict[str, dict]:
+    """person_id -> what an incoming director's own letter says about their
+    consent to act (Jacqueline A2, A5): e-Sign when GSHK holds their complete
+    e-Registry account. Never fails the send."""
+    try:
+        plan = await prepare.consent_plan(case, entries)
+    except Exception as exc:  # noqa: BLE001 — wording only
+        print(f"[officer_changes] consent plan for the letter failed: {exc!r}",
+              file=sys.stderr)
+        return {}
+    natural = {e["id"]: e for e in entries
+               if e.get("kind") == "appointment" and e.get("person_id")}
+    out = {}
+    for row in plan:
+        entry = natural.get(row.get("entry_id"))
+        if entry and row.get("ready"):
+            out[entry["person_id"]] = {"mode": "esign", "url": None,
+                                       "name": row.get("signer_name")}
+    return out
 
 
 @router.get("/{case_id}/verification/delivery")

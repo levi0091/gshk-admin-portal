@@ -133,3 +133,62 @@ def test_a_revised_letter_opens_with_nar1s_own_notice():
     assert body.index("Revised draft") < body.index("Dear Client")
     assert "&middot; Rev. 2</div>" in body
     assert "Ref ND2A-2026-0001 · Rev. 2" in body
+
+
+# -- Jacqueline's feedback (A1, A2, A3, A5, A8, B2, BQ1) ------------------------------
+
+def _body(entries=None, case=CASE, **kw):
+    kw.setdefault("approval_url", "https://x.test/a")
+    kw.setdefault("respond_by", date(2026, 10, 10))
+    return emails.officer_change_email(case, ENTITY, entries or _entries(), **kw)[1]
+
+
+def test_undated_change_reads_to_be_confirmed():
+    entries = _entries()
+    entries[1]["effective_date"] = None
+    assert emails.changes_summary(entries)[1] == (
+        "WONG Ka Yan is appointed Company Secretary, with effect from a date to be "
+        "confirmed when we file this notice.")
+
+
+def test_pi_paragraph_replaces_the_old_privacy_line():
+    body = _body()
+    assert "protected-information sheet" in body
+    assert "please keep this email private" in body
+    assert "not shown in this email or in the draft" not in body
+
+
+def test_attachments_are_listed():
+    body = _body(attachments=["ND2A-ND2A-2026-0001.pdf", "Written <Resolution>.pdf"])
+    assert "Attached:" in body and "ND2A-ND2A-2026-0001.pdf" in body
+    assert "Written &lt;Resolution&gt;.pdf" in body
+
+
+def test_esign_director_is_told_no_signature_needed():
+    body = _body(consent={"mode": "esign", "url": None, "name": "LEE Ka Ho"})
+    assert "No signature is needed from you" in body
+    assert "e-Registry account we set up with you" in body
+    assert "Sign consent to act" not in body
+
+
+def test_econsent_director_gets_the_sign_button():
+    body = _body(consent={"mode": "econsent", "url": "https://x.test/c?t=9",
+                            "name": "LEE Ka Ho"})
+    assert "Sign consent to act" in body and "https://x.test/c?t=9" in body
+    assert "consent to act as a director" in body
+
+
+def test_no_consent_paragraph_for_other_recipients():
+    body = _body(consent=None)
+    assert "Sign consent to act" not in body and "No signature is needed from you" not in body
+
+
+def test_nd2b_says_we_will_proceed():
+    body = _body(_nd2b_entries(), case={**CASE, "form_code": "Nd2b"})
+    assert ("If we do not hear from you by <strong>10 October 2026</strong>, we will "
+            "proceed with filing so that the Companies Registry receives this notice "
+            "within the 15-day period.") in body
+
+
+def test_nd2a_never_says_we_will_proceed():
+    assert "we will proceed with filing" not in _body()

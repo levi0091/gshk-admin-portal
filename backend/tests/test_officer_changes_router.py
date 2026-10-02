@@ -35,6 +35,7 @@ def env():
          patch.object(oc.nar1_cases, "update_case") as update, \
          patch.object(oc.nar1_cases, "entity_for", return_value={"company_name": "Kanenas"}), \
          patch.object(oc.svc, "mark_deferred", return_value=0) as deferred, \
+         patch.object(oc.documents, "email_attachments", return_value=[]), \
          patch.object(oc, "log_event", new_callable=AsyncMock) as audit:
         m.case = dict(CASE)
         composite.return_value = dict(COMPOSITE)
@@ -246,14 +247,16 @@ def test_a_filed_document_cannot_be_removed(env):
 
 # -- the PDF ---------------------------------------------------------------------------
 
-def test_preview_is_the_public_pages_by_default(env):
+def test_preview_is_the_full_form_by_default(env):
+    """Jacqueline A8/B2: the client checks the PI sheets too, so the client's
+    copy is the full form."""
     with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock,
                       return_value="<cr:brNo>1</cr:brNo>"), \
          patch.object(oc, "render_form", return_value=b"%PDF-1.7") as render:
         resp = client.get("/officer-changes/K1/preview", headers=H)
         client.get("/officer-changes/K1/preview?audience=staff", headers=H)
     assert resp.status_code == 200 and resp.headers["content-type"] == "application/pdf"
-    assert render.call_args_list[0].kwargs["public_only"] is True
+    assert render.call_args_list[0].kwargs["public_only"] is False
     assert render.call_args_list[1].kwargs["public_only"] is False
 
 
@@ -541,3 +544,85 @@ def test_resolution_is_nd2a_only(env):
     env.case = {**CASE, "form_code": "Nd2b"}
     resp = client.get("/officer-changes/K1/resolution", headers=H)
     assert resp.status_code == 409
+
+
+
+# -- the send: PI sheets, attachments, consent wording (Jacqueline A3, A5, A8) --------
+
+def _send_patches(sent, *, attachments=(), attach_error=None, plan=()):
+    from contextlib import ExitStack
+    stack = ExitStack()
+    stack.enter_context(patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock,
+                                     return_value="<x/>"))
+    stack.enter_context(patch.object(oc.prepare, "consent_plan", new_callable=AsyncMock,
+                                     return_value=list(plan)))
+    stack.enter_context(patch.object(oc.tpsi_filings, "create_filing", return_value={"id": "F1"}))
+    stack.enter_context(patch.object(oc.nar1_router, "_undeliverable", new_callable=AsyncMock,
+                                     return_value={}))
+    render = stack.enter_context(patch.object(oc, "render_form", return_value=b"%PDF-form"))
+    stack.enter_context(patch.object(oc.recipients_svc, "default_recipients", return_value=[
+        {"email": "lee@example.com", "person_id": "P9", "name": "LEE Ka Ho"}]))
+    stack.enter_context(patch.object(oc.nar1_router, "_approval_link_base", return_value=None))
+    stack.enter_context(patch.object(oc.resolution, "render", return_value=b"%PDF-res"))
+    if attach_error:
+        stack.enter_context(patch.object(oc.documents, "email_attachments",
+                                         side_effect=attach_error))
+    else:
+        stack.enter_context(patch.object(oc.documents, "email_attachments",
+                                         return_value=list(attachments)))
+    stack.enter_context(patch.object(oc.email_service, "send",
+                                     side_effect=lambda **k: sent.append(k) or
+                                     {"id": "m1", "to": k["to"]}))
+    letter = stack.enter_context(patch.object(oc.emails, "officer_change_email",
+                                              return_value=("s", "h")))
+    return stack, render, letter
+
+
+def test_send_attaches_full_form_resolution_and_ticked_docs(env):
+    env.case = {**CASE, "attach_resolution": True}
+    sent = []
+    stack, render, letter = _send_patches(sent, attachments=[("memo.pdf", b"%PDF-memo")])
+    with stack:
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
+    assert resp.status_code == 200, resp.text
+    assert render.call_args.kwargs["public_only"] is False
+    names = [n for n, _ in sent[0]["attachments"]]
+    assert names == ["ND2A-ND2A-2026-0001.pdf", "Written-Resolution-ND2A-2026-0001.pdf",
+                     "memo.pdf"]
+    assert letter.call_args.kwargs["attachments"] == names
+    email_row = next(c.kwargs for c in env.audit.await_args_list
+                     if c.kwargs["action_type"] == "EMAIL_SENT")
+    assert email_row["metadata"]["attachments"] == names
+
+
+def test_send_refuses_before_mailing_when_an_attachment_cannot_be_read(env):
+    sent = []
+    stack, _r, _l = _send_patches(sent, attach_error=oc.documents.AttachmentError("memo.pdf"))
+    with stack:
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
+    assert resp.status_code == 502 and "memo.pdf" in resp.text
+    assert sent == []
+    env.update.assert_not_called()
+
+
+def test_send_tells_an_esign_director_no_signature_is_needed(env):
+    sent = []
+    plan = [{"entry_id": "N1", "signer_person_id": "P9", "ready": True, "signer_name": "LEE"}]
+    stack, _r, letter = _send_patches(sent, plan=plan)
+    stack.enter_context(patch.object(oc.svc, "list_entries", return_value=[
+        {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"}]))
+    with stack:
+        client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
+    assert letter.call_args.kwargs["consent"]["mode"] == "esign"
+
+
+def test_preview_public_audience_is_public_only(env):
+    with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock, return_value="<x/>"), \
+         patch.object(oc, "render_form", return_value=b"%PDF") as render:
+        client.get("/officer-changes/K1/preview?audience=public", headers=H)
+        assert render.call_args.kwargs["public_only"] is True
+        client.get("/officer-changes/K1/preview?audience=client", headers=H)
+        assert render.call_args.kwargs["public_only"] is False
