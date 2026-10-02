@@ -55,10 +55,53 @@ def filing_deadline(entries: list[dict]) -> date | None:
     return min(dates) + timedelta(days=FILING_WINDOW_DAYS) if dates else None
 
 
-def reply_by_default(deadline: date | None, today: date) -> date | None:
-    """`max(deadline - 5 days, today + 2 days)`; None with no deadline, when the
-    operator must choose (the send refuses without one)."""
+def reply_by_default(deadline: date | None, today: date) -> date:
+    """`max(deadline - 5 days, today + 2 days)`; with no deadline, today + 5.
+
+    A case with no dated change used to have no default, and the operator had
+    to choose. Since Jacqueline's A1 every change may be undated when the draft
+    goes out ("let us fill in the most recent date"), so "no deadline yet" is
+    the common case and five days is the same lead the deadline rule gives."""
     if deadline is None:
-        return None
+        return today + timedelta(days=REPLY_LEAD_DAYS)
     return max(deadline - timedelta(days=REPLY_LEAD_DAYS),
                today + timedelta(days=REPLY_MIN_DAYS))
+
+
+#: NAR1's filing window: an annual return is due within 42 days after the
+#: incorporation anniversary. An ND2B dated to an anniversary older than this is
+#: not being filed "with the NAR1", which is the whole reason for the default.
+ANNIVERSARY_WINDOW_DAYS = 42
+
+
+def _anniversary_in(year: int, born: date) -> date:
+    try:
+        return born.replace(year=year)
+    except ValueError:  # 29 February in a common year
+        return date(year, 2, 28)
+
+
+def anniversary_default(incorporation_date, *, open_return_date=None,
+                        today: date | None = None) -> date | None:
+    """The effective date a new ND2B line starts with (Jacqueline B1).
+
+    "Unless there is any special request, most of the time we will default the
+    effective date to the anniversary date ... so we can submit both forms
+    together." So: the return date of the company's open NAR1 when it has one,
+    else its most recent anniversary when that is no more than 42 days ago (the
+    NAR1 window), else None — an older anniversary would make the ND2B overdue
+    the moment it was opened. Never a date after today: CR records what has
+    happened."""
+    today = today or hk_today()
+    open_day = _as_date(open_return_date)
+    if open_day is not None and open_day <= today:
+        return open_day
+    born = _as_date(incorporation_date)
+    if born is None:
+        return None
+    anniversary = _anniversary_in(today.year, born)
+    if anniversary > today:
+        anniversary = _anniversary_in(today.year - 1, born)
+    if anniversary <= born:
+        return None
+    return anniversary if (today - anniversary).days <= ANNIVERSARY_WINDOW_DAYS else None

@@ -121,9 +121,74 @@ def test_future_dates_block():
     assert check(result, "no_future_dates")["ok"] is False and result["blocking"]
 
 
-def test_a_missing_date_blocks():
+def test_a_missing_date_no_longer_blocks_sending():
+    """Jacqueline A1: clients let GSHK fill in the most recent date, so the
+    draft may go out undated; the date is required at Signing instead."""
     result = run([appoint(person="P9", when=None)])
-    assert check(result, "dates_present")["ok"] is False
+    c = check(result, "dates_present")
+    assert c["ok"] is False and c["level"] == "notice" and result["blocking"] is False
+
+
+def _named(o, name):
+    return {**o, "name": name}
+
+
+def test_three_lines_name_the_board():
+    """Jacqueline A6: three lines are enough for the team."""
+    board = [_named(officer("O1", "director", person="P1"), "CHAN Tai Man"),
+             _named(officer("O3", "company_secretary", corp="GSHK"), "Get Started HK Limited")]
+    r = rules.evaluate(board, [appoint(person="P9", name="LEE Ka Ho")], company=PRIVATE,
+                       today=TODAY)
+    assert r["lines"] == [
+        "After these changes the company will have 2 directors (2 natural persons) "
+        "and 1 secretary.",
+        "Directors: CHAN Tai Man and LEE Ka Ho.",
+        "A company secretary remains — Get Started HK Limited."]
+
+
+def test_three_or_more_directors_are_listed_with_commas():
+    board = [_named(officer("O1", "director", person="P1"), "A"),
+             _named(officer("O2", "director", person="P2"), "B"),
+             _named(officer("O3", "company_secretary", corp="GSHK"), "G")]
+    r = rules.evaluate(board, [appoint(person="P9", name="C")], company=PRIVATE, today=TODAY)
+    assert r["lines"][1] == "Directors: A, B and C."
+
+
+def test_no_director_left_is_visible_in_the_board():
+    board = [_named(o, o["officer_id"]) for o in BOARD]
+    r = rules.evaluate(board, [cease("O1", person="P1"), cease("O2", person="P2")],
+                       company=PRIVATE, today=TODAY)
+    assert r["board"]["directors"] == []
+    assert r["lines"][1] == "No director would remain."
+
+
+def test_secretary_line_when_appointed_on_this_form():
+    board = [_named(officer("O1", "director", person="P1"), "CHAN Tai Man"),
+             _named(officer("O3", "company_secretary", corp="GSHK"), "Old Sec Ltd")]
+    r = rules.evaluate(board, [cease("O3", corp="GSHK", capacity="company_secretary"),
+                               appoint(corp="NEW", capacity="company_secretary",
+                                       name="New Sec Ltd")],
+                       company=PRIVATE, today=TODAY)
+    assert r["lines"][2] == "Company secretary: New Sec Ltd (appointed on this form)."
+    assert r["board"]["secretaries"] == [{"name": "New Sec Ltd", "new": True}]
+
+
+def test_secretary_line_when_none_remains():
+    board = [_named(officer("O1", "director", person="P1"), "CHAN Tai Man"),
+             _named(officer("O3", "company_secretary", corp="GSHK"), "G")]
+    r = rules.evaluate(board, [cease("O3", corp="GSHK", capacity="company_secretary")],
+                       company=PRIVATE, today=TODAY)
+    assert r["lines"][2] == "No company secretary would remain."
+
+
+def test_dates_missing_lists_undated_changes():
+    entries = [appoint(person="P9", when=None, name="LEE Ka Ho"),
+               cease("O1", person="P1"),
+               {"kind": "change", "party": {"name": "CHAN Tai Man"}, "items": [
+                   {"key": "email", "label": "Email address", "effective_date": None},
+                   {"key": "alias", "label": "Alias", "effective_date": None,
+                    "omitted": True}]}]
+    assert rules.dates_missing(entries) == ["LEE Ka Ho", "CHAN Tai Man — Email address"]
 
 
 def test_an_officer_with_no_identity_document_is_a_warning():

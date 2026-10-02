@@ -37,8 +37,41 @@ def test_reply_by_is_never_less_than_two_days_out():
     assert dl.reply_by_default(date(2026, 9, 1), date(2026, 9, 30)) == date(2026, 10, 2)
 
 
-def test_reply_by_without_a_deadline_is_left_to_the_operator():
-    assert dl.reply_by_default(None, date(2026, 9, 30)) is None
+def test_reply_by_defaults_to_five_days_without_a_deadline():
+    """Every change may now be undated at send (Jacqueline A1), and a send
+    needs a reply-by date, so the default is five days out."""
+    assert dl.reply_by_default(None, date(2026, 10, 2)) == date(2026, 10, 7)
+
+
+def test_anniversary_default_prefers_the_open_nar1():
+    assert dl.anniversary_default("2019-03-12", open_return_date="2026-03-12",
+                                  today=date(2026, 10, 2)) == date(2026, 3, 12)
+
+
+def test_anniversary_default_within_42_days():
+    assert dl.anniversary_default("2019-09-01", today=date(2026, 10, 2)) == date(2026, 9, 1)
+
+
+def test_anniversary_default_none_after_42_days():
+    assert dl.anniversary_default("2019-03-12", today=date(2026, 10, 2)) is None
+
+
+def test_anniversary_default_never_future():
+    # This year's anniversary (20 Oct) has not happened; last year's is >42 days ago.
+    assert dl.anniversary_default("2019-10-20", today=date(2026, 10, 2)) is None
+
+
+def test_anniversary_default_on_the_day():
+    assert dl.anniversary_default("2019-10-02", today=date(2026, 10, 2)) == date(2026, 10, 2)
+
+
+def test_anniversary_default_leap_day():
+    assert dl.anniversary_default("2020-02-29", today=date(2027, 3, 10)) == date(2027, 2, 28)
+
+
+def test_anniversary_default_unreadable_is_none():
+    assert dl.anniversary_default(None, today=date(2026, 10, 2)) is None
+    assert dl.anniversary_default("not a date", today=date(2026, 10, 2)) is None
 
 
 def test_hk_today_is_a_date():

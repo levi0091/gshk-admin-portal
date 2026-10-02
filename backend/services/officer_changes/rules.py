@@ -52,7 +52,8 @@ def board_after(officers_now: list[dict], entries: list[dict]) -> list[dict]:
     ceased_keys = {(e.get("capacity"), _key(e)) for e in entries
                    if e.get("kind") == "cessation"}
     board = [
-        {"role": o["role"], "key": _key(o), "party_type": o.get("party_type")}
+        {"role": o["role"], "key": _key(o), "party_type": o.get("party_type"),
+         "name": o.get("name") or "", "new": False}
         for o in officers_now
         if o.get("role") in _ROLES
         and o.get("officer_id") not in ceased_ids
@@ -61,8 +62,35 @@ def board_after(officers_now: list[dict], entries: list[dict]) -> list[dict]:
     for e in entries:
         if e.get("kind") == "appointment":
             board.append({"role": e.get("capacity"), "key": _key(e),
-                          "party_type": e.get("party_type")})
+                          "party_type": e.get("party_type"),
+                          "name": (e.get("party") or {}).get("name") or "", "new": True})
     return board
+
+
+def _join(names: list[str]) -> str:
+    """"A", "A and B", "A, B and C"."""
+    names = [n for n in names if n]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def dates_missing(entries: list[dict]) -> list[str]:
+    """Who still has no effective date: an officer's name, or for an ND2B line
+    "name — item". Omitted ND2B lines are not filed and so need none.
+
+    Since Jacqueline's A1 a draft may go out undated; this is the list the
+    Signing stage asks for, and the one the filing routes refuse on."""
+    out = []
+    for e in entries:
+        name = (e.get("party") or {}).get("name") or e.get("capacity") or "an officer"
+        if e.get("kind") == "change":
+            for item in e.get("items") or []:
+                if not item.get("omitted") and not item.get("effective_date"):
+                    out.append(f"{name} — {item.get('label') or item.get('key')}")
+        elif not e.get("effective_date"):
+            out.append(name)
+    return out
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -94,10 +122,14 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
                              else "There are changes to file."))
         undated = [e.get("capacity") for e in entries if not e.get("effective_date")]
         dates = [_as_date(e.get("effective_date")) for e in entries]
+    # A NOTICE since Jacqueline's A1: the client may be sent the draft with the
+    # date blank, and it is entered at Signing (`dates_missing` gates filing).
     checks.append(_check(
         "dates_present", not undated,
         "Every change has the date it took effect." if not undated else
-        f"{_plural(len(undated), 'change has', 'changes have')} no effective date yet."))
+        f"{_plural(len(undated), 'change has', 'changes have')} no effective date yet — "
+        "the client is told it will be confirmed when we file; enter it at Signing.",
+        level="notice"))
     future = sorted(d for d in dates if d and d > today)
     checks.append(_check(
         "no_future_dates", not future,
@@ -208,5 +240,21 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
                f"{_plural(len(directors), 'director', 'directors')} "
                f"({_plural(len(natural), 'natural person', 'natural persons')}) and "
                f"{_plural(len(secretaries), 'secretary', 'secretaries')}.")
+    # Jacqueline A6: the three lines the team reads; the checks sit behind them.
+    directors_line = (f"Directors: {_join([d['name'] for d in directors])}." if directors
+                      else "No director would remain.")
+    if not secretaries:
+        secretary_line = "No company secretary would remain."
+    elif any(s_["new"] for s_ in secretaries):
+        secretary_line = (f"Company secretary: {_join([s_['name'] for s_ in secretaries])} "
+                          "(appointed on this form).")
+    else:
+        secretary_line = (f"A company secretary remains — "
+                          f"{_join([s_['name'] for s_ in secretaries])}.")
     return {"summary": summary, "checks": checks,
+            "lines": [summary, directors_line, secretary_line],
+            "board": {"directors": [{"name": d["name"], "party_type": d["party_type"]}
+                                    for d in directors],
+                      "secretaries": [{"name": s_["name"], "new": s_["new"]}
+                                      for s_ in secretaries]},
             "blocking": any(not c["ok"] and c["level"] == "rule" for c in checks)}
