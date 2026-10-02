@@ -129,7 +129,8 @@ def pi_values(br: str, bean: dict) -> dict:
               m.PI["other_names_en"]: _get(bean, "indvEngOname")}
     if _get(bean, "indvNewHkidNoEffDt"):
         number = "".join(c for c in _get(bean, "indvNewHkidNo") if c.isalnum()).upper()
-        values[m.PI["hkid_full"]] = _DASH if number in ("", "NIL") else number
+        # NIL as CR files it (Jacqueline A9); a dash only when nothing came.
+        values[m.PI["hkid_full"]] = number or _DASH
         if number not in ("", "NIL"):
             values[m.PI["hkid_check_digit"]] = _get(bean, "indvNewHkidChkDgt")
     if _get(bean, "indvNewPptNoEffDt"):

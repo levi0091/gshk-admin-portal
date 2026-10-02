@@ -144,7 +144,8 @@ def test_a_secretary_with_no_identity_document_has_no_pi_sheet_and_no_none():
     xml = _xml(secretary, mutate=strip_ids)
     assert "PI" not in [p["sheet"] for p in page_plan("Nd2a", xml)]
     text = "\n".join(_text(render("Nd2a", xml, company_name=COMPANY)))
-    assert "None" not in text and "NIL" not in text
+    # NIL, as CR files it (Jacqueline A9), where a dash used to stand.
+    assert "None" not in text and "NIL" in text
 
 
 def test_a_director_with_no_identity_document_still_gets_a_pi_sheet():
@@ -155,7 +156,8 @@ def test_a_director_with_no_identity_document_still_gets_a_pi_sheet():
 
     xml = _xml(director, mutate=strip_ids)
     assert [p["sheet"] for p in page_plan("Nd2a", xml)][-1] == "PI"
-    assert "NIL" not in "\n".join(_text(render("Nd2a", xml, company_name=COMPANY)))
+    pages = _text(render("Nd2a", xml, company_name=COMPANY))
+    assert "NIL" in pages[1] and "NIL" in pages[-1]
 
 
 def test_the_signature_date_is_empty_until_filed():
@@ -198,3 +200,24 @@ def test_an_undated_appointment_renders_with_empty_date_boxes():
     xml = _xml(director, mutate=undate)
     assert "indvDtAppt" not in xml
     assert render("Nd2a", xml, company_name=COMPANY)[:4] == b"%PDF"
+
+
+def test_a_passport_only_director_prints_nil_in_the_hkid_boxes():
+    """Jacqueline A9: the draft the client checks shows HKID as NIL, on the
+    public page and the PI sheet."""
+    director = next(p for p in fx.files("ND2A") if "Appoint Individual Director" in p.name)
+
+    def passport_only(graph, entries):
+        pid = entries[0]["person_id"]
+        graph["identity_documents"][pid] = [d for d in graph["identity_documents"][pid]
+                                            if d.get("id_type") == "passport"]
+
+    xml = _xml(director, mutate=passport_only)
+    fields = PdfReader(io.BytesIO(render_fields("Nd2a", xml,
+                                                company_name=COMPANY))).get_fields()
+    from services.officer_change_form import nd2a_map as m
+    def values(name):
+        return [v.get("/V") for k, v in fields.items() if k.split("__")[0] == name]
+
+    assert values(m.MAIN_2["hkid_partial"]) == ["NIL"]
+    assert values(m.PI["hkid_full"]) == ["NIL"]

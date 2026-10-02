@@ -68,14 +68,19 @@ def _capacity(block: dict, cpty: str) -> dict:
 
 
 def _partial_hkid(number: str) -> str:
+    """CR's partial number — or NIL, printed as CR files it (Jacqueline A9)."""
     digits = "".join(c for c in (number or "") if c.isalnum()).upper()
-    if not digits or digits == "NIL":
+    if digits == "NIL":
+        return "NIL"
+    if not digits:
         return ""
     return nar1_mapper._partial_hkid(digits) or ""
 
 
 def _partial_passport(number: str) -> str:
-    if not number or number.strip().upper() == "NIL":
+    if (number or "").strip().upper() == "NIL":
+        return "NIL"
+    if not number:
         return ""
     return nar1_mapper._partial_passport(number)
 
@@ -191,9 +196,10 @@ def pi_values(br: str, bean: dict) -> dict:
         m.PI["name_zh"]: _get(bean, "indvChiName"),
         m.PI["surname_en"]: _get(bean, "indvEngSname"),
         m.PI["other_names_en"]: _get(bean, "indvEngOname"),
-        m.PI["hkid_full"]: "" if hkid == "NIL" else hkid,
+        # NIL as CR files it (Jacqueline A9), not a dash.
+        m.PI["hkid_full"]: hkid,
         m.PI["hkid_check_digit"]: _get(bean, "indvHkidChkDgt"),
-        m.PI["passport_full"]: "" if passport.upper() == "NIL" else passport,
+        m.PI["passport_full"]: passport,
         m.PI["passport_country"]: (display_country(_get(bean, "indvPptIssCtry"))
                                    if _get(bean, "indvPptIssCtry") else ""),
     }
@@ -204,7 +210,7 @@ def pi_values(br: str, bean: dict) -> dict:
                        m.PI["res_country"]: home["country"]})
         _dash(values, m.PI, ("res_flat", "res_building"))
     _dash(values, m.PI, ("name_zh", "hkid_full", "passport_full", "passport_country"))
-    if not values.get(m.PI["hkid_full"]) or values[m.PI["hkid_full"]] == _DASH:
+    if values.get(m.PI["hkid_full"]) in (None, "", _DASH, "NIL"):
         values.pop(m.PI["hkid_check_digit"], None)
     return values
 

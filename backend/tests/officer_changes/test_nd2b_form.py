@@ -159,3 +159,22 @@ def test_centred_cells(field, index):
     text, x, _y, size, _f = _drawn(field, index)
     x0, _y0, x1, _y1 = _box(field, index)
     assert x == pytest.approx(x0 + ((x1 - x0) - ap.measure(text, size)) / 2, abs=0.6)
+
+
+def test_a_removed_hkid_prints_nil_on_the_pi_sheet():
+    """Jacqueline A9: NIL is what CR files for "no HKID", so the PI sheet the
+    client checks says NIL rather than a dash."""
+    path = next(p for p in fx.files("ND2B") if "Individual Director" in p.name)
+
+    def drop_hkid(graph, entries):
+        for item in entries[0]["items"]:
+            if item["key"] == "hkid":
+                item["new"] = None
+
+    xml = _xml(path, mutate=drop_hkid)
+    assert "<cr:indvNewHkidNo>NIL</cr:indvNewHkidNo>" in xml
+    filled = PdfReader(io.BytesIO(render_fields("Nd2b", xml, company_name=COMPANY)))
+    pi = [str(a.get_object().get("/V") or "") for page in filled.pages
+          for a in page.get("/Annots") or []
+          if str(a.get_object().get("/T")).split("__p")[0] == m.PI["hkid_full"]]
+    assert pi == ["NIL"]

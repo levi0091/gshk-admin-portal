@@ -11,8 +11,9 @@ codes and the body-corporate signing scheme CR's live register verified on
     CR's reason (`rsnCes`) for a natural person, and `dirAfterCesInd` = N for a
     director — alternate directors are out of scope (answer 5), so nobody stays
     on as one.
-  * Appointment: the FULL HKID with the check digit split out, or the full
-    passport with its issuing country; "NIL" in both only when the person holds
+  * Appointment: the FULL HKID with the check digit split out, and/or the full
+    passport with its issuing country; HKID "NIL" beside a passport when the
+    person holds no HKID (Jacqueline A9), and "NIL" in both when they hold
     neither, as CR's remark says. `dirBeforeApptInd` = N for a director, absent
     for a secretary — the examples carry it on directors only.
   * Every new DIRECTOR's bean carries `id="S<n>"`, which its consent signature
@@ -117,7 +118,12 @@ def full_ids(graph: dict, person_id: str, problems: list[str], where: str,
     hkid, passport = documents(graph, person_id)
     if not hkid and not passport:
         return {f"{prefix}HkidNo": "NIL", f"{prefix}PptNo": "NIL"}
-    out = {}
+    # Jacqueline A9 (2026-10-01): "HKID must be filed as NIL in the CR system
+    # if the proposed director does not use an HKID for registration" — and
+    # CR's worksheet marks indvHkidNo mandatory. A passport holder therefore
+    # carries NIL beside the passport, with no check digit. Not yet run on CR
+    # TEST (spec C-10).
+    out = {} if hkid else {f"{prefix}HkidNo": "NIL"}
     if hkid:
         split = split_hkid(hkid.get("id_number"), problems, where)
         if split:

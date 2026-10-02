@@ -188,3 +188,24 @@ def test_form_xml_emits_schema_order_and_the_bean_id():
     assert xml.index("<cr:language>") < xml.index("<cr:brNo>") < xml.index("<cr:appOfNpBeans>")
     assert '<cr:appOfNpBean id="S1"><cr:cpty>D</cr:cpty>' in xml
     assert xml.endswith("<cr:signatoryDate>01/06/2022</cr:signatoryDate>")
+
+
+# -- HKID "NIL" (Jacqueline A9) ----------------------------------------------------
+
+def test_passport_only_appointee_files_hkid_nil():
+    """CR's worksheet marks indvHkidNo mandatory, and Jacqueline: "HKID must be
+    filed as NIL in the CR system if the proposed director does not use an
+    HKID for registration"."""
+    graph, entries = _director_world()
+    pid = entries[0]["person_id"]
+    graph["identity_documents"][pid] = [d for d in graph["identity_documents"][pid]
+                                        if d.get("id_type") == "passport"]
+    bean = nd2a_mapper.map_case(graph, entries)["appOfNpBeans"][0]
+    assert bean["indvHkidNo"] == "NIL" and "indvHkidChkDgt" not in bean
+    assert bean["indvPptNo"] and bean["indvPptNo"] != "NIL" and bean["indvPptIssCtry"]
+
+
+def test_hkid_holder_is_unchanged():
+    graph, entries = _director_world()
+    bean = nd2a_mapper.map_case(graph, entries)["appOfNpBeans"][0]
+    assert bean["indvHkidNo"] == "A123456" and bean["indvHkidChkDgt"] == "3"
