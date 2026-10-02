@@ -47,12 +47,26 @@ const openCreate = async () => {
 }
 
 describe('the modules a role can be granted', () => {
-  it('offers exactly the five the API gates on', async () => {
+  it('offers exactly the six the API gates on', async () => {
     await openCreate()
     for (const label of ['Companies', 'Persons', 'NAR1 cases',
+                         'Officer changes (ND2A / ND2B)',
                          'Companies Registry filing', 'Audit Trail']) {
       expect(screen.getByText(label), label).toBeInTheDocument()
     }
+  })
+
+  it('grants officer_changes read and write, and nothing more (migration 050)', async () => {
+    const user = await openCreate()
+    const block = screen.getByText('Officer changes (ND2A / ND2B)').parentElement
+    expect(within(block).getAllByRole('checkbox')).toHaveLength(2)
+    await user.click(within(block).getByLabelText('Edit'))
+    await user.type(screen.getByPlaceholderText(/company_reviewer/), 'officer_clerk')
+    await user.click(screen.getByRole('button', { name: /Create Role/ }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/roles/', {
+      name: 'officer_clerk',
+      permissions: [{ module: 'officer_changes', permission: 'write' }],
+    }))
   })
 
   it('does NOT offer Documents — it is not a module (migration 040)', async () => {

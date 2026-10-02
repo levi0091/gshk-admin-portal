@@ -9,6 +9,8 @@ import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
 import { WorkflowBadge, WORKFLOW_LABEL } from '../components/CaseStatusBadge.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
+import { casePath, deadlineText } from '../components/officerChange/workflow.js'
+import '../components/officerChange/entryPoints.css'
 import {
   DATE, ENUM, ID, OWNER, RANGE, TEXT,
   appendTo, filtersFor, setColumn,
@@ -79,6 +81,8 @@ const WORKFLOW_ORDER = [
   'cr_rejected', 'cr_unknown', 'closed',
 ]
 
+const CASE_TYPES = ['NAR1', 'ND2A', 'ND2B']
+
 const ANNIV_HINT =
   'Negative once the anniversary has passed, positive counting down to the ' +
   'next one. −42 to 0 is the statutory filing window — still filable. Below ' +
@@ -97,8 +101,10 @@ function buildColumns(meId, counts) {
   return [
     { col: 'case_no', label: 'Case ID', sort: 'case_no',
       filter: { kind: TEXT, placeholder: 'NAR-2026-…' } },
+    // ND2A / ND2B join NAR1 here (migration 050): the view derives the type
+    // from `form_code`, and `nar1_cases._FILTERABLE` accepts all three.
     { col: 'case_type', label: 'Case Type', sort: null,
-      filter: { kind: ENUM, options: [{ value: 'NAR1', label: 'NAR1' }] } },
+      filter: { kind: ENUM, options: CASE_TYPES.map(value => ({ value, label: value })) } },
     { col: 'entity_id', label: 'Entity ID', sort: null,
       filter: { kind: ID, placeholder: 'Company UUID' } },
     { col: 'company_name', label: 'Company Name', sort: 'company_name',
@@ -127,6 +133,12 @@ function buildColumns(meId, counts) {
           value, label: WORKFLOW_LABEL[value], count: counts?.[value],
         })),
       } },
+    // AN OFFICER CHANGE IS DUE 15 DAYS AFTER IT HAPPENED, not on an anniversary
+    // (migration 050). Its own column rather than a second meaning for the one
+    // beside it: the two sort on different fields, and folding them together
+    // would sort every ND2 row to the bottom of "Days to anniversary".
+    { col: 'filing_deadline', label: 'File by', sort: 'filing_deadline',
+      filter: { kind: DATE } },
     { col: 'days_to_anniversary', label: 'Days to anniversary', sort: 'days_to_anniversary',
       filter: { kind: RANGE, unit: 'days', hint: ANNIV_HINT } },
     // Levi 2026-09-04: Last Updated belongs beside Create Date, not between the
@@ -143,11 +155,28 @@ function buildColumns(meId, counts) {
   ]
 }
 
+//: Codes after which an ND2's deadline no longer has anything to chase: the
+//: form is with CR, or the case is shut. The date still shows; the count stops.
+const DEADLINE_SPENT = /^(cr_|closed)/
+
+/** `{text, overdue}` for an ND2 row's File by cell, or null for a NAR1 row. */
+export function officerDeadline(row) {
+  if (!row?.filing_deadline) return null
+  const code = typeof row.workflow_status === 'string'
+    ? row.workflow_status : row.workflow_status?.code
+  if (DEADLINE_SPENT.test(code || '')) return { text: null, overdue: false }
+  return deadlineText({ date: row.filing_deadline, days: row.days_to_deadline })
+    || { text: null, overdue: false }
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate()
   const { hasPermission, isSuperAdmin, profile, profileLoading } = useAuth()
-  // nar1:read shows the cases; nar1:write is what opens and drives one.
+  // nar1:read shows the cases; nar1:write is what opens and drives one. An
+  // ND2A / ND2B is opened on `officer_changes:write`, and the modal offers each
+  // form only to the role that may open it.
   const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
+    || hasPermission('officer_changes', 'write')
   const meId = profile?.id
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
@@ -282,7 +311,7 @@ export default function DashboardPage() {
       {showAdd && (
         <NewCaseModal
           onClose={() => setShowAdd(false)}
-          onCreated={c => navigate(`/cases/${c.id}`)}
+          onCreated={c => navigate(casePath(c))}
         />
       )}
 
@@ -400,9 +429,10 @@ export default function DashboardPage() {
                   </td></tr>
                 ) : rows.map(c => {
                   const { text, overdue } = labelForDays(c.days_to_anniversary)
+                  const due = officerDeadline(c)
                   return (
                     <tr key={c.id} className="clickable"
-                        onClick={() => navigate(`/cases/${c.id}`)}>
+                        onClick={() => navigate(casePath(c))}>
                       <td data-label="Case ID"><span className="td-id">{c.case_no || '—'}</span></td>
                       <td data-label="Case Type">
                         {/* The YEAR rides with the type (migration 047): a
@@ -424,6 +454,18 @@ export default function DashboardPage() {
                             act on it. A list scanned for "what needs me next"
                             reads better with one word per row than two. */}
                         <WorkflowBadge status={c.workflow_status} />
+                      </td>
+                      <td data-label="File by">
+                        {due ? (
+                          <span className="td-deadline">
+                            <span className="td-muted">{formatDate(c.filing_deadline)}</span>
+                            {due.text && (
+                              <span className={due.overdue ? 'td-anniv-overdue' : 'td-muted'}>
+                                {due.text}
+                              </span>
+                            )}
+                          </span>
+                        ) : <span className="td-muted">—</span>}
                       </td>
                       <td data-label="Days to anniversary" aria-label="Days to anniversary">
                         <span className={overdue ? 'td-anniv-overdue' : 'td-muted'}>{text}</span>

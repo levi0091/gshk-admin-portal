@@ -23,6 +23,8 @@ import {
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
 import { personProfileCaps, asDeleted } from '../lib/screenCapabilities.js'
+import EServiceCredentialCard from '../components/officerChange/EServiceCredentialCard.jsx'
+import ParticularsChangeAlert from '../components/officerChange/ParticularsChangeAlert.jsx'
 import {
   DeleteRecordModal, DeletedBanner, RecordGone, createdOn,
 } from '../components/SoftDelete.jsx'
@@ -544,6 +546,15 @@ export default function PersonProfilePage() {
         <ReadOnlyNote module="persons" what="this person's details and identity documents" />
       )}
 
+      {/* Particulars CR holds for one of this person's appointments changed
+          here and no ND2B has told CR (answers 14, 16). */}
+      {!isDeleted && (
+        <ParticularsChangeAlert kind="person" id={personId} caps={{
+          view: caps.viewParticularsChanges, dismiss: caps.dismissParticularsChange,
+          start: caps.startOfficerChange, open: caps.viewOfficerChanges,
+        }} />
+      )}
+
       <div className="detail-grid client-off">
         <div>
           {/* Personal Information */}
@@ -606,6 +617,12 @@ export default function PersonProfilePage() {
               </div>
             )}
           </div>
+
+          {/* The person's own e-Registry account (answers 1, 8): beside their
+              particulars, because it is set up when they are, by GSHK. */}
+          {caps.viewEServiceCredential && (
+            <EServiceCredentialCard personId={personId} canEdit={caps.editEServiceCredential} />
+          )}
 
           {/* "Unavailable" is not "none". If the section catalogue could not be
               loaded, say so — rendering an empty Identity Documents card would

@@ -9,10 +9,16 @@ vi.mock('../lib/api.js', () => ({
   api: { get: (...a) => get(...a), post: (...a) => post(...a) },
 }))
 
+let perms
+vi.mock('../context/AuthContext.jsx', () => ({
+  useAuth: () => ({ hasPermission: (m, p) => perms.includes(`${m}:${p}`) }),
+}))
+
 const onClose = vi.fn(); const onCreated = vi.fn()
 
 beforeEach(() => {
   vi.clearAllMocks()
+  perms = ['nar1:write']
   get.mockResolvedValue({ companies: [
     { id: 'e1', company_name: 'Harbour Tech Ltd.', br_number: '2100028' },
   ] })
@@ -83,5 +89,44 @@ describe('NewCaseModal — from a company profile', () => {
   it('is immediately ready — the company is already known', () => {
     render(<NewCaseModal entity={entity} onClose={onClose} onCreated={onCreated} />)
     expect(screen.getByRole('button', { name: 'Open case' })).toBeEnabled()
+  })
+})
+
+describe('NewCaseModal — the form picker (migration 050)', () => {
+  const entity = { id: 'e7', company_name: 'Obsydian Group Limited' }
+
+  it('offers no ND2 form to a role without officer_changes:write — not even disabled', () => {
+    render(<NewCaseModal entity={entity} onClose={onClose} onCreated={onCreated} />)
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    expect(screen.queryByText(/ND2A/)).not.toBeInTheDocument()
+    expect(screen.getByText('Annual Return (NAR1)')).toBeInTheDocument()
+  })
+
+  it('offers all three forms to a role holding both modules', () => {
+    perms = ['nar1:write', 'officer_changes:write']
+    render(<NewCaseModal entity={entity} onClose={onClose} onCreated={onCreated} />)
+    expect(screen.getAllByRole('radio')).toHaveLength(3)
+    expect(screen.getByLabelText('Annual Return (NAR1)')).toBeChecked()
+  })
+
+  it('opens an ND2A through the officer-change API and hands back its form code', async () => {
+    perms = ['nar1:write', 'officer_changes:write']
+    post.mockResolvedValue({ case: { id: 'k1', case_no: 'ND2A-2026-0001' }, reused: false })
+    const user = userEvent.setup()
+    render(<NewCaseModal entity={entity} onClose={onClose} onCreated={onCreated} />)
+    await user.click(screen.getByLabelText(/Appointment \/ cessation of officers \(ND2A\)/))
+    await user.click(screen.getByRole('button', { name: 'Open case' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes', {
+      entity_id: 'e7', form_code: 'Nd2a',
+    }))
+    expect(onCreated).toHaveBeenCalledWith({ id: 'k1', case_no: 'ND2A-2026-0001', form_code: 'Nd2a' })
+  })
+
+  it('shows a lone ND2 role its two forms, preselecting the one asked for', () => {
+    perms = ['officer_changes:write']
+    render(<NewCaseModal entity={entity} initialForm="Nd2b" onClose={onClose} onCreated={onCreated} />)
+    expect(screen.getAllByRole('radio')).toHaveLength(2)
+    expect(screen.getByLabelText(/\(ND2B\)/)).toBeChecked()
+    expect(screen.queryByText('Annual Return (NAR1)')).not.toBeInTheDocument()
   })
 })
