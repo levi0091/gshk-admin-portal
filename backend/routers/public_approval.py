@@ -424,6 +424,12 @@ def _decided(case: dict) -> HTMLResponse | None:
         return _unavailable(miss)
 
     decision = case.get("client_approved")
+    if decision is True and case.get("client_approval_source") == \
+            nar1_approvals.SOURCE_STAFF_WAIVER:
+        # GSHK is proceeding without the client's confirmation (an ND2B,
+        # Jacqueline BQ1). Nobody confirmed, so the page must not say anybody
+        # did — and the client's own confirmation is still worth having.
+        return None
     if decision is True:
         approved = nar1_approvals.approved_row_for(case["id"])
         return _already((approved or {}).get("recipient_name") or "",

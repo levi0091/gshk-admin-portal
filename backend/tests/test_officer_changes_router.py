@@ -65,6 +65,7 @@ ROUTES = [
     ("get", "/officer-changes/K1/verification/recipients", None),
     ("post", "/officer-changes/K1/verification/send", {"respond_by": "2026-10-10"}),
     ("post", "/officer-changes/K1/verification/response", {"approved": True}),
+    ("post", "/officer-changes/K1/verification/proceed", {"reason": "x"}),
     ("post", "/officer-changes/K1/close", {"reason": "x"}),
     ("post", "/officer-changes/K1/validate", None),
     ("post", "/officer-changes/K1/sign", None),
@@ -694,3 +695,46 @@ def test_econsent_pdf_without_a_signature_is_409(env):
                       side_effect=LookupError("no signed consent")):
         resp = client.post("/officer-changes/K1/entries/N1/econsent-pdf", headers=H)
     assert resp.status_code == 409
+
+
+# -- ND2B: proceed without the client's confirmation (Jacqueline BQ1) ---------------
+
+ND2B_SENT = {**CASE, "form_code": "Nd2b", "case_no": "ND2B-2026-0003",
+             "verification_sent_at": "2026-10-01T00:00:00Z"}
+
+
+def test_proceed_sets_approved_with_waiver_source(env):
+    env.case = dict(ND2B_SENT)
+    resp = client.post("/officer-changes/K1/verification/proceed", headers=H,
+                       json={"reason": "Filing deadline; client not responding"})
+    assert resp.status_code == 200, resp.text
+    patch_ = env.update.call_args.args[1]
+    assert patch_["client_approved"] is True
+    assert patch_["client_approval_source"] == "staff_waiver"
+    assert patch_["client_approval_name"] == "Filing deadline; client not responding"
+    row = env.audit.await_args.kwargs
+    assert row["action_type"] == "OFFICER_CONFIRMATION_WAIVED"
+    assert row["metadata"]["reason"] == "Filing deadline; client not responding"
+
+
+def test_proceed_refused_on_nd2a(env):
+    env.case = {**CASE, "verification_sent_at": "2026-10-01T00:00:00Z"}
+    resp = client.post("/officer-changes/K1/verification/proceed", headers=H,
+                       json={"reason": "x"})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "nd2b_only"
+
+
+def test_proceed_requires_a_reason(env):
+    env.case = dict(ND2B_SENT)
+    resp = client.post("/officer-changes/K1/verification/proceed", headers=H,
+                       json={"reason": "   "})
+    assert resp.status_code == 400
+
+
+def test_proceed_needs_a_sent_unanswered_form(env):
+    env.case = {**ND2B_SENT, "verification_sent_at": None}
+    assert client.post("/officer-changes/K1/verification/proceed", headers=H,
+                       json={"reason": "x"}).status_code == 409
+    env.case = {**ND2B_SENT, "client_approved": True}
+    assert client.post("/officer-changes/K1/verification/proceed", headers=H,
+                       json={"reason": "x"}).status_code == 409

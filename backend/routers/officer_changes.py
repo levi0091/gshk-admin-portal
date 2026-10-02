@@ -893,6 +893,47 @@ async def record_response(case_id: str, body: ResponseIn,
     return await respond(case_id, user)
 
 
+class ProceedIn(BaseModel):
+    reason: str
+
+
+@router.post("/{case_id}/verification/proceed")
+async def proceed_without_confirmation(case_id: str, body: ProceedIn,
+                                       user=Depends(require_permission(MODULE, "write"))):
+    """An ND2B filed without the client's confirmation (Jacqueline BQ1: "we
+    usually submit the ND2B even if the client has not confirmed the form"),
+    with the reason on record. The client's link stays live: a confirmation
+    that arrives later replaces this one. An ND2A is never filed this way."""
+    case = load_case(case_id)
+    refuse_if_closed(case, "proceeding with it")
+    if case.get("form_code") != "Nd2b":
+        raise HTTPException(409, {"message": "Only an ND2B may proceed without the "
+                                             "client's confirmation.",
+                                  "reason": "nd2b_only"})
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "Say why the ND2B is going ahead without the client")
+    if len(reason) > nar1_router._MAX_CLOSE_REASON:
+        raise HTTPException(400, f"Keep the reason to {nar1_router._MAX_CLOSE_REASON} "
+                                 "characters")
+    if not case.get("verification_sent_at"):
+        raise HTTPException(409, {"message": "Send the form to the client first.",
+                                  "reason": "not_sent"})
+    if case.get("client_approved") is not None:
+        raise HTTPException(409, {"message": "The client's answer is already recorded.",
+                                  "reason": "answered"})
+    nar1_cases.update_case(case_id, {
+        "client_approved": True,
+        "client_response_at": datetime.now(timezone.utc).isoformat(),
+        "client_approval_source": nar1_approvals.SOURCE_STAFF_WAIVER,
+        "client_approval_name": reason, "client_approval_person_id": None,
+    })
+    await audit(case, user, ev.OFFICER_CONFIRMATION_WAIVED, old_value=None,
+                new_value="proceeding without confirmation",
+                metadata={"case_no": case.get("case_no"), "reason": reason})
+    return await respond(case_id, user)
+
+
 # -- closing -------------------------------------------------------------------------------
 
 class CloseIn(BaseModel):

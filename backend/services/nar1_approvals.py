@@ -57,6 +57,10 @@ OUTCOME_SUPERSEDED = "superseded"
 SOURCE_SELF_SERVICE = "self_service"
 SOURCE_STAFF_RELAY = "staff_relay"
 SOURCE_SYSTEM_TIMEOUT = "system_timeout"
+#: An ND2B GSHK files without the client's confirmation (Jacqueline BQ1, 1 Oct
+#: 2026: "we usually submit the ND2B even if the client has not confirmed").
+#: The REASON is kept in `client_approval_name`; there is no approver.
+SOURCE_STAFF_WAIVER = "staff_waiver"
 
 
 def _now() -> datetime:
@@ -363,6 +367,12 @@ def provenance(case: dict) -> dict | None:
         summary = (f"Approved by {name} using the link in the verification email"
                    if name else
                    "Approved by the client using the link in the verification email")
+    elif source == SOURCE_STAFF_WAIVER:
+        summary = ("Proceeding without the client's confirmation"
+                   + (f" — {name}" if name else ""))
+        return {"source": source, "name": None, "reason": name,
+                "person_id": None, "responded_at": when, "summary": summary,
+                "system": False}
     elif source == SOURCE_STAFF_RELAY:
         summary = (f"Approved by {name}, recorded by a member of staff" if name
                    else "Recorded by a member of staff from the client's reply")
