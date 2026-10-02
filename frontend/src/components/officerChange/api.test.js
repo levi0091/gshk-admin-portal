@@ -52,6 +52,7 @@ describe('officerChangeApi', () => {
     ['submit', () => oc.submit('c1'), 'post', '/officer-changes/c1/submit'],
     ['recordFiling', () => oc.recordFiling('c1', {}), 'post', '/officer-changes/c1/record-filing'],
     ['undo', () => oc.undo('c1'), 'post', '/officer-changes/c1/undo'],
+    ['retryApply', () => oc.retryApply('c1'), 'post', '/officer-changes/c1/apply'],
     ['close', () => oc.close('c1', 'x'), 'post', '/officer-changes/c1/close'],
     ['refreshCrStatus', () => oc.refreshCrStatus('c1'), 'post', '/tpsi/cases/c1/refresh-status'],
   ])('%s calls %s', async (_name, call, verb, path) => {

@@ -15,8 +15,12 @@ export default function StageCrStatus({ data, reload, can }) {
   const [confirmUndo, setConfirmUndo] = useState(false)
   const [error, setError] = useState(null)
   const status = crStatus(data)
+  // `cr_text` is what the backend sends (doc_status.describe): CR's exact words.
+  const crText = data.cr_status?.cr_text || null
   const rejected = data.cr_status?.code === 'cr_rejected'
-  const canUndo = rejected && data.applied_at && !data.undone_at && can.tpsiSubmit
+  // Any entry applied, not only a complete write-back: the backend's Undo gate.
+  const anyApplied = Boolean(data.applied_at) || (data.entries || []).some(e => e.applied)
+  const canUndo = rejected && anyApplied && !data.undone_at && can.tpsiSubmit
 
   async function check() {
     setBusy(true); setError(null)
@@ -40,13 +44,19 @@ export default function StageCrStatus({ data, reload, can }) {
               : 'Not yet checked with CR.'}
           </div>
         </div>
-        <span className="badge">{status.label}</span>
+        {/* On an answer this portal does not recognise, CR's own words are
+            the only thing that says anything — they go on the badge. */}
+        <span className="badge">
+          {data.cr_status?.code === 'cr_unknown' && crText ? crText : status.label}
+        </span>
       </div>
-      {data.cr_status?.raw && <div className="cr-quote">CR says: “{data.cr_status.raw}”</div>}
+      {crText && <div className="cr-quote">CR says: “{crText}”</div>}
       <div className="oc-send-row">
-        <button className="btn btn-outline" disabled={busy || !can.tpsiRead} onClick={check}>
-          {busy ? 'Checking…' : 'Check now'}
-        </button>
+        {can.tpsiRead && (
+          <button className="btn btn-outline" disabled={busy} onClick={check}>
+            {busy ? 'Checking…' : 'Check now'}
+          </button>
+        )}
         {canUndo && (
           <button className="btn btn-danger-outline btn-outline" onClick={() => setConfirmUndo(true)}>
             Undo profile update

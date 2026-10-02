@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
+import { officerRef } from './CessationDrawer.jsx'
+import { formatDate } from '../../lib/format.js'
 
 const ROLE = { director: 'Director', company_secretary: 'Company Secretary' }
 
@@ -15,8 +17,14 @@ const ROLE = { director: 'Director', company_secretary: 'Company Secretary' }
 export default function ParticularsChangeCard({ data, reload, can }) {
   const entries = (data.entries || []).filter(e => e.kind === 'change')
   const editable = data.editable && can.write
-  const onCase = new Set(entries.map(e => e.officer_id))
-  const available = (data.officers || []).filter(o => !onCase.has(o.officer_id))
+  const onCase = new Set(entries.map(e => e.officer_id).filter(Boolean))
+  // Keyed by `officerRef`: a secretary held only on the register has no officer
+  // row yet (officer_id null) and is added by its register id.
+  const available = (data.officers || []).filter(o => !o.officer_id || !onCase.has(o.officer_id))
+  function addOfficer(ref) {
+    const who = ref.startsWith('cs:') ? { secretary_id: ref.slice(3) } : { officer_id: ref }
+    run(officerChangeApi.addEntry(data.id, { kind: 'change', ...who }))
+  }
   const [adding, setAdding] = useState('')
   const [omitting, setOmitting] = useState(null)
   const [removing, setRemoving] = useState(null)
@@ -46,12 +54,11 @@ export default function ParticularsChangeCard({ data, reload, can }) {
                     onChange={e => setAdding(e.target.value)}>
               <option value="">Add an officer…</option>
               {available.map(o => (
-                <option key={o.officer_id} value={o.officer_id}>{o.name} — {ROLE[o.role]}</option>
+                <option key={officerRef(o)} value={officerRef(o)}>{o.name} — {ROLE[o.role]}</option>
               ))}
             </select>
             <button className="btn btn-primary" disabled={!adding}
-                    onClick={() => { run(officerChangeApi.addEntry(data.id,
-                      { kind: 'change', officer_id: adding })); setAdding('') }}>Add officer</button>
+                    onClick={() => { addOfficer(adding); setAdding('') }}>Add officer</button>
           </div>
         )}
       </div>
@@ -84,9 +91,14 @@ export default function ParticularsChangeCard({ data, reload, can }) {
                     <td className="oc-old">{item.old_text}</td>
                     <td className="oc-new">{item.new_text}</td>
                     <td>
-                      <input type="date" className="f-input" aria-label={`Effective date — ${item.label}`}
-                             value={item.effective_date || ''} disabled={!editable || item.omitted}
-                             onChange={e => setItem(entry, item.key, { effective_date: e.target.value })} />
+                      {/* A role that may not edit sees the date, not a dead input. */}
+                      {editable ? (
+                        <input type="date" className="f-input" aria-label={`Effective date — ${item.label}`}
+                               value={item.effective_date || ''} disabled={item.omitted}
+                               onChange={e => setItem(entry, item.key, { effective_date: e.target.value })} />
+                      ) : (
+                        <span className="td-muted">{item.effective_date ? formatDate(item.effective_date) : '—'}</span>
+                      )}
                     </td>
                     <td>
                       {editable && (item.omitted

@@ -10,6 +10,7 @@ import StageDataVerification from './StageDataVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageCrStatus from './StageCrStatus.jsx'
+import StageConfirmation from './StageConfirmation.jsx'
 import { stageIndexFor, stageDone, deadlineText } from './workflow.js'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn(); const upload = vi.fn()
@@ -36,7 +37,11 @@ const BASE = {
 }
 const wrap = ui => render(<MemoryRouter>{ui}</MemoryRouter>)
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  // The appointment drawer reads /lookups for CR's country and district lists.
+  get.mockResolvedValue({})
+})
 
 describe('workflow', () => {
   it('derives the stage from the case for both routes', () => {
@@ -47,7 +52,11 @@ describe('workflow', () => {
     expect(stageIndexFor({ client_approved: true, signing_method: 'manual', data_checked_at: 'x' })).toBe(3)
     expect(stageIndexFor({ client_approved: true, signing_method: 'manual', data_checked_at: 'x',
       manual_signed_document_id: 'd' })).toBe(4)
-    expect(stageIndexFor({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_not_checked' } })).toBe(5)
+    // Filed opens CR Status even before CR has listed it — "Check now" lives there.
+    expect(stageIndexFor({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_not_checked' } })).toBe(6)
+    expect(stageDone({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_pending' } }, 5)).toBe(true)
+    expect(stageDone({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_pending' } }, 6)).toBe(false)
+    expect(stageDone({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_registered' } }, 6)).toBe(true)
     expect(stageIndexFor({ changes_applied_at: 'x', cr_status: { code: 'cr_pending' } })).toBe(6)
     expect(stageIndexFor({ closed_at: 'x' })).toBe(0)
     expect(stageDone({ client_approved: true }, 1)).toBe(true)
@@ -234,8 +243,101 @@ describe('StageSubmission', () => {
     wrap(<StageSubmission data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
     await userEvent.click(screen.getByLabelText(/Filing it with the Companies Registry cannot be undone/))
     await userEvent.click(screen.getByRole('button', { name: 'File ND2A with CR' }))
+    // Preview, tick, then a confirmation — the portal's rule for submitForm.
+    expect(post).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'File with CR' }))
     expect(await screen.findByText(/Filed with CR — but some follow-up did not complete/)).toBeInTheDocument()
     expect(screen.getByText('HO New: timeout')).toBeInTheDocument()
+  })
+
+  it('shows the form as it will be filed before an e-Sign filing', () => {
+    const data = { ...BASE, signing_method: 'esign', filing: { stage: 'signed' },
+      profile_changes: [], documents: [] }
+    wrap(<StageSubmission data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText(/the Companies Registry validated and that has been signed/))
+      .toBeInTheDocument()
+  })
+
+  it('draws no filing controls for a role without File with CR — not even disabled', () => {
+    const data = { ...BASE, signing_method: 'esign', filing: { stage: 'signed' },
+      profile_changes: [], documents: [] }
+    wrap(<StageSubmission data={data} reload={vi.fn()} can={{ ...ALL, tpsiSubmit: false }}
+                          goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /File ND2A with CR/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.getByText(/Filing needs Companies Registry filing/)).toBeInTheDocument()
+  })
+})
+
+describe('the case stages draw nothing a role may not use (#21)', () => {
+  const READER = { write: false, tpsiWrite: false, tpsiSubmit: false, tpsiRead: false }
+
+  it('Data Verification: no KYC tick, capacity picker, route radios or step buttons', () => {
+    const data = { ...BASE, entries: [{ id: 'n2', kind: 'appointment', party: { name: 'HO New' },
+      kyc_cleared: true, documents: [] }], signatory: { capacities: ['Director'] } }
+    wrap(<StageDataVerification data={data} reload={vi.fn()} can={READER} goTo={vi.fn()} />)
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Validate|Mark as checked/ })).not.toBeInTheDocument()
+    expect(screen.getByText('KYC cleared.')).toBeInTheDocument()
+    expect(screen.queryAllByRole('button').filter(b => b.disabled)).toEqual([])
+  })
+
+  it('Signing and CR Status: no Apply signatures, no Check now', () => {
+    const esign = { ...BASE, signing_method: 'esign', filing: { stage: 'validated' },
+      route: { consents: [] } }
+    const { unmount } = wrap(<StageSigning data={esign} reload={vi.fn()} can={READER} goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Apply signatures' })).not.toBeInTheDocument()
+    unmount()
+    wrap(<StageCrStatus data={{ ...BASE, cr_status: { code: 'cr_pending', label: 'Pending' } }}
+                        reload={vi.fn()} can={READER} />)
+    expect(screen.queryByRole('button', { name: 'Check now' })).not.toBeInTheDocument()
+  })
+
+  it("CR Status prints CR's own words, on the badge when the answer is unknown", () => {
+    wrap(<StageCrStatus data={{ ...BASE, cr_status: { code: 'cr_unknown', label: 'Other CR status',
+      cr_text: 'Withdrawn by presenter' } }} reload={vi.fn()} can={ALL} />)
+    expect(screen.getAllByText(/Withdrawn by presenter/).length).toBeGreaterThan(1)
+  })
+})
+
+describe('StageConfirmation — an unfinished profile update', () => {
+  const filed = { ...BASE, manual_receipt: { caseNo: '123456' }, profile_changes: [],
+    documents: [], applied_at: null }
+
+  it('says the update did not finish and offers to finish it', async () => {
+    post.mockResolvedValue({ ...filed, applied_at: 'x', write_back: { errors: [] } })
+    const reload = vi.fn()
+    wrap(<StageConfirmation data={filed} reload={reload} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText(/The profile update did not finish/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Finish the profile update' }))
+    expect(post).toHaveBeenCalledWith('/officer-changes/k1/apply', { confirm: true })
+    await waitFor(() => expect(reload).toHaveBeenCalled())
+  })
+
+  it('offers nothing once the update is complete, or undone after a rejection', () => {
+    const { unmount } = wrap(<StageConfirmation data={{ ...filed, applied_at: 'x' }}
+                                                reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByText(/did not finish/)).not.toBeInTheDocument()
+    unmount()
+    wrap(<StageConfirmation data={{ ...filed, undone_at: 'y' }} reload={vi.fn()} can={ALL}
+                            goTo={vi.fn()} />)
+    expect(screen.queryByText(/did not finish/)).not.toBeInTheDocument()
+  })
+})
+
+describe('ParticularsChangeCard — the secretary register (#19)', () => {
+  it('adds a register-only secretary by its register id', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    const data = { ...BASE, form_code: 'Nd2b', entries: [], officers: [
+      { officer_id: null, secretary_id: 'S1', register_only: true, role: 'company_secretary',
+        name: 'Get Started HK Limited', pending: false }] }
+    wrap(<ParticularsChangeCard data={data} reload={vi.fn()} can={ALL} />)
+    await userEvent.selectOptions(screen.getByLabelText('Officer to add'), 'cs:S1')
+    await userEvent.click(screen.getByRole('button', { name: 'Add officer' }))
+    expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries',
+      { kind: 'change', secretary_id: 'S1' })
   })
 })
 

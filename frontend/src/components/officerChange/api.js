@@ -61,6 +61,8 @@ export const officerChangeApi = {
   recordFiling: (id, receipt) =>
     api.post(`${base(id)}/record-filing`, { receipt, confirm: true }),
   undo: (id) => api.post(`${base(id)}/undo`, { confirm: true }),
+  // Re-runs an unfinished profile update of a FILED form (idempotent per entry).
+  retryApply: (id) => api.post(`${base(id)}/apply`, { confirm: true }),
   close: (id, reason) => api.post(`${base(id)}/close`, { reason }),
 
   // CR's register is asked through the route NAR1 already uses; it is keyed on

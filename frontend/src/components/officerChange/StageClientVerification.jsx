@@ -22,6 +22,13 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
   const [recipients, setRecipients] = useState(null)
   const [to, setTo] = useState([])
   const [respondBy, setRespondBy] = useState(data.reply_by_default || '')
+  // Until the operator picks a date, it FOLLOWS the default — which moves when
+  // an earlier change brings CR's deadline forward. A date left behind would
+  // ask the client to reply after the filing is already late.
+  const [respondByTouched, setRespondByTouched] = useState(false)
+  useEffect(() => {
+    if (!respondByTouched && data.reply_by_default) setRespondBy(data.reply_by_default)
+  }, [data.reply_by_default, respondByTouched])
   const [sending, setSending] = useState(false)
   const [delivery, setDelivery] = useState(null)
   const [error, setError] = useState(null)
@@ -36,7 +43,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
       if (!live) return
       setRecipients(r.recipients || [])
       setTo(r.default_to || [])
-      if (!respondBy && r.reply_by_default) setRespondBy(r.reply_by_default)
+      if (!respondByTouched && r.reply_by_default) setRespondBy(r.reply_by_default)
     }).catch(() => { if (live) setRecipients([]) })
     return () => { live = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -129,7 +136,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
               <div className="f-group">
                 <label className="f-label" htmlFor="oc-reply-by">Reply by <span className="f-req">*</span></label>
                 <input id="oc-reply-by" type="date" className="f-input" value={respondBy}
-                       onChange={e => setRespondBy(e.target.value)} />
+                       onChange={e => { setRespondByTouched(true); setRespondBy(e.target.value) }} />
                 {data.deadline?.date && (
                   <div className="f-hint">CR's deadline is {formatDate(data.deadline.date)}.</div>
                 )}

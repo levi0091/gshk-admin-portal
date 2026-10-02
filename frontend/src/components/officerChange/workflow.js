@@ -40,10 +40,10 @@ export function isManual(c) {
 /** The furthest stage the case has reached (1-based); 0 for a closed case. */
 export function stageIndexFor(c) {
   if (!c || isClosed(c)) return 0
-  if (isFiled(c)) {
-    const code = c.cr_status?.code
-    return code && code !== 'cr_not_checked' ? 6 : 5
-  }
+  // Filed reaches CR Status at once, as NAR1's `reachedStage` does: that is
+  // where "Check now" lives, and Confirmation has no act that completes it.
+  // A freshly filed case is often not listed by CR for days.
+  if (isFiled(c)) return 6
   if (c.client_approved !== true) return 1
   if (isManual(c)) {
     if (c.manual_signed_document_id) return 4

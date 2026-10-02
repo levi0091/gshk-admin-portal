@@ -555,7 +555,8 @@ export default function CompanyProfilePage() {
           it (its name, its registered office) changed here and no ND2B has
           told CR. Only a corporate party serves anywhere. */}
       {isCorp && !isDeleted && (
-        <ParticularsChangeAlert kind="company" id={companyId} caps={{
+        <ParticularsChangeAlert kind="company" id={companyId}
+          refreshKey={company} caps={{
           view: caps.viewParticularsChanges, dismiss: caps.dismissParticularsChange,
           start: caps.startOfficerChange, open: caps.viewOfficerChanges,
         }} />
@@ -998,20 +999,23 @@ export default function CompanyProfilePage() {
               <PartyTile title="Company Secretary" sub="Secretarial service provider"
                          rows={company.secretaries} relation="secretaries" busy={busy}
                          canWrite={canWrite}
-                         /* These rows are the secretary REGISTER, so they carry a
-                            register id; the officer-change API resolves it to the
-                            officer row (or creates one) — cases._officer_for_secretary. */
+                         /* These rows are entity_officers rows (role
+                            company_secretary — routers/companies.py), so they are
+                            named by their officer id, exactly as a director is. A
+                            secretary held only on the register has no row here; the
+                            case screen's officer list offers those. */
                          aside={s => (
                            <OfficerAside
                              current={s.is_current !== false}
                              pending={pendingFor(pendingCases, {
-                               personId: s.person_id, corporateEntityId: s.corporate_entity_id,
+                               officerId: s.id, personId: s.person_id,
+                               corporateEntityId: s.corporate_entity_id,
                                capacity: 'company_secretary' })}
                              canStart={caps.startOfficerChange}
                              busy={officerStart.busy}
-                             onCease={() => officerStart.start('Nd2a', { cease: `cs:${s.id}` })}
+                             onCease={() => officerStart.start('Nd2a', { cease: s.id })}
                              onChange={() => officerStart.start('Nd2b', {
-                               entry: { kind: 'change', secretary_id: s.id } })} />
+                               entry: { kind: 'change', officer_id: s.id } })} />
                          )}
                          onAdd={() => setLinkModal({ relation: 'secretaries' })}
                          onEdit={row => setLinkModal({ relation: 'secretaries', link: row })}

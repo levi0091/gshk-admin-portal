@@ -42,6 +42,17 @@ describe('ParticularsChangeAlert', () => {
     expect(screen.getByText(/2 appointments are/)).toBeInTheDocument()
   })
 
+  it('re-reads when the profile is saved, so an edit raises or clears it at once', async () => {
+    get.mockResolvedValueOnce({ changes: [] }).mockResolvedValueOnce({ changes: ROWS })
+    const { rerender } = wrap(<ParticularsChangeAlert kind="person" id="p1" caps={ALL}
+                                                      refreshKey={{ v: 1 }} />)
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('Kanenas Holding Limited')).not.toBeInTheDocument()
+    rerender(<MemoryRouter><ParticularsChangeAlert kind="person" id="p1" caps={ALL}
+                                                   refreshKey={{ v: 2 }} /></MemoryRouter>)
+    expect(await screen.findByText('Kanenas Holding Limited')).toBeInTheDocument()
+  })
+
   it('renders nothing when CR has been told everything', async () => {
     get.mockResolvedValue({ changes: [] })
     const { container } = wrap(<ParticularsChangeAlert kind="person" id="p1" caps={ALL} />)

@@ -49,13 +49,16 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
               <span className="oc-pc-name">{entry.party?.name}</span>
               <span className="td-muted">{entry.summary}</span>
             </div>
-            {entry.kind === 'appointment' && (
+            {entry.kind === 'appointment' && (can.write ? (
               <label className="check-row">
-                <input type="checkbox" checked={Boolean(entry.kyc_cleared)} disabled={!can.write || busy}
+                <input type="checkbox" checked={Boolean(entry.kyc_cleared)} disabled={busy}
                        onChange={e => run(officerChangeApi.setKyc(data.id, entry.id, e.target.checked))} />
                 KYC cleared
               </label>
-            )}
+            ) : (
+              // Without officer_changes (edit) the tick is a fact to read, not a control.
+              <div className="f-hint">{entry.kyc_cleared ? 'KYC cleared.' : 'KYC not cleared yet.'}</div>
+            ))}
             {entry.eservice && (
               <div className="f-hint">
                 {entry.eservice.configured && entry.eservice.has_password
@@ -77,31 +80,49 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
           <label className="f-label" htmlFor="oc-capacity">
             {signatory.name ? `${signatory.name} signs as` : 'Signing capacity'}
           </label>
-          <select id="oc-capacity" className="f-select" disabled={!can.write || busy}
-                  value={signatory.selected_capacity || signatory.default_capacity || ''}
-                  onChange={e => run(officerChangeApi.patch(data.id, { signatory_capacity: e.target.value }))}>
-            {(signatory.capacities || []).map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
+          {can.write ? (
+            <select id="oc-capacity" className="f-select" disabled={busy}
+                    value={signatory.selected_capacity || signatory.default_capacity || ''}
+                    onChange={e => run(officerChangeApi.patch(data.id, { signatory_capacity: e.target.value }))}>
+              {(signatory.capacities || []).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          ) : (
+            <div className="f-static" id="oc-capacity">
+              {signatory.selected_capacity || signatory.default_capacity || 'Not chosen yet'}
+            </div>
+          )}
         </div>
 
-        <fieldset className="meth-group" style={{ border: 0, padding: 0, marginTop: 12 }}>
-          <legend className="f-label">Route</legend>
-          <label className="meth-opt">
-            <input type="radio" name="oc-route" className="meth-radio" checked={method === 'esign'}
-                   disabled={!route.esign_available || !can.write}
-                   onChange={() => choose('esign')} />
-            <span className="meth-body"><span className="meth-lbl">e-Sign via CR</span>
-              <span className="meth-sub">Validated with CR here, signed with stored e-Registry accounts, filed from the portal.</span>
-            </span>
-          </label>
-          <label className="meth-opt">
-            <input type="radio" name="oc-route" className="meth-radio" checked={method === 'manual'}
-                   disabled={!can.write} onChange={() => choose('manual')} />
-            <span className="meth-body"><span className="meth-lbl">Manual (CR portal)</span>
-              <span className="meth-sub">Prepared, signed and filed on CR's portal; the receipt is recorded here.</span>
-            </span>
-          </label>
-        </fieldset>
+        {can.write ? (
+          <fieldset className="meth-group" style={{ border: 0, padding: 0, marginTop: 12 }}>
+            <legend className="f-label">Route</legend>
+            <label className="meth-opt">
+              {/* Disabled for a DATA reason only — a new director with no stored
+                  e-Registry account — and the reasons print just below. */}
+              <input type="radio" name="oc-route" className="meth-radio" checked={method === 'esign'}
+                     disabled={!route.esign_available}
+                     onChange={() => choose('esign')} />
+              <span className="meth-body"><span className="meth-lbl">e-Sign via CR</span>
+                <span className="meth-sub">Validated with CR here, signed with stored e-Registry accounts, filed from the portal.</span>
+              </span>
+            </label>
+            <label className="meth-opt">
+              <input type="radio" name="oc-route" className="meth-radio" checked={method === 'manual'}
+                     onChange={() => choose('manual')} />
+              <span className="meth-body"><span className="meth-lbl">Manual (CR portal)</span>
+                <span className="meth-sub">Prepared, signed and filed on CR's portal; the receipt is recorded here.</span>
+              </span>
+            </label>
+          </fieldset>
+        ) : (
+          <div className="f-group" style={{ marginTop: 12 }}>
+            <span className="f-label">Route</span>
+            <div className="f-static">
+              {data.signing_method === 'esign' ? 'e-Sign via CR'
+                : data.signing_method === 'manual' ? 'Manual (CR portal)' : 'Not chosen yet'}
+            </div>
+          </div>
+        )}
         {!route.esign_available && (route.reasons || []).length > 0 && (
           <div className="card-note" role="status">
             <b>e-Sign is not available:</b>
@@ -112,14 +133,14 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
         )}
 
         <div className="oc-send-row">
-          {method === 'esign' && !validated && (
-            <button className="btn btn-primary" disabled={!can.tpsiWrite || busy}
+          {method === 'esign' && !validated && can.tpsiWrite && (
+            <button className="btn btn-primary" disabled={busy}
                     onClick={() => run(officerChangeApi.validate(data.id))}>
               {busy ? 'Validating…' : 'Validate with CR Portal'}
             </button>
           )}
-          {method === 'manual' && !checked && (
-            <button className="btn btn-primary" disabled={!can.write || busy}
+          {method === 'manual' && !checked && can.write && (
+            <button className="btn btn-primary" disabled={busy}
                     onClick={() => run(officerChangeApi.markChecked(data.id))}>Mark as checked</button>
           )}
           {((method === 'esign' && validated) || (method === 'manual' && checked)) && (
@@ -128,7 +149,12 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
               <button className="btn btn-primary" onClick={() => goTo(3)}>Continue to Signing →</button>
             </>
           )}
-          {method === 'esign' && !can.tpsiWrite && <span className="f-hint">Validating needs TPSI (edit).</span>}
+          {method === 'esign' && !validated && !can.tpsiWrite && (
+            <span className="f-hint">Validating with CR needs Companies Registry filing (Edit).</span>
+          )}
+          {method === 'manual' && !checked && !can.write && (
+            <span className="f-hint">Marking the form as checked needs Officer changes (Edit).</span>
+          )}
         </div>
         {error && (
           <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
+import { useLookups } from '../../lib/lookups.js'
+import AddressBlock from '../AddressBlock.jsx'
 import Drawer from './Drawer.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
@@ -70,6 +72,7 @@ function PartyPicker({ kind, selected, onSelect, label }) {
  */
 export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   const editing = Boolean(entry)
+  const lookups = useLookups()
   const [kind, setKind] = useState(entry ? (entry.party_type === 'corporate' ? 'corporate' : 'person') : 'person')
   const [party, setParty] = useState(entry ? { id: entry.person_id || entry.corporate_entity_id,
     full_name: entry.party?.name } : null)
@@ -169,15 +172,12 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
             Correspondence address is the same as the residential address
           </label>
           {!sameAddress && (
-            <div className="form-grid" style={{ marginTop: 8 }} data-testid="corr-address">
-              {[['line1', 'Flat / Floor / Block'], ['line2', 'Building'], ['line3', 'Street / Estate'],
-                ['city', 'District / City'], ['country', 'Country / Region']].map(([key, lbl]) => (
-                <div className="f-group" key={key}>
-                  <label className="f-label" htmlFor={`oc-corr-${key}`}>{lbl}</label>
-                  <input id={`oc-corr-${key}`} className="f-input" value={address[key] || ''}
-                         onChange={e => setAddress(a => ({ ...a, [key]: e.target.value }))} />
-                </div>
-              ))}
+            // The profile's own address editor: CR's Country & Region list and,
+            // for Hong Kong, CR's districts. Free text here typed values like
+            // "Hong Kong" / "Wan Chai" that the CR mapping then refused.
+            <div style={{ marginTop: 8 }} data-testid="corr-address">
+              <AddressBlock value={address} lookups={lookups}
+                            onChange={(key, value) => setAddress(a => ({ ...a, [key]: value }))} />
               <div className="f-hint">This address is printed on the public record.</div>
             </div>
           )}

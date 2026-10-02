@@ -99,11 +99,13 @@ export default function StageSigning({ data, reload, can, goTo }) {
             <span className="badge b-live">Signed</span>
             <button className="btn btn-primary" onClick={() => goTo(4)}>Continue to Submission →</button>
           </>
-        ) : (
-          <button className="btn btn-primary" disabled={!can.tpsiWrite || busy}
+        ) : can.tpsiWrite ? (
+          <button className="btn btn-primary" disabled={busy}
                   onClick={() => run(officerChangeApi.sign(data.id))}>
             {busy ? 'Signing…' : 'Apply signatures'}
           </button>
+        ) : (
+          <span className="f-hint">Signing needs Companies Registry filing (Edit).</span>
         )}
       </div>
       {error && <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>

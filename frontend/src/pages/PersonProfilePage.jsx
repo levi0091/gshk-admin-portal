@@ -549,7 +549,8 @@ export default function PersonProfilePage() {
       {/* Particulars CR holds for one of this person's appointments changed
           here and no ND2B has told CR (answers 14, 16). */}
       {!isDeleted && (
-        <ParticularsChangeAlert kind="person" id={personId} caps={{
+        <ParticularsChangeAlert kind="person" id={personId}
+          refreshKey={person} caps={{
           view: caps.viewParticularsChanges, dismiss: caps.dismissParticularsChange,
           start: caps.startOfficerChange, open: caps.viewOfficerChanges,
         }} />

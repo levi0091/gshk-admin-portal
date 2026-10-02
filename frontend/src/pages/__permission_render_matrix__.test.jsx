@@ -315,6 +315,23 @@ describe('ND2A / ND2B entry points per role (migration 050)', () => {
     expect(has(/^Change particulars$/), 'Change particulars').toBe(cease)
   })
 
+  it('names a Secretary-tile row by its OFFICER id — those rows are entity_officers (#17)', async () => {
+    auth = authFor(['companies:read', 'officer_changes:read', 'officer_changes:write'])
+    mockApi({ ...CLIENT, secretaries: [{ id: 'sec-officer-1', role: 'company_secretary',
+      is_current: true, corporate_entity_id: 'g1',
+      corporate_entity: { company_name: 'Get Started HK Limited' } }] },
+    COMPANY_SECTIONS, COMPANY_LIST)
+    api.post.mockImplementation(url => Promise.resolve(
+      url === '/officer-changes' ? { case: { id: 'k1' } } : {}))
+    render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
+    await screen.findByText('Document History')
+    const buttons = screen.getAllByRole('button', { name: 'Change particulars' })
+    buttons[buttons.length - 1].click()
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/officer-changes/k1/entries', { kind: 'change', officer_id: 'sec-officer-1' }))
+    expect(navigate).toHaveBeenCalledWith('/officer-changes/k1')
+  })
+
   it.each([
     // role,                                              card, add account
     ['no permissions at all', [],                                     false, false],

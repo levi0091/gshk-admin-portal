@@ -25,7 +25,7 @@ const CAPACITY = { director: 'Director', company_secretary: 'Company Secretary' 
  * `caps` decides what is DRAWN, never what is disabled: view, start (open a
  * case), open (read one) and dismiss, each from `screenCapabilities`.
  */
-export default function ParticularsChangeAlert({ kind, id, caps }) {
+export default function ParticularsChangeAlert({ kind, id, caps, refreshKey }) {
   const base = kind === 'company' ? `/companies/${id}` : `/persons/${id}`
   const [rows, setRows] = useState([])
   const [confirming, setConfirming] = useState(false)
@@ -40,7 +40,10 @@ export default function ParticularsChangeAlert({ kind, id, caps }) {
       .catch(() => setRows([]))
   }, [base, caps?.view])
 
-  useEffect(() => { load() }, [load])
+  // `refreshKey` is the profile's own `updated_at`: an edit saved on the page
+  // can raise a change (or, edited back, remove one), and the alert must say
+  // so without a reload — that is the moment the operator is looking.
+  useEffect(() => { load() }, [load, refreshKey])
 
   if (!caps?.view || rows.length === 0) return null
 
