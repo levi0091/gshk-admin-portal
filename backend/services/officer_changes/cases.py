@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
-    apply, deadlines, documents, eservice, particulars, prepare, rules,
+    apply, checks, deadlines, documents, eservice, particulars, prepare, rules,
 )
 from services.tpsi import fees
 from services.tpsi import filings as tpsi_filings
@@ -529,6 +529,18 @@ def dates_missing_for(case_id: str) -> list[str]:
     return rules.dates_missing([{**e, "party": _party_view(e, ctx)} for e in entries])
 
 
+def manual_checks_open(case: dict, *, route: str) -> list[str]:
+    """`checks.incomplete` for a case — what the filing routes refuse to leave
+    Data Verification without (Jacqueline A4)."""
+    entries = list_entries(case["id"])
+    if not entries or case.get("form_code") != "Nd2a":
+        return []
+    ctx = _parties(entries)
+    view = [{**e, "party": _party_view(e, ctx)} for e in entries]
+    docs = documents.list_for_case(case["id"], entries)
+    return checks.incomplete(checks.manual_checks(case, view, docs, route=route))
+
+
 def _signed(case: dict) -> bool:
     if case.get("manual_signed_document_id"):
         return True
@@ -888,6 +900,10 @@ async def composite(case_id: str, *, user: dict) -> dict:
         # Jacqueline A1: what Signing must still ask for before anything is
         # signed or filed.
         "dates_missing": rules.dates_missing(view),
+        # Jacqueline A4: the checklist Data Verification shows and gates on.
+        "manual_checks": checks.manual_checks(
+            case, view, docs, route=case.get("signing_method") or ("esign" if esign
+                                                                     else "manual")),
         "route": {"esign_available": esign, "reasons": reasons,
                   "selected": case.get("signing_method"),
                   "default": "esign" if esign else "manual", "consents": consents},

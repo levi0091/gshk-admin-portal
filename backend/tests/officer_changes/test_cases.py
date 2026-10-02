@@ -605,3 +605,21 @@ def test_composite_lists_missing_dates(db, nd2a, monkeypatch):
                            "person_id": "P9", "capacity": "director"}, user_id="U1")
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
     assert data["dates_missing"] == ["HO New"]
+
+
+def test_composite_carries_the_manual_checks(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",
+                           "cessation_reason": "R"}, user_id="U1")
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    assert [c["code"] for c in data["manual_checks"]] == ["resignation_letter",
+                                                          "written_resolution"]
+    assert data["manual_checks"][0]["label"] == "Resignation letter on file — CHAN Tai Man"
+
+
+def test_manual_checks_open_names_the_leaver(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",
+                           "cessation_reason": "R"}, user_id="U1")
+    assert cases.manual_checks_open(nd2a, route="manual") == [
+        "Resignation letter on file — CHAN Tai Man", "Signed written resolution on file"]

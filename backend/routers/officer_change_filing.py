@@ -65,6 +65,16 @@ def _refuse_if_dates_missing(case: dict) -> None:
                                   "reason": "dates_missing", "missing": missing})
 
 
+def _refuse_if_checks_incomplete(case: dict, *, route: str) -> None:
+    """Data Verification's manual checks (Jacqueline A4) — KYC, resignation
+    letters, the written resolution and, on the manual route, each consent."""
+    open_ = svc.manual_checks_open(case, route=route)
+    if open_:
+        raise HTTPException(409, {"message": "Finish the manual checks first: "
+                                             + "; ".join(open_) + ".",
+                                  "reason": "checks_incomplete", "open": open_})
+
+
 #: CR's own refusals of an ND2A/ND2B, MEASURED on CR TEST (2026-10-02), with
 #: what each means for the operator. CR's sentence is kept verbatim beside it.
 _CR_HINTS = (
@@ -146,6 +156,7 @@ async def validate(case_id: str, user=Depends(require_permission("tpsi", "write"
     _require_approved(case)
     _refuse_if_filed(case)
     _refuse_if_dates_missing(case)
+    _refuse_if_checks_incomplete(case, route="esign")
     entries = svc.list_entries(case_id)
     plan = await prepare.consent_plan(case, entries)
     missing = [c["reason"] for c in plan if not c.get("ready")]
@@ -367,6 +378,7 @@ async def mark_checked(case_id: str, body: MarkCheckedIn | None = None,
     refuse_if_closed(case, "marking it as checked")
     _require_approved(case)
     _refuse_if_filed(case)
+    _refuse_if_checks_incomplete(case, route=method)
     if method == "esign":
         plan = await prepare.consent_plan(case, svc.list_entries(case_id))
         missing = [c["reason"] for c in plan if not c.get("ready")]

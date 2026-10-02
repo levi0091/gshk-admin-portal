@@ -428,3 +428,25 @@ def test_signer_mismatch_hint_mentions_a_stale_eregistry_account():
     exc = ocf._explain(HTTPException(422, {"message": "x",
                                            "problems": ["signer does not match with officer"]}))
     assert any("e-Registry account still holds" in h for h in exc.detail["hints"])
+
+
+# -- manual checks (Jacqueline A4) --------------------------------------------------
+
+OPEN = ["Resignation letter on file — WONG Mei Ling"]
+
+
+def test_validate_refuses_incomplete_checks(env):
+    with patch.object(ocf.svc, "manual_checks_open", return_value=OPEN), \
+         patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]):
+        resp = client.post("/officer-changes/K1/validate", headers=H)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "checks_incomplete"
+    assert "WONG Mei Ling" in resp.json()["detail"]["message"]
+    env.cr.assert_not_called()
+
+
+def test_mark_checked_refuses_incomplete_checks(env):
+    with patch.object(ocf.svc, "manual_checks_open", return_value=OPEN) as open_:
+        resp = client.post("/officer-changes/K1/mark-checked", headers=H)
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "checks_incomplete"
+    assert open_.call_args.kwargs["route"] == "manual"
