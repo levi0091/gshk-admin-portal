@@ -7,7 +7,8 @@ Part A ("particulars currently registered") is printed from `entry.registered`
 director is identified to CR by the name CR knows, and a partial identity number
 CR already has. Part B carries only the items the operator did not omit, each
 with its own effective date; an item with no date is a problem naming the
-officer and the item.
+officer and the item when dates are required (anything sent to CR) and left
+blank on the client's draft (Jacqueline A1/B1).
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ def _who(registered: dict) -> str:
         or "officer"
 
 
-def _natural(entry: dict, problems: list[str]) -> dict:
+def _natural(entry: dict, problems: list[str], require_dates: bool = True) -> dict:
     reg = entry.get("registered") or {}
     who = _who(reg)
     name = reg.get("name_en") or {}
@@ -44,7 +45,8 @@ def _natural(entry: dict, problems: list[str]) -> dict:
             continue
         key, new = item["key"], item.get("new")
         where = f"{who}: {item.get('label') or key}"
-        when = cr_date(item.get("effective_date"), problems, f"{where} effective date")
+        when = cr_date(item.get("effective_date"), problems, f"{where} effective date",
+                       required=require_dates)
         if key == "name_zh":
             bean.update(indvNewChiName=_s(new), indvNewChiNameEffDt=when)
         elif key == "name_en":
@@ -85,7 +87,8 @@ def _natural(entry: dict, problems: list[str]) -> dict:
     return bean
 
 
-def _corporate(graph: dict, entry: dict, problems: list[str]) -> dict:
+def _corporate(graph: dict, entry: dict, problems: list[str],
+               require_dates: bool = True) -> dict:
     reg = entry.get("registered") or {}
     who = _who(reg)
     corp = (graph.get("entities") or {}).get(entry.get("corporate_entity_id")) or {}
@@ -99,7 +102,8 @@ def _corporate(graph: dict, entry: dict, problems: list[str]) -> dict:
             continue
         key, new = item["key"], item.get("new")
         where = f"{who}: {item.get('label') or key}"
-        when = cr_date(item.get("effective_date"), problems, f"{where} effective date")
+        when = cr_date(item.get("effective_date"), problems, f"{where} effective date",
+                       required=require_dates)
         if key == "name":
             bean.update(corpNewChiName=_s((new or {}).get("name_zh")),
                         corpNewEngName=_s((new or {}).get("name")), corpNewNameEffDt=when)
@@ -116,7 +120,10 @@ def _corporate(graph: dict, entry: dict, problems: list[str]) -> dict:
 
 
 def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None = None,
-             signing_identity: dict | None = None, for_esign: bool = False) -> dict:
+             signing_identity: dict | None = None, for_esign: bool = False,
+             require_dates: bool | None = None) -> dict:
+    """`require_dates` defaults to `for_esign`, as on ND2A."""
+    require_dates = for_esign if require_dates is None else require_dates
     problems: list[str] = []
     entity = graph.get("entity") or {}
     data = {"language": "E", "brNo": _s(entity.get("br_number"))}
@@ -130,9 +137,9 @@ def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None
         if not any(not i.get("omitted") for i in entry.get("items") or []):
             continue  # an officer whose every line is omitted is not on the form
         if entry.get("party_type") == "corporate" or entry.get("corporate_entity_id"):
-            corporate.append(_corporate(graph, entry, problems))
+            corporate.append(_corporate(graph, entry, problems, require_dates))
         else:
-            natural.append(_natural(entry, problems))
+            natural.append(_natural(entry, problems, require_dates))
     if not (natural or corporate):
         problems.append("the form reports no change")
     if natural:

@@ -95,8 +95,40 @@ def test_nd2b_an_undated_line_names_the_officer_and_the_item():
     graph, entries = fx.build_world(path)
     entries[0]["items"][0]["effective_date"] = None
     with pytest.raises(MappingError) as caught:
-        nd2b_mapper.map_case(graph, entries)
+        nd2b_mapper.map_case(graph, entries, require_dates=True)
     assert any("CHAN TAI MAN" in p and "effective date" in p for p in caught.value.problems)
+
+
+def test_nd2b_client_draft_may_leave_a_line_undated():
+    """Jacqueline A1/B1: the draft goes out with the date to be confirmed."""
+    path = next(p for p in fx.files("ND2B") if "Individual Director" in p.name)
+    graph, entries = fx.build_world(path)
+    entries[0]["items"][0]["effective_date"] = None
+    data = nd2b_mapper.map_case(graph, entries)
+    assert data["npBeans"]
+
+
+def test_nd2a_client_draft_leaves_a_missing_date_empty():
+    graph, entries = _director_world()
+    entries[0]["effective_date"] = None
+    xml = form_xml.build("Nd2a", nd2a_mapper.map_case(graph, entries, for_esign=False))
+    assert "indvDtAppt" not in xml
+
+
+def test_nd2a_esign_requires_the_date():
+    graph, entries = _director_world()
+    entries[0]["effective_date"] = None
+    with pytest.raises(MappingError) as caught:
+        nd2a_mapper.map_case(graph, entries, for_esign=True)
+    assert any("no date" in p for p in caught.value.problems)
+
+
+def test_nd2a_cessation_undated_on_the_draft():
+    path = next(p for p in fx.files("ND2A") if "Cease Individual Director" in p.name)
+    graph, entries = fx.build_world(path)
+    entries[0]["effective_date"] = None
+    data = nd2a_mapper.map_case(graph, entries)
+    assert data["resCesBeans"][0]["dtResign"] == ""
 
 
 def test_nd2b_omitted_lines_are_not_filed_and_an_all_omitted_officer_is_dropped():

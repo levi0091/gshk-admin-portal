@@ -55,6 +55,16 @@ def _refuse_if_filed(case: dict) -> None:
                                   "reason": "already_filed"})
 
 
+def _refuse_if_dates_missing(case: dict) -> None:
+    """Nothing is signed or filed with a blank effective date (Jacqueline A1:
+    the client may be sent the draft undated; Signing asks for the dates)."""
+    missing = svc.dates_missing_for(case["id"])
+    if missing:
+        raise HTTPException(409, {"message": "Enter the effective date of: "
+                                             + "; ".join(missing) + ".",
+                                  "reason": "dates_missing", "missing": missing})
+
+
 #: CR's own refusals of an ND2A/ND2B, MEASURED on CR TEST (2026-10-02), with
 #: what each means for the operator. CR's sentence is kept verbatim beside it.
 _CR_HINTS = (
@@ -133,6 +143,7 @@ async def validate(case_id: str, user=Depends(require_permission("tpsi", "write"
     refuse_if_closed(case, "validating it with CR")
     _require_approved(case)
     _refuse_if_filed(case)
+    _refuse_if_dates_missing(case)
     entries = svc.list_entries(case_id)
     plan = await prepare.consent_plan(case, entries)
     missing = [c["reason"] for c in plan if not c.get("ready")]
@@ -201,6 +212,7 @@ async def sign(case_id: str, request: Request,
     if not filing or filing.get("stage") != filings.STAGE_VALIDATED:
         raise HTTPException(409, {"message": "Validate the form with CR before signing.",
                                   "reason": "not_validated"})
+    _refuse_if_dates_missing(case)
     pair = credentials.load_eservice(user["id"])
     if pair is None:
         raise HTTPException(409, {"message": "You have no e-Service signing password stored. "
@@ -330,18 +342,41 @@ async def retry_write_back(case_id: str, body: ConfirmIn,
 
 # -- manual route (CR portal) -----------------------------------------------------------
 
+class MarkCheckedIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    signing_method: str = "manual"
+
+
 @router.post("/{case_id}/mark-checked")
-async def mark_checked(case_id: str, user=Depends(require_permission(MODULE, "write"))):
-    """The manual route's stand-in for CR's validation. No CR call."""
+async def mark_checked(case_id: str, body: MarkCheckedIn | None = None,
+                       user=Depends(require_permission(MODULE, "write"))):
+    """Data Verification done, without a CR call.
+
+    The manual route's stand-in for CR's validation, as before. And, since
+    Jacqueline's A1, the e-Sign route's way out of Data Verification when a
+    date is still blank: CR's validation checks the dates, so on that route
+    the dates are entered and CR validates at Signing (spec §2.1)."""
+    method = (body.signing_method if body else "manual") or "manual"
+    if method not in ("esign", "manual"):
+        raise HTTPException(400, "signing_method is 'esign' or 'manual'")
     case = load_case(case_id)
     refuse_if_closed(case, "marking it as checked")
     _require_approved(case)
     _refuse_if_filed(case)
+    if method == "esign":
+        plan = await prepare.consent_plan(case, svc.list_entries(case_id))
+        missing = [c["reason"] for c in plan if not c.get("ready")]
+        if missing:
+            raise HTTPException(409, {"message": "e-Sign is not available: "
+                                                 + "; ".join(missing),
+                                      "reason": "esign_unavailable"})
     nar1_cases.update_case(case_id, {"data_checked_at": _now(),
                                      "data_checked_by": user["id"],
-                                     "signing_method": "manual"})
+                                     "signing_method": method})
     await audit(case, user, ev.CASE_STATUS_CHANGED, old_value="data_verification",
-                new_value="signing", metadata={"reason": "marked as checked (manual route)",
+                new_value="signing", metadata={"reason": f"marked as checked ({method} route)",
                                                "case_no": case.get("case_no")})
     return await respond(case_id, user)
 
@@ -358,6 +393,7 @@ async def signed_form(case_id: str, file: UploadFile = File(...),
     if not case.get("data_checked_at"):
         raise HTTPException(409, {"message": "Mark the form as checked first.",
                                   "reason": "not_checked"})
+    _refuse_if_dates_missing(case)
     content = await file.read()
     if not content:
         raise HTTPException(400, "The file is empty")
@@ -455,6 +491,7 @@ async def record_filing(case_id: str, body: RecordFilingIn,
     if not case.get("manual_receipt_document_id"):
         raise HTTPException(409, {"message": "Attach CR's receipt first.",
                                   "reason": "no_receipt"})
+    _refuse_if_dates_missing(case)
     # NAR1's gate, for the same reason: an e-filing CR already holds, or a
     # CR-signed one waiting to be submitted, would make this a second filing of
     # one form — and after a rejected e-filing was Undone, it would re-apply

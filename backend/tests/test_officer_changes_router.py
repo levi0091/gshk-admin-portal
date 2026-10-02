@@ -34,10 +34,11 @@ def env():
          patch.object(oc.nar1_cases, "current_filing", return_value=None), \
          patch.object(oc.nar1_cases, "update_case") as update, \
          patch.object(oc.nar1_cases, "entity_for", return_value={"company_name": "Kanenas"}), \
+         patch.object(oc.svc, "mark_deferred", return_value=0) as deferred, \
          patch.object(oc, "log_event", new_callable=AsyncMock) as audit:
         m.case = dict(CASE)
         composite.return_value = dict(COMPOSITE)
-        m.composite, m.update, m.audit = composite, update, audit
+        m.composite, m.update, m.audit, m.deferred = composite, update, audit, deferred
         yield m
 
 
@@ -55,6 +56,7 @@ ROUTES = [
     ("post", "/officer-changes/K1/entries", {"kind": "cessation"}),
     ("delete", "/officer-changes/K1/entries/N1", None),
     ("post", "/officer-changes/K1/entries/N1/kyc", {"cleared": True}),
+    ("put", "/officer-changes/K1/entries/N1/effective-date", {"effective_date": "2026-10-01"}),
     ("get", "/officer-changes/K1/preview", None),
     ("get", "/officer-changes/K1/verification/recipients", None),
     ("post", "/officer-changes/K1/verification/send", {"respond_by": "2026-10-10"}),
@@ -305,6 +307,8 @@ def test_send_mails_each_recipient_with_their_own_officer_change_link(env):
     assert body["failed_to"] == ["not an address"]
     assert [d["message_id"] for d in body["deliveries"]] == ["m1", "m2"]
     assert env.update.call_args.args[1]["verification_sent_at"]
+    # Undated changes are deferred to Signing once the client has the draft.
+    env.deferred.assert_called_once_with("K1")
     assert _actions(env.audit).count("CLIENT_APPROVAL_LINK_SENT") == 2
     email_row = next(c.kwargs for c in env.audit.await_args_list
                      if c.kwargs["action_type"] == "EMAIL_SENT")
@@ -439,3 +443,35 @@ def test_close_supersedes_filings_and_revokes_links(env):
     assert resp.status_code == 200
     meta = env.audit.await_args.kwargs["metadata"]
     assert meta["filings_superseded"] == 1 and meta["approval_links_revoked"] == 2
+
+
+# -- deferred effective dates (Jacqueline A1) ---------------------------------------
+
+def test_put_effective_date_fills_a_deferred_date_and_audits_it(env):
+    before = {"id": "N1", "kind": "appointment", "effective_date": None}
+    after = {**before, "effective_date": "2026-10-01"}
+    with patch.object(oc.svc, "set_effective_date", return_value=(before, after)) as svc_set:
+        resp = client.put("/officer-changes/K1/entries/N1/effective-date", headers=H,
+                          json={"effective_date": "2026-10-01"})
+    assert resp.status_code == 200, resp.text
+    assert svc_set.call_args.kwargs["item_key"] is None
+    row = env.audit.await_args_list[-1].kwargs
+    assert row["action_type"] == "CASE_FIELD_UPDATED"
+    assert row["metadata"]["field"] == "effective_date"
+    assert row["old_value"] is None and row["new_value"] == "2026-10-01"
+
+
+def test_put_effective_date_refusal_is_a_409_with_its_reason(env):
+    with patch.object(oc.svc, "set_effective_date",
+                      side_effect=oc.svc.CaseRefused("not_deferred", "The client was sent this date.")):
+        resp = client.put("/officer-changes/K1/entries/N1/effective-date", headers=H,
+                          json={"effective_date": "2026-10-01"})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "not_deferred"
+
+
+def test_put_effective_date_bad_value_is_a_400(env):
+    with patch.object(oc.svc, "set_effective_date",
+                      side_effect=ValueError("The effective date cannot be after today")):
+        resp = client.put("/officer-changes/K1/entries/N1/effective-date", headers=H,
+                          json={"effective_date": "2099-01-01"})
+    assert resp.status_code == 400

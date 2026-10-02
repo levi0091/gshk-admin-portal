@@ -363,3 +363,60 @@ def test_a_recorded_receipt_cannot_be_replaced(env):
     resp = client.post("/officer-changes/K1/receipt", headers=H,
                        files={"file": ("r.pdf", b"%PDF", "application/pdf")})
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "already_filed"
+
+
+# -- deferred effective dates (Jacqueline A1) ---------------------------------------
+
+MISSING = ["HO New"]
+
+
+def test_record_filing_refuses_while_a_date_is_missing(env):
+    env.case = {**CASE, "manual_signed_document_id": "D1", "manual_receipt_document_id": "R1"}
+    with patch.object(ocf.svc, "dates_missing_for", return_value=MISSING):
+        resp = client.post("/officer-changes/K1/record-filing", headers=H, json={
+            "receipt": {"caseNo": "1", "transactionDate": "01/10/2026"}, "confirm": True})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "dates_missing"
+    assert "HO New" in resp.json()["detail"]["message"]
+
+
+def test_signed_form_upload_refuses_while_a_date_is_missing(env):
+    env.case = {**CASE, "data_checked_at": "2026-10-01T00:00:00Z"}
+    with patch.object(ocf.svc, "dates_missing_for", return_value=MISSING):
+        resp = client.post("/officer-changes/K1/signed-form", headers=H,
+                           files={"file": ("signed.pdf", b"%PDF-1", "application/pdf")})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "dates_missing"
+
+
+def test_validate_refuses_while_a_date_is_missing(env):
+    with patch.object(ocf.svc, "dates_missing_for", return_value=MISSING), \
+         patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]):
+        resp = client.post("/officer-changes/K1/validate", headers=H)
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "dates_missing"
+    env.cr.assert_not_called()
+
+
+def test_mark_checked_esign_keeps_the_route(env):
+    """With a deferred date, e-Sign leaves Data Verification without CR (the
+    dates are entered and CR validates at Signing — spec §2.1)."""
+    with patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]):
+        resp = client.post("/officer-changes/K1/mark-checked", headers=H,
+                           json={"signing_method": "esign"})
+    assert resp.status_code == 200, resp.text
+    patch_ = env.update.call_args.args[1]
+    assert patch_["signing_method"] == "esign" and patch_["data_checked_at"]
+    env.cr.assert_not_called()
+
+
+def test_mark_checked_esign_needs_every_consent_ready(env):
+    plan = [{"ready": False, "reason": "HO New has no e-Registry account stored"}]
+    with patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=plan):
+        resp = client.post("/officer-changes/K1/mark-checked", headers=H,
+                           json={"signing_method": "esign"})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "esign_unavailable"
+
+
+def test_mark_checked_defaults_to_the_manual_route(env):
+    resp = client.post("/officer-changes/K1/mark-checked", headers=H)
+    assert resp.status_code == 200
+    assert env.update.call_args.args[1]["signing_method"] == "manual"

@@ -186,3 +186,15 @@ def test_a_corrupt_model_is_a_form_fill_error_not_a_partial_pdf():
         render("Nd2a", "<cr:nothing/>")
     with pytest.raises(FormFillError):
         render("Nar1", "<cr:brNo>1</cr:brNo>")
+
+
+def test_an_undated_appointment_renders_with_empty_date_boxes():
+    """Jacqueline A1: the client's draft may carry no effective date."""
+    director = next(p for p in fx.files("ND2A") if "Appoint Individual Director" in p.name)
+
+    def undate(graph, entries):
+        entries[0]["effective_date"] = None
+
+    xml = _xml(director, mutate=undate)
+    assert "indvDtAppt" not in xml
+    assert render("Nd2a", xml, company_name=COMPANY)[:4] == b"%PDF"

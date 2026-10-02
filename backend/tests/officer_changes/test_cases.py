@@ -125,7 +125,6 @@ def test_a_cessation_takes_its_party_from_the_officer_row(db, nd2a):
 @pytest.mark.parametrize("payload, message", [
     ({"kind": "cessation", "effective_date": "2026-09-28", "cessation_reason": "R"},
      "officer"),
-    ({"kind": "cessation", "officer_id": "O1", "cessation_reason": "R"}, "date"),
     ({"kind": "cessation", "officer_id": "O1", "effective_date": "2026-09-28"},
      "reason"),
     ({"kind": "cessation", "officer_id": "OX", "effective_date": "2026-09-28",
@@ -450,3 +449,159 @@ def test_a_register_row_of_another_company_is_refused(db, nd2a):
     with pytest.raises(ValueError, match="not a current secretary of this company"):
         cases.add_entry(nd2a, {"kind": "cessation", "secretary_id": "S1",
                                "effective_date": "2026-09-28"}, user_id="U1")
+
+
+# -- deferred effective dates (Jacqueline A1, B1) -------------------------------------
+
+from datetime import date as _date  # noqa: E402
+
+
+def _send(db, case):
+    row = next(r for r in db.tables["nar1_cases"] if r["id"] == case["id"])
+    row["verification_sent_at"] = "2026-10-01T00:00:00Z"
+    cases.mark_deferred(case["id"])
+    return dict(row)
+
+
+def test_appointment_and_cessation_accept_no_date(db, nd2a):
+    gone = cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",
+                                  "cessation_reason": "R"}, user_id="U1")
+    new = cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                 "person_id": "P9", "capacity": "director",
+                                 "effective_date": ""}, user_id="U1")
+    assert gone["effective_date"] is None and new["effective_date"] is None
+    assert db.rows("nar1_cases")[0]["filing_deadline"] is None
+
+
+def test_new_nd2b_item_is_dated_the_anniversary(db, monkeypatch):
+    db.tables["entities"][0]["incorporation_date"] = "2019-09-01"
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    particulars.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["persons"][0]["email"] = "new@example.com"
+    case, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
+    entry = cases.add_entry(case, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+    assert [i["effective_date"] for i in entry["items"]] == ["2026-09-01"]
+
+
+def test_nd2b_default_follows_the_open_nar1_return_date(db, monkeypatch):
+    db.tables["entities"][0]["incorporation_date"] = "2019-03-12"
+    db.tables["nar1_cases"].append({"id": "N1", "entity_id": "E1", "form_code": "Nar1",
+                                    "ar_period_year": 2026, "closed_at": None})
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    particulars.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["persons"][0]["email"] = "new@example.com"
+    case, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
+    entry = cases.add_entry(case, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+    assert entry["items"][0]["effective_date"] == "2026-03-12"
+
+
+def test_mark_deferred_flags_only_undated(db, nd2a):
+    dated = cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",
+                                   "cessation_reason": "R",
+                                   "effective_date": "2026-09-28"}, user_id="U1")
+    undated = cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                     "person_id": "P9", "capacity": "director"},
+                              user_id="U1")
+    _send(db, nd2a)
+    rows = {r["id"]: r for r in db.rows("officer_change_entries")}
+    assert not rows[dated["id"]].get("date_deferred")  # column default false
+    assert rows[undated["id"]]["date_deferred"] is True
+
+
+def test_mark_deferred_marks_nd2b_items(db, nd2b):
+    entry = cases.add_entry(nd2b, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+    _send(db, nd2b)
+    item = cases.list_entries(nd2b["id"])[0]["items"][0]
+    assert entry["items"][0]["effective_date"] is None and item["deferred"] is True
+
+
+def _deferred_appointment(db, nd2a):
+    entry = cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                   "person_id": "P9", "capacity": "director"}, user_id="U1")
+    return _send(db, nd2a), entry
+
+
+def test_set_effective_date_fills_a_deferred_date(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    sent, entry = _deferred_appointment(db, nd2a)
+    before, after = cases.set_effective_date(sent, entry["id"], "2026-10-01", user_id="U1")
+    assert before["effective_date"] is None and after["effective_date"] == "2026-10-01"
+    assert db.rows("nar1_cases")[0]["filing_deadline"] == "2026-10-16"
+
+
+def test_set_effective_date_refuses_a_date_the_client_saw(db, nd2a):
+    entry = cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",
+                                   "cessation_reason": "R",
+                                   "effective_date": "2026-09-28"}, user_id="U1")
+    sent = _send(db, nd2a)
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.set_effective_date(sent, entry["id"], "2026-09-29", user_id="U1")
+    assert exc.value.reason == "not_deferred"
+
+
+def test_set_effective_date_refuses_the_future(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    sent, entry = _deferred_appointment(db, nd2a)
+    with pytest.raises(ValueError, match="after today"):
+        cases.set_effective_date(sent, entry["id"], "2026-10-03", user_id="U1")
+
+
+def test_set_effective_date_before_sending_is_refused(db, nd2a):
+    entry = cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                   "person_id": "P9", "capacity": "director"}, user_id="U1")
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.set_effective_date(nd2a, entry["id"], "2026-09-29", user_id="U1")
+    assert exc.value.reason == "not_sent"
+
+
+def test_set_effective_date_after_signing_is_refused(db, nd2a, monkeypatch):
+    sent, entry = _deferred_appointment(db, nd2a)
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.set_effective_date({**sent, "manual_signed_document_id": "D9"}, entry["id"],
+                                 "2026-09-29", user_id="U1")
+    assert exc.value.reason == "signed"
+    monkeypatch.setattr(cases.nar1_cases, "current_filing",
+                        lambda cid: {"id": "F1", "stage": "signed"})
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.set_effective_date(sent, entry["id"], "2026-09-29", user_id="U1")
+    assert exc.value.reason == "signed"
+
+
+def test_set_effective_date_supersedes_a_validated_filing(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    sent, entry = _deferred_appointment(db, nd2a)
+    monkeypatch.setattr(cases.nar1_cases, "current_filing",
+                        lambda cid: {"id": "F1", "stage": "validated"})
+    calls = []
+    monkeypatch.setattr(cases.tpsi_filings, "supersede_all_for_case",
+                        lambda cid: calls.append(cid) or 1)
+    cases.set_effective_date(sent, entry["id"], "2026-10-01", user_id="U1")
+    assert calls == [nd2a["id"]]
+
+
+def test_set_effective_date_on_an_nd2b_item(db, nd2b, monkeypatch):
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    entry = cases.add_entry(nd2b, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+    sent = _send(db, nd2b)
+    _, after = cases.set_effective_date(sent, entry["id"], "2026-09-30", item_key="email",
+                                        user_id="U1")
+    assert after["items"][0]["effective_date"] == "2026-09-30"
+
+
+def test_restart_then_resend_makes_a_filled_date_seen(db, nd2a, monkeypatch):
+    """Review Focus 1: a date filled in after the first send is one the client
+    has SEEN once the form is re-sent, so it can no longer be changed quietly."""
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    sent, entry = _deferred_appointment(db, nd2a)
+    cases.set_effective_date(sent, entry["id"], "2026-10-01", user_id="U1")
+    resent = _send(db, nd2a)
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.set_effective_date(resent, entry["id"], "2026-09-30", user_id="U1")
+    assert exc.value.reason == "not_deferred"
+
+
+def test_composite_lists_missing_dates(db, nd2a, monkeypatch):
+    cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                           "person_id": "P9", "capacity": "director"}, user_id="U1")
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    assert data["dates_missing"] == ["HO New"]

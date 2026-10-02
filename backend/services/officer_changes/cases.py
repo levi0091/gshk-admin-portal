@@ -27,6 +27,8 @@ from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
     apply, deadlines, documents, eservice, particulars, prepare, rules,
 )
+from services.tpsi import fees
+from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL, default_capacity,
 )
@@ -269,8 +271,6 @@ def _check_appointment(case: dict, row: dict, entries: list[dict],
     if row.get("capacity") not in _CAPACITIES:
         raise ValueError("The capacity must be Director or Company Secretary "
                          "(alternate directors are not offered)")
-    if not row.get("effective_date"):
-        raise ValueError("Enter the date of appointment")
     if row.get("party_type") == "corporate":
         if row.get("capacity") == "director" and not (
                 row.get("consent_person_id") and str(row.get("consent_capacity") or "").strip()):
@@ -311,8 +311,6 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
                 # date or reason never leaves a promotion behind.
                 reg = (get_supabase().table("company_secretaries").select("*")
                        .eq("id", payload["secretary_id"]).execute().data or [None])[0] or {}
-                if not payload.get("effective_date"):
-                    raise ValueError("Enter the date of cessation")
                 if reg.get("person_id") and payload.get("cessation_reason") not in ("R", "D"):
                     raise ValueError("Choose the reason for cessation: Resignation / "
                                      "Others, or Deceased")
@@ -327,9 +325,9 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
             raise ValueError("That officer is already on this form")
         row = {**base, **party}
         if kind == "cessation":
-            if not payload.get("effective_date"):
-                raise ValueError("Enter the date of cessation")
-            row["effective_date"] = payload["effective_date"]
+            # Optional since Jacqueline's A1: blank is "the most recent date",
+            # entered at Signing.
+            row["effective_date"] = payload.get("effective_date") or None
             if party["party_type"] == "individual":
                 if payload.get("cessation_reason") not in ("R", "D"):
                     raise ValueError("Choose the reason for cessation: Resignation / "
@@ -344,8 +342,8 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
             return row
         party_key = ({"person_id": party["person_id"]} if party["person_id"]
                      else {"corporate_entity_id": party["corporate_entity_id"]})
-        row["items"] = particulars.pending_for_officer(
-            case["entity_id"], capacity=party["capacity"], **party_key)
+        row["items"] = _dated_by_default(case, particulars.pending_for_officer(
+            case["entity_id"], capacity=party["capacity"], **party_key))
         row["registered"] = particulars.registered_view(case["entity_id"], **party_key)
         if promoted:
             row["_promoted"] = promoted
@@ -363,6 +361,7 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
     for key in _WRITABLE["appointment"]:
         if key in payload:
             row[key] = payload[key]
+    row["effective_date"] = row.get("effective_date") or None
     row.setdefault("correspondence_same_as_residential", True)
     _check_appointment(case, row, entries)
     return row
@@ -415,10 +414,10 @@ def update_entry(case: dict, entry_id: str, patch: dict, *, user_id) -> tuple[di
         changes["items"] = _merge_items(before.get("items"), patch["items"])
     if not changes:
         raise ValueError("Nothing on this entry can be changed that way")
+    if "effective_date" in changes:
+        changes["effective_date"] = changes["effective_date"] or None
     merged = {**before, **changes}
     if before["kind"] == "cessation":
-        if not merged.get("effective_date"):
-            raise ValueError("Enter the date of cessation")
         if merged.get("party_type") == "individual" and merged.get("cessation_reason") not in ("R", "D"):
             raise ValueError("Choose the reason for cessation")
     if before["kind"] == "appointment":
@@ -455,6 +454,136 @@ def set_kyc(case: dict, entry_id: str, cleared: bool, *, user_id) -> dict:
     }).eq("id", entry_id).execute().data[0])
 
 
+# -- effective dates: the ND2B default, and dates deferred to Signing ---------------
+
+def _open_nar1_return_date(entity: dict, case: dict) -> str | None:
+    """The return date of the company's open annual return, if it has one."""
+    born = deadlines._as_date(entity.get("incorporation_date"))
+    if born is None:
+        return None
+    rows = (get_supabase().table("nar1_cases").select("*")
+            .eq("entity_id", case["entity_id"]).execute().data) or []
+    for row in sorted(rows, key=lambda r: r.get("ar_period_year") or 0, reverse=True):
+        if (row.get("form_code") or "Nar1") != "Nar1" or row.get("closed_at") \
+                or row.get("manual_receipt") or not row.get("ar_period_year"):
+            continue
+        try:
+            return fees.return_date_for(born, int(row["ar_period_year"])).isoformat()
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _nd2b_default_date(case: dict) -> str | None:
+    """Jacqueline B1: an ND2B line starts dated the anniversary, so the ND2B and
+    the NAR1 made up to that date say the same thing and go to CR together."""
+    entity = (_by_id("entities", [case["entity_id"]]).get(case["entity_id"]) or {})
+    default = deadlines.anniversary_default(
+        entity.get("incorporation_date"),
+        open_return_date=_open_nar1_return_date(entity, case),
+        today=deadlines.hk_today())
+    return _iso(default)
+
+
+def _dated_by_default(case: dict, items: list[dict]) -> list[dict]:
+    if not items:
+        return items
+    default = _nd2b_default_date(case)
+    return [{**item, "effective_date": item.get("effective_date") or default}
+            for item in items]
+
+
+def mark_deferred(case_id: str) -> int:
+    """At send: every undated change is DEFERRED — the client was told its date
+    will be confirmed when GSHK files (Jacqueline A1) — and every dated one is
+    not, which is what makes a date filled in after an earlier send one the
+    client has now SEEN. Returns how many changes are deferred."""
+    deferred = 0
+    for entry in list_entries(case_id):
+        if entry.get("kind") == "change":
+            items = []
+            for item in entry.get("items") or []:
+                flag = not item.get("omitted") and not item.get("effective_date")
+                deferred += flag
+                items.append({**item, "deferred": flag})
+            if items != (entry.get("items") or []):
+                get_supabase().table("officer_change_entries").update({"items": items}) \
+                    .eq("id", entry["id"]).execute()
+            continue
+        flag = not entry.get("effective_date")
+        deferred += flag
+        if bool(entry.get("date_deferred")) != flag:
+            get_supabase().table("officer_change_entries").update({"date_deferred": flag}) \
+                .eq("id", entry["id"]).execute()
+    return deferred
+
+
+def dates_missing_for(case_id: str) -> list[str]:
+    """`rules.dates_missing` for a case, with each officer named — what the
+    filing routes refuse on (Jacqueline A1: nothing is signed or filed
+    undated)."""
+    entries = list_entries(case_id)
+    if not entries:
+        return []
+    ctx = _parties(entries)
+    return rules.dates_missing([{**e, "party": _party_view(e, ctx)} for e in entries])
+
+
+def _signed(case: dict) -> bool:
+    if case.get("manual_signed_document_id"):
+        return True
+    filing = nar1_cases.current_filing(case["id"])
+    return bool(filing and filing.get("stage") == "signed")
+
+
+def set_effective_date(case: dict, entry_id: str, value, *, item_key: str | None = None,
+                       user_id) -> tuple[dict, dict]:
+    """Fill in a date that was blank when the client was sent the form.
+
+    Only a DEFERRED date: one the client saw is still changed by restarting
+    verification. Refused once the form is signed (it carries the date), and a
+    CR-validated filing is superseded — CR's answer described an undated form."""
+    if case.get("closed_at"):
+        raise CaseRefused("case_closed", "This case is closed.")
+    if not case.get("verification_sent_at"):
+        raise CaseRefused("not_sent", "The form has not been sent yet — edit the change "
+                                      "on the list instead.")
+    if case.get("manual_receipt") or case.get("changes_applied_at"):
+        raise CaseRefused("already_filed", "This form has been filed.")
+    if _signed(case):
+        raise CaseRefused("signed", "The form is already signed with its dates.")
+    day = deadlines._as_date(value)
+    if day is None:
+        raise ValueError("Enter the effective date as YYYY-MM-DD")
+    if day > deadlines.hk_today():
+        raise ValueError("The effective date cannot be after today: CR records what has "
+                         "happened.")
+    before = _entry(case, entry_id)
+    if before.get("kind") == "change":
+        items = [dict(i) for i in before.get("items") or []]
+        item = next((i for i in items if i.get("key") == item_key), None)
+        if item is None:
+            raise ValueError("Name the ND2B line (item_key) this date is for")
+        if not item.get("deferred") or item.get("omitted"):
+            raise CaseRefused("not_deferred", "The client was sent this date. Restart "
+                                              "verification to change it.")
+        item["effective_date"] = day.isoformat()
+        changes = {"items": items}
+    else:
+        if not before.get("date_deferred"):
+            raise CaseRefused("not_deferred", "The client was sent this date. Restart "
+                                              "verification to change it.")
+        changes = {"effective_date": day.isoformat()}
+    filing = nar1_cases.current_filing(case["id"])
+    if filing and filing.get("stage") == "validated":
+        tpsi_filings.supersede_all_for_case(case["id"])
+    after = (get_supabase().table("officer_change_entries")
+             .update({**changes, "updated_at": _now()}).eq("id", entry_id)
+             .execute().data[0])
+    _store_deadline(case["id"])
+    return before, after
+
+
 def refresh_items(case: dict, entries: list[dict]) -> list[dict]:
     """Re-diff every `change` entry against the profile, keeping the dates and
     omissions of surviving items (Review Focus 3).
@@ -475,9 +604,11 @@ def refresh_items(case: dict, entries: list[dict]) -> list[dict]:
         fresh = particulars.pending_for_officer(
             case["entity_id"], capacity=entry["capacity"], **party)
         kept = {i["key"]: i for i in entry.get("items") or []}
+        default = _nd2b_default_date(case)
         items = [{**item, "effective_date": kept[item["key"]].get("effective_date"),
                   "omitted": kept[item["key"]].get("omitted", False)}
-                 if item["key"] in kept else item for item in fresh]
+                 if item["key"] in kept else {**item, "effective_date": default}
+                 for item in fresh]
         registered = particulars.registered_view(case["entity_id"], **party)
         if items != entry.get("items") or registered != entry.get("registered"):
             entry = (get_supabase().table("officer_change_entries")
@@ -754,6 +885,9 @@ async def composite(case_id: str, *, user: dict) -> dict:
         "reply_by_default": _iso(deadlines.reply_by_default(due, today)),
         "entries": view,
         "rules": rule_result,
+        # Jacqueline A1: what Signing must still ask for before anything is
+        # signed or filed.
+        "dates_missing": rules.dates_missing(view),
         "route": {"esign_available": esign, "reasons": reasons,
                   "selected": case.get("signing_method"),
                   "default": "esign" if esign else "manual", "consents": consents},

@@ -36,13 +36,14 @@ def _capacity(graph: dict, case: dict) -> str | None:
 
 async def build_form_xml(case: dict, entries: list[dict], *,
                          signing_identity: dict | None = None,
-                         for_esign: bool = False) -> str:
+                         for_esign: bool = False,
+                         require_dates: bool | None = None) -> str:
     """The form model XML for this case. Raises `MappingError` listing every
     problem at once — a length CR would refuse included."""
     graph = await source.load_graph(case["entity_id"], entries)
     data = _MAPPERS[case["form_code"]](
         graph, entries, signatory_capacity=_capacity(graph, case),
-        signing_identity=signing_identity, for_esign=for_esign)
+        signing_identity=signing_identity, for_esign=for_esign, require_dates=require_dates)
     try:
         return form_xml.build(case["form_code"], data)
     except form_xml.FormValidationError as exc:

@@ -54,9 +54,13 @@ def cr_address(addr: dict | None, problems: list[str], where: str, *,
     return block
 
 
-def cr_date(value, problems: list[str], where: str) -> str:
+def cr_date(value, problems: list[str], where: str, *, required: bool = True) -> str:
+    """DD/MM/YYYY. A missing date is a problem only when `required`: the
+    client's draft may leave it blank (Jacqueline A1), anything sent to CR may
+    not."""
     if not value:
-        problems.append(f"{where}: no date")
+        if required:
+            problems.append(f"{where}: no date")
         return ""
     return nm._format_date(value, problems, where)
 
@@ -140,7 +144,8 @@ def tcsp(prefix: str, licence: str, reason: str, problems: list[str], where: str
     return {}
 
 
-def _cessation(graph: dict, entry: dict, problems: list[str]) -> dict:
+def _cessation(graph: dict, entry: dict, problems: list[str],
+               require_dates: bool = True) -> dict:
     """The officer as CR HOLDS them: the ND2B baseline when there is one (an
     edit on the profile that no ND2B has filed is not on CR's register), else
     the profile — which, with no baseline, has not changed since CR was told."""
@@ -177,13 +182,15 @@ def _cessation(graph: dict, entry: dict, problems: list[str]) -> dict:
                                        else corp.get("company_name"))})
         if not bean["corpEngName"]:
             problems.append(f"{where}: the body corporate has no name on record")
-    bean["dtResign"] = cr_date(entry.get("effective_date"), problems, f"{where}: date")
+    bean["dtResign"] = cr_date(entry.get("effective_date"), problems, f"{where}: date",
+                               required=require_dates)
     if entry["capacity"] == "director":
         bean["dirAfterCesInd"] = "N"
     return bean
 
 
-def _natural_appointment(graph, entry, bean_id, problems, for_esign) -> dict:
+def _natural_appointment(graph, entry, bean_id, problems, for_esign,
+                         require_dates=True) -> dict:
     person = (graph.get("persons") or {}).get(entry["person_id"]) or {}
     where = f"appointment of {person.get('full_name') or entry['person_id']}"
     secretary = entry["capacity"] == "company_secretary"
@@ -212,7 +219,8 @@ def _natural_appointment(graph, entry, bean_id, problems, for_esign) -> dict:
     if secretary:
         bean.update(tcsp("indv", person.get("tcsp_licence_no"),
                          person.get("tcsp_exemption_reason"), problems, where))
-    bean["indvDtAppt"] = cr_date(entry.get("effective_date"), problems, f"{where}: date")
+    bean["indvDtAppt"] = cr_date(entry.get("effective_date"), problems, f"{where}: date",
+                                 required=require_dates)
     if not secretary:
         bean["dirBeforeApptInd"] = "N"
         account = (graph.get("eservice") or {}).get(entry["person_id"]) or {}
@@ -226,7 +234,8 @@ def _natural_appointment(graph, entry, bean_id, problems, for_esign) -> dict:
     return bean
 
 
-def _corporate_appointment(graph, entry, bean_id, problems, for_esign) -> dict:
+def _corporate_appointment(graph, entry, bean_id, problems, for_esign,
+                           require_dates=True) -> dict:
     corp = (graph.get("entities") or {}).get(entry.get("corporate_entity_id")) or {}
     where = f"appointment of {corp.get('company_name') or entry.get('corporate_entity_id')}"
     secretary = entry["capacity"] == "company_secretary"
@@ -245,7 +254,8 @@ def _corporate_appointment(graph, entry, bean_id, problems, for_esign) -> dict:
     if secretary:
         bean.update(tcsp("corp", corp.get("tcsp_licence_no"),
                          corp.get("tcsp_exemption_reason"), problems, where))
-    bean["corpDtAppt"] = cr_date(entry.get("effective_date"), problems, f"{where}: date")
+    bean["corpDtAppt"] = cr_date(entry.get("effective_date"), problems, f"{where}: date",
+                                 required=require_dates)
     if not secretary:
         bean["dirBeforeApptInd"] = "N"
         signer = (graph.get("persons") or {}).get(entry.get("consent_person_id")) or {}
@@ -284,7 +294,11 @@ def signatory(graph: dict, problems: list[str], *, signatory_capacity, signing_i
 
 
 def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None = None,
-             signing_identity: dict | None = None, for_esign: bool = False) -> dict:
+             signing_identity: dict | None = None, for_esign: bool = False,
+             require_dates: bool | None = None) -> dict:
+    """`require_dates` defaults to `for_esign`: CR is sent only dated changes,
+    while the client's draft and the manual route's PDF may wait for them."""
+    require_dates = for_esign if require_dates is None else require_dates
     problems: list[str] = []
     entity = graph.get("entity") or {}
     data = {"language": "E", "brNo": _s(entity.get("br_number"))}
@@ -295,17 +309,18 @@ def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None
     for entry in entries:
         kind = entry.get("kind")
         if kind == "cessation":
-            ceased.append(_cessation(graph, entry, problems))
+            ceased.append(_cessation(graph, entry, problems, require_dates))
         elif kind == "appointment":
             bean_id = None
             if entry.get("capacity") == "director":
                 seq += 1
                 bean_id = f"S{seq}"
             if entry.get("person_id"):
-                natural.append(_natural_appointment(graph, entry, bean_id, problems, for_esign))
+                natural.append(_natural_appointment(graph, entry, bean_id, problems, for_esign,
+                                                    require_dates))
             else:
                 corporate.append(_corporate_appointment(graph, entry, bean_id, problems,
-                                                        for_esign))
+                                                        for_esign, require_dates))
         else:
             problems.append("an ND2A carries cessations and appointments only")
     if not (ceased or natural or corporate):

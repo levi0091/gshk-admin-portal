@@ -303,6 +303,45 @@ async def set_kyc(case_id: str, entry_id: str, body: KycIn,
     return await respond(case_id, user)
 
 
+class EffectiveDateIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    effective_date: str
+    #: An ND2B line's key; absent for a cessation or an appointment.
+    item_key: str | None = None
+
+
+@router.put("/{case_id}/entries/{entry_id}/effective-date")
+async def set_effective_date(case_id: str, entry_id: str, body: EffectiveDateIn,
+                             user=Depends(require_permission(MODULE, "write"))):
+    """Fill in a date that was blank when the client was sent the form
+    (Jacqueline A1) — at Signing, before anything is signed or filed."""
+    case = load_case(case_id)
+    refuse_if_closed(case, "dating a change on it")
+    try:
+        before, after = svc.set_effective_date(case, entry_id, body.effective_date,
+                                               item_key=body.item_key, user_id=user["id"])
+    except svc.CaseRefused as exc:
+        raise refused(exc)
+    except LookupError:
+        raise HTTPException(404, "Entry not found on this case")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    def date_of(row):
+        if body.item_key:
+            return next((i.get("effective_date") for i in row.get("items") or []
+                         if i.get("key") == body.item_key), None)
+        return row.get("effective_date")
+
+    await audit(case, user, ev.CASE_FIELD_UPDATED, old_value=date_of(before),
+                new_value=date_of(after),
+                metadata={"field": "effective_date", "item_key": body.item_key,
+                          "deferred": True, **_entry_metadata(after)})
+    return await respond(case_id, user)
+
+
 # -- supporting documents (answers 7, 11, 13) ---------------------------------------------
 
 @router.post("/{case_id}/entries/{entry_id}/documents")
@@ -576,6 +615,13 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
                      client_approval_source=None, client_approval_person_id=None,
                      client_approval_name=None)
     nar1_cases.update_case(case_id, patch)
+    # Every undated change is now DEFERRED to Signing; every dated one is a
+    # date the client has seen (Jacqueline A1).
+    try:
+        svc.mark_deferred(case_id)
+    except Exception as exc:  # noqa: BLE001 — the mail is out; say so on stderr
+        print(f"[officer_changes] mark_deferred failed for {case_id}: {exc!r}",
+              file=sys.stderr)
 
     def across(key):
         out = []
