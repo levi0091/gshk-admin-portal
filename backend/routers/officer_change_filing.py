@@ -55,6 +55,37 @@ def _refuse_if_filed(case: dict) -> None:
                                   "reason": "already_filed"})
 
 
+#: CR's own refusals of an ND2A/ND2B, MEASURED on CR TEST (2026-10-02), with
+#: what each means for the operator. CR's sentence is kept verbatim beside it.
+_CR_HINTS = (
+    ("signer does not match with officer",
+     "A new director's particulars on this form must match their e-Registry account "
+     "exactly: English and Chinese names, HKID or passport. A Chinese name the account "
+     "holds but the profile does not is enough for CR to refuse. Correct the profile, "
+     "or file this form on the manual route."),
+    ("no matched individual offic",   # CR spells it "officier"
+     "CR cannot find the officer on its register under the name and partial identity "
+     "number on this form. A ceasing or changing officer is identified as CR holds "
+     "them — if their name or identity number changed, file the ND2B for that first."),
+    ("please check selectpersonid",
+     "CR does not accept the signing account for this company. Check the e-Service "
+     "account under CR Credentials, and that whoever signs is a current officer — or "
+     "a director of the body-corporate secretary signing for it."),
+)
+
+
+def _explain(exc: HTTPException) -> HTTPException:
+    """NAR1's 422, in an officer change's words, with a hint per known refusal."""
+    detail = exc.detail if isinstance(exc.detail, dict) else None
+    if exc.status_code != 422 or detail is None:
+        return exc
+    text = " ".join(str(p) for p in detail.get("problems") or []).lower()
+    hints = [hint for needle, hint in _CR_HINTS if needle in text]
+    message = (detail.get("message") or "").replace("this return", "this form")
+    return HTTPException(422, {**detail, "message": message,
+                               **({"hints": hints} if hints else {})})
+
+
 def _refuse_manual_conflict(case_id: str, *, step: str) -> None:
     """`nar1_cases.manual_conflict` against the filing that decides it."""
     reason = nar1_cases.manual_conflict(nar1_cases.blocking_filing(case_id), step=step)
@@ -134,7 +165,7 @@ async def validate(case_id: str, user=Depends(require_permission("tpsi", "write"
         await audit(case, user, ev.TPSI_VALIDATE, new_value="refused",
                     metadata={"filing_id": filing["id"], "form_code": case["form_code"],
                               "faults": getattr(exc, "faults", None)})
-        raise tpsi_router._handle(exc)
+        raise _explain(tpsi_router._handle(exc))
     nar1_cases.update_case(case_id, {"signing_method": "esign"})
     if created:
         await audit(case, user, ev.TPSI_FILING_CREATED, new_value=filing["id"],
@@ -202,7 +233,7 @@ async def sign(case_id: str, request: Request,
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
-        raise tpsi_router._handle(exc)
+        raise _explain(tpsi_router._handle(exc))
     now = _now()
     for consent in consents:
         svc.get_supabase().table("officer_change_entries").update(
@@ -244,7 +275,7 @@ async def submit(case_id: str, body: ConfirmIn,
             raise HTTPException(409, {"message": str(exc), "reason": "case_finished"})
         if isinstance(exc, ValueError):
             raise HTTPException(400, str(exc))
-        raise tpsi_router._handle(exc)
+        raise _explain(tpsi_router._handle(exc))
     receipt = result.get("receipt") or {}
     await audit(case, user, ev.TPSI_SUBMISSION_SUCCESS, new_value=receipt.get("caseNo"),
                 metadata={"filing_id": filing["id"], "case_no_cr": receipt.get("caseNo"),

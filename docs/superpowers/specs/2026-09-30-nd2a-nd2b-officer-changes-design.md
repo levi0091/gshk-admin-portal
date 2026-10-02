@@ -327,10 +327,38 @@ banner) — the dismissable alert covers the same ground from the profile. ND4,
 ND5, ND7. A bulk ND2B for GSHK Ltd's own particulars (PRD Q17). Filing in
 Chinese.
 
-## 11 · Not verified
+## 11 · Verified on CR TEST, and what still is not
 
-Nothing here has been sent to the Companies Registry. The XML is checked against
-CR's own examples, and the consent-signature placement against CR's reference
-program, but PRD SC-5 ("all 14 examples validate first time on CR TEST") needs a
-CR TEST window (Mon–Fri 10:00–16:00 HKT). PRD R-3 (empty Chinese name on an
-appointment) is likewise unproven.
+**2026-10-02, 14:49–15:00 HKT, apitest.cr.gov.hk** — every form built by OUR
+mapper (`map_case(..., for_esign=True)` → `form_xml.build`), re-pointed at CR
+TEST's own register (company T0001137 and its associated test accounts, from
+CR's test-account workbook) because CR checks every signer and officer against
+that register. `validateForm` and `verifyPinSigning` only; **nothing was
+submitted**.
+
+| Check | Result |
+|---|---|
+| PRD SC-5: all 14 CR examples validate | **14/14 validated** |
+| All 14 signed (`verifyPinSigning`) | **14/14 "Pin Signature(s) Verified Successfully."** |
+| Consent signature, individual director (`PinSign URI="#S1"`) | verified |
+| Consent signature, body-corporate director (associated person signs) | verified |
+| One ND2A with 2 cessations + 2 appointments, consents S1 **and** S2 | validated and signed |
+| B-13: body-corporate secretary signing, a natural person signing for it (GSHK's case) | validated and signed, with and without a consent |
+| B-17: corporate appointee sent with names **and** BR number | accepted (4 cases) |
+
+What CR TEST taught, now in the code (`officer_change_filing._CR_HINTS`):
+
+- **CR matches a ceasing or changing officer against its register** by name and
+  partial identity number — "No matched individual officier." (CR's spelling).
+  This is why a cessation names the officer from the ND2B baseline.
+- **PRD R-3 is a real constraint, not a formatting one.** An appointee sent with
+  no Chinese name, when their e-Registry account holds one, is refused at
+  VALIDATION: "signer does not match with officer." CR compares the appointee's
+  particulars with the consent signer's account. A director with genuinely no
+  Chinese name on their account was not testable (every CR test account has one).
+- CR's sample signer ids are refused ("Please check selectPersonId field."):
+  the signer must be a real account associated with the company.
+
+Still not verified: `submitForm` (it would change CR TEST's shared register),
+`docStatusEnquiry` on an ND2 case number, and the two PostgREST queries noted in
+the final review (the auto-approval job's inner join, the register name match).

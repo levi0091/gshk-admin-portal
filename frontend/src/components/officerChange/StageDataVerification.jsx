@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import SupportingDocuments from './SupportingDocuments.jsx'
+import CrRefusal from './CrRefusal.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
@@ -156,15 +157,7 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
             <span className="f-hint">Marking the form as checked needs Officer changes (Edit).</span>
           )}
         </div>
-        {error && (
-          <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>
-            <div className="al-body"><b>{error.message}</b>
-              {error.problems?.length > 0 && <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                {error.problems.map(p => <li key={typeof p === 'string' ? p : JSON.stringify(p)}>
-                  {typeof p === 'string' ? p : p.message || JSON.stringify(p)}</li>)}</ul>}
-            </div>
-          </div>
-        )}
+        <CrRefusal error={error} />
       </div>
     </>
   )

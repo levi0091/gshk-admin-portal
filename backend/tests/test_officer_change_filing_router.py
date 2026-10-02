@@ -111,6 +111,29 @@ def test_sign_accepts_an_empty_object_as_an_empty_body(env):
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "not_validated"
 
 
+@pytest.mark.parametrize("cr_says, hint", [
+    # Each measured on CR TEST, 2026-10-02.
+    ("signer does not match with officer.", "must match their e-Registry account"),
+    ("No matched individual officier.", "cannot find the officer on its register"),
+    ("Please check selectPersonId field.", "does not accept the signing account"),
+])
+def test_crs_refusals_are_explained_in_an_officer_changes_words(env, cr_says, hint):
+    from services.tpsi.errors import TpsiValidationError
+    env.cr.side_effect = None
+    with patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ocf.prepare, "build_form_xml", new_callable=AsyncMock, return_value="<x/>"), \
+         patch.object(ocf.credentials, "load_signatory_identity", return_value={"x": 1}), \
+         patch.object(ocf.filings, "create_filing", return_value={"id": "F1", "stage": "draft"}), \
+         patch.object(ocf.filings, "validate",
+                      side_effect=TpsiValidationError([("ERROR", cr_says)])):
+        resp = client.post("/officer-changes/K1/validate", headers=H)
+    detail = resp.json()["detail"]
+    assert resp.status_code == 422
+    assert detail["message"] == "The Companies Registry rejected this form."
+    assert any(hint in h for h in detail["hints"])
+    assert detail["problems"] == [["ERROR", cr_says]]      # CR's own words kept
+
+
 def test_sign_needs_a_validated_filing_and_the_users_own_credential(env):
     assert client.post("/officer-changes/K1/sign", headers=H).status_code == 409
     env.filing = {"id": "F1", "stage": "validated"}

@@ -97,5 +97,7 @@ export function errorOf(e) {
     || e?.message || 'Something went wrong.'
   const problems = (detail && typeof detail === 'object' && Array.isArray(detail.problems))
     ? detail.problems : (Array.isArray(e?.problems) ? e.problems : [])
-  return { message, problems }
+  const hints = (detail && typeof detail === 'object' && Array.isArray(detail.hints))
+    ? detail.hints : (Array.isArray(e?.hints) ? e.hints : [])
+  return { message, problems, hints }
 }

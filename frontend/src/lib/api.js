@@ -118,6 +118,9 @@ export function describeApiError(detail, fallback = 'API error') {
     // Submission stage renders it as a table, and a sentence cannot show two
     // values per row.
     if (Array.isArray(detail.differences)) e.differences = detail.differences
+    // What a known CR refusal means for the operator (officer changes, measured
+    // on CR TEST): carried beside CR's own words, never instead of them.
+    if (Array.isArray(detail.hints)) e.hints = detail.hints
     return e
   }
 

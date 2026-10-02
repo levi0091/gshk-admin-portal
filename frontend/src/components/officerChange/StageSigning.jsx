@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { officerChangeApi } from './api.js'
+import CrRefusal from './CrRefusal.jsx'
 import { errorOf, isManual } from './workflow.js'
 
 /**
@@ -108,8 +109,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
           <span className="f-hint">Signing needs Companies Registry filing (Edit).</span>
         )}
       </div>
-      {error && <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>
-        <div className="al-body">{error.message}</div></div>}
+      <CrRefusal error={error} />
     </div>
   )
 }

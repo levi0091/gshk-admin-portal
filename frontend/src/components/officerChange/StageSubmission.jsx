@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import PdfFrame, { usePdfBlob } from '../case/PdfPreview.jsx'
 import ProfileChangesList from './ProfileChangesList.jsx'
+import CrRefusal from './CrRefusal.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf, isFiled, isManual } from './workflow.js'
 
@@ -155,11 +156,7 @@ export default function StageSubmission({ data, reload, can, goTo }) {
             </div>
           </div>
         )}
-        {error && (
-          <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>
-            <div className="al-body"><b>{error.message}</b></div>
-          </div>
-        )}
+        <CrRefusal error={error} />
       </div>
 
       {confirmingFile && (
