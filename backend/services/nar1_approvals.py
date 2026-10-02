@@ -104,6 +104,30 @@ def is_stale(row: dict, case: dict) -> bool:
         return False
 
 
+def is_ahead(row: dict, case: dict) -> bool:
+    """Was this link issued for a send the case never recorded?
+
+    Tokens are issued BEFORE the send loop, and the case's revision is stored
+    only once a message has left. So a link carrying a revision ABOVE the case's
+    belongs to a send that reached nobody — or, rarely, to one that went out and
+    then could not write the case.
+
+    ONLY THE AUTO-APPROVAL JOB ASKS THIS. It approves on silence, and silence
+    about an email that may never have been delivered is not consent; skipping
+    is always the safe direction there. The public page must NOT refuse such a
+    link, because in the second path the client holds a genuine one.
+
+    Legacy (NULL) links are never ahead, by the same reasoning as `is_stale`.
+    """
+    issued = (row or {}).get("revision")
+    if issued is None:
+        return False
+    try:
+        return int(issued) > int((case or {}).get("verification_revision") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
 def issue(*, case_id: str, recipients: list[dict],
           sent_at: datetime | None = None,
           expires_at: datetime | None = None,

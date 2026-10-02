@@ -26,6 +26,9 @@ WHAT IT WILL NOT TOUCH, AND WHY EACH EXCLUSION MATTERS.
                         a withdrawn request is not consent to the new one
   earlier revisions     the same, for a link whose supersede never landed: it
                         carries a lower revision than the case (migration 051)
+  unsent revisions      a link carrying a HIGHER revision than the case was
+                        issued for a send that never recorded itself — usually
+                        one that reached nobody (migration 051)
 
 IDEMPOTENT. A second run the same night finds every case it approved already
 carrying `client_approved`, and changes nothing.
@@ -212,6 +215,15 @@ async def run(now: datetime | None = None) -> dict:
         if nar1_approvals.is_stale(token_row, case):
             seen.discard(case_id)
             skipped.append((case_id, "the link belongs to an earlier revision"))
+            continue
+        # AND ONE AHEAD OF THE CASE: issued for a send that never recorded
+        # itself — normally one Resend refused for every recipient, which
+        # leaves these links outstanding while `verification_sent_at` from the
+        # previous send lets every exclusion below pass. Approving here would
+        # read silence about an email nobody received as consent.
+        if nar1_approvals.is_ahead(token_row, case):
+            seen.discard(case_id)
+            skipped.append((case_id, "the link belongs to a send that never went out"))
             continue
 
         reason = skip_reason(case)
