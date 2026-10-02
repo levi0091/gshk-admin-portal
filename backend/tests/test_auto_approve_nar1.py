@@ -279,6 +279,50 @@ def test_only_unanswered_tokens_past_their_expiry_are_selected():
     assert ("is", "outcome", None) in filters
     assert ("lt", "expires_at", NOW.isoformat()) in filters
     sb.table.assert_called_with("nar1_client_approvals")
+    # The revision is read with the token, or `run` cannot tell an earlier
+    # revision's link from the current one (migration 051).
+    assert "revision" in table.select.call_args.args[0]
+
+
+# --------------------------------------------------------------------------- #
+#  An earlier revision's link (Levi 2026-10-02, migration 051)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_silence_on_an_earlier_revision_is_not_consent_to_the_current_one():
+    """The Rev. 1 link's supersede did not land, so it is still outstanding and
+    past ITS deadline — the one the client was given for a return they have
+    since been re-sent. That is not their silence about Rev. 2."""
+    resent = case(verification_revision=2)
+    with _Stack(*_world(tokens=[token(revision=1)], cases=[resent])) as entered:
+        report = await job.run(NOW)
+    update_case = entered[3]
+    assert report["approved"] == 0
+    assert report["skipped_detail"] == [
+        ("c1", "the link belongs to an earlier revision")]
+    update_case.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_link_does_not_hide_the_current_revisions_link_behind_it():
+    """Ordered by deadline, the earlier revision's link comes first. It must
+    not use up the case's one turn in the run, or the current link that is
+    genuinely overdue would wait for ever behind a token that never clears."""
+    resent = case(verification_revision=2)
+    tokens = [token(id="a1", revision=1), token(id="a2", revision=2)]
+    with _Stack(*_world(tokens=tokens, cases=[resent])) as entered:
+        report = await job.run(NOW)
+    log = entered[5]
+    assert report["approved"] == 1
+    assert log.call_args.kwargs["metadata"]["revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_link_issued_before_revisions_existed_is_judged_as_before():
+    with _Stack(*_world(tokens=[token(revision=None)],
+                        cases=[case(verification_revision=3)])):
+        report = await job.run(NOW)
+    assert report["approved"] == 1
 
 
 # --------------------------------------------------------------------------- #

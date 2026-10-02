@@ -67,9 +67,47 @@ def hash_token(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
+def next_revision(case: dict) -> int:
+    """The revision the NEXT verification email for this case will carry.
+
+    `verification_revision` counts the emails that actually went out (migration
+    051), so the next one is one more — and the first is 1. It is not reset by
+    a restart: the client still holds the earlier email, so the next one has to
+    read as a later revision of it.
+    """
+    try:
+        sent = int((case or {}).get("verification_revision") or 0)
+    except (TypeError, ValueError):
+        sent = 0
+    return max(sent, 0) + 1
+
+
+def is_stale(row: dict, case: dict) -> bool:
+    """Was this link mailed with a revision the case has since moved past?
+
+    THE SECOND LOCK on an earlier revision's link (migration 051). The first is
+    `supersede_outstanding`, which `issue` runs before every new revision —
+    but that is a write, and when it fails the old link would otherwise keep
+    working. This is a read of two numbers, so it holds regardless.
+
+    A token issued before migration 051 has no revision and is never stale by
+    this rule — its send can only be numbered by inference, and an inference
+    one too low would refuse a director's current link. It is still governed
+    by its `outcome`, which the next send supersedes.
+    """
+    issued = (row or {}).get("revision")
+    if issued is None:
+        return False
+    try:
+        return int(issued) < int((case or {}).get("verification_revision") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
 def issue(*, case_id: str, recipients: list[dict],
           sent_at: datetime | None = None,
-          expires_at: datetime | None = None) -> list[dict]:
+          expires_at: datetime | None = None,
+          revision: int | None = None) -> list[dict]:
     """One fresh token per recipient. Returns the PLAINTEXT tokens.
 
     The plaintext is returned to the caller once, to put in that person's email,
@@ -80,6 +118,11 @@ def issue(*, case_id: str, recipients: list[dict],
     verification means the previous message's document is no longer the one
     being asked about, and a director holding the older mail must not be able to
     approve it.
+
+    `revision` is the number the email these tokens go in will carry (see
+    `next_revision`). Stored on each row so that a link can be refused for
+    belonging to an earlier revision even if the supersede above did not land
+    — see `is_stale`.
 
     `expires_at` IS THE DEADLINE THE OPERATOR CHOSE, and it is one value doing
     three jobs on purpose (Levi 2026-09-07): the date the email prints, the
@@ -98,7 +141,7 @@ def issue(*, case_id: str, recipients: list[dict],
     rows = []
     for recipient in recipients:
         token = secrets.token_urlsafe(_TOKEN_BYTES)
-        rows.append({
+        row = {
             "nar1_case_id": case_id,
             "person_id": recipient.get("person_id"),
             "recipient_email": recipient["email"],
@@ -106,8 +149,14 @@ def issue(*, case_id: str, recipients: list[dict],
             "token_hash": hash_token(token),
             "sent_at": sent.isoformat(),
             "expires_at": expires.isoformat(),
-        })
-        issued.append({**recipient, "token": token, "expires_at": expires})
+        }
+        # Only when given, so a caller that names none writes exactly the row
+        # it always did — NULL, which the revision lock leaves alone.
+        if revision is not None:
+            row["revision"] = revision
+        rows.append(row)
+        issued.append({**recipient, "token": token, "expires_at": expires,
+                       "revision": revision})
 
     if rows:
         get_supabase().table(_TABLE).insert(rows).execute()

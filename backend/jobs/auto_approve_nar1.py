@@ -24,6 +24,8 @@ WHAT IT WILL NOT TOUCH, AND WHY EACH EXCLUSION MATTERS.
   superseded tokens     the document those links approve was discarded when
                         verification was restarted; the client's silence about
                         a withdrawn request is not consent to the new one
+  earlier revisions     the same, for a link whose supersede never landed: it
+                        carries a lower revision than the case (migration 051)
 
 IDEMPOTENT. A second run the same night finds every case it approved already
 carrying `client_approved`, and changes nothing.
@@ -75,7 +77,8 @@ def due_tokens(now: datetime | None = None,
     moment = (now or _now()).isoformat()
     return (
         get_supabase().table("nar1_client_approvals")
-        .select("id,nar1_case_id,recipient_email,recipient_name,expires_at")
+        .select("id,nar1_case_id,recipient_email,recipient_name,expires_at,"
+                "revision")
         .is_("outcome", None)
         .lt("expires_at", moment)
         .order("expires_at")
@@ -147,6 +150,8 @@ async def approve(case: dict, token_row: dict, now: datetime) -> None:
             "window_days": nar1_approvals.APPROVAL_WINDOW_DAYS,
             "verification_sent_at": case.get("verification_sent_at"),
             "expired_at": token_row.get("expires_at"),
+            # Which emailed revision the client did not answer.
+            "revision": token_row.get("revision"),
             # Who was asked and did not answer. The fact being recorded is a
             # SILENCE, and a silence is only meaningful if you can say whose.
             "last_recipient": token_row.get("recipient_email"),
@@ -182,6 +187,18 @@ async def run(now: datetime | None = None) -> dict:
             continue
         except Exception as exc:  # noqa: BLE001
             failed.append((case_id, str(exc)))
+            continue
+
+        # A LINK FROM AN EARLIER REVISION (migration 051). Its deadline is the
+        # one the client was given for a return they have since been re-sent,
+        # so its expiry is not their silence about the current one. Checked on
+        # the TOKEN, ahead of the case, and the case is handed back to `seen`:
+        # the current revision's own link may be further down this same list,
+        # ordered after this one by its later deadline, and must still be
+        # judged on its own.
+        if nar1_approvals.is_stale(token_row, case):
+            seen.discard(case_id)
+            skipped.append((case_id, "the link belongs to an earlier revision"))
             continue
 
         reason = skip_reason(case)

@@ -343,6 +343,62 @@ def test_a_company_with_no_name_still_gets_a_usable_subject():
     assert subject == "[Action Required] NAR1 Review & Confirmation"
 
 
+# --- revisions (Levi 2026-10-02: "[Rev. 2] or [Rev. 3] ... for each email we
+# send for confirmation") ----------------------------------------------------
+
+def test_the_first_email_is_the_sample_letter_unchanged():
+    """Rev. 1 has no predecessor to be told apart from, so it carries no tag —
+    and the approved wording stays byte for byte what it was."""
+    assert _letter(revision=1) == _letter()
+    assert _letter(revision=None) == _letter()
+
+
+def test_a_resend_says_which_revision_it_is_in_the_subject():
+    subject, _ = _letter(revision=2)
+    assert subject == ("[Action Required] [Rev. 2] NAR1 Review & Confirmation"
+                       " - Explod Limited")
+
+
+def test_the_revision_counts_up_with_every_send():
+    assert _letter(revision=3)[0].startswith("[Action Required] [Rev. 3] ")
+    assert _letter(revision=12)[0].startswith("[Action Required] [Rev. 12] ")
+
+
+def test_a_revised_letter_says_so_before_anything_else():
+    """The client now holds two emails about one return, and the older one's
+    Confirm button is dead. That is the first thing they read, above "Dear
+    Client" — not a line they find after reviewing the wrong PDF."""
+    _, html = _letter(revision=2)
+    notice = html.index("Revised draft")
+    assert notice < html.index("Dear Client")
+    assert "Rev. 2" in html[notice:notice + 200]
+    assert "no longer works" in html
+
+
+def test_the_masthead_and_the_reference_carry_the_revision():
+    _, html = _letter(revision=2)
+    assert "Form NAR1 &middot; Annual Return &middot; Rev. 2" in html
+    assert "Ref NAR-2026-0041 · Rev. 2" in html
+
+
+def test_the_first_letter_carries_no_revision_notice():
+    _, html = _letter()
+    assert "Revised draft" not in html
+    assert "Rev. " not in html
+
+
+@pytest.mark.parametrize("revision, label", [
+    (None, ""), (1, ""), (2, "Rev. 2"), ("3", "Rev. 3"), ("x", ""), (0, ""),
+])
+def test_the_revision_label(revision, label):
+    assert email_service.revision_label(revision) == label
+
+
+def test_a_subject_without_the_action_prefix_is_tagged_at_the_front():
+    assert email_service.with_revision("Hello", 2) == "[Rev. 2] Hello"
+    assert email_service.with_revision("Hello", 1) == "Hello"
+
+
 def test_the_letter_addresses_the_client_generically():
     """"Dear Client", NOT the director's own name (Levi 2026-09-08). This is
     sent unattended, one message per director, and greeting each of them by

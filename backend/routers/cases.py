@@ -1933,7 +1933,18 @@ async def send_verification(
         raise HTTPException(
             422, f"the validated snapshot could not be rendered: {exc}")
 
-    attachment_name = f"NAR1-{case.get('case_no') or case_id}.pdf"
+    # WHICH VERIFICATION EMAIL THIS IS (Levi 2026-10-02; migration 051). The
+    # client sees "[Rev. 2]" and up on every send after the first, so two
+    # emails about one return can be told apart in an inbox. Computed here and
+    # STORED only once something has actually gone out (the patch below): a
+    # send Resend refused entirely reached nobody, and the retry must carry the
+    # same number rather than skip one.
+    revision = nar1_approvals.next_revision(case)
+
+    # The revision is in the file name too, so a client who has downloaded
+    # both PDFs is not left with "NAR1-….pdf" and "NAR1-… (1).pdf".
+    attachment_name = (f"NAR1-{case.get('case_no') or case_id}"
+                       f"{f'-Rev{revision}' if revision >= 2 else ''}.pdf")
 
     # --- who each address belongs to, and their own approval link ---------- #
     #
@@ -1968,8 +1979,13 @@ async def send_verification(
             # The operator's deadline, not a fortnight from now. One value for
             # the date the email prints, the moment the link dies and the
             # moment the auto-approval job acts — see nar1_approvals.issue.
+            #
+            # Every outstanding link is superseded first, which is what makes
+            # an earlier revision's Confirm button stop working; the revision
+            # stamped on these is the second lock (nar1_approvals.is_stale).
             targets = nar1_approvals.issue(
-                case_id=case_id, recipients=targets, expires_at=deadline_at)
+                case_id=case_id, recipients=targets, expires_at=deadline_at,
+                revision=revision)
         except Exception as exc:  # noqa: BLE001
             # A token store that will not write must not stop the return going
             # out. Without links the message is exactly the one that shipped
@@ -1992,6 +2008,7 @@ async def send_verification(
             # letter's "if we do not hear from you by ..." sentence is the one
             # thing that must survive a deployment that cannot build links.
             deadline=target.get("expires_at") or deadline_at,
+            revision=revision,
             # NO recipient_name AND NO sender_name (Levi 2026-09-08). The
             # letter now opens "Dear Client" and is signed "Get Started HK
             # Limited", per docs/Auto email - NAR1 Review_v2.pdf — it is sent
@@ -2087,7 +2104,11 @@ async def send_verification(
     # moved since the client said yes -- which is the operator's next decision,
     # whether the change is worth re-mailing a director over -- and a hash can
     # only say that something did.
-    patch = {"verification_sent_at": sent_at, "verification_xml": mailed_xml}
+    patch = {"verification_sent_at": sent_at, "verification_xml": mailed_xml,
+             # The revision the client now holds. From this write on, any
+             # link from an earlier one is refused even if superseding it
+             # failed — see nar1_approvals.is_stale.
+             "verification_revision": revision}
 
     # A previous answer answered the PREVIOUS request. Left in place it pins the
     # badge at Client Rejected forever while the client is looking at a fresh
@@ -2167,6 +2188,8 @@ async def send_verification(
         metadata={# Which annual return the client was asked to approve. One
                   # company can have several cases open, one per year.
                   "return_year": case.get("ar_period_year"),
+                  # And which email about it — the "[Rev. N]" the client saw.
+                  "revision": revision,
                   # The first, kept so existing readers of this key still
                   # resolve to a real message; `message_ids` is the whole set,
                   # because there is now one message per director.
@@ -2234,6 +2257,7 @@ async def send_verification(
                       "expires_at": (target["expires_at"].isoformat()
                                      if hasattr(target.get("expires_at"), "isoformat")
                                      else target.get("expires_at")),
+                      "revision": revision,
                       "case_no": case.get("case_no")},
         )
 
@@ -2251,6 +2275,8 @@ async def send_verification(
         )
 
     return {"sent_at": sent_at, "to": delivered, "intended_to": intended,
+            # The revision just sent, so the screen can say "Rev. 2 sent".
+            "revision": revision,
             "cc": copied, "intended_cc": intended_cc,
             "redirected": any(bool(s["sent"].get("redirected")) for s in sends),
             "transport": sends[0]["sent"].get("transport", "resend"),
