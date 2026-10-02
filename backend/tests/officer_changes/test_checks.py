@@ -82,3 +82,17 @@ def test_incomplete_names_what_is_left():
     items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling")], [], route="manual")
     assert checks.incomplete(items) == ["Resignation letter on file — WONG Mei Ling",
                                         "Signed written resolution on file"]
+
+
+def test_the_draft_resolution_sent_for_signature_does_not_pass_as_signed():
+    """Finding 2: the resolution GSHK uploads at Client Verification to SEND to
+    the client is the unsigned draft; only a copy kept on the case counts."""
+    draft = {**doc(None, "board_resolution", "draft.pdf"), "send_with_email": True}
+    items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling", reason="D")], [draft],
+                                 route="esign")
+    assert by_code(items, "written_resolution")[0]["ok"] is False
+    signed = {**doc(None, "board_resolution", "signed.pdf"), "id": "D9", "send_with_email": False}
+    items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling", reason="D")],
+                                 [draft, signed], route="esign")
+    check = by_code(items, "written_resolution")[0]
+    assert check["ok"] is True and check["document"]["file_name"] == "signed.pdf"

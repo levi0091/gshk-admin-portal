@@ -67,12 +67,16 @@ def _complete(account: dict | None) -> bool:
 
 
 def eligible(entries: list[dict], eservice_meta: dict[str, dict],
-             emails: dict[str, str]) -> list[dict]:
-    """New natural-person directors with an email and no complete account."""
+             emails: dict[str, str], *, esign_case: bool = True) -> list[dict]:
+    """New natural-person directors with an email and no complete account —
+    or, when the CASE cannot go e-Sign at all (another director has no
+    account, an overseas corporate director), every one of them: a stored
+    account is then never used, and the manual route needs their consent
+    (review finding 4)."""
     return [e for e in entries
             if e.get("kind") == "appointment" and e.get("capacity") == "director"
             and e.get("person_id") and emails.get(e["person_id"])
-            and not _complete(eservice_meta.get(e["person_id"]))]
+            and (not esign_case or not _complete(eservice_meta.get(e["person_id"])))]
 
 
 def supersede(case_id: str) -> int:

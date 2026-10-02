@@ -467,6 +467,11 @@ def _open_nar1_return_date(entity: dict, case: dict) -> str | None:
         if (row.get("form_code") or "Nar1") != "Nar1" or row.get("closed_at") \
                 or row.get("manual_receipt") or not row.get("ar_period_year"):
             continue
+        # Filed by e-Sign is filed too (review finding 3): `other_open_cases`'
+        # test, so a March return already with CR does not date an October ND2B.
+        filing = nar1_cases.current_filing(row["id"])
+        if filing and filing.get("stage") in nar1_cases.CR_FILED_STAGES:
+            continue
         try:
             return fees.return_date_for(born, int(row["ar_period_year"])).isoformat()
         except (TypeError, ValueError):
@@ -889,7 +894,8 @@ async def composite(case_id: str, *, user: dict) -> dict:
         if item.get("kind") != "appointment" or item.get("capacity") != "director":
             continue
         row = by_entry.get(item["id"]) or {}
-        if row.get("ready"):
+        # e-Sign only when the whole CASE can go e-Sign (review finding 4).
+        if row.get("ready") and esign:
             mode = "esign"
         elif item.get("person_id") and (item.get("party") or {}).get("email"):
             mode = "econsent"

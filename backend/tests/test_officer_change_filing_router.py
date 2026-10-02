@@ -450,3 +450,23 @@ def test_mark_checked_refuses_incomplete_checks(env):
         resp = client.post("/officer-changes/K1/mark-checked", headers=H)
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "checks_incomplete"
     assert open_.call_args.kwargs["route"] == "manual"
+
+
+def test_signed_form_upload_rechecks_the_manual_list(env):
+    """Finding 1: the paper route cannot be reached past an open check."""
+    env.case = {**CASE, "data_checked_at": "2026-10-01T00:00:00Z", "signing_method": "manual"}
+    with patch.object(ocf.svc, "manual_checks_open",
+                      return_value=["Consent to act signed — LEE Ka Ho"]):
+        resp = client.post("/officer-changes/K1/signed-form", headers=H,
+                           files={"file": ("signed.pdf", b"%PDF-1", "application/pdf")})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "checks_incomplete"
+
+
+def test_record_filing_rechecks_the_manual_list(env):
+    env.case = {**CASE, "manual_signed_document_id": "D1", "manual_receipt_document_id": "R1",
+                "signing_method": "manual"}
+    with patch.object(ocf.svc, "manual_checks_open",
+                      return_value=["Consent to act signed — LEE Ka Ho"]):
+        resp = client.post("/officer-changes/K1/record-filing", headers=H, json={
+            "receipt": {"caseNo": "1", "transactionDate": "01/10/2026"}, "confirm": True})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "checks_incomplete"

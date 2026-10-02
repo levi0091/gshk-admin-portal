@@ -24,10 +24,14 @@ case's documents.
 from __future__ import annotations
 
 
-def _latest(docs: list[dict], document_type: str, entry_id=...) -> dict | None:
-    """The newest document of a type — on one entry, or (default) anywhere."""
+def _latest(docs: list[dict], document_type: str, entry_id=..., *,
+            kept_only: bool = False) -> dict | None:
+    """The newest document of a type — on one entry, or (default) anywhere.
+    `kept_only` ignores a document ticked to go with the client email: that
+    copy is the draft sent out for signature (review finding 2)."""
     found = [d for d in docs if d.get("document_type_code") == document_type
-             and (entry_id is ... or d.get("entry_id") == entry_id)]
+             and (entry_id is ... or d.get("entry_id") == entry_id)
+             and not (kept_only and d.get("send_with_email"))]
     if not found:
         return None
     best = max(found, key=lambda d: d.get("uploaded_at") or "")
@@ -71,7 +75,8 @@ def manual_checks(case: dict, entries: list[dict], docs: list[dict], *,
                 "resignation_letter", entry["id"],
                 _latest(docs, "resignation_letter", entry["id"])))
     resolution = _document_check("written_resolution", "Signed written resolution on file",
-                                 "board_resolution", None, _latest(docs, "board_resolution"))
+                                 "board_resolution", None,
+                                 _latest(docs, "board_resolution", kept_only=True))
     return kyc + letters + consents + [resolution]
 
 

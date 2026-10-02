@@ -408,6 +408,7 @@ async def signed_form(case_id: str, file: UploadFile = File(...),
         raise HTTPException(409, {"message": "Mark the form as checked first.",
                                   "reason": "not_checked"})
     _refuse_if_dates_missing(case)
+    _refuse_if_checks_incomplete(case, route="manual")
     content = await file.read()
     if not content:
         raise HTTPException(400, "The file is empty")
@@ -506,6 +507,7 @@ async def record_filing(case_id: str, body: RecordFilingIn,
         raise HTTPException(409, {"message": "Attach CR's receipt first.",
                                   "reason": "no_receipt"})
     _refuse_if_dates_missing(case)
+    _refuse_if_checks_incomplete(case, route="manual")
     # NAR1's gate, for the same reason: an e-filing CR already holds, or a
     # CR-signed one waiting to be submitted, would make this a second filing of
     # one form — and after a rejected e-filing was Undone, it would re-apply

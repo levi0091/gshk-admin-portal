@@ -466,3 +466,17 @@ def test_a_filed_or_closed_officer_change_is_never_overdue():
 ])
 def test_is_officer_change_reads_the_form_code(form_code, expected):
     assert st.is_officer_change({"form_code": form_code}) is expected
+
+
+def test_an_esign_case_marked_checked_with_a_date_left_blank_is_at_signing():
+    """Jacqueline A1: with an effective date deferred to Signing, e-Sign leaves
+    Data Verification by mark-checked and CR validates at Signing. The badge,
+    the dashboard and the stepper must all say Signing (review finding 6)."""
+    c = case(form_code="Nd2a", signing_method="esign",
+             data_checked_at="2026-10-02T02:00:00Z", **APPROVED)
+    assert st.derive(c, None)["code"] == "signing"
+    assert st.derive(c, filing("validation_failed"))["code"] == "signing"
+    assert st.derive(c, filing("validated"))["code"] == "signing"
+    assert st.derive(c, filing("signed"))["code"] == "submission"
+    nar1 = case(signing_method="esign", data_checked_at="2026-10-02T02:00:00Z", **APPROVED)
+    assert st.derive(nar1, None)["code"] == "data_verification"

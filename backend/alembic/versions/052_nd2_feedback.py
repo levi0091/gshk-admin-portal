@@ -34,12 +34,22 @@ Design: `docs/superpowers/specs/2026-10-02-nd2-jacqueline-feedback-design.md`.
       e-Reg and CR's register do not sync, and an account opened with an old
       passport fails the consent signature later).
 
+  nar1_case_registry (restated)
+      One branch added to 050's view, after its manual branch: an e-Sign
+      officer change marked checked with a date deferred to Signing reads
+      'signing' until a live filing exists — as `nar1_case_status` says, so
+      the dashboard and the case header agree (review finding 6). Built from
+      050's own `_case_view_sql`, so nothing else can drift.
+
 REVERSIBLE; the downgrade refuses while a consent or a case-level document
-exists, rather than drop either.
+exists, rather than drop either, and restores 050's view.
 
 Revision ID: 052
 Revises: 050
 """
+import importlib.util
+from pathlib import Path
+
 from alembic import op
 
 revision = "052"
@@ -129,6 +139,53 @@ DOWNGRADE_GUARD = """
 """
 
 
+def _m050():
+    """Migration 050's module, for its tested view builder. Loaded by path:
+    the versions directory is not a package."""
+    path = Path(__file__).with_name("050_officer_changes_nd2a_nd2b.py")
+    spec = importlib.util.spec_from_file_location("m050_case_view", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: nar1_case_status._code's e-Sign branch (review finding 6): a case marked
+#: checked with a date deferred to Signing is AT Signing until a live filing
+#: exists. Placed right after 050's manual branch, as in the Python.
+ESIGN_CHECKED_BRANCH = """
+              WHEN base.form_code <> 'Nar1'
+               AND base.signing_method = 'esign'
+               AND base.data_checked_at IS NOT NULL
+               AND (base.filing_stage IS NULL
+                    OR base.filing_stage NOT IN ('validated', 'signed',
+                                                 'signing_failed',
+                                                 'submission_failed')) THEN 'signing'"""
+
+#: The last line of 050's manual branch — where the e-Sign branch goes.
+_AFTER = """                  ELSE 'submission'
+                END"""
+
+
+def previous_view_sql() -> str:
+    """050's case registry — the downgrade target."""
+    return _m050()._case_view_sql(officer_changes=True)
+
+
+def view_sql() -> str:
+    """050's case registry with the e-Sign branch, and nothing else changed."""
+    sql = previous_view_sql()
+    if sql.count(_AFTER) != 1:
+        raise RuntimeError("migration 050's manual branch is not where 052 expects it")
+    return sql.replace(_AFTER, _AFTER + ESIGN_CHECKED_BRANCH, 1)
+
+
+def _rebuild_view(sql: str) -> None:
+    m050 = _m050()
+    op.execute(f"DROP VIEW IF EXISTS {m050.CASE_VIEW};")
+    op.execute(sql)
+    op.execute(m050._CASE_GRANTS)
+
+
 def _lock_down(table: str) -> str:
     """050's lock-down, verbatim in effect: RLS on, no policy, revoked from the
     two browser-facing roles where they exist (vanilla CI Postgres has none)."""
@@ -158,10 +215,12 @@ def upgrade() -> None:
         op.execute(statement)
     op.execute(_lock_down("officer_change_consents"))
     op.execute(audit_seed_sql())
+    _rebuild_view(view_sql())
 
 
 def downgrade() -> None:
     op.execute(DOWNGRADE_GUARD)
+    _rebuild_view(previous_view_sql())
     codes = ", ".join(f"'{c}'" for c, _ in AUDIT_CODES)
     op.execute(f"DELETE FROM public.audit_event_types WHERE code IN ({codes})")
     op.execute("""

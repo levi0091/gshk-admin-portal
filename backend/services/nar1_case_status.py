@@ -194,6 +194,16 @@ def _code(case: dict, filing: dict | None) -> str:
             return SIGNING
         return SUBMISSION
 
+    # E-SIGN WITH A DATE LEFT FOR SIGNING (Jacqueline A1, migration 052): Data
+    # Verification ends with `mark-checked {esign}` and CR validates at Signing,
+    # once the dates are in — so until a live filing exists the case is at
+    # Signing, not back at Data Verification. Restated in 052's view.
+    if (is_officer_change(case) and case.get("signing_method") == "esign"
+            and case.get("data_checked_at") and stage not in (
+                STAGE_VALIDATED, STAGE_SIGNED, STAGE_SUBMISSION_FAILED,
+                STAGE_SIGNING_FAILED)):
+        return SIGNING
+
     # Approved. Nothing validated -> the data is still being worked on.
     # validation_failed lands here too: it is free to fix and retry, and that IS
     # data verification. A failure here does NOT send the case back to the

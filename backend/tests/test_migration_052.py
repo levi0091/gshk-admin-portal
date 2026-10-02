@@ -81,6 +81,33 @@ def test_052_downgrade_refuses_while_data_exists():
     assert "entry_id IS NULL" in DOWN_SQL
 
 
+M050 = _migration("050_officer_changes_nd2a_nd2b.py")
+
+
+def test_052_restates_the_case_view_with_the_esign_checked_branch():
+    """Review finding 6: an e-Sign case marked checked (a date deferred to
+    Signing) reads 'signing' on the dashboard as on the badge."""
+    view = _normalise(m.view_sql())
+    branch = _normalise(m.ESIGN_CHECKED_BRANCH)
+    assert branch in view
+    assert "base.signing_method = 'esign'" in branch
+    assert "base.data_checked_at IS NOT NULL" in branch and "THEN 'signing'" in branch
+    # After the manual branch, before the filing-stage tests.
+    assert view.index("base.signing_method = 'manual'") < view.index(branch) < \
+        view.index("WHEN base.filing_stage IS NULL")
+
+
+def test_052_changes_nothing_else_in_050s_view():
+    restated = _normalise(_normalise(m.view_sql()).replace(
+        _normalise(m.ESIGN_CHECKED_BRANCH), ""))
+    assert restated == _normalise(M050._case_view_sql(officer_changes=True))
+
+
+def test_052_downgrade_restores_050s_view():
+    assert _normalise(m.previous_view_sql()) == _normalise(
+        M050._case_view_sql(officer_changes=True))
+
+
 # --------------------------------------------------------------------------- #
 #  Needs Postgres with migrations applied
 # --------------------------------------------------------------------------- #

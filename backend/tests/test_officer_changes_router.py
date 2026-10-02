@@ -604,7 +604,11 @@ def test_send_refuses_before_mailing_when_an_attachment_cannot_be_read(env):
     with stack:
         resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
             "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
-    assert resp.status_code == 502 and "memo.pdf" in resp.text
+    # 409, not 502 (finding 5): behind Cloudflare a 502's body never reaches
+    # the screen, and naming the file is the point of this refusal.
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "attachment_unreadable"
+    assert "memo.pdf" in resp.json()["detail"]["message"]
     assert sent == []
     env.update.assert_not_called()
 
@@ -738,3 +742,46 @@ def test_proceed_needs_a_sent_unanswered_form(env):
     env.case = {**ND2B_SENT, "client_approved": True}
     assert client.post("/officer-changes/K1/verification/proceed", headers=H,
                        json={"reason": "x"}).status_code == 409
+
+
+# -- review findings ------------------------------------------------------------------
+
+def test_switching_route_clears_the_data_check(env):
+    """Finding 1: a case marked checked for e-Sign and switched to manual must
+    pass the manual route's checks (each new director's consent) again."""
+    env.case = {**CASE, "signing_method": "esign", "data_checked_at": "2026-10-02T00:00:00Z",
+                "data_checked_by": "U1", "client_approved": True,
+                "verification_sent_at": "2026-10-01T00:00:00Z"}
+    resp = client.patch("/officer-changes/K1", headers=H, json={"signing_method": "manual"})
+    assert resp.status_code == 200, resp.text
+    sent = env.update.call_args.args[1]
+    assert sent["signing_method"] == "manual"
+    assert sent["data_checked_at"] is None and sent["data_checked_by"] is None
+
+
+def test_a_mixed_board_on_a_manual_only_case_is_never_told_no_signature_is_needed(env):
+    """Finding 4: director A has an account, B has none — the case can only go
+    manual, so A gets the in-system consent link, not 'no signature needed'."""
+    sent = []
+    plan = [{"entry_id": "N1", "signer_person_id": "P9", "ready": True, "signer_name": "LEE"},
+            {"entry_id": "N2", "signer_person_id": "P8", "ready": False, "signer_name": "HO",
+             "reason": "HO has no e-Registry account stored on their profile"}]
+    stack, _r, letter = _send_patches(sent, plan=plan)
+    stack.enter_context(patch.object(oc.nar1_router, "_approval_link_base",
+                                     return_value="https://api.test"))
+    stack.enter_context(patch.object(oc.nar1_approvals, "issue", return_value=[
+        {"email": "lee@example.com", "person_id": "P9", "name": "LEE Ka Ho",
+         "token": "tokA", "expires_at": None}]))
+    stack.enter_context(patch.object(oc.svc, "list_entries", return_value=[
+        {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"},
+        {"id": "N2", "kind": "appointment", "capacity": "director", "person_id": "P8"}]))
+    stack.enter_context(patch.object(oc.eservice, "metadata_for", return_value={
+        "P9": {"eservice_user_id": "LKH1", "eservice_person_name": "LEE", "has_password": True}}))
+    issue = stack.enter_context(patch.object(oc.econsent, "issue",
+                                             return_value={"N1": "consentTok"}))
+    with stack:
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
+    assert resp.status_code == 200, resp.text
+    assert [e["id"] for e in issue.call_args.args[1]] == ["N1"]
+    assert letter.call_args.kwargs["consent"]["mode"] == "econsent"

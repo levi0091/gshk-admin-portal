@@ -167,6 +167,12 @@ async def patch_case(case_id: str, body: CasePatchIn,
                                           "reason": "esign_unavailable"})
         if body.signing_method != case.get("signing_method"):
             patch["signing_method"] = body.signing_method
+            # The two routes check different things (the manual route needs
+            # each new director's consent document), so a data check made for
+            # one does not carry to the other (review finding 1).
+            if case.get("data_checked_at"):
+                patch["data_checked_at"] = None
+                patch["data_checked_by"] = None
     if body.signatory_capacity is not None:
         capacity = body.signatory_capacity.strip()
         # The vocabulary of THIS signer: CR takes any string here and refuses a
@@ -677,10 +683,14 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     try:
         files += documents.email_attachments(case_id)
     except documents.AttachmentError as exc:
-        raise HTTPException(502, f"The email was not sent: {exc.file_name} could not be "
-                                 "read from storage.")
+        # 409, not 502 (review finding 5): behind Cloudflare a 502's body never
+        # reaches the page, and naming the file is the point of the refusal.
+        raise HTTPException(409, {"message": f"The email was not sent: {exc.file_name} "
+                                             "could not be read from storage. Upload it "
+                                             "again or untick it.",
+                                  "reason": "attachment_unreadable"})
     names = [name for name, _ in files]
-    consents = await _consent_wording(case, entries)
+    consents, esign_case = await _consent_wording(case, entries)
 
     board = {(r.get("email") or "").lower(): r
              for r in recipients_svc.default_recipients(case, entries) if r.get("email")}
@@ -706,7 +716,8 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         try:
             people = [e["person_id"] for e in entries if e.get("person_id")]
             mailed = {t["person_id"]: t["email"] for t in targets if t.get("person_id")}
-            wanted = econsent.eligible(entries, eservice.metadata_for(people), mailed)
+            wanted = econsent.eligible(entries, eservice.metadata_for(people), mailed,
+                                       esign_case=esign_case)
             tokens = econsent.issue(case_id, wanted, revision=revision,
                                     expires_at=deadline_at) if wanted else {}
             for entry in wanted:
@@ -829,25 +840,30 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
             "respond_by": deadline_at.isoformat(), "approval_links": bool(link_base)}
 
 
-async def _consent_wording(case: dict, entries: list[dict]) -> dict[str, dict]:
-    """person_id -> what an incoming director's own letter says about their
-    consent to act (Jacqueline A2, A5): e-Sign when GSHK holds their complete
-    e-Registry account. Never fails the send."""
+async def _consent_wording(case: dict, entries: list[dict]) -> tuple[dict[str, dict], bool]:
+    """`(person_id -> wording, esign_case)`: what an incoming director's own
+    letter says about their consent to act (Jacqueline A2, A5), and whether the
+    CASE can go e-Sign at all. "No signature is needed" only when it can: on a
+    manual-only case a stored account is never used (review finding 4).
+    Never fails the send; uncertainty reads as "cannot"."""
     try:
         plan = await prepare.consent_plan(case, entries)
     except Exception as exc:  # noqa: BLE001 — wording only
         print(f"[officer_changes] consent plan for the letter failed: {exc!r}",
               file=sys.stderr)
-        return {}
+        return {}, False
+    esign_case = all(row.get("ready") for row in plan)
+    if not esign_case:
+        return {}, False
     natural = {e["id"]: e for e in entries
                if e.get("kind") == "appointment" and e.get("person_id")}
     out = {}
     for row in plan:
         entry = natural.get(row.get("entry_id"))
-        if entry and row.get("ready"):
+        if entry:
             out[entry["person_id"]] = {"mode": "esign", "url": None,
                                        "name": row.get("signer_name")}
-    return out
+    return out, True
 
 
 @router.get("/{case_id}/verification/delivery")

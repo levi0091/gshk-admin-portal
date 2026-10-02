@@ -693,3 +693,42 @@ def test_nd2b_composite_names_the_anniversary_default(db, monkeypatch):
     case, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
     data = asyncio.run(cases.composite(case["id"], user=USER))
     assert data["anniversary_default"] == "2026-09-01"
+
+
+def test_a_nar1_filed_by_esign_does_not_set_the_nd2b_default(db, monkeypatch):
+    """Finding 3: an e-Sign-filed NAR1 (no manual_receipt; its filing is at
+    'submitted') is not 'open', so an October ND2B is not dated March."""
+    db.tables["entities"][0]["incorporation_date"] = "2019-03-12"
+    db.tables["nar1_cases"].append({"id": "N1", "entity_id": "E1", "form_code": "Nar1",
+                                    "ar_period_year": 2026, "closed_at": None})
+    db.tables["tpsi_filings"].append({"id": "F1", "nar1_case_id": "N1", "stage": "submitted",
+                                      "created_at": "2026-03-20T00:00:00Z"})
+    monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
+    particulars.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["persons"][0]["email"] = "new@example.com"
+    case, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
+    entry = cases.add_entry(case, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+    assert entry["items"][0]["effective_date"] is None
+
+
+def test_a_ready_director_on_a_manual_only_case_is_not_shown_as_esign(db, nd2a, monkeypatch):
+    """Finding 4, on the change list."""
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    monkeypatch.setattr(cases.econsent, "status_for", lambda cid: {})
+
+    async def plan(case, entries):
+        rows = [e for e in entries if e.get("kind") == "appointment"]
+        return [{"entry_id": rows[0]["id"], "ready": True},
+                {"entry_id": rows[1]["id"], "ready": False, "reason": "no account"}]
+
+    monkeypatch.setattr(cases.prepare, "consent_plan", plan)
+    db.tables["persons"][2]["email"] = "ho@example.com"
+    db.tables["persons"].append({"id": "P7", "full_name": "LEE Ka Ho", "surname": "LEE",
+                                 "given_names": "Ka Ho", "email": "lee@example.com"})
+    a = cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                               "person_id": "P7", "capacity": "director"}, user_id="U1")
+    cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                           "person_id": "P9", "capacity": "director"}, user_id="U1")
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    view = next(e for e in data["entries"] if e["id"] == a["id"])
+    assert view["consent_mode"] == "econsent"

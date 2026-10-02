@@ -202,3 +202,12 @@ def test_regenerate_refuses_an_unsigned_consent(db):
     econsent.issue("K1", [LEE], revision=1, expires_at=FUTURE)
     with pytest.raises(LookupError):
         asyncio.run(econsent.regenerate({"id": "K1"}, LEE))
+
+
+def test_when_the_case_cannot_esign_a_director_with_an_account_is_eligible_too():
+    """Finding 4: on a manual-only case the stored account is never used, so
+    that director must also be able to sign the consent in G-FlowDesk."""
+    meta = {"P9": {"eservice_user_id": "LKH1", "eservice_person_name": "LEE",
+                   "has_password": True}}
+    assert econsent.eligible([LEE], meta, {"P9": "lee@example.com"}, esign_case=False) == [LEE]
+    assert econsent.eligible([LEE], meta, {"P9": "lee@example.com"}, esign_case=True) == []
