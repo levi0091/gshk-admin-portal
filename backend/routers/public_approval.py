@@ -228,33 +228,47 @@ def _render(*, title: str, heading: str, sub: str, body: str,
     )
 
 
-def _unavailable() -> HTMLResponse:
+def _unavailable(subject: str = "this Annual Return") -> HTMLResponse:
     """The ONE answer for every miss: unknown token, malformed token, expired
     token, rate-limited, deleted case.
 
     Identical in shape, size class and status for all of them, so the route
     cannot be used to learn which tokens or cases exist. 200, not 404: a status
     that differed per reason would leak exactly what the identical body hides.
+
+    `subject` is chosen by the ROUTE, never by the token: the officer-change
+    page says "this form" for every miss, so its wording cannot tell an ND2A
+    token from an ND2B one or from none at all.
     """
     return _render(
         title="Link unavailable",
         heading="This link is no longer available",
         sub="It may have expired, or a newer request may have replaced it.",
         body='<p class="stop">Nothing has been changed.</p>'
-             '<p class="note">If you still need to confirm this Annual Return, '
+             f'<p class="note">If you still need to confirm {html.escape(subject)}, '
              f'please email {html.escape(RENEWAL_MAILBOX)} and we will '
              'help.</p>',
     )
 
 
-def _already(name: str, when: str) -> HTMLResponse:
+def _subject(case: dict) -> tuple[str, str]:
+    """`(heading noun, one-word noun)` for the form this case files — so a
+    director asked to confirm an ND2A is never told an Annual Return is done."""
+    form = case.get("form_code") or "Nar1"
+    if form in _OFFICER_CHANGE_FORMS:
+        return f"Form {form.upper()}", "form"
+    return "This Annual Return", "return"
+
+
+def _already(name: str, when: str, case: dict | None = None) -> HTMLResponse:
     who = name or "another director"
+    heading, noun = _subject(case or {})
     return _render(
         title="Already confirmed",
-        heading="This Annual Return has already been confirmed",
+        heading=f"{heading} has already been confirmed",
         sub=f"Confirmed by {who}{f' on {when}' if when else ''}.",
         body='<p class="done">No further action is needed.</p>'
-             '<p class="note">Only one confirmation is required for a return. '
+             f'<p class="note">Only one confirmation is required for a {noun}. '
              'If something in it looks wrong, please email '
              f'{html.escape(RENEWAL_MAILBOX)}.</p>',
     )
@@ -343,8 +357,17 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
 #  Routes
 # --------------------------------------------------------------------------- #
 
-def _resolve(token: str, request: Request):
-    """(approval_row, case) or None. Every failure returns None identically."""
+#: Which forms each page confirms. The approval tokens share one table, so a
+#: token is only good on the page for its own form: an ND2A link opened on the
+#: NAR1 page would show a director annual-return wording about an officer
+#: change, and confirm it in those words.
+_NAR1_FORMS = ("Nar1",)
+_OFFICER_CHANGE_FORMS = ("Nd2a", "Nd2b")
+
+
+def _resolve(token: str, request: Request, forms=_NAR1_FORMS):
+    """(approval_row, case) or None. Every failure returns None identically,
+    a token for another form's page included."""
     if not _TOKEN.match(token or ""):
         return None
     if _rate_limited(f"t:{token}", f"ip:{_client_ip(request) or 'unknown'}"):
@@ -359,6 +382,8 @@ def _resolve(token: str, request: Request):
     try:
         case = nar1_cases.get_case(row["nar1_case_id"])
     except Exception:  # noqa: BLE001 — LookupError, or a database fault
+        return None
+    if (case.get("form_code") or "Nar1") not in forms:
         return None
     return row, case
 
@@ -387,17 +412,26 @@ def _decided(case: dict) -> HTMLResponse | None:
     # working before it reaches this line. This is the second lock: a token
     # store that would not write is a reason to shout on stderr, not a reason
     # to let a director approve a return that will never be filed.
+    miss = _miss_for(case)
     if case.get("closed_at"):
-        return _unavailable()
+        return _unavailable(miss)
 
     decision = case.get("client_approved")
     if decision is True:
         approved = nar1_approvals.approved_row_for(case["id"])
         return _already((approved or {}).get("recipient_name") or "",
-                        _hkt((approved or {}).get("responded_at")))
+                        _hkt((approved or {}).get("responded_at")), case)
     if decision is False:
-        return _unavailable()
+        return _unavailable(miss)
     return None
+
+
+def _miss_for(case_or_forms) -> str:
+    """The `_unavailable` subject: "this form" on the officer-change page, for
+    every miss alike; "this Annual Return" on NAR1's."""
+    forms = case_or_forms if isinstance(case_or_forms, tuple) else \
+        ((case_or_forms or {}).get("form_code") or "Nar1",)
+    return "this form" if set(forms) & set(_OFFICER_CHANGE_FORMS) else "this Annual Return"
 
 
 @router.get("/nar1-approval/{token}", response_class=HTMLResponse)
@@ -407,50 +441,132 @@ async def show_approval(token: str, request: Request):
     A mail-security scanner fetching this link must leave the case exactly as it
     found it, including its audit trail.
     """
-    resolved = _resolve(token, request)
-    if resolved is None:
-        return _unavailable()
-    row, case = resolved
-
-    if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
-        return _already(row.get("recipient_name") or "",
-                        _hkt(row.get("responded_at")))
-    # A superseded token and an expired one are the same thing to the reader:
-    # this link no longer works, and nothing they do here matters. Except when
-    # the CASE was settled by somebody else — then the honest answer is that it
-    # is already done, not that the link is broken.
-    if row.get("outcome") or nar1_approvals.is_expired(row):
-        return _decided(case) or _unavailable()
-
-    settled = _decided(case)
-    if settled is not None:
-        return settled
-
-    entity = _entity_or_empty(case)
-    return _ask(
+    return await _show(token, request, forms=_NAR1_FORMS, ask=lambda case, entity, row: _ask(
         company=entity.get("company_name") or "",
         br_number=entity.get("br_number") or "",
         period=str(case.get("ar_period_year") or ""),
         case_no=case.get("case_no") or "",
-        deadline=_hkt(row.get("expires_at")),
-    )
+        deadline=_hkt(row.get("expires_at"))))
 
 
 @router.post("/nar1-approval/{token}", response_class=HTMLResponse)
 async def record_approval(token: str, request: Request):
     """The only mutating half. Takes NO body — there is nothing to supply."""
-    resolved = _resolve(token, request)
+    return await _record(token, request, forms=_NAR1_FORMS, confirmed=_confirmed)
+
+
+# --------------------------------------------------------------------------- #
+#  ND2A / ND2B — the same guarantees, an officer change's words (spec §5)
+#
+#  Same token table, same first-approval-wins claim, same no-script page and
+#  the same GET-mutates-nothing rule. There is NO auto-approval behind these
+#  links (spec §5), so the page never says silence will be taken as consent.
+# --------------------------------------------------------------------------- #
+
+_FORM_TITLES = {"Nd2a": ("ND2A", "the change of company secretary and directors"),
+                "Nd2b": ("ND2B", "the change in particulars of your company officers")}
+
+
+def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no: str,
+                        deadline: str) -> HTMLResponse:
+    code, what = _FORM_TITLES.get(form_code, _FORM_TITLES["Nd2a"])
+    rows = [("Company", company), ("Business Registration No.", br_number),
+            ("Form", f"Form {code}"), ("Our reference", case_no)]
+    ledger = "".join(f"<dt>{html.escape(label)}</dt><dd>{html.escape(str(value))}</dd>"
+                     for label, value in rows if value)
+    body = (
+        f"<dl>{ledger}</dl>"
+        '<form method="post"><div class="warn">'
+        f'<div class="warn-top"><div class="warn-ico">{_WARNING_MARK}</div>'
+        '<div><p class="warn-h">Warning</p>'
+        '<p class="warn-t">By clicking <strong>Confirm &amp; File</strong>, you '
+        f"confirm that you have reviewed the draft Form {code} and that the changes "
+        "it reports are correct. It will then be arranged for submission to the "
+        "Companies Registry without further confirmation.</p></div></div>"
+        '<div class="warn-foot"><button type="submit">Confirm &amp; File</button>'
+        "</div></div></form>"
+        '<p class="note">If anything is wrong, do not press Confirm &amp; File '
+        f"— email {html.escape(RENEWAL_MAILBOX)} instead and tell us what needs "
+        "changing."
+        + (f" Please let us know by {html.escape(deadline)}." if deadline else "")
+        + "</p>"
+    )
+    return _render(title=f"Confirm Form {code}",
+                   heading=f"Please confirm {what}",
+                   sub="Check the details below against the form attached to our email.",
+                   body=body)
+
+
+def _confirmed_officer_change(case: dict):
+    code, _what = _FORM_TITLES.get(case.get("form_code"), _FORM_TITLES["Nd2a"])
+
+    def page(company: str) -> HTMLResponse:
+        return _render(
+            title="Confirmed", heading="Thank you — your confirmation is recorded",
+            sub=(f"We will file Form {code} for {company}." if company
+                 else f"We will file Form {code}."),
+            body='<p class="done">Confirmation recorded.</p>'
+                 '<p class="note">You do not need to do anything else. If you later '
+                 f"notice something wrong, email {html.escape(RENEWAL_MAILBOX)} as "
+                 "soon as you can.</p>")
+    return page
+
+
+@router.get("/officer-change-approval/{token}", response_class=HTMLResponse)
+async def show_officer_change_approval(token: str, request: Request):
+    """WRITES NOTHING, exactly as the NAR1 page."""
+    return await _show(
+        token, request, forms=_OFFICER_CHANGE_FORMS,
+        ask=lambda case, entity, row: _ask_officer_change(
+            company=entity.get("company_name") or "",
+            br_number=entity.get("br_number") or "",
+            form_code=case.get("form_code"), case_no=case.get("case_no") or "",
+            deadline=_hkt(row.get("expires_at"))))
+
+
+@router.post("/officer-change-approval/{token}", response_class=HTMLResponse)
+async def record_officer_change_approval(token: str, request: Request):
+    return await _record(token, request, forms=_OFFICER_CHANGE_FORMS,
+                         confirmed=None)
+
+
+async def _show(token: str, request: Request, *, forms, ask) -> HTMLResponse:
+    resolved = _resolve(token, request, forms)
     if resolved is None:
-        return _unavailable()
+        return _unavailable(_miss_for(forms))
+    row, case = resolved
+
+    if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
+        return _already(row.get("recipient_name") or "",
+                        _hkt(row.get("responded_at")), case)
+    # A superseded token and an expired one are the same thing to the reader:
+    # this link no longer works, and nothing they do here matters. Except when
+    # the CASE was settled by somebody else — then the honest answer is that it
+    # is already done, not that the link is broken.
+    if row.get("outcome") or nar1_approvals.is_expired(row):
+        return _decided(case) or _unavailable(_miss_for(forms))
+
+    settled = _decided(case)
+    if settled is not None:
+        return settled
+
+    return ask(case, _entity_or_empty(case), row)
+
+
+async def _record(token: str, request: Request, *, forms, confirmed) -> HTMLResponse:
+    """The only mutating half. Takes NO body — there is nothing to supply."""
+    resolved = _resolve(token, request, forms)
+    if resolved is None:
+        return _unavailable(_miss_for(forms))
     row, case = resolved
 
     if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
         # Idempotent: the same director pressing twice, or a browser replaying
         # the POST, sees what they saw the first time rather than an error.
         return _already(row.get("recipient_name") or "",
-                        _hkt(row.get("responded_at")))
+                        _hkt(row.get("responded_at")), case)
     if row.get("outcome") or nar1_approvals.is_expired(row):
-        return _decided(case) or _unavailable()
+        return _decided(case) or _unavailable(_miss_for(forms))
 
     # THE CASE MAY BE DECIDED WITHOUT ANY TOKEN BEING USED — see `_decided`.
     # Without this the link would overwrite a decision somebody else already
@@ -471,7 +587,7 @@ async def record_approval(token: str, request: Request):
     if claimed is None:
         approved = nar1_approvals.approved_row_for(case["id"])
         return _already((approved or {}).get("recipient_name") or "",
-                        _hkt((approved or {}).get("responded_at")))
+                        _hkt((approved or {}).get("responded_at")), case)
 
     name = claimed.get("recipient_name") or row.get("recipient_name")
     responded = claimed.get("responded_at")
@@ -527,7 +643,8 @@ async def record_approval(token: str, request: Request):
         },
     )
 
-    return _confirmed(entity.get("company_name") or "")
+    page = confirmed or _confirmed_officer_change(case)
+    return page(entity.get("company_name") or "")
 
 
 def _entity_or_empty(case: dict) -> dict:

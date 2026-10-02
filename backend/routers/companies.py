@@ -20,6 +20,7 @@ from services import (
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE, COMPANY_TYPE, CURRENCY)
 from services.cr_forms.readiness import filing_problems
+from services.officer_changes import particulars
 from services.cr_forms import control_nature, record_types
 
 router = APIRouter()
@@ -1037,6 +1038,12 @@ async def update_company(
             )
         updates["company_type"] = value
 
+    # A body corporate officer's name, email and TCSP licence are ND2B items:
+    # baseline every appointment it holds before the write (spec §4).
+    if particulars.TRACKED_ENTITY_FIELDS & updates.keys():
+        particulars.capture_before_edit(corporate_entity_id=company_id,
+                                        user_id=user["id"])
+
     updated = (
         sb.table("entities").update(updates).eq("id", company_id).execute()
     ).data[0]
@@ -1171,6 +1178,10 @@ async def update_registered_address(
             sb.table("addresses").select("*")
             .eq("id", current["registered_address_id"]).single().execute()
         ).data
+
+    # A body corporate officer's address is ND2B item (b): baseline first.
+    particulars.capture_before_edit(corporate_entity_id=company_id,
+                                    user_id=user["id"])
 
     try:
         result = address_service.save(
@@ -1727,6 +1738,48 @@ def _party_summary(name: str, row: dict) -> str:
     """e.g. 'John Smith (director)' — what the link actually is."""
     role = row.get("role") or row.get("owner_type")
     return f"{name} ({role})" if role else name
+
+
+# --------------------------------------------------------------------------- #
+#  A body corporate OFFICER's particulars changed on its profile, CR not told
+#  (spec §4). The company here is the officer, not the company it serves.
+#  Registered before the `/{company_id}/{relation}` catch-alls on purpose.
+# --------------------------------------------------------------------------- #
+
+def _change_rows(rows: list[dict]) -> list[dict]:
+    return [{**row, "items": [
+        {k: v for k, v in item.items() if k not in ("effective_date", "omitted")}
+        for item in row["items"]]} for row in rows]
+
+
+@router.get("/{company_id}/particulars-changes")
+async def get_particulars_changes(company_id: str, user=Depends(live_company("read"))):
+    return {"changes": _change_rows(particulars.pending_for_corporate(company_id))}
+
+
+@router.post("/{company_id}/particulars-changes/dismiss")
+async def dismiss_particulars_changes(company_id: str,
+                                      user=Depends(live_company("write"))):
+    sb = get_supabase()
+    pending = particulars.pending_for_corporate(company_id)
+    dismissed = particulars.dismiss(corporate_entity_id=company_id, user_id=user["id"])
+    if dismissed:
+        rows = (sb.table("entities").select("id, company_name, br_number")
+                .eq("id", company_id).execute().data) or [{"id": company_id}]
+        await log_event(
+            case_id=company_id, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type=audit_events.OFFICER_PARTICULARS_DISMISSED,
+            event_code=audit_events.OFFICER_PARTICULARS_DISMISSED,
+            company_name=rows[0].get("company_name"),
+            **audit_subject.for_company(rows[0]),
+            entity_type="entity", entity_id=str(company_id),
+            new_value=f"{dismissed} appointment(s)",
+            metadata={"appointments": dismissed, "dismissed": [
+                {"entity_id": r["entity_id"], "company_name": r.get("company_name"),
+                 "capacity": r["capacity"],
+                 "items": [i["label"] for i in r["items"]]} for r in pending]})
+    return {"dismissed": dismissed}
 
 
 @router.post("/{company_id}/{relation}", status_code=201)

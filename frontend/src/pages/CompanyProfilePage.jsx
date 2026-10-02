@@ -21,6 +21,11 @@ import { useFormContract, fieldWarning } from '../lib/formContract.js'
 import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
 import CasesPane, { caseSummary } from '../components/CasesPane.jsx'
+import { casePath } from '../components/officerChange/workflow.js'
+import { officerChangeApi } from '../components/officerChange/api.js'
+import ReportChangeMenu, { useStartOfficerChange } from '../components/officerChange/ReportChangeMenu.jsx'
+import PendingChangeChip, { pendingFor } from '../components/officerChange/PendingChangeChip.jsx'
+import ParticularsChangeAlert from '../components/officerChange/ParticularsChangeAlert.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
 import { companyProfileCaps, asDeleted } from '../lib/screenCapabilities.js'
@@ -254,6 +259,22 @@ export default function CompanyProfilePage() {
   }, [companyId])
 
   useEffect(() => { load() }, [load])
+
+  // ND2A / ND2B (migration 050): the unfinished cases naming this company's
+  // officers, for the "pending" chips. Asked only by a role that may read
+  // them, and only for a client — the Cases pane's own visibility rule.
+  const officerStart = useStartOfficerChange(companyId)
+  const [pendingCases, setPendingCases] = useState([])
+  const canViewOfficerChanges = caps.viewOfficerChanges
+  const isClientCompany = Boolean(company?.is_client)
+  useEffect(() => {
+    if (!canViewOfficerChanges || !isClientCompany) { setPendingCases([]); return undefined }
+    let cancelled = false
+    officerChangeApi.pending({ entityId: companyId })
+      .then(d => { if (!cancelled) setPendingCases(Array.isArray(d?.cases) ? d.cases : []) })
+      .catch(() => { if (!cancelled) setPendingCases([]) })
+    return () => { cancelled = true }
+  }, [companyId, canViewOfficerChanges, isClientCompany])
 
   async function toggleFlag(flag) {
     setBusy(true)
@@ -514,17 +535,32 @@ export default function CompanyProfilePage() {
         {/* No page-level Upload button: it offered every document type at
             once from a place that named no section. Each section carries its
             own. */}
-        {caps.deleteCompany && (
+        {((caps.startOfficerChange && isClient) || caps.deleteCompany) && (
           <div className="pg-actions">
+            {/* ND2A / ND2B are filed for a CLIENT's officers, like a NAR1. */}
+            {caps.startOfficerChange && isClient && <ReportChangeMenu entityId={companyId} />}
             {/* Outlined red, as Close case is: a destructive action on an
                 ordinary header, which the confirmation then asks about. */}
-            <button className="btn btn-outline btn-danger-outline"
-                    onClick={() => setDeleting(true)}>
-              Delete company
-            </button>
+            {caps.deleteCompany && (
+              <button className="btn btn-outline btn-danger-outline"
+                      onClick={() => setDeleting(true)}>
+                Delete company
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {/* This company as somebody else's officer: a particular CR holds about
+          it (its name, its registered office) changed here and no ND2B has
+          told CR. Only a corporate party serves anywhere. */}
+      {isCorp && !isDeleted && (
+        <ParticularsChangeAlert kind="company" id={companyId}
+          refreshKey={company} caps={{
+          view: caps.viewParticularsChanges, dismiss: caps.dismissParticularsChange,
+          start: caps.startOfficerChange, open: caps.viewOfficerChanges,
+        }} />
+      )}
 
       {isDeleted && (
         <DeletedBanner kind="company" record={company}
@@ -551,7 +587,7 @@ export default function CompanyProfilePage() {
         <NewCaseModal
           entity={company}
           onClose={() => setNewCase(false)}
-          onCreated={c => navigate(`/cases/${c.id}`)}
+          onCreated={c => navigate(casePath(c))}
         />
       )}
 
@@ -853,9 +889,27 @@ export default function CompanyProfilePage() {
           {/* Client-only party tiles */}
           {isClient && (
             <>
+              {officerStart.error && (
+                <div className="alert al-danger mb-16" role="alert">
+                  <span className="al-icon">⚠</span>
+                  <div className="al-body">{officerStart.error}</div>
+                </div>
+              )}
               <PartyTile title="Director(s)" sub="Appointed directors"
                          rows={company.officers} relation="officers" busy={busy}
                          canWrite={canWrite}
+                         aside={o => (
+                           <OfficerAside
+                             current={o.is_current !== false && o.role === 'director'}
+                             pending={pendingFor(pendingCases, {
+                               officerId: o.id, personId: o.person_id,
+                               corporateEntityId: o.corporate_entity_id, capacity: 'director' })}
+                             canStart={caps.startOfficerChange}
+                             busy={officerStart.busy}
+                             onCease={() => officerStart.start('Nd2a', { cease: o.id })}
+                             onChange={() => officerStart.start('Nd2b', {
+                               entry: { kind: 'change', officer_id: o.id } })} />
+                         )}
                          onAdd={() => setLinkModal({ relation: 'officers' })}
                          onEdit={row => setLinkModal({ relation: 'officers', link: row })}
                          onRemove={row => unlinkParty('officers', row)}
@@ -945,6 +999,24 @@ export default function CompanyProfilePage() {
               <PartyTile title="Company Secretary" sub="Secretarial service provider"
                          rows={company.secretaries} relation="secretaries" busy={busy}
                          canWrite={canWrite}
+                         /* These rows are entity_officers rows (role
+                            company_secretary — routers/companies.py), so they are
+                            named by their officer id, exactly as a director is. A
+                            secretary held only on the register has no row here; the
+                            case screen's officer list offers those. */
+                         aside={s => (
+                           <OfficerAside
+                             current={s.is_current !== false}
+                             pending={pendingFor(pendingCases, {
+                               officerId: s.id, personId: s.person_id,
+                               corporateEntityId: s.corporate_entity_id,
+                               capacity: 'company_secretary' })}
+                             canStart={caps.startOfficerChange}
+                             busy={officerStart.busy}
+                             onCease={() => officerStart.start('Nd2a', { cease: s.id })}
+                             onChange={() => officerStart.start('Nd2b', {
+                               entry: { kind: 'change', officer_id: s.id } })} />
+                         )}
                          onAdd={() => setLinkModal({ relation: 'secretaries' })}
                          onEdit={row => setLinkModal({ relation: 'secretaries', link: row })}
                          onRemove={row => unlinkParty('secretaries', row)}
@@ -1070,7 +1142,7 @@ export default function CompanyProfilePage() {
                   </ul>
                 </div>
               )}
-              <CasesPane cases={company.cases} onOpen={id => navigate(`/cases/${id}`)} />
+              <CasesPane cases={company.cases} onOpen={(id, row) => navigate(casePath(row))} />
             </div>
           </div>
         )}
@@ -1197,9 +1269,30 @@ function ShareCapitalTile({ classes, warnFor, busy, onSave, onCreate,
  * its attributes (OQ-1) or remove it. company_secretaries has no linking
  * endpoint, so that tile stays read-only.
  */
+/**
+ * What an officer row offers about ND2A / ND2B: a chip when a filing about them
+ * is already under way, and Cease / Change particulars for a role that may open
+ * one. Nothing at all for a former officer — CR has nothing left to be told.
+ */
+function OfficerAside({ current, pending, canStart, busy, onCease, onChange }) {
+  if (!current) return null
+  if (!pending && !canStart) return null
+  return (
+    <span className="ep-row-acts">
+      <PendingChangeChip pending={pending} />
+      {canStart && (
+        <>
+          <button className="btn-edit" disabled={busy} onClick={onCease}>Cease</button>
+          <button className="btn-edit" disabled={busy} onClick={onChange}>Change particulars</button>
+        </>
+      )}
+    </span>
+  )
+}
+
 function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
                      onAdd, onEdit, onRemove, busy, note, canWrite = true,
-                     onCopy, copyLabel = 'Copy from' }) {
+                     onCopy, copyLabel = 'Copy from', aside }) {
   const list = rows || []
   // `relation` says the tile CAN be edited; `canWrite` says this reader may.
   // Both are required for any of the three controls to render at all.
@@ -1235,13 +1328,19 @@ function PartyTile({ title, sub, rows, render, nameOf = partyName, relation,
             {/* Brian's B10 — NAR1 says Body Corporate, so the portal does. */}
             {row.corporate_entity_id && <span className="member-role-tag">Body Corporate</span>}
             {row.is_current === false && <span className="member-role-tag">Former</span>}
-            {editable && (
-              <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                <button className="btn-edit" onClick={() => onEdit(row)}>Edit</button>
-                {/* `onRemove(row)`, not `row.id` — the caller needs the whole
-                    row to name the party in its confirmation. */}
-                <button className="btn-edit" disabled={busy}
-                        onClick={() => onRemove(row)}>Remove</button>
+            {(editable || aside) && (
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center',
+                             flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {aside?.(row)}
+                {editable && (
+                  <>
+                    <button className="btn-edit" onClick={() => onEdit(row)}>Edit</button>
+                    {/* `onRemove(row)`, not `row.id` — the caller needs the whole
+                        row to name the party in its confirmation. */}
+                    <button className="btn-edit" disabled={busy}
+                            onClick={() => onRemove(row)}>Remove</button>
+                  </>
+                )}
               </span>
             )}
           </div>

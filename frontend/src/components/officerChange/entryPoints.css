@@ -1,0 +1,113 @@
+/* Officer-change entry points: the New Case form picker, the profile's
+ * Report a change menu, the "pending" chip on an officer row, the
+ * particulars-changed alert, the e-Registry account card and the dashboard's
+ * File by cell.
+ *
+ * Brand tokens only (index.css :root). These sit on screens that already have
+ * a voice, so they borrow it: cards, kv rows, outline buttons. The one thing
+ * allowed to stand out is the particulars alert, because it is the only one
+ * of them that is telling the reader something is owed to the Registry.
+ */
+
+/* -- New Case: the form picker ------------------------------------------------- */
+.nc-forms { border: 0; padding: 0; margin: 0; display: grid; gap: 6px; }
+.nc-forms legend { margin-bottom: 6px; padding: 0; }
+.nc-form {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r);
+  font-size: 13px; color: var(--t-body); cursor: pointer; background: var(--bg-card);
+}
+.nc-form input { accent-color: var(--indigo); margin: 0; }
+.nc-form:hover { border-color: var(--indigo-20); }
+.nc-form.on { border-color: var(--indigo); background: var(--indigo-5); color: var(--t-head); font-weight: 600; }
+.nc-form:focus-within { box-shadow: 0 0 0 3px rgba(36,44,102,.12); }
+
+/* -- Report a change ------------------------------------------------------------ */
+.ep-menu { position: relative; display: inline-flex; flex-direction: column; align-items: flex-end; }
+.ep-menu > .btn { display: inline-flex; align-items: center; gap: 8px; }
+.ep-caret { flex: none; }
+.ep-menu-list {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 30;
+  min-width: 280px; padding: 6px; display: grid; gap: 2px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--r); box-shadow: var(--sh-md);
+}
+.ep-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 9px 10px; border: 0; border-radius: var(--r-sm); background: none;
+  font: inherit; font-size: 13px; color: var(--t-head); text-align: left; cursor: pointer;
+}
+.ep-menu-item:hover, .ep-menu-item:focus-visible { background: var(--indigo-5); outline: none; }
+.ep-menu-item:focus-visible { box-shadow: inset 0 0 0 2px var(--indigo-20); }
+.ep-menu-code {
+  flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
+  padding: 2px 6px; border-radius: var(--r-xs, 4px);
+  background: var(--indigo-10); color: var(--indigo);
+}
+
+/* -- Row actions and the pending chip -------------------------------------------- */
+.ep-row-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.ep-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 9px 2px 7px; border-radius: 999px;
+  background: var(--carrot-10); color: #8A3B12;
+  font-size: 11.5px; font-weight: 600; text-decoration: none; white-space: nowrap;
+}
+.ep-chip:hover { background: #FDE2D6; }
+.ep-chip:focus-visible { outline: 2px solid var(--carrot); outline-offset: 2px; }
+.ep-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--carrot); }
+.ep-chip-no { font-weight: 500; color: #A0532E; padding-left: 6px; border-left: 1px solid var(--carrot-20, #FBD3C2); }
+
+/* -- Changed here, not yet filed ------------------------------------------------- */
+.ep-alert {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-left: 3px solid var(--carrot); border-radius: var(--r-lg);
+  padding: 16px 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(36,44,102,.07);
+}
+.ep-alert-hd { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; }
+.ep-alert-title { font-size: 14px; font-weight: 700; color: var(--t-head); }
+.ep-alert-sub { font-size: 12.5px; color: var(--t-body); margin-top: 3px; max-width: 68ch; line-height: 1.5; }
+.ep-alert-rows { list-style: none; margin: 12px 0 0; padding: 0; }
+.ep-alert-row {
+  display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
+  gap: 8px 18px; align-items: start; padding: 12px 0; border-top: 1px solid var(--border);
+}
+.ep-alert-who { display: flex; flex-direction: column; gap: 2px; }
+.ep-alert-company { font-size: 13px; font-weight: 600; color: var(--t-head); overflow-wrap: anywhere; }
+.ep-alert-cap { font-size: 12px; color: var(--t-muted); }
+.ep-items { margin: 0; display: grid; gap: 6px; }
+.ep-item { display: grid; grid-template-columns: minmax(110px, 160px) minmax(0, 1fr); gap: 10px; }
+.ep-item dt { font-size: 12px; color: var(--t-muted); }
+.ep-item dd { margin: 0; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.ep-old { color: var(--t-muted); text-decoration: line-through; text-decoration-color: var(--indigo-20); overflow-wrap: anywhere; }
+.ep-to { color: var(--carrot); font-weight: 700; }
+.ep-new { color: var(--t-head); font-weight: 600; overflow-wrap: anywhere; }
+.ep-alert-act { display: flex; justify-content: flex-end; }
+.ep-alert-act .btn { white-space: nowrap; text-decoration: none; display: inline-flex; align-items: center; }
+
+@media (max-width: 720px) {
+  .ep-alert-hd { flex-direction: column; }
+  .ep-alert-row { grid-template-columns: minmax(0, 1fr); }
+  .ep-item { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .ep-alert-act { justify-content: flex-start; }
+}
+
+/* -- e-Registry account ---------------------------------------------------------- */
+.ep-cred-form { display: grid; gap: 12px; max-width: 460px; }
+.ep-cred-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.ep-state {
+  display: inline-block; font-size: 11.5px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--r-sm);
+}
+.ep-state.on { background: var(--bang-10); color: var(--bang); }
+.ep-state.off { background: var(--indigo-10); color: var(--indigo-60); }
+
+/* -- shared messages ------------------------------------------------------------- */
+.ep-error {
+  margin-top: 10px; padding: 8px 10px; border-radius: var(--r-sm);
+  background: #FEF2F2; color: #991B1B; font-size: 12.5px;
+}
+.ep-saved { margin-top: 10px; font-size: 12.5px; color: var(--bang); font-weight: 600; }
+
+/* -- Dashboard: File by ------------------------------------------------------------ */
+.td-deadline { display: inline-flex; flex-direction: column; gap: 1px; line-height: 1.3; }

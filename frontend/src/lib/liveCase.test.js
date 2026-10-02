@@ -74,4 +74,12 @@ describe('liveCaseWarning', () => {
     const warning = liveCaseWarning(company(caseAt('signing', { case_no: null })))
     expect(warning.body).toContain('1 on-going NAR1 case')
   })
+
+  it('never warns about an ND2A / ND2B — an ND2B exists because the profile was edited', () => {
+    expect(liveCaseWarning(company(
+      caseAt('client_verification', { form_code: 'Nd2b', case_no: 'ND2B-2026-0001' }),
+      caseAt('signing', { form_code: 'Nd2a', case_no: 'ND2A-2026-0001' }),
+    ))).toBeNull()
+    expect(liveCases(company(caseAt('signing', { form_code: 'Nar1' })))).toHaveLength(1)
+  })
 })

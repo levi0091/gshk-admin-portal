@@ -28,6 +28,12 @@ EXPECTED_TYPES = {
     # FK from `documents` means rows already uploaded under them still resolve.
     "id_hkid", "id_passport", "id_china_id", "id_other",
     "addr_utility_bill", "addr_bank_statement", "addr_tenancy", "addr_govt_letter",
+    # Migration 050. The signed officer-change forms, owned by the company like
+    # `nar1`, and the supporting documents filed on the officer's own profile
+    # when the form is filed.
+    "nd2a", "nd2b",
+    "resignation_letter", "board_resolution", "consent_to_act",
+    "officer_change_support",
 }
 
 

@@ -287,3 +287,48 @@ CLIENT_APPROVAL_RECEIVED = "CLIENT_APPROVAL_RECEIVED"
 CLIENT_APPROVAL_LINK_SENT = "CLIENT_APPROVAL_LINK_SENT"
 CLIENT_APPROVAL_SELF_SERVICE = "CLIENT_APPROVAL_SELF_SERVICE"
 CLIENT_APPROVAL_AUTO_APPROVED = "CLIENT_APPROVAL_AUTO_APPROVED"
+
+# ---- Officer changes: ND2A and ND2B (migration 050) -------------------------
+#   Seeded by migration 050 with origin='g_flowdesk' and
+#   category='officer_changes'. `tests/test_migration_050.py` holds this list
+#   and the migration's to each other, because there is no FK from audit_log to
+#   audit_event_types: a code that is written but not seeded renders in the
+#   trail with a blank Action, which has already happened twice (022, 034).
+#
+#   The case-level codes NAR1 already has — CASE_STATUS_CHANGED,
+#   CASE_FIELD_UPDATED, EMAIL_SENT, the three CLIENT_APPROVAL_* codes, the
+#   TPSI_SUBMISSION_* codes, NAR1_CASE_CLOSED and the two CR-status codes — are
+#   REUSED for an officer-change case rather than duplicated. They describe the
+#   same event on the same table, and a second vocabulary would split one
+#   filter in the trail into two.
+#
+#   What is below is what an annual return has no equivalent of.
+OFFICER_CHANGE_ADDED = "OFFICER_CHANGE_ADDED"
+OFFICER_CHANGE_UPDATED = "OFFICER_CHANGE_UPDATED"
+OFFICER_CHANGE_REMOVED = "OFFICER_CHANGE_REMOVED"
+OFFICER_SUPPORT_DOC_UPLOADED = "OFFICER_SUPPORT_DOC_UPLOADED"
+OFFICER_SUPPORT_DOC_REMOVED = "OFFICER_SUPPORT_DOC_REMOVED"
+#   A director's consent to act, PIN-signed with that director's own e-Registry
+#   account. Never carries the password, its length, or a hint.
+OFFICER_CONSENT_SIGNED = "OFFICER_CONSENT_SIGNED"
+OFFICER_SIGNED_FORM_UPLOADED = "OFFICER_SIGNED_FORM_UPLOADED"
+#   A filing made on CR's own portal, recorded here. The officer-change
+#   counterpart of NAR1_MANUAL_SUBMISSION_RECORDED, and gated the same way.
+OFFICER_FILING_RECORDED = "OFFICER_FILING_RECORDED"
+OFFICER_CHANGES_APPLIED = "OFFICER_CHANGES_APPLIED"
+OFFICER_CHANGES_UNDONE = "OFFICER_CHANGES_UNDONE"
+#   "This was data loading, not a real-world change" — the alert on a profile
+#   was dismissed, which moves what CR is taken to hold up to the present.
+OFFICER_PARTICULARS_DISMISSED = "OFFICER_PARTICULARS_DISMISSED"
+#   A client's e-Registry login stored or replaced on their Person Profile.
+#   The row names the person and the user ID. NEVER the password.
+PERSON_ESERVICE_CRED_SET = "PERSON_ESERVICE_CRED_SET"
+
+#: Every code above, for the seed test.
+OFFICER_CHANGE_CODES = (
+    OFFICER_CHANGE_ADDED, OFFICER_CHANGE_UPDATED, OFFICER_CHANGE_REMOVED,
+    OFFICER_SUPPORT_DOC_UPLOADED, OFFICER_SUPPORT_DOC_REMOVED,
+    OFFICER_CONSENT_SIGNED, OFFICER_SIGNED_FORM_UPLOADED,
+    OFFICER_FILING_RECORDED, OFFICER_CHANGES_APPLIED, OFFICER_CHANGES_UNDONE,
+    OFFICER_PARTICULARS_DISMISSED, PERSON_ESERVICE_CRED_SET,
+)

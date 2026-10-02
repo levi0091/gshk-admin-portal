@@ -539,6 +539,11 @@ _SORTABLE = {
     # dashboard by a value nobody can read off the screen.
     "created_by_name",
     "closed_at",
+    # Migration 050. `case_type` sorts NAR1 / ND2A / ND2B together, and
+    # `filing_deadline` is what "what is due next" means for an officer change:
+    # NULL on an annual return, which `nullsfirst=False` below puts last.
+    "case_type",
+    "filing_deadline",
 }
 
 #: Columns the per-column header filters may narrow on (services/table_filters).
@@ -562,7 +567,11 @@ _FILTERABLE = {
     "company_name_zh": tf.text(),
     "br_number": tf.text(),
     "cr_number": tf.text(),
-    "case_type": tf.enum({"NAR1"}),
+    # The view derives this from `form_code` (migration 050): an officer-change
+    # case is a row in this same relation, and the dashboard's Case Type filter
+    # is how an operator separates the annual returns from them.
+    "case_type": tf.enum({"NAR1", "ND2A", "ND2B"}),
+    "filing_deadline": tf.date(),
     "case_status": tf.enum({
         "draft", "pending_aml", "pending_client", "to_verify",
         "revision_required", "ready_to_submit", "submitted", "approved", "rejected",
@@ -599,6 +608,10 @@ _LIST_COLS = (
     # Migration 047. A company catching up on missed years has one case per
     # year, and without this the dashboard lists them as identical rows.
     "ar_period_year, "
+    # Migration 050. The 15-day deadline of an officer-change case, and how far
+    # off it is — signed like days_to_anniversary, negative once it has passed.
+    # Both NULL on an annual return, whose deadline is the anniversary's.
+    "form_code, filing_deadline, days_to_deadline, "
     # CR's own words, for the one badge that cannot be labelled without them:
     # `cr_unknown` renders what CR said, because that is the only informative
     # thing there is about a status this portal does not recognise.

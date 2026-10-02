@@ -110,6 +110,21 @@ FILING_WINDOW_DAYS = 42
 #: a separate judgement about whose move it is, made in DashboardPage.jsx.)
 TERMINAL_STATUSES = CR_STATUS_CODES + (CLOSED,)
 
+#: The forms that are NOT an annual return (migration 050). ND2A and ND2B share
+#: `nar1_cases` and this badge with NAR1; the two places they differ are below,
+#: and both are gated on this.
+OFFICER_CHANGE_FORMS = ("Nd2a", "Nd2b")
+
+
+def is_officer_change(case: dict) -> bool:
+    """Is this an ND2A / ND2B case rather than an annual return?
+
+    An ABSENT form code is an annual return: every row written before migration
+    050 carries none, and so does every fixture that predates it. Reading a
+    missing key as "officer change" would re-badge the whole existing book.
+    """
+    return (case or {}).get("form_code") in OFFICER_CHANGE_FORMS
+
 
 def _code(case: dict, filing: dict | None) -> str:
     stage = (filing or {}).get("stage")
@@ -155,6 +170,29 @@ def _code(case: dict, filing: dict | None) -> str:
         return CLIENT_VERIFICATION
     if case.get("client_approved") is None:
         return AWAITING_CLIENT
+
+    # AN OFFICER CHANGE ON THE MANUAL ROUTE NEVER CALLS CR (migration 050), so
+    # it has no filing stage to follow — and the three tests below would park it
+    # at Data Verification for ever. NAR1's manual path is different and is
+    # deliberately NOT caught here: it still goes through CR's validation, so
+    # its badge keeps following the filing.
+    #
+    # The reason the two differ is CR's, not ours. `validateFormNd2a` wants the
+    # e-Registry ID of every director being appointed, so an appointee without
+    # one makes the form unvalidatable, and the operator marks the data checked
+    # instead (`data_checked_at`). The form is then prepared on CR's own portal,
+    # signed on paper and uploaded.
+    #
+    # A filing row left behind by an operator who validated and THEN switched
+    # route is ignored, which is the point of testing the route first.
+    #
+    # Restated in migration 050's view; the two must not diverge.
+    if is_officer_change(case) and case.get("signing_method") == "manual":
+        if not case.get("data_checked_at"):
+            return DATA_VERIFICATION
+        if not case.get("manual_signed_document_id"):
+            return SIGNING
+        return SUBMISSION
 
     # Approved. Nothing validated -> the data is still being worked on.
     # validation_failed lands here too: it is free to fix and retry, and that IS
@@ -252,11 +290,28 @@ def derive(case: dict, filing: dict | None) -> dict:
         # alarm about work that was deliberately cancelled -- which is exactly
         # the noise closing a case exists to remove.
         #
-        # nar1_case_registry (024, restated by 033, 039 and 043) carries the
-        # identical predicate; the two must not diverge.
-        "overdue": (
-            code not in TERMINAL_STATUSES
-            and days is not None
-            and days < -FILING_WINDOW_DAYS
-        ),
+        # nar1_case_registry (024, restated by 033, 039, 043 and 050) carries
+        # the identical predicate; the two must not diverge.
+        "overdue": code not in TERMINAL_STATUSES and _past_its_window(case, days),
     }
+
+
+def _past_its_window(case: dict, days) -> bool:
+    """Has this case's statutory window shut? Which window depends on the form.
+
+    AN ANNUAL RETURN has 42 days from the anniversary (`days_to_anniversary`).
+
+    AN OFFICER CHANGE has 15 days from the change itself (Cap. 622 s.645(4) and
+    s.652(2)), held on the case as `filing_deadline` and read here as
+    `days_to_deadline` — signed the same way, so it is negative once the
+    deadline has passed and the case is overdue the day AFTER it.
+
+    The anniversary is never consulted for an officer change. It belongs to the
+    company's annual return, and a company 90 days past it has a late NAR1, not
+    a late resignation notice. The view nulls the column on those rows; this
+    does not rely on that.
+    """
+    if is_officer_change(case):
+        left = case.get("days_to_deadline")
+        return left is not None and left < 0
+    return days is not None and days < -FILING_WINDOW_DAYS

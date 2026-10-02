@@ -371,7 +371,9 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     // Falling back to the current user would be a lie about who opened it.
     renderPage()
     const row = (await screen.findByText('NAR-2026-0031')).closest('tr')
-    expect(within(row).getByText('—')).toBeInTheDocument()
+    // Scoped to its own cell: a NAR1 row's File by is an em dash too (050).
+    const author = within(row).getAllByRole('cell').find(td => td.dataset.label === 'Created By')
+    expect(author).toHaveTextContent(/^—$/)
   })
 
   it('sorts by the author\'s name, not by their uuid', async () => {
@@ -552,6 +554,62 @@ describe('DashboardPage — the primary action opens a case', () => {
     renderPage()
     await screen.findByText('NAR-2025-0028')
     expect(screen.queryByRole('button', { name: /Open Case/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('DashboardPage — ND2A / ND2B rows (migration 050)', () => {
+  const ND2 = {
+    id: 'k1', case_no: 'ND2A-2026-0001', entity_id: 'e2', form_code: 'Nd2a',
+    company_name: 'Skyline Capital', br_number: '2100031', case_type: 'ND2A',
+    workflow_status: badge('client_verification', 'Client Verification'),
+    days_to_anniversary: null, filing_deadline: '2026-09-28', days_to_deadline: -3,
+    created_at: '2026-09-20', updated_at: '2026-09-29', created_by: 'u1', created_by_name: 'Levi Z.',
+  }
+  const withNd2 = (row = ND2) => api.get.mockResolvedValue({
+    ...PAYLOAD, total: 4, rows: [...PAYLOAD.rows, row] })
+
+  it('opens an ND2 row on the officer-change screen', async () => {
+    withNd2()
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByText('ND2A-2026-0001'))
+    expect(navigate).toHaveBeenCalledWith('/officer-changes/k1')
+  })
+
+  it('shows its File by date and how late it is, and nothing there for a NAR1', async () => {
+    withNd2()
+    renderPage()
+    const row = (await screen.findByText('ND2A-2026-0001')).closest('tr')
+    const cell = within(row).getAllByRole('cell').find(td => td.dataset.label === 'File by')
+    expect(cell).toHaveTextContent('3 days overdue')
+    const nar1 = screen.getByText('NAR-2025-0028').closest('tr')
+    expect(within(nar1).getAllByRole('cell').find(td => td.dataset.label === 'File by'))
+      .toHaveTextContent('—')
+  })
+
+  it('stops counting once the form is with CR', async () => {
+    withNd2({ ...ND2, workflow_status: badge('cr_pending', 'Pending at CR') })
+    renderPage()
+    const row = (await screen.findByText('ND2A-2026-0001')).closest('tr')
+    expect(row).not.toHaveTextContent('overdue')
+  })
+
+  it('filters Case Type on all three forms', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    await user.click(screen.getByRole('button', { name: /^Filter Case Type/ }))
+    for (const name of ['NAR1', 'ND2A', 'ND2B']) {
+      expect(screen.getByRole('checkbox', { name: new RegExp(`^${name}`) })).toBeInTheDocument()
+    }
+  })
+
+  it('offers Open Case to a role that may open only officer changes', async () => {
+    auth = { isSuperAdmin: false, profile: { id: 'u-1' }, profileLoading: false,
+      hasPermission: (m, p) => ['nar1:read', 'officer_changes:write'].includes(`${m}:${p}`) }
+    renderPage()
+    await screen.findByText('NAR-2025-0028')
+    expect(screen.getByRole('button', { name: /Open Case/ })).toBeInTheDocument()
   })
 })
 
