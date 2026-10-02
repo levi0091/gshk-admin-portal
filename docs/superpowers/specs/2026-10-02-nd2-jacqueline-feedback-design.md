@@ -2,6 +2,7 @@
 
 **Date:** 2026-10-02
 **Author:** Claude (Levi asked for build without check-ins; every decision taken alone is in §5)
+**Status:** Built on `nd2a_nd2b` (commits from `26647d8`), not pushed. Migration 052 not applied to DEV or PROD. HKID NIL (C-10) not yet run on CR TEST.
 **Builds on:** `2026-09-30-nd2a-nd2b-officer-changes-design.md` (the ND2A/ND2B build, branch `nd2a_nd2b`)
 **Source:** `nd2a.pdf`, pages 24–34 only — "Related to ND2A" and "Related to ND2B", comments and questions by Jacqueline (GSHK), with Brian's notes. Pages outside 24–34 were deliberately not read (Levi, 2026-10-02).
 
