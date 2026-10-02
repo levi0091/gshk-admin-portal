@@ -85,7 +85,7 @@ export default function AttachmentsCard({ data, reload, can }) {
       {nd2a && (
         <div className="oc-attach-gen">
           {writable ? (
-            <label className="check-row" style={{ margin: 0 }}>
+            <label className="oc-inline-check">
               <input type="checkbox" checked={Boolean(data.attach_resolution)} disabled={busy}
                      onChange={e => run(officerChangeApi.patch(data.id, { attach_resolution: e.target.checked }))} />
               Attach the written resolution prepared by G-FlowDesk
@@ -111,7 +111,7 @@ export default function AttachmentsCard({ data, reload, can }) {
             {CASE_TYPES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
           </select>
           <input type="file" aria-label="Choose file" onChange={e => setFile(e.target.files?.[0] || null)} />
-          <label className="check-row" style={{ margin: 0 }}>
+          <label className="oc-inline-check">
             <input type="checkbox" checked={send} onChange={e => setSend(e.target.checked)} />
             Send with the email
           </label>

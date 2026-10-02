@@ -275,13 +275,17 @@ describe('the case stages draw nothing a role may not use (#21)', () => {
 
   it('Data Verification: no KYC tick, capacity picker, route radios or step buttons', () => {
     const data = { ...BASE, entries: [{ id: 'n2', kind: 'appointment', party: { name: 'HO New' },
-      kyc_cleared: true, documents: [] }], signatory: { capacities: ['Director'] } }
+      kyc_cleared: true, documents: [] }], signatory: { capacities: ['Director'] },
+      // KYC is now one of Data Verification's manual checks (Jacqueline A4).
+      manual_checks: [{ code: 'kyc', entry_id: 'n2', label: 'KYC / WorldCheck cleared — HO New',
+        kind: 'tick', ok: true, document: null }] }
     wrap(<StageDataVerification data={data} reload={vi.fn()} can={READER} goTo={vi.fn()} />)
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('radio')).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Validate|Mark as checked/ })).not.toBeInTheDocument()
-    expect(screen.getByText('KYC cleared.')).toBeInTheDocument()
+    expect(screen.getByText('KYC / WorldCheck cleared — HO New').closest('[data-check]'))
+      .toHaveAttribute('data-ok', 'true')
     expect(screen.queryAllByRole('button').filter(b => b.disabled)).toEqual([])
   })
 

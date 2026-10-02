@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { officerChangeApi } from './api.js'
 import CrRefusal from './CrRefusal.jsx'
+import EffectiveDatesPanel from './EffectiveDatesPanel.jsx'
 import { errorOf, isManual } from './workflow.js'
 
 /**
@@ -14,6 +15,11 @@ import { errorOf, isManual } from './workflow.js'
  * download (answer 10 — the operator already has it from CR's portal); an ND2B
  * keeps one. Uploading the signed PDF does not move the case on (answer 9):
  * Continue is its own press, so a wrong file is caught here.
+ *
+ * Both routes first ask for any effective date left blank when the client was
+ * sent the form (Jacqueline A1: "place the effective date button on the
+ * 'Signing – e-Page' and 'Signing – Paper' pages before we complete the
+ * signature"). On e-Sign that also means CR validates here, after the dates.
  */
 export default function StageSigning({ data, reload, can, goTo }) {
   const [file, setFile] = useState(null)
@@ -21,7 +27,10 @@ export default function StageSigning({ data, reload, can, goTo }) {
   const [error, setError] = useState(null)
   const manual = isManual(data)
   const signed = data.filing?.stage === 'signed'
+  const validated = data.filing?.stage === 'validated' || signed
   const consents = data.route?.consents || []
+  const datesPending = (data.dates_missing || []).length > 0
+  const mismatches = consents.filter(c => c.id_mismatch)
 
   async function run(promise) {
     setError(null); setBusy(true)
@@ -40,6 +49,8 @@ export default function StageSigning({ data, reload, can, goTo }) {
 
   if (manual) {
     return (
+      <>
+      {!data.manual_signed_document_id && <EffectiveDatesPanel data={data} reload={reload} can={can} />}
       <div className="card">
         <div className="card-title">Signing — manual (CR portal)</div>
         {data.form_code === 'Nd2a' ? (
@@ -64,21 +75,31 @@ export default function StageSigning({ data, reload, can, goTo }) {
           <div className="oc-send-row">
             <input type="file" accept="application/pdf" aria-label="Signed form (PDF)"
                    onChange={e => setFile(e.target.files?.[0] || null)} />
-            <button className="btn btn-outline" disabled={!file || busy}
+            <button className="btn btn-outline" disabled={!file || busy || datesPending}
                     onClick={() => run(officerChangeApi.uploadSignedForm(data.id, file))}>
               {data.manual_signed_document_id ? 'Replace signed form' : 'Upload signed form'}
             </button>
+            {datesPending && <span className="f-hint">Enter the effective dates above first.</span>}
           </div>
         )}
         {error && <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>
           <div className="al-body">{error.message}</div></div>}
       </div>
+      </>
     )
   }
 
   return (
+    <>
+    {!validated && <EffectiveDatesPanel data={data} reload={reload} can={can} />}
     <div className="card">
       <div className="card-title">Signing — e-Sign via CR</div>
+      {mismatches.length > 0 && (
+        // Jacqueline, note 1: e-Reg is not updated when CR's register is.
+        <div className="alert al-warn" role="alert" style={{ marginTop: 10 }}>
+          <div className="al-body">{mismatches.map(c => <div key={c.entry_id}>{c.id_mismatch}</div>)}</div>
+        </div>
+      )}
       <ul style={{ margin: '10px 0 0', paddingLeft: 18 }}>
         {consents.map(c => (
           <li key={c.entry_id}>
@@ -95,7 +116,20 @@ export default function StageSigning({ data, reload, can, goTo }) {
         <p className="f-hint">No consent signature is needed on this form — only the overall signature.</p>
       )}
       <div className="oc-send-row">
-        {signed ? (
+        {!validated ? (
+          can.tpsiWrite ? (
+            <>
+              <button className="btn btn-primary" disabled={busy || datesPending}
+                      onClick={() => run(officerChangeApi.validate(data.id))}>
+                {busy ? 'Validating…' : 'Validate with CR'}
+              </button>
+              <span className="f-hint">
+                {datesPending ? 'Enter the effective dates above first; CR checks them.'
+                  : 'CR checks the form, dates included, before it is signed.'}
+              </span>
+            </>
+          ) : <span className="f-hint">Validating with CR needs Companies Registry filing (Edit).</span>
+        ) : signed ? (
           <>
             <span className="badge b-live">Signed</span>
             <button className="btn btn-primary" onClick={() => goTo(4)}>Continue to Submission →</button>
@@ -111,5 +145,6 @@ export default function StageSigning({ data, reload, can, goTo }) {
       </div>
       <CrRefusal error={error} />
     </div>
+    </>
   )
 }

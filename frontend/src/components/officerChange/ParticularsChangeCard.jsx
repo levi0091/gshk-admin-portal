@@ -20,7 +20,7 @@ function AddressValue({ value, lookups }) {
   return (
     <dl className="oc-addr">
       {crAddressLines(value, lookups).map(line => (
-        <div key={line.label} style={{ display: 'contents' }}>
+        <div key={line.label} className="oc-addr-line">
           <dt>{line.label}</dt>
           <dd>{line.value || <span className="oc-blank">(blank)</span>}</dd>
         </div>

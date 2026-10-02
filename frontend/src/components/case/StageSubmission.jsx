@@ -3,6 +3,7 @@ import { api } from '../../lib/api.js'
 import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
 import FilingSummaryCard from './FilingSummaryCard.jsx'
+import OtherOpenCases from './OtherOpenCases.jsx'
 import { formatMoney as money } from '../../lib/format.js'
 import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { describeError } from './workflow.js'
@@ -85,9 +86,16 @@ const emptyLine = () => ({
  */
 export default function StageSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   const manual = caseRow.signing_method === 'manual'
-  return manual
-    ? <ManualSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />
-    : <ESignSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />
+  return (
+    <>
+      {/* Jacqueline AQ3/BQ1: an open ND2A/ND2B on the same company, named
+          before anything goes to CR. A reminder, never a gate. */}
+      <OtherOpenCases cases={caseRow.other_open_cases} />
+      {manual
+        ? <ManualSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />
+        : <ESignSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />}
+    </>
+  )
 }
 
 function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {

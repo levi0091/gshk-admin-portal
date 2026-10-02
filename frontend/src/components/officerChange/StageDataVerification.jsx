@@ -1,16 +1,22 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import SupportingDocuments from './SupportingDocuments.jsx'
+import ManualChecks from './ManualChecks.jsx'
 import CrRefusal from './CrRefusal.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
 /**
- * Stage 2 (spec §5): per joiner and leaver, the KYC tick and the supporting
- * documents; the signing capacity; and the route. e-Sign validates with CR
- * (free, no PIN); the manual route is "Mark as checked" and calls nobody.
- * e-Sign is offered only when every new director's consent can be signed from
- * a stored e-Registry account (answers 2 and 8) — otherwise the reasons say who.
+ * Stage 2 (spec §5): the manual checks (Jacqueline A4) — KYC, resignation
+ * letters, the signed written resolution and, on the manual route, each new
+ * director's consent; any other supporting documents; the signing capacity;
+ * and the route. e-Sign validates with CR (free, no PIN); the manual route is
+ * "Mark as checked" and calls nobody. With an effective date still blank
+ * (A1), e-Sign leaves here by "Continue to Signing": CR checks the dates, so it
+ * validates at Signing once they are entered. Nothing leaves while a check is
+ * open. e-Sign is offered only when every new director's consent can be
+ * applied by GSHK from a stored e-Registry account (answers 2, 8; A5) — the
+ * client is never asked for a PIN — otherwise the reasons say who.
  */
 export default function StageDataVerification({ data, reload, can, goTo }) {
   const route = data.route || {}
@@ -21,6 +27,8 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
   const validated = data.filing?.stage === 'validated' || data.filing?.stage === 'signed'
   const checked = Boolean(data.data_checked_at)
   const signatory = data.signatory || {}
+  const openChecks = (data.manual_checks || []).filter(c => !c.ok).map(c => c.label)
+  const datesPending = (data.dates_missing || []).length > 0
 
   async function run(promise) {
     setError(null); setBusy(true)
@@ -38,11 +46,13 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
 
   return (
     <>
-      <div className="card">
+      <ManualChecks data={data} reload={reload} can={can} />
+
+      <div className="card" style={{ marginTop: 16 }}>
         <div className="card-hdr"><div>
           <div className="card-title">Officers on this form</div>
-          <div className="card-sub">Clear KYC for each new officer and attach the supporting documents.
-            They are saved to each officer's profile when the form is filed.</div>
+          <div className="card-sub">Any other supporting documents. Everything attached here and above
+            is saved to each officer's profile when the form is filed.</div>
         </div></div>
         {(data.entries || []).map(entry => (
           <div key={entry.id} className="oc-pc" data-testid={`dv-${entry.id}`}>
@@ -50,21 +60,13 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
               <span className="oc-pc-name">{entry.party?.name}</span>
               <span className="td-muted">{entry.summary}</span>
             </div>
-            {entry.kind === 'appointment' && (can.write ? (
-              <label className="check-row">
-                <input type="checkbox" checked={Boolean(entry.kyc_cleared)} disabled={busy}
-                       onChange={e => run(officerChangeApi.setKyc(data.id, entry.id, e.target.checked))} />
-                KYC cleared
-              </label>
-            ) : (
-              // Without officer_changes (edit) the tick is a fact to read, not a control.
-              <div className="f-hint">{entry.kyc_cleared ? 'KYC cleared.' : 'KYC not cleared yet.'}</div>
-            ))}
             {entry.eservice && (
               <div className="f-hint">
                 {entry.eservice.configured && entry.eservice.has_password
-                  ? <>e-Registry account {entry.eservice.eservice_user_id} stored — their consent can be e-signed.</>
-                  : <>No complete e-Registry account stored, so this ND2A can only be filed on the manual route.{' '}
+                  ? <>GSHK applies this director's consent at Signing with the e-Registry account
+                    set up with them ({entry.eservice.eservice_user_id}). The client signs nothing.</>
+                  : <>No complete e-Registry account stored, so this ND2A can only be filed on the
+                    manual route.{' '}
                     {entry.party?.profile_path && <Link to={entry.party.profile_path}>Add it on the profile</Link>}</>}
               </div>
             )}
@@ -134,15 +136,31 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
         )}
 
         <div className="oc-send-row">
-          {method === 'esign' && !validated && can.tpsiWrite && (
-            <button className="btn btn-primary" disabled={busy}
+          {method === 'esign' && !validated && !datesPending && can.tpsiWrite && (
+            <button className="btn btn-primary" disabled={busy || openChecks.length > 0}
                     onClick={() => run(officerChangeApi.validate(data.id))}>
               {busy ? 'Validating…' : 'Validate with CR Portal'}
             </button>
           )}
+          {method === 'esign' && !validated && datesPending && !checked && can.write && (
+            <>
+              <button className="btn btn-primary" disabled={busy || openChecks.length > 0}
+                      onClick={() => run(officerChangeApi.markChecked(data.id, 'esign'))}>
+                Continue to Signing
+              </button>
+              <span className="f-hint">An effective date is still blank, so CR validates the form at
+                Signing once it is entered.</span>
+            </>
+          )}
           {method === 'manual' && !checked && can.write && (
-            <button className="btn btn-primary" disabled={busy}
+            <button className="btn btn-primary" disabled={busy || openChecks.length > 0}
                     onClick={() => run(officerChangeApi.markChecked(data.id))}>Mark as checked</button>
+          )}
+          {method === 'esign' && !validated && checked && (
+            <>
+              <span className="badge b-live">Checked</span>
+              <button className="btn btn-primary" onClick={() => goTo(3)}>Continue to Signing →</button>
+            </>
           )}
           {((method === 'esign' && validated) || (method === 'manual' && checked)) && (
             <>
@@ -157,6 +175,9 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
             <span className="f-hint">Marking the form as checked needs Officer changes (Edit).</span>
           )}
         </div>
+        {openChecks.length > 0 && !validated && !checked && (
+          <div className="oc-locked-note">Finish the manual checks first: {openChecks.join('; ')}.</div>
+        )}
         <CrRefusal error={error} />
       </div>
     </>

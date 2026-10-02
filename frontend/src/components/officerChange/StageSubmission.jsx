@@ -2,6 +2,7 @@ import { useState } from 'react'
 import PdfFrame, { usePdfBlob } from '../case/PdfPreview.jsx'
 import ProfileChangesList from './ProfileChangesList.jsx'
 import CrRefusal from './CrRefusal.jsx'
+import OtherOpenCases from '../case/OtherOpenCases.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf, isFiled, isManual } from './workflow.js'
 
@@ -72,6 +73,7 @@ export default function StageSubmission({ data, reload, can, goTo }) {
 
   return (
     <>
+      {!filed && <OtherOpenCases cases={data.other_open_cases} />}
       <ProfileChangesList changes={data.profile_changes} documents={data.documents} done={false} />
 
       <div className="card" style={{ marginTop: 16 }}>

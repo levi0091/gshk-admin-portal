@@ -53,6 +53,9 @@ export function stageIndexFor(c) {
   const stage = c.filing?.stage
   if (stage === 'signed') return 4
   if (stage === 'validated') return 3
+  // e-Sign with a date left blank for Signing (Jacqueline A1): Data
+  // Verification is done, and CR validates at Signing.
+  if (c.data_checked_at) return 3
   return 2
 }
 
