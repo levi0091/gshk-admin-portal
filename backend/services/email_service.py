@@ -58,11 +58,18 @@ RESEND_ENDPOINT = "https://api.resend.com/emails"
 #: that it be *impossible*, not merely configured, for one of them to be mailed
 #: from a test deployment. A tuple rather than a list so it cannot be mutated in
 #: place by a caller that got hold of it.
+#:
+#: jacqueline@getstarted.hk added 2026-10-03, at Levi's request and for test /
+#: DEV only — which is all this list ever governs: production never reads it
+#: (`_apply_test_recipient_lock` returns the real recipients there). Every
+#: entry must be a named person at ZenexFlow or GSHK, never one of GSHK's shared
+#: working mailboxes; tests/test_email_test_recipients.py holds it to that.
 TEST_RECIPIENTS = (
     "levi@zenexflow.com",
     "roy@zenexflow.com",
     "brian@getstarted.hk",
     "vanis@getstarted.hk",
+    "jacqueline@getstarted.hk",
 )
 
 #: A hung Resend must not hang the request thread holding the case open — the
@@ -323,10 +330,10 @@ def _apply_test_cc_lock(cc, is_production):
     """A CC is a recipient, so the same rule binds it: on a non-production
     deployment it is DROPPED, not redirected.
 
-    Dropped rather than substituted because the four addresses are already
+    Dropped rather than substituted because the test addresses are already
     receiving the message as `to` -- copying them again would put the same
     mailbox on both lines. The case worker who would have been copied is one of
-    the four on a test deployment; if they are not, they were never going to
+    them on a test deployment; if they are not, they were never going to
     receive a test send in the first place, which is the interlock working.
 
     The intended list is still reported, so the audit trail records who a
@@ -355,7 +362,7 @@ def _apply_test_reply_to_lock(reply_to, is_production):
     mailbox has been dropped outside production since it was introduced, and
     leaving the other header pointing there made that drop half a measure.
 
-    DROPPED, not substituted with a test address. The four `TEST_RECIPIENTS`
+    DROPPED, not substituted with a test address. The `TEST_RECIPIENTS`
     are already on `to`, so a reply goes back to them by hitting Reply All;
     and pointing `reply_to` somewhere merely to have it set would invent an
     address that no production send would ever carry, which is the opposite of
@@ -1432,7 +1439,7 @@ def _test_banner(intended_to: list[str], intended_cc: list[str]) -> str:
     """The band that says this send never left the test environment.
 
     Styled to match the message below it rather than bolted on as a bare
-    paragraph: four people share these mailboxes across every test case, and a
+    paragraph: several people share these mailboxes across every test case, and a
     banner they skim past is a banner that fails at the one job it has.
     """
     joined = ", ".join(intended_to)

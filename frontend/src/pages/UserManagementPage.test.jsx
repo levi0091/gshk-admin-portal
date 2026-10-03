@@ -105,7 +105,7 @@ describe('UserManagementPage — adding a user', () => {
 describe('UserManagementPage — a test deployment', () => {
   it('says the password went to the test mailboxes, not to the new user', async () => {
     // The account is real and locked to `must_change_password`. Unless the new
-    // user is one of the four TEST_RECIPIENTS they can never sign in, and
+    // user is one of the TEST_RECIPIENTS they can never sign in, and
     // nothing else on this screen would say why.
     post.mockResolvedValue({ id: 'u9', welcome_email_sent: true,
                              welcome_email_redirected: true })

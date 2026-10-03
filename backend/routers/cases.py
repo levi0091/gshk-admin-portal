@@ -2095,7 +2095,7 @@ async def send_verification(
             # rather than left computed and unused.
             #
             # OUTSIDE PRODUCTION BOTH ARE DROPPED. renewal@getstarted.hk is a
-            # real GSHK mailbox and is NOT one of the four TEST_RECIPIENTS, so
+            # real GSHK mailbox and is NOT one of the TEST_RECIPIENTS, so
             # a test deployment must not reach it and must not put it in front
             # of anybody: `_apply_test_cc_lock` drops the copy and
             # `_apply_test_reply_to_lock` drops the reply address, both inside
@@ -2413,7 +2413,7 @@ async def verification_delivery(
 
         A REDIRECTED MESSAGE IS NEVER REPORTED ON THE ADDRESS ON SCREEN. Outside
         production the recipient lock substitutes TEST_RECIPIENTS inside send(),
-        so Resend's record for that message describes the four internal
+        so Resend's record for that message describes the internal test
         mailboxes -- asking about it and printing the answer beside the intended
         address is how this screen told Levi that an address which does not
         exist had been "Delivered" (2026-09-08). Nothing was sent there, so the
