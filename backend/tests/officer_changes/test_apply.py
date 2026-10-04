@@ -219,3 +219,26 @@ def test_same_as_residential_writes_no_correspondence_address(db):
     _run(apply.apply_changes, CASE, entries)
     new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
     assert not new.get("correspondence_address_id")
+
+
+def test_an_nd2b_filed_for_one_company_dismisses_the_same_change_elsewhere(db, monkeypatch):
+    """Levi 2026-10-05: 'We will dismiss the change not yet filed warning after
+    it has been filed with at least one company.'"""
+    calls = []
+    monkeypatch.setattr(particulars, "dismiss_filed_elsewhere",
+                        lambda **k: calls.append(k) or [{"entity_id": "E2", "items": ["Email address"],
+                                                          "company_name": "Second", "capacity": "director"}])
+    particulars.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["persons"][0]["email"] = "new@example.com"
+    items = particulars.pending_for_officer("E1", person_id="P1", capacity="director")
+    change = {"id": "N4", "case_id": "K1", "kind": "change", "capacity": "director",
+              "party_type": "individual", "person_id": "P1", "officer_id": "O1",
+              "items": items, "party": {"name": "CHAN Tai Man"}}
+    out = _run(apply.apply_changes, CASE, _entries(db, change))
+    assert calls[0]["person_id"] == "P1" and calls[0]["filed_entity_id"] == "E1"
+    assert out["dismissed_elsewhere"] == [{"entry_id": "N4", "person_id": "P1",
+                                           "corporate_entity_id": None,
+                                           "companies": calls and [{"entity_id": "E2",
+                                                                    "items": ["Email address"],
+                                                                    "company_name": "Second",
+                                                                    "capacity": "director"}]}]

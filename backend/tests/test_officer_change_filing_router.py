@@ -310,6 +310,23 @@ def test_undo_with_nothing_applied_is_refused(env):
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "nothing_to_undo"
 
 
+def test_a_change_dismissed_elsewhere_is_audited(env):
+    """Levi 2026-10-05: the automatic dismissal is in the trail, with why."""
+    env.case = {**CASE, "manual_receipt": {"caseNo": "1"}, "changes_applied_at": None}
+    result = {"applied": [{"entry_id": "N4"}], "errors": [], "dismissed_elsewhere": [
+        {"entry_id": "N4", "person_id": "P1", "corporate_entity_id": None,
+         "companies": [{"entity_id": "E2", "company_name": "Second", "capacity": "director",
+                        "items": ["Email address"]}]}]}
+    with patch.object(ocf.apply, "apply_changes", new_callable=AsyncMock, return_value=result), \
+         patch.object(ocf.documents, "file_to_profiles", new_callable=AsyncMock, return_value=[]):
+        resp = client.post("/officer-changes/K1/apply", headers=H, json={"confirm": True})
+    assert resp.status_code == 200
+    assert _actions(env.audit) == ["OFFICER_CHANGES_APPLIED", "OFFICER_PARTICULARS_DISMISSED"]
+    row = env.audit.await_args_list[-1].kwargs
+    assert row["metadata"]["reason"] == "filed_with_another_company"
+    assert row["metadata"]["dismissed"][0]["entity_id"] == "E2"
+
+
 # -- retrying an unfinished profile update -------------------------------------------------
 
 def test_retry_completes_an_unfinished_write_back_of_a_filed_form(env):

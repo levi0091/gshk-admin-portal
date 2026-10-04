@@ -195,10 +195,29 @@ def _apply_change(sb, case, entry, user) -> dict:
     return {"baseline_before": before, "items": [i["key"] for i in filed]}
 
 
+def _dismiss_elsewhere(case: dict, entry: dict, user: dict) -> dict | None:
+    """The same change, filed here, stops being reported for the party's other
+    companies (Levi 2026-10-05). Never raises: the filing stands either way."""
+    party = _party(entry)
+    try:
+        companies = particulars.dismiss_filed_elsewhere(
+            filed_entity_id=case["entity_id"], items=entry.get("items") or [],
+            user_id=user["id"], **party)
+    except Exception as exc:  # noqa: BLE001
+        print(f"officer change: dismissal elsewhere failed for {entry.get('id')}: {exc!r}",
+              file=sys.stderr)
+        return None
+    if not companies:
+        return None
+    return {"entry_id": entry["id"], "person_id": party.get("person_id"),
+            "corporate_entity_id": party.get("corporate_entity_id"), "companies": companies}
+
+
 async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
-    """`{"applied": [...], "errors": [str]}`. Idempotent."""
+    """`{"applied": [...], "errors": [str], "dismissed_elsewhere": [...]}`.
+    Idempotent."""
     sb = get_supabase()
-    applied, errors = [], []
+    applied, errors, dismissed = [], [], []
     texts = {r["entry_id"]: r["text"] for r in plan(case, entries)}
     for entry in entries:
         record = entry.get("applied") or {}
@@ -229,6 +248,9 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
                 record = _apply_appointment(sb, case, entry, user)
             else:
                 record = _apply_change(sb, case, entry, user)
+                elsewhere = _dismiss_elsewhere(case, entry, user)
+                if elsewhere:
+                    dismissed.append(elsewhere)
             record["applied_at"] = _now()
             sb.table("officer_change_entries").update({"applied": record}) \
                 .eq("id", entry["id"]).execute()
@@ -240,7 +262,7 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
     if not errors:
         sb.table("nar1_cases").update({"changes_applied_at": _now(),
                                        "updated_at": _now()}).eq("id", case["id"]).execute()
-    return {"applied": applied, "errors": errors}
+    return {"applied": applied, "errors": errors, "dismissed_elsewhere": dismissed}
 
 
 def _restore_baseline(sb, case, entry, before, user) -> None:

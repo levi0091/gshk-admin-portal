@@ -445,3 +445,71 @@ def test_appointment_correspondence_reads_the_officer_row(db):
     db.tables["entity_officers"][0]["correspondence_address_id"] = "A2"
     out = pt.appointment_correspondence("P1")
     assert out[0]["officer_id"] == "O1" and out[0]["address"]["line1"] == "Room 1201"
+
+
+# -- filed with one company: dismissed for the others (Levi 2026-10-05) -------------
+
+def _filed_for_e1(db):
+    items = pt.pending_for_officer("E1", person_id="P1", capacity="director")
+    pt.advance("E1", person_id="P1", items=items, user_id="U1")
+    return items
+
+
+def test_the_same_change_is_dismissed_for_the_other_companies(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, email="changed@example.com")
+    items = _filed_for_e1(db)
+    out = pt.dismiss_filed_elsewhere(person_id="P1", filed_entity_id="E1", items=items,
+                                     user_id="U1")
+    assert pt.pending_for_person("P1") == []
+    assert {r["entity_id"] for r in out} == {"E2"}
+    assert out[0]["items"] == ["Email address"]
+    e2 = pt._baseline_row("E2", person_id="P1")
+    assert e2["source"] == "dismissed" and e2["particulars"]["email"] == "changed@example.com"
+
+
+def test_a_different_new_value_is_left_pending(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, email="changed@example.com")
+    other = [{**i, "new": "someone-else@example.com"}
+             for i in pt.pending_for_officer("E1", person_id="P1", capacity="director")]
+    assert pt.dismiss_filed_elsewhere(person_id="P1", filed_entity_id="E1", items=other,
+                                      user_id="U1") == []
+    assert "E2" in {r["entity_id"] for r in pt.pending_for_person("P1")}
+
+
+def test_only_the_filed_items_are_dismissed(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, email="changed@example.com", full_name_zh="陳小文")
+    email = [i for i in pt.pending_for_officer("E1", person_id="P1", capacity="director")
+             if i["key"] == "email"]
+    pt.dismiss_filed_elsewhere(person_id="P1", filed_entity_id="E1", items=email, user_id="U1")
+    left = {r["entity_id"]: _keys(r["items"]) for r in pt.pending_for_person("P1")}
+    assert left["E2"] == ["name_zh"]
+
+
+def test_a_company_with_its_own_open_nd2b_is_left_alone(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, email="changed@example.com")
+    db.tables["nar1_cases"].append({"id": "K2", "case_no": "ND2B-2026-0002", "entity_id": "E2",
+                                    "form_code": "Nd2b", "closed_at": None,
+                                    "changes_applied_at": None})
+    db.tables["officer_change_entries"].append(
+        {"id": "N9", "case_id": "K2", "kind": "change", "person_id": "P1"})
+    items = _filed_for_e1(db)
+    assert pt.dismiss_filed_elsewhere(person_id="P1", filed_entity_id="E1", items=items,
+                                      user_id="U1") == []
+
+
+def test_omitted_lines_are_not_filed_so_nothing_is_dismissed_for_them(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, email="changed@example.com")
+    items = [{**i, "omitted": True}
+             for i in pt.pending_for_officer("E1", person_id="P1", capacity="director")]
+    assert pt.dismiss_filed_elsewhere(person_id="P1", filed_entity_id="E1", items=items,
+                                      user_id="U1") == []

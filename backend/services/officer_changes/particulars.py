@@ -603,7 +603,7 @@ def dismiss(*, person_id: str | None = None, corporate_entity_id: str | None = N
 
 def advance(entity_id: str, *, person_id: str | None = None,
             corporate_entity_id: str | None = None, items: list[dict],
-            user_id, capacity: str | None = None) -> None:
+            user_id, capacity: str | None = None, source: str = "nd2b_filed") -> None:
     """Write only the given items' `new` values into the baseline.
 
     Correspondence (e) needs care because the baseline stores it as "same as
@@ -659,4 +659,37 @@ def advance(entity_id: str, *, person_id: str | None = None,
         base.pop(FOLLOWS_RESIDENTIAL, None)
     set_baseline(entity_id, person_id=person_id,
                  corporate_entity_id=corporate_entity_id, particulars=base,
-                 source="nd2b_filed", user_id=user_id)
+                 source=source, user_id=user_id)
+
+
+def dismiss_filed_elsewhere(*, person_id: str | None = None,
+                            corporate_entity_id: str | None = None,
+                            filed_entity_id: str, items: list[dict], user_id) -> list[dict]:
+    """Levi 2026-10-05: "We will dismiss the change not yet filed warning after
+    it has been filed with at least one company."
+
+    After an ND2B has filed `items` for `filed_entity_id`, the SAME change —
+    the same CR item with the same new value — stops being reported for the
+    party's other companies: their baselines move forward for those items,
+    `source = 'dismissed'`. Anything else still pending there stays pending,
+    and a company with its own open ND2B is left to that ND2B. Returns
+    `[{entity_id, company_name, capacity, items: [label]}]` for the trail.
+    """
+    filed = [i for i in items if not i.get("omitted")]
+    if not filed:
+        return []
+    out = []
+    for row in _pending(person_id, corporate_entity_id):
+        if row["entity_id"] == filed_entity_id or row.get("open_case"):
+            continue
+        same = [i for i in row["items"] if any(
+            f.get("key") == i["key"] and _norm(i["key"], f.get("new")) == _norm(i["key"], i["new"])
+            for f in filed)]
+        if not same:
+            continue
+        advance(row["entity_id"], person_id=person_id,
+                corporate_entity_id=corporate_entity_id, items=same, user_id=user_id,
+                capacity=row["capacity"], source="dismissed")
+        out.append({"entity_id": row["entity_id"], "company_name": row.get("company_name"),
+                    "capacity": row["capacity"], "items": [i["label"] for i in same]})
+    return out

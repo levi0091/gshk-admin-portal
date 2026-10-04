@@ -144,6 +144,16 @@ async def _write_back(case_id: str, user: dict, case: dict | None = None
                                          "filed_document_id": d.get("filed_document_id"),
                                          "destination": d.get("destination"),
                                          "error": d.get("error")} for d in filed_docs]})
+    # Levi 2026-10-05: the same change, now filed here, is no longer reported
+    # for the party's other companies — and the trail says so, and why.
+    for row in result.get("dismissed_elsewhere") or []:
+        await audit(case, user, ev.OFFICER_PARTICULARS_DISMISSED,
+                    new_value=f"{len(row['companies'])} appointment(s)",
+                    metadata={"reason": "filed_with_another_company",
+                              "entry_id": row.get("entry_id"),
+                              "person_id": row.get("person_id"),
+                              "corporate_entity_id": row.get("corporate_entity_id"),
+                              "dismissed": row["companies"]})
     return result, filed_docs
 
 
