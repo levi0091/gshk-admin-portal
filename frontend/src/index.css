@@ -2102,3 +2102,6 @@ th.th-filtered {
    not one of: it swaps the whole list, it does not narrow it. */
 .filter-tab.tab-deleted { color: #C53030; }
 .filter-tab.tab-deleted.active { background: #C53030; color: #fff; }
+
+/* Natural Person Registry: a second passport is there, not hidden (Levi 2026-10-05). */
+.reg-more-ids { display: block; font-size: 11px; margin-top: 2px; }

@@ -5,6 +5,7 @@ Person Profile carries fields, identity documents, residential address, a role
 roll-up (read-only from the link tables), and document history.
 """
 import asyncio
+import sys
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
@@ -302,6 +303,37 @@ _FILTERABLE = {
 }
 
 
+def _people_with_id_number(sb, search: str) -> list[str]:
+    """Person ids holding ANY identity document whose number contains `search`
+    (the registry view carries only the primary one). Never raises."""
+    try:
+        rows = (sb.table("person_identity_documents").select("person_id")
+                .ilike("id_number", f"%{search}%").limit(200).execute().data) or []
+        return sorted({str(r["person_id"]) for r in rows if r.get("person_id")})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[persons] identity-number search skipped: {exc!r}", file=sys.stderr)
+        return []
+
+
+def _attach_id_counts(sb, rows: list[dict]) -> None:
+    """`id_count` on each row, so the list can say a person holds more than one
+    identity document. Never raises: without it the row reads as before."""
+    ids = [r["id"] for r in rows if r.get("id")]
+    if not ids:
+        return
+    try:
+        docs = (sb.table("person_identity_documents").select("person_id")
+                .in_("person_id", ids).execute().data) or []
+    except Exception as exc:  # noqa: BLE001
+        print(f"[persons] identity counts skipped: {exc!r}", file=sys.stderr)
+        return
+    counts: dict[str, int] = {}
+    for doc in docs:
+        counts[str(doc.get("person_id"))] = counts.get(str(doc.get("person_id")), 0) + 1
+    for row in rows:
+        row["id_count"] = counts.get(str(row.get("id")), 0)
+
+
 @router.get("")
 async def list_persons(
     search: Optional[str] = Query(None),
@@ -332,6 +364,10 @@ async def list_persons(
         raise HTTPException(status_code=422, detail=str(exc))
 
     sb = get_supabase()
+    # Any of the person's ID numbers, not only the primary (Levi 2026-10-05: "We
+    # do have clients holding 2 passports"). Best-effort: a failed read leaves
+    # the search as it was rather than failing the list.
+    also = _people_with_id_number(sb, search) if search else []
 
     def base(cols: str, count: Optional[str] = None):
         q = (sb.table("person_registry").select(cols, count=count) if count
@@ -345,6 +381,7 @@ async def list_persons(
                 f"full_name_zh.ilike.%{search}%,"
                 f"email.ilike.%{search}%,"
                 f"primary_id_number.ilike.%{search}%"
+                + (f",id.in.({','.join(also)})" if also else "")
             )
         return q
 
@@ -374,6 +411,7 @@ async def list_persons(
     for n, v in zip(names, results[1:-1]):
         role_counts[n] = v
     rows = results[-1]
+    _attach_id_counts(sb, rows)
 
     total = role_counts[role] if role else role_counts["all"]
     return {

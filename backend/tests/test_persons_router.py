@@ -363,3 +363,46 @@ def test_update_person_no_fields_400():
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.persons.get_supabase"):
         assert client.patch("/persons/p1", json={}, headers=H).status_code == 400
+
+
+class _Docs:
+    """person_identity_documents for the registry's two extra reads."""
+
+    def __init__(self, by_number, rows):
+        self._by_number, self._rows, self._mode = by_number, rows, None
+
+    def select(self, *_a, **_k):
+        return self
+
+    def ilike(self, col, value):
+        self._mode = "search"
+        return self
+
+    def in_(self, col, values):
+        self._mode = "count"
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self._by_number if self._mode == "search" else self._rows)
+
+
+def test_search_finds_a_person_by_any_identity_number_and_rows_carry_id_counts():
+    """Levi 2026-10-05: a client holding a French and a US passport is found by
+    either number, and the list says when a person holds more than one ID."""
+    registry = _FakeQuery({None: 1}, [{"id": "p1", "full_name": "Jane Doe"}])
+    ors = []
+    registry.or_ = lambda expr: ors.append(expr) or registry
+    docs = _Docs([{"person_id": "p2"}], [{"person_id": "p1"}, {"person_id": "p1"}])
+    sb = MagicMock()
+    reg_table = MagicMock()
+    reg_table.select.side_effect = lambda cols, count=None: registry
+    sb.table.side_effect = lambda name: docs if name == "person_identity_documents" else reg_table
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase", return_value=sb):
+        resp = client.get("/persons?search=K765", headers=H)
+    assert resp.status_code == 200, resp.text
+    assert any("id.in.(p2)" in expr for expr in ors)
+    assert resp.json()["persons"][0]["id_count"] == 2
