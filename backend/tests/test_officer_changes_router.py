@@ -524,12 +524,22 @@ def test_patch_document_send_with_email_audits_the_field(env):
     assert row["metadata"]["field"] == "send_with_email"
 
 
-def test_patch_attach_resolution_audits_field(env):
-    resp = client.patch("/officer-changes/K1", headers=H, json={"attach_resolution": True})
+def test_patch_audits_each_changed_field(env):
+    env.case = {**CASE, "signing_method": "esign", "client_approved": True,
+                "verification_sent_at": "2026-10-01T00:00:00Z"}
+    resp = client.patch("/officer-changes/K1", headers=H, json={"signing_method": "manual"})
     assert resp.status_code == 200, resp.text
-    assert env.update.call_args.args[1] == {"attach_resolution": True}
-    row = env.audit.await_args.kwargs
-    assert row["metadata"]["field"] == "attach_resolution" and row["new_value"] is True
+    rows = [c.kwargs for c in env.audit.await_args_list
+            if c.kwargs["action_type"] == "CASE_FIELD_UPDATED"]
+    assert [r["metadata"]["field"] for r in rows][:1] == ["signing_method"]
+    assert rows[0]["old_value"] == "esign" and rows[0]["new_value"] == "manual"
+
+
+def test_patch_refuses_attach_resolution(env):
+    """Levi 2026-10-05: the resolution always goes with an ND2A — no toggle."""
+    resp = client.patch("/officer-changes/K1", headers=H, json={"attach_resolution": True})
+    assert resp.status_code == 422
+    env.update.assert_not_called()
 
 
 def test_resolution_preview_is_a_pdf(env):
@@ -580,7 +590,9 @@ def _send_patches(sent, *, attachments=(), attach_error=None, plan=()):
 
 
 def test_send_attaches_full_form_resolution_and_ticked_docs(env):
-    env.case = {**CASE, "attach_resolution": True}
+    """Levi 2026-10-05: an ND2A always goes with its written resolution — the
+    case carries no flag for it any more."""
+    env.case = dict(CASE)
     sent = []
     stack, render, letter = _send_patches(sent, attachments=[("memo.pdf", b"%PDF-memo")])
     with stack:
@@ -595,6 +607,17 @@ def test_send_attaches_full_form_resolution_and_ticked_docs(env):
     email_row = next(c.kwargs for c in env.audit.await_args_list
                      if c.kwargs["action_type"] == "EMAIL_SENT")
     assert email_row["metadata"]["attachments"] == names
+
+
+def test_an_nd2b_send_carries_no_resolution(env):
+    env.case = {**CASE, "form_code": "Nd2b", "case_no": "ND2B-2026-0001"}
+    sent = []
+    stack, _render, _letter = _send_patches(sent)
+    with stack:
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
+    assert resp.status_code == 200, resp.text
+    assert [n for n, _ in sent[0]["attachments"]] == ["ND2B-ND2B-2026-0001.pdf"]
 
 
 def test_send_refuses_before_mailing_when_an_attachment_cannot_be_read(env):

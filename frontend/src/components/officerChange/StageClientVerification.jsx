@@ -56,6 +56,13 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
   const preview = usePdfBlob(
     (data.entries || []).length ? `/officer-changes/${data.id}/preview?audience=client` : null,
     data.updated_at)
+  // An ND2A goes to the client with its written resolution, and both are
+  // previewed here on two tabs (Levi 2026-10-05). An ND2B is the form alone.
+  const nd2a = data.form_code === 'Nd2a'
+  const [shown, setShown] = useState('form')
+  const resolutionPreview = usePdfBlob(
+    nd2a && (data.entries || []).length ? `/officer-changes/${data.id}/resolution` : null,
+    data.updated_at)
 
   useEffect(() => {
     let live = true
@@ -150,12 +157,31 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
           </div>
         )}
 
-        {(data.entries || []).length > 0 && (
+        {(data.entries || []).length > 0 && nd2a && (
+          <div className="oc-doc-tabs">
+            <div className="filter-tabs" role="tablist" aria-label="Documents sent to the client">
+              {[['form', 'ND2A'], ['resolution', 'Written Resolution']].map(([key, label]) => (
+                <button key={key} type="button" role="tab" aria-selected={shown === key}
+                        className={`filter-tab ${shown === key ? 'active' : ''}`}
+                        onClick={() => setShown(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="f-hint">Both are attached to the email when you send it.</span>
+          </div>
+        )}
+        {(data.entries || []).length > 0 && (nd2a && shown === 'resolution' ? (
+          <PdfFrame url={resolutionPreview.url} error={resolutionPreview.error}
+                    fileName={`Written-Resolution-${data.case_no}.pdf`}
+                    pills={[{ label: 'For the directors to sign', tone: '' }]}
+                    label="written resolution" />
+        ) : (
           <PdfFrame url={preview.url} error={preview.error}
                     fileName={`${data.case_type}-${data.case_no}.pdf`}
                     pills={[{ label: 'Client copy — full form incl. PI', tone: '' }]}
                     label="draft form" />
-        )}
+        ))}
 
         {sent && (
           <div className={`alert ${data.client_approved === true ? 'al-success'

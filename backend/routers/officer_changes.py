@@ -142,8 +142,6 @@ class CasePatchIn(BaseModel):
     signing_method: str | None = None
     signatory_capacity: str | None = None
     restart_verification: bool | None = None
-    #: Attach the generated written resolution to the client email (A3).
-    attach_resolution: bool | None = None
 
 
 @router.patch("/{case_id}")
@@ -185,12 +183,6 @@ async def patch_case(case_id: str, body: CasePatchIn,
                                      f"capacities for {kind} signing")
         if capacity != (case.get("signatory_capacity") or ""):
             patch["signatory_capacity"] = capacity or None
-    if body.attach_resolution is not None:
-        if case.get("form_code") != "Nd2a" and body.attach_resolution:
-            raise HTTPException(409, {"message": "A written resolution goes with an ND2A.",
-                                      "reason": "nd2a_only"})
-        if bool(body.attach_resolution) != bool(case.get("attach_resolution")):
-            patch["attach_resolution"] = bool(body.attach_resolution)
     for field, new in patch.items():
         await audit(case, user, ev.CASE_FIELD_UPDATED, old_value=case.get(field),
                     new_value=new, metadata={"field": field, "case_no": case.get("case_no")})
@@ -648,7 +640,9 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     # (Jacqueline A3: one email, not two). A file that cannot be read stops the
     # send: a letter must not promise an attachment it does not carry.
     files = [(attachment, pdf)]
-    if case.get("attach_resolution") and case["form_code"] == "Nd2a":
+    # An ND2A always goes with its written resolution (Levi 2026-10-05: "When
+    # they click send to client button then both are sent to client").
+    if case["form_code"] == "Nd2a":
         entity_row = nar1_cases.entity_for(case["entity_id"]) or {}
         files.append((resolution.file_name(case), await asyncio.to_thread(
             resolution.render, case, entity_row, data.get("entries") or [],

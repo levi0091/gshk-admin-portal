@@ -15,9 +15,9 @@ Design: `docs/superpowers/specs/2026-10-02-nd2-jacqueline-feedback-design.md`.
   officer_change_documents.send_with_email
       Attached to the verification email.
 
-  nar1_cases.attach_resolution
-      Attach the generated written resolution to the email (off by default:
-      its wording is a standard one, GSHK's sample was not available).
+  (No `nar1_cases.attach_resolution`: the toggle was removed on Levi
+  2026-10-05 — the written resolution, now built to GSHK's own sample, always
+  goes with an ND2A — before any database ran this migration.)
 
   (No consent table. A consent-to-act signed in G-FlowDesk was here until
   Levi 2026-10-05 — CR's consent signature over the director's bean IS the
@@ -66,10 +66,6 @@ UPGRADE_SQL = [
     ALTER TABLE public.officer_change_documents
       ALTER COLUMN entry_id DROP NOT NULL,
       ADD COLUMN IF NOT EXISTS send_with_email boolean NOT NULL DEFAULT false;
-    """,
-    """
-    ALTER TABLE public.nar1_cases
-      ADD COLUMN IF NOT EXISTS attach_resolution boolean NOT NULL DEFAULT false;
     """,
     """
     ALTER TABLE public.person_eservice_credentials
@@ -167,7 +163,6 @@ def downgrade() -> None:
           DROP COLUMN IF EXISTS registered_id_number,
           DROP COLUMN IF EXISTS registered_id_type;
     """)
-    op.execute("ALTER TABLE public.nar1_cases DROP COLUMN IF EXISTS attach_resolution")
     op.execute("""
         ALTER TABLE public.officer_change_documents
           DROP COLUMN IF EXISTS send_with_email,

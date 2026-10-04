@@ -103,7 +103,9 @@ describe('AttachmentsCard (A3)', () => {
     const [path, form] = upload.mock.calls[0]
     expect(path).toBe('/officer-changes/k1/documents')
     expect(form.get('send_with_email')).toBe('true')
-    expect(form.get('document_type_code')).toBe('board_resolution')
+    // The written resolution is G-FlowDesk's own now (Levi 2026-10-05); an
+    // upload here is anything else the client should have.
+    expect(form.get('document_type_code')).toBe('officer_change_support')
   })
 
   it('ticks an uploaded document to go with the email', async () => {
@@ -114,20 +116,17 @@ describe('AttachmentsCard (A3)', () => {
     expect(patch).toHaveBeenCalledWith('/officer-changes/k1/documents/d1', { send_with_email: true })
   })
 
-  it('attaches the generated written resolution and previews it', async () => {
-    patch.mockResolvedValue({ id: 'k1' })
-    const user = userEvent.setup()
+  it('has no resolution toggle — the resolution always goes with an ND2A', () => {
     render(<AttachmentsCard data={{ ...BASE, documents: [] }} reload={vi.fn()} can={ALL} />)
-    await user.click(screen.getByLabelText(/Attach the written resolution prepared by G-FlowDesk/))
-    expect(patch).toHaveBeenCalledWith('/officer-changes/k1', { attach_resolution: true })
-    await user.click(screen.getByRole('button', { name: 'Preview resolution' }))
-    expect(blob).toHaveBeenCalledWith('/officer-changes/k1/resolution')
+    expect(screen.queryByText(/prepared by G-FlowDesk/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Preview resolution' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Document type')).not.toBeInTheDocument()
+    expect(screen.getByText(/written resolution are always attached/)).toBeInTheDocument()
   })
 
-  it('is ND2A only for the resolution, and read-only without edit', () => {
+  it('is read-only without edit', () => {
     render(<AttachmentsCard data={{ ...BASE, form_code: 'Nd2b', documents: DOCS }} reload={vi.fn()}
                             can={{ ...ALL, write: false }} />)
-    expect(screen.queryByText(/written resolution prepared by G-FlowDesk/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Upload' })).not.toBeInTheDocument()
     expect(screen.getByText('resolution-signed.pdf')).toBeInTheDocument()
   })
@@ -204,6 +203,28 @@ describe('Send card (A8) and the ND2B waiver (BQ1)', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Proceed' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/verification/proceed',
       { reason: 'Deadline on 21 Sept; client away' }))
+  })
+
+  it('previews the ND2A and its written resolution on two tabs, and sends both', async () => {
+    const user = userEvent.setup()
+    wrap(<StageClientVerification data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation',
+      party: { name: 'CHAN Tai Man' }, summary: 'Director' }] }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    const tabs = screen.getByRole('tablist', { name: 'Documents sent to the client' })
+    const form = within(tabs).getByRole('tab', { name: 'ND2A' })
+    const res = within(tabs).getByRole('tab', { name: 'Written Resolution' })
+    expect(form).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('pdf')).toHaveTextContent('Client copy — full form incl. PI')
+    await user.click(res)
+    expect(res).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('pdf')).toHaveTextContent('For the directors to sign')
+    expect(screen.getByText(/Both are attached to the email/)).toBeInTheDocument()
+  })
+
+  it('an ND2B has the form only — no tabs', () => {
+    wrap(<StageClientVerification data={{ ...BASE, form_code: 'Nd2b', case_type: 'ND2B',
+      entries: [{ id: 'n1', kind: 'change', party: { name: 'CHAN Tai Man' }, items: [] }] }}
+                                  reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
   })
 
   it('never offers the waiver on an ND2A', () => {

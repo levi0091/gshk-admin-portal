@@ -58,7 +58,6 @@ describe('officerChangeApi', () => {
     ['refreshCrStatus', () => oc.refreshCrStatus('c1'), 'post', '/tpsi/cases/c1/refresh-status'],
     // Jacqueline's feedback (1 Oct 2026)
     ['setSendWithEmail', () => oc.setSendWithEmail('c1', 'd1', true), 'patch', '/officer-changes/c1/documents/d1'],
-    ['resolutionPdf', () => oc.resolutionPdf('c1'), 'blob', '/officer-changes/c1/resolution'],
     ['proceed', () => oc.proceed('c1', 'why'), 'post', '/officer-changes/c1/verification/proceed'],
     ['setEffectiveDate', () => oc.setEffectiveDate('c1', 'n1', '2026-10-01'), 'put', '/officer-changes/c1/entries/n1/effective-date'],
   ])('%s calls %s', async (_name, call, verb, path) => {

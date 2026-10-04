@@ -39,7 +39,7 @@ def test_052_revises_050():
 
 def test_052_adds_every_column():
     for col in ("date_deferred", "send_with_email",
-                "attach_resolution", "registered_id_type", "registered_id_number"):
+                "registered_id_type", "registered_id_number"):
         assert f"ADD COLUMN IF NOT EXISTS {col}" in SQL, col
 
 
@@ -55,7 +55,9 @@ def test_052_carries_no_in_portal_consent():
     """Levi 2026-10-05: CR's consent signature IS the consent (TPSI API
     v1.0.14 section 7.1.2), so nothing of the in-portal consent survives."""
     for gone in ("officer_change_consents", "token_hash", "uploaded_by_name",
-                 "econsent", "ADD COLUMN IF NOT EXISTS source"):
+                 "econsent", "ADD COLUMN IF NOT EXISTS source",
+                 # Levi 2026-10-05: the resolution always goes; no toggle.
+                 "attach_resolution"):
         assert gone not in SQL, gone
     assert "officer_change_consents" not in DOWN_SQL
     assert not any("ECONSENT" in code for code, _ in m.AUDIT_CODES)
@@ -120,7 +122,6 @@ def test_052_columns_exist_after_upgrade():
         cols = {(r[0], r[1]) for r in cur.fetchall()}
         for pair in (("officer_change_entries", "date_deferred"),
                      ("officer_change_documents", "send_with_email"),
-                     ("nar1_cases", "attach_resolution"),
                      ("person_eservice_credentials", "registered_id_type"),
                      ("person_eservice_credentials", "registered_id_number")):
             assert pair in cols, pair

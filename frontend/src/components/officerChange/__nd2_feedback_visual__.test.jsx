@@ -42,7 +42,6 @@ const CASE = {
       send_with_email: true },
     { id: 'd2', entry_id: null, file_name: 'Cover-note.pdf', type_label: 'Other supporting document',
       send_with_email: false }],
-  attach_resolution: false,
   entries: [
     { id: 'n1', kind: 'cessation', capacity: 'director', party: { name: 'WONG Mei Ling' },
       summary: 'Director · ceases 12 Sep 2026 · Resignation / Others' },

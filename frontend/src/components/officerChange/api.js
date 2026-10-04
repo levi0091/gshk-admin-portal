@@ -51,7 +51,6 @@ export const officerChangeApi = {
     }),
   setSendWithEmail: (id, docId, value) =>
     api.patch(`${base(id)}/documents/${docId}`, { send_with_email: Boolean(value) }),
-  resolutionPdf: (id) => api.blob(`${base(id)}/resolution`),
   documentUrl: (id, docId) => api.get(`${base(id)}/documents/${docId}/download`),
 
   // A Blob; the caller makes and revokes the object URL.
