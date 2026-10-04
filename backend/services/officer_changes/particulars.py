@@ -343,7 +343,10 @@ def _appointments(person_id=None, corporate_entity_id=None) -> list[dict]:
             seen.add(key)
             out.append({"entity_id": row["entity_id"], "capacity": row["role"],
                         "officer_id": row.get("id"),
-                        "correspondence_address_id": row.get("correspondence_address_id")})
+                        "correspondence_address_id": row.get("correspondence_address_id"),
+                        # What THIS company files (migration 053).
+                        "residential_address_id": row.get("residential_address_id"),
+                        "identity_document_id": row.get("identity_document_id")})
     if person_id:
         secs = (sb.table("company_secretaries").select("*")
                 .eq("person_id", person_id).eq("is_current", True).execute().data) or []
@@ -362,30 +365,59 @@ def _appointments(person_id=None, corporate_entity_id=None) -> list[dict]:
     return out
 
 
-def _correspondence_by_entity(appointments: list[dict]) -> dict[str, dict | None]:
-    """entity_id -> the appointment's own correspondence address (or None,
-    "same as residential"). A party holding two roles in one company gives CR
-    one correspondence address there, so the first explicit one wins."""
-    ids = sorted({a["correspondence_address_id"] for a in appointments
-                  if a.get("correspondence_address_id")})
-    rows = {}
-    if ids:
-        rows = {r["id"]: r for r in (get_supabase().table("addresses").select("*")
-                                     .in_("id", ids).execute().data or [])}
-    out: dict[str, dict | None] = {}
+def _links_by_entity(appointments: list[dict]) -> dict[str, dict]:
+    """entity_id -> what the person's appointment there files, as linked on the
+    officer row: `{"correspondence": address | None ("same as residential"),
+    "residential": address | None (the person's default), "document": identity
+    document | None (the person's primary)}` (migration 053; Levi 2026-10-05).
+    A party holding two roles in one company gives CR one set of particulars
+    there, so the first explicit link of each kind wins."""
+    sb = get_supabase()
+    address_ids = sorted({a[k] for a in appointments
+                          for k in ("correspondence_address_id", "residential_address_id")
+                          if a.get(k)})
+    addresses = {}
+    if address_ids:
+        addresses = {r["id"]: r for r in (sb.table("addresses").select("*")
+                                          .in_("id", address_ids).execute().data or [])}
+    doc_ids = sorted({a["identity_document_id"] for a in appointments
+                      if a.get("identity_document_id")})
+    documents = {}
+    if doc_ids:
+        documents = {d["id"]: d for d in (sb.table("person_identity_documents").select("*")
+                                          .in_("id", doc_ids).execute().data or [])}
+    out: dict[str, dict] = {}
     for a in appointments:
-        address = _address(rows.get(a.get("correspondence_address_id") or ""))
-        if out.get(a["entity_id"]) is None:
-            out[a["entity_id"]] = address
+        link = out.setdefault(a["entity_id"], {"correspondence": None, "residential": None,
+                                               "document": None})
+        if link["correspondence"] is None:
+            link["correspondence"] = _address(
+                addresses.get(a.get("correspondence_address_id") or ""))
+        if link["residential"] is None:
+            link["residential"] = _address(addresses.get(a.get("residential_address_id") or ""))
+        if link["document"] is None:
+            link["document"] = documents.get(a.get("identity_document_id") or "")
     return out
 
 
-def _current_for(current: dict, entity_id: str, corr: dict) -> dict:
-    """The party's snapshot as ONE appointment files it (a person's correspondence
-    address is the appointment's)."""
+def _current_for(current: dict, entity_id: str, links: dict) -> dict:
+    """The party's snapshot as ONE appointment files it: a person's
+    correspondence address is the appointment's, and so — when linked — are
+    their residential address and their identity document of that type."""
     if current.get("party_type") == "corporate":
         return current
-    return {**current, "correspondence_address": corr.get(entity_id)}
+    link = links.get(entity_id) or {}
+    out = {**current, "correspondence_address": link.get("correspondence")}
+    if link.get("residential") is not None:
+        out["residential_address"] = link["residential"]
+    document = link.get("document")
+    if document and _s(document.get("id_number")):
+        if document.get("id_type") == "hkid":
+            out["hkid"] = _s(document["id_number"])
+        elif document.get("id_type") == "passport":
+            out["passport"] = {"number": _s(document["id_number"]),
+                               "issuing_country": _s(document.get("issuing_country"))}
+    return out
 
 
 def appointment_correspondence(person_id: str) -> list[dict]:
@@ -470,12 +502,12 @@ def capture_before_edit(*, person_id: str | None = None,
         if not missing:
             return 0
         snapshot = _snapshot(person_id, corporate_entity_id)
-        corr = _correspondence_by_entity(appointments)
+        links = _links_by_entity(appointments)
         now = _now()
         sb.table(_TABLE).insert([
             {"entity_id": company, "person_id": person_id,
              "corporate_entity_id": corporate_entity_id,
-             "particulars": _current_for(snapshot, company, corr), "source": "first_edit",
+             "particulars": _current_for(snapshot, company, links), "source": "first_edit",
              "captured_by": user_id, "captured_at": now}
             for company in missing
         ]).execute()
@@ -502,9 +534,9 @@ def pending_for_officer(entity_id: str, *, person_id: str | None = None,
         return []
     current = _snapshot(person_id, corporate_entity_id)
     if person_id:
-        corr = _correspondence_by_entity(
+        links = _links_by_entity(
             [a for a in _appointments(person_id, None) if a["entity_id"] == entity_id])
-        current = _current_for(current, entity_id, corr)
+        current = _current_for(current, entity_id, links)
     return diff(held, current, capacity=capacity)
 
 
@@ -534,13 +566,13 @@ def _pending(person_id=None, corporate_entity_id=None) -> list[dict]:
     if not held:
         return []
     current = _snapshot(person_id, corporate_entity_id)
-    corr = _correspondence_by_entity(appointments)
+    links = _links_by_entity(appointments)
     rows = []
     for appointment in appointments:
         base = held.get(appointment["entity_id"])
         if base is None:
             continue
-        items = diff(base, _current_for(current, appointment["entity_id"], corr),
+        items = diff(base, _current_for(current, appointment["entity_id"], links),
                      capacity=appointment["capacity"])
         if items:
             rows.append({**appointment, "items": items})
@@ -589,10 +621,10 @@ def dismiss(*, person_id: str | None = None, corporate_entity_id: str | None = N
     if not rows:
         return 0
     current = _snapshot(person_id, corporate_entity_id)
-    corr = (_correspondence_by_entity(_appointments(person_id, None)) if person_id else {})
+    links = _links_by_entity(_appointments(person_id, None)) if person_id else {}
     now = _now()
     for row in rows:
-        new = (_current_for(current, row["entity_id"], corr) if person_id
+        new = (_current_for(current, row["entity_id"], links) if person_id
                else _keep_correspondence(row["particulars"], current))
         sb.table(_TABLE).update({
             "particulars": new,

@@ -513,3 +513,42 @@ def test_omitted_lines_are_not_filed_so_nothing_is_dismissed_for_them(db):
              for i in pt.pending_for_officer("E1", person_id="P1", capacity="director")]
     assert pt.dismiss_filed_elsewhere(person_id="P1", filed_entity_id="E1", items=items,
                                       user_id="U1") == []
+
+
+
+# -- per-company identity and addresses (Levi 2026-10-05) ------------------------------
+
+def test_a_passport_linked_to_one_company_is_a_change_for_that_company_only(db):
+    _two_directorships(db)
+    db.tables["person_identity_documents"] += [
+        {"id": "D3", "person_id": "P1", "id_type": "passport", "id_number": "F1111111",
+         "issuing_country": "FR", "is_primary": True},
+        {"id": "D2", "person_id": "P1", "id_type": "passport", "id_number": "K7654321",
+         "issuing_country": "US", "is_primary": False}]
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["entity_officers"][0]["identity_document_id"] = "D2"
+    rows = {r["entity_id"]: r for r in pt.pending_for_person("P1")}
+    assert set(rows) == {"E1"}
+    assert _keys(rows["E1"]["items"]) == ["passport"]
+    assert rows["E1"]["items"][0]["new"] == {"number": "K7654321", "issuing_country": "US"}
+
+
+def test_a_residential_address_linked_to_one_company_moves_d_and_e_there_only(db):
+    _two_directorships(db)
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["entity_officers"][0]["residential_address_id"] = "A2"
+    rows = {r["entity_id"]: r for r in pt.pending_for_person("P1")}
+    assert set(rows) == {"E1"}
+    assert _keys(rows["E1"]["items"]) == ["residential_address", "correspondence_address"]
+    assert rows["E1"]["items"][0]["new"]["line1"] == "Room 1201"
+
+
+def test_the_baseline_is_captured_from_the_linked_particulars(db):
+    db.tables["person_identity_documents"] += [
+        {"id": "D3", "person_id": "P1", "id_type": "passport", "id_number": "F1111111",
+         "issuing_country": "FR", "is_primary": True},
+        {"id": "D2", "person_id": "P1", "id_type": "passport", "id_number": "K7654321",
+         "issuing_country": "US", "is_primary": False}]
+    db.tables["entity_officers"][0]["identity_document_id"] = "D2"
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    assert pt.baseline("E1", person_id="P1")["passport"]["number"] == "K7654321"

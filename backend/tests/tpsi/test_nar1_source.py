@@ -482,3 +482,26 @@ async def test_a_register_secretary_carries_its_entitys_tcsp_licence():
         graph = await nar1_source.load_entity_graph("e1")
 
     assert graph["secretaries"][0]["corporate_tcsp_licence_no"] == "TC000807"
+
+
+async def test_a_company_files_the_identity_and_address_linked_to_its_appointment():
+    """Levi 2026-10-05: an officer row's links are what THIS company files."""
+    sb = _Supabase({
+        "entities": [ENTITY],
+        "entity_officers": [{"id": "o1", "entity_id": "e1", "person_id": "p1",
+                             "party_type": "individual", "role": "director",
+                             "is_current": True, "identity_document_id": "d2",
+                             "residential_address_id": "a4"}],
+        "persons": [PERSON],
+        "person_identity_documents": [
+            {"id": "d1", "person_id": "p1", "id_type": "passport", "id_number": "FR111",
+             "is_primary": True},
+            {"id": "d2", "person_id": "p1", "id_type": "passport", "id_number": "US222",
+             "is_primary": False}],
+        "addresses": [FILER_ADDR, RES_ADDR, {"id": "a4", "line1": "Flat 9", "country": "US"}],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+    assert graph["persons"]["p1"]["residential_address_id"] == "a4"
+    assert graph["addresses"]["a4"]["line1"] == "Flat 9"
+    assert [d["id"] for d in graph["identity_documents"]["p1"]] == ["d2", "d1"]
