@@ -705,12 +705,13 @@ def dismiss_filed_elsewhere(*, person_id: str | None = None,
     party's other companies: their baselines move forward for those items,
     `source = 'dismissed'`. Anything else still pending there stays pending,
     and a company with its own open ND2B is left to that ND2B. Returns
-    `[{entity_id, company_name, capacity, items: [label]}]` for the trail.
+    `[{entity_id, company_name, capacity, items: [label], baseline_before}]` —
+    the last for Undo only; it holds particulars and never goes in an audit row.
     """
     filed = [i for i in items if not i.get("omitted")]
     if not filed:
         return []
-    out = []
+    out: dict[str, dict] = {}
     for row in _pending(person_id, corporate_entity_id):
         if row["entity_id"] == filed_entity_id or row.get("open_case"):
             continue
@@ -719,9 +720,16 @@ def dismiss_filed_elsewhere(*, person_id: str | None = None,
             for f in filed)]
         if not same:
             continue
+        # One entry per COMPANY (a director who is also secretary there is two
+        # appointments and one baseline), its before-state taken before the
+        # first move so Undo can put it back (review finding 2).
+        entry = out.setdefault(row["entity_id"], {
+            "entity_id": row["entity_id"], "company_name": row.get("company_name"),
+            "capacity": row["capacity"], "items": [],
+            "baseline_before": baseline(row["entity_id"], person_id=person_id,
+                                        corporate_entity_id=corporate_entity_id)})
         advance(row["entity_id"], person_id=person_id,
                 corporate_entity_id=corporate_entity_id, items=same, user_id=user_id,
                 capacity=row["capacity"], source="dismissed")
-        out.append({"entity_id": row["entity_id"], "company_name": row.get("company_name"),
-                    "capacity": row["capacity"], "items": [i["label"] for i in same]})
-    return out
+        entry["items"] += [i["label"] for i in same if i["label"] not in entry["items"]]
+    return list(out.values())

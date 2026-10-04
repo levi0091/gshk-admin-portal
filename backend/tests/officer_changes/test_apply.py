@@ -242,3 +242,24 @@ def test_an_nd2b_filed_for_one_company_dismisses_the_same_change_elsewhere(db, m
                                                                     "items": ["Email address"],
                                                                     "company_name": "Second",
                                                                     "capacity": "director"}]}]
+
+
+def test_undo_restores_the_companies_the_filing_dismissed(db):
+    """Review finding 2: CR rejected the ND2B for E1 and Undo ran. CR was never
+    told for E2 either, so E2 must report the change again too."""
+    db.tables["entities"].append({"id": "E2", "company_name": "Second Limited"})
+    db.tables["entity_officers"].append(
+        {"id": "O8", "entity_id": "E2", "person_id": "P1", "party_type": "individual",
+         "role": "director", "is_current": True})
+    particulars.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["persons"][0]["email"] = "new@example.com"
+    items = particulars.pending_for_officer("E1", person_id="P1", capacity="director")
+    change = {"id": "N4", "case_id": "K1", "kind": "change", "capacity": "director",
+              "party_type": "individual", "person_id": "P1", "officer_id": "O1",
+              "items": items, "party": {"name": "CHAN Tai Man"}}
+    out = _run(apply.apply_changes, CASE, _entries(db, change))
+    assert particulars.pending_for_person("P1") == []
+    # The before-state is kept on the entry, never in the audit metadata.
+    assert "baseline_before" not in str(out["dismissed_elsewhere"])
+    _run(apply.undo_changes, CASE, db.rows("officer_change_entries"))
+    assert {r["entity_id"] for r in particulars.pending_for_person("P1")} == {"E1", "E2"}

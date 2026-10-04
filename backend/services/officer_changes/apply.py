@@ -213,6 +213,15 @@ def _dismiss_elsewhere(case: dict, entry: dict, user: dict) -> dict | None:
             "corporate_entity_id": party.get("corporate_entity_id"), "companies": companies}
 
 
+def _split_before(elsewhere: dict) -> tuple[dict, list[dict]]:
+    """The audit-safe half (labels only) and the Undo half (before-states)."""
+    befores = [{"entity_id": c["entity_id"], "baseline_before": c.get("baseline_before")}
+               for c in elsewhere["companies"]]
+    safe = {**elsewhere, "companies": [{k: v for k, v in c.items() if k != "baseline_before"}
+                                       for c in elsewhere["companies"]]}
+    return safe, befores
+
+
 async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
     """`{"applied": [...], "errors": [str], "dismissed_elsewhere": [...]}`.
     Idempotent."""
@@ -250,7 +259,9 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
                 record = _apply_change(sb, case, entry, user)
                 elsewhere = _dismiss_elsewhere(case, entry, user)
                 if elsewhere:
-                    dismissed.append(elsewhere)
+                    safe, befores = _split_before(elsewhere)
+                    record["dismissed_elsewhere"] = befores
+                    dismissed.append(safe)
             record["applied_at"] = _now()
             sb.table("officer_change_entries").update({"applied": record}) \
                 .eq("id", entry["id"]).execute()
@@ -299,6 +310,14 @@ async def undo_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
                 _restore_baseline(sb, case, entry, record.get("baseline_before"), user)
             else:
                 _restore_baseline(sb, case, entry, record.get("baseline_before"), user)
+                # The same change, dismissed for the party's other companies
+                # when this was filed, comes back with it (review finding 2).
+                party = _party(entry)
+                for other in record.get("dismissed_elsewhere") or []:
+                    if other.get("baseline_before") is not None:
+                        particulars.set_baseline(other["entity_id"],
+                                                 particulars=other["baseline_before"],
+                                                 source="undo", user_id=user["id"], **party)
             sb.table("officer_change_entries").update({"applied": None}) \
                 .eq("id", entry["id"]).execute()
             undone.append({"entry_id": entry["id"]})

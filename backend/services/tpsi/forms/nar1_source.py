@@ -229,6 +229,13 @@ async def load_entity_graph(entity_id: str) -> dict:
     identity_documents: dict[str, list] = {}
     for doc in identity_rows or []:
         identity_documents.setdefault(doc["person_id"], []).append(doc)
+    # Primary first, then oldest: the mapper files the FIRST document of a type,
+    # and Postgres returns rows in no promised order, so without this a person
+    # holding two passports could be filed with the one the profile does NOT
+    # call primary. `person_registry` and `audit_subject` already order this way
+    # (review finding 3, 2026-10-05).
+    for docs in identity_documents.values():
+        docs.sort(key=lambda d: (not d.get("is_primary"), str(d.get("created_at") or "")))
     # Each person as THIS company files them (Levi 2026-10-05, migration 053):
     # the identity document and residential address linked to their
     # appointment here, else their defaults — so the NAR1, its drift check and

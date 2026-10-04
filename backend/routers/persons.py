@@ -308,8 +308,9 @@ def _people_with_id_number(sb, search: str) -> list[str]:
     (the registry view carries only the primary one). Never raises."""
     try:
         rows = (sb.table("person_identity_documents").select("person_id")
-                .ilike("id_number", f"%{search}%").limit(200).execute().data) or []
-        return sorted({str(r["person_id"]) for r in rows if r.get("person_id")})
+                .ilike("id_number", f"%{search}%").limit(25).execute().data) or []
+        # At most 25 ids: they ride in every query's URL (review, 2026-10-05).
+        return sorted({str(r["person_id"]) for r in rows if r.get("person_id")})[:25]
     except Exception as exc:  # noqa: BLE001
         print(f"[persons] identity-number search skipped: {exc!r}", file=sys.stderr)
         return []
@@ -367,7 +368,7 @@ async def list_persons(
     # Any of the person's ID numbers, not only the primary (Levi 2026-10-05: "We
     # do have clients holding 2 passports"). Best-effort: a failed read leaves
     # the search as it was rather than failing the list.
-    also = _people_with_id_number(sb, search) if search else []
+    also = _people_with_id_number(sb, search) if search and len(search.strip()) >= 4 else []
 
     def base(cols: str, count: Optional[str] = None):
         q = (sb.table("person_registry").select(cols, count=count) if count

@@ -406,3 +406,31 @@ def test_search_finds_a_person_by_any_identity_number_and_rows_carry_id_counts()
     assert resp.status_code == 200, resp.text
     assert any("id.in.(p2)" in expr for expr in ors)
     assert resp.json()["persons"][0]["id_count"] == 2
+
+
+def test_a_short_search_does_not_look_up_identity_numbers():
+    """Review: 'A1' matches hundreds of ID numbers; 200 ids in every query's URL
+    would put the list past common request-line limits. Only a search of 4+
+    characters looks, and it takes at most 25."""
+    registry = _FakeQuery({None: 1}, [{"id": "p1", "full_name": "Jane Doe"}])
+    ors = []
+    registry.or_ = lambda expr: ors.append(expr) or registry
+    looked = []
+
+    class _Counting(_Docs):
+        def limit(self, n):
+            looked.append(n)
+            return self
+
+    docs = _Counting([{"person_id": f"p{n}"} for n in range(40)], [])
+    sb = MagicMock()
+    reg_table = MagicMock()
+    reg_table.select.side_effect = lambda cols, count=None: registry
+    sb.table.side_effect = lambda name: docs if name == "person_identity_documents" else reg_table
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase", return_value=sb):
+        client.get("/persons?search=A1", headers=H)
+        assert not any("id.in." in e for e in ors) and looked == []
+        client.get("/persons?search=K7654", headers=H)
+    assert looked == [25]
+    assert max(len(e) for e in ors) < 2000

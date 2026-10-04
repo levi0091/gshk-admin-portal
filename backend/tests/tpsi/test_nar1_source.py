@@ -505,3 +505,26 @@ async def test_a_company_files_the_identity_and_address_linked_to_its_appointmen
     assert graph["persons"]["p1"]["residential_address_id"] == "a4"
     assert graph["addresses"]["a4"]["line1"] == "Flat 9"
     assert [d["id"] for d in graph["identity_documents"]["p1"]] == ["d2", "d1"]
+
+
+async def test_an_unlinked_persons_primary_document_comes_first():
+    """Review finding 3: the mapper files the FIRST document of a type, so the
+    graph orders each person's documents primary first, then oldest — the order
+    the registry and the audit trail already use — and the NAR1 files the
+    passport the profile says it does, whatever order Postgres returns rows in."""
+    sb = _Supabase({
+        "entities": [ENTITY],
+        "entity_officers": [{"id": "o1", "entity_id": "e1", "person_id": "p1",
+                             "party_type": "individual", "role": "director",
+                             "is_current": True}],
+        "persons": [PERSON],
+        "person_identity_documents": [
+            {"id": "old", "person_id": "p1", "id_type": "passport", "id_number": "FR111",
+             "is_primary": False, "created_at": "2020-01-01T00:00:00Z"},
+            {"id": "new", "person_id": "p1", "id_type": "passport", "id_number": "US222",
+             "is_primary": True, "created_at": "2026-01-01T00:00:00Z"}],
+        "addresses": [FILER_ADDR, RES_ADDR],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        graph = await nar1_source.load_entity_graph("e1")
+    assert [d["id"] for d in graph["identity_documents"]["p1"]] == ["new", "old"]

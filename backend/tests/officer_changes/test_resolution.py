@@ -223,3 +223,23 @@ def test_signatories_are_the_board_after_the_changes():
 
 def test_file_name():
     assert resolution.file_name(CASE) == "Written-Resolution-ND2A-2026-0007.pdf"
+
+
+def test_a_signature_block_is_never_split_across_pages():
+    """Review finding 4: six changes pushed the first block's 'Director' line
+    alone onto page 2. A block is the rule, the name and 'Director', together."""
+    officers = [{"officer_id": f"O{n}", "role": "director", "name": f"OUTGOING Number {n}"}
+                for n in range(1, 4)] + [
+        {"officer_id": "O9", "role": "director", "name": "STAYING Director"}]
+    entries = [{"id": f"C{n}", "kind": "cessation", "capacity": "director", "officer_id": f"O{n}",
+                "cessation_reason": "R", "effective_date": "2026-03-20",
+                "party": {"name": f"OUTGOING Number {n}"}} for n in range(1, 4)] + [
+        {"id": f"A{n}", "kind": "appointment", "capacity": "director",
+         "effective_date": "2026-03-20", "party": {"name": f"INCOMING Number {n}"}}
+        for n in range(1, 4)]
+    for page in _pages(resolution.render(CASE, ENTITY, entries, officers)):
+        texts = [r["text"] for r in _lines(page)]
+        rules = sum(t.startswith("____") for t in texts)
+        names = sum(t.startswith("Name:") for t in texts)
+        labels = sum(t == "Director" for t in texts)
+        assert rules == names == labels, (rules, names, labels)

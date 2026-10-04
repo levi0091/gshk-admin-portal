@@ -306,3 +306,69 @@ def test_an_invalid_token_is_401(db):
     with patch("middleware.auth._resolve_user",
                side_effect=HTTPException(status_code=401, detail="x")):
         assert client.get("/persons/P1/particulars-by-company", headers=H).status_code == 401
+
+
+# -- review finding 1: following the default is NOT a link to it --------------------
+
+def test_saving_the_default_address_unchanged_writes_nothing(db, admin, audit):
+    """E1 follows the default. Saving the picker as it opened must not pin E1
+    to A1 — or E1 would keep A1 after the default moves on."""
+    resp = client.put("/persons/P1/addresses/A1/companies", headers=H,
+                      json={"kind": "residential", "entity_ids": ["E1"]})
+    assert resp.status_code == 200
+    assert _officer(db, "O1").get("residential_address_id") is None
+    assert audit.await_count == 0
+
+
+def test_moving_a_company_onto_the_default_clears_its_own_link(db, admin, audit):
+    resp = client.put("/persons/P1/addresses/A1/companies", headers=H,
+                      json={"kind": "residential", "entity_ids": ["E1", "E2"]})
+    assert resp.status_code == 200
+    assert _officer(db, "O2")["residential_address_id"] is None
+    assert [r["metadata"]["entity_id"] for r in _rows(audit)] == ["E2"]
+    client.post("/persons/P1/addresses/A2/default", headers=H)
+    data = client.get("/persons/P1/particulars-by-company", headers=H).json()
+    assert next(r for r in data["residential"] if r["address_id"] == "A2")["used_by"] == ["E1", "E2"]
+
+
+def test_saving_the_primary_document_unchanged_writes_nothing(db, admin, audit):
+    resp = client.put("/persons/P1/identity-documents/D1/companies", headers=H,
+                      json={"entity_ids": ["E1"]})
+    assert resp.status_code == 200
+    assert _officer(db, "O1").get("identity_document_id") is None
+    assert audit.await_count == 0
+
+
+def test_moving_a_company_onto_the_primary_document_clears_its_link(db, admin, audit):
+    resp = client.put("/persons/P1/identity-documents/D1/companies", headers=H,
+                      json={"entity_ids": ["E1", "E2"]})
+    assert resp.status_code == 200
+    assert _officer(db, "O2")["identity_document_id"] is None
+
+
+def test_a_new_default_address_for_chosen_companies_leaves_them_following_it(db, admin, audit):
+    resp = client.post("/persons/P1/addresses", headers=H,
+                       json={"kind": "residential", **NEW, "entity_ids": ["E2"],
+                             "make_default": True})
+    assert resp.status_code == 201, resp.text
+    assert _officer(db, "O2")["residential_address_id"] is None
+    assert db.tables["persons"][0]["residential_address_id"] not in ("A1", "A2")
+
+
+def test_a_two_role_person_has_both_officer_rows_moved(db, admin, audit):
+    """Review Focus 1: CR holds one set of particulars per person per company."""
+    db.tables["entity_officers"].append(
+        {"id": "O3", "entity_id": "E1", "person_id": "P1", "role": "company_secretary",
+         "is_current": True})
+    client.put("/persons/P1/addresses/A2/companies", headers=H,
+               json={"kind": "residential", "entity_ids": ["E1", "E2"]})
+    assert _officer(db, "O1")["residential_address_id"] == "A2"
+    assert _officer(db, "O3")["residential_address_id"] == "A2"
+
+
+def test_a_dangling_document_link_reads_as_the_primary(db, admin):
+    """Review Focus 2: the document was deleted under the link (FK SET NULL in
+    Postgres; here the id simply no longer resolves)."""
+    _officer(db, "O2")["identity_document_id"] = "GONE"
+    data = client.get("/persons/P1/particulars-by-company", headers=H).json()
+    assert next(d for d in data["identity"] if d["document_id"] == "D1")["used_by"] == ["E1", "E2"]

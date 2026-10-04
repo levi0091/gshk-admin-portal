@@ -232,11 +232,17 @@ def add_address(person_id: str, *, kind: str, payload: dict, entity_ids: list[st
             .eq("id", person_id).execute()
         changes.append({"field": "default_residential_address", "entity_id": None,
                         "old": person.get("residential_address_id"), "new": row["id"]})
+    # A company given the new DEFAULT follows it (NULL) rather than being
+    # pinned to it, or it would stay behind when the default next moves
+    # (review finding 1).
+    value = None if make_default else row["id"]
     for entity_id in entity_ids:
         company = by_id[entity_id]
-        _link(sb, company, _LINK[kind], row["id"])
+        if company[_LINK[kind]] == value:
+            continue
+        _link(sb, company, _LINK[kind], value)
         changes.append({"field": f"{kind}_address", "entity_id": entity_id,
-                        "old": company[_LINK[kind]], "new": row["id"]})
+                        "old": company[_LINK[kind]], "new": value})
     return {"address": {"id": row["id"], **_address(row)}, "changes": changes}
 
 
@@ -283,11 +289,17 @@ def set_address_companies(person_id: str, address_id: str, *, kind: str,
     companies = _companies(sb, _appointments(sb, person_id))
     _check_companies(companies, entity_ids)
     column = _LINK[kind]
+    # Using the DEFAULT residential address is following it — no link of its
+    # own — so a company moved onto it is UNlinked, and one already following
+    # it is not touched. Pinning it instead would leave it behind on the old
+    # address the day the default changes (review finding 1).
+    target = None if (kind == "residential"
+                      and address_id == data["default_residential_address_id"]) else address_id
     plan = []
     for company in companies:
         current = company[column]
-        if company["entity_id"] in entity_ids and current != address_id:
-            plan.append((company, address_id))
+        if company["entity_id"] in entity_ids and current != target:
+            plan.append((company, target))
         elif company["entity_id"] not in entity_ids and current == address_id:
             plan.append((company, None))
     if plan:
@@ -344,11 +356,15 @@ def set_document_companies(person_id: str, document_id: str, *, entity_ids: list
         raise Refused(404, "That identity document is not this person's.", "not_found")
     companies = _companies(sb, _appointments(sb, person_id))
     _check_companies(companies, entity_ids)
+    # Filing the PRIMARY is following it — no link — for the same reason as
+    # the default address above: a renewed passport made primary must reach
+    # every company that was simply following the old one (review finding 1).
+    target = None if docs[document_id].get("is_primary") else document_id
     plan = []
     for company in companies:
         current = company["identity_document_id"]
-        if company["entity_id"] in entity_ids and current != document_id:
-            plan.append((company, document_id))
+        if company["entity_id"] in entity_ids and current != target:
+            plan.append((company, target))
         elif company["entity_id"] not in entity_ids and current == document_id:
             plan.append((company, None))
     if plan:

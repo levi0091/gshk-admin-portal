@@ -330,7 +330,9 @@ def render(case: dict, entity: dict, entries: list[dict], officers: list[dict]) 
         page.blank()
     page.line(f"Dated: {dated(entries) or '_' * 20}")
     for n, name in enumerate(signatories(entries, officers)):
-        if not page.room_for(4 if n == 0 else 7):
+        # A block is its spacing plus the rule, the name and 'Director' (review
+        # finding 4): 4 + 3 lines for the first, 3 + 3 after.
+        if not page.room_for(7 if n == 0 else 6):
             pdf.showPage()
             page.y, page.descent, page.fresh = TOP_MARGIN, 0.0, True
         for _ in range(4 if n == 0 else 3):
