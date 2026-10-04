@@ -1,5 +1,7 @@
 # ND2A / ND2B — Jacqueline's feedback of 1 October 2026
 
+> **Revised by `2026-10-05-nd2-levi-revisions-design.md`** (Levi, 4–5 October): §2.2's in-portal consent, §2.3's toggle and standard wording, §2.4's resolution and consent checks and §2.14's per-company dismissal no longer stand as written here.
+
 **Date:** 2026-10-02
 **Author:** Claude (Levi asked for build without check-ins; every decision taken alone is in §5)
 **Status:** Built on `nd2a_nd2b` (commits from `26647d8`), not pushed. Migration 052 not applied to DEV or PROD. HKID NIL (C-10) not yet run on CR TEST.
