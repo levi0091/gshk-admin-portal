@@ -32,8 +32,8 @@ const CHECKS = [
   { code: 'resignation_letter', entry_id: 'n1', label: 'Resignation letter on file — WONG Mei Ling',
     kind: 'document', document_type: 'resignation_letter', ok: true,
     document: { id: 'd1', file_name: 'resignation-letter-wong-mei-ling.pdf', uploaded_at: '2026-09-15T02:00:00Z' } },
-  { code: 'written_resolution', entry_id: null, label: 'Signed written resolution on file',
-    kind: 'document', document_type: 'board_resolution', ok: false, document: null },
+  { code: 'resignation_letter', entry_id: 'n3', label: 'Resignation letter on file — HO Old',
+    kind: 'document', document_type: 'resignation_letter', ok: false, document: null },
 ]
 const ENTRIES = [
   { id: 'n1', kind: 'cessation', capacity: 'director', party: { name: 'WONG Mei Ling' },
@@ -58,19 +58,21 @@ describe('ManualChecks (A4, the mock-up on p. 25)', () => {
     wrap(<ManualChecks data={BASE} reload={vi.fn()} can={ALL} />)
     expect(screen.getByText('KYC / WorldCheck cleared — LEE Ka Ho')).toBeInTheDocument()
     expect(screen.getByText('resignation-letter-wong-mei-ling.pdf')).toBeInTheDocument()
-    const open = screen.getByText('Signed written resolution on file').closest('[data-check]')
+    const open = screen.getByText('Resignation letter on file — HO Old').closest('[data-check]')
     expect(open).toHaveAttribute('data-ok', 'false')
+    // Levi 2026-10-05: the resolution goes with the ND2A; consent is CR's signature.
+    expect(screen.queryByText(/written resolution/i)).not.toBeInTheDocument()
   })
 
-  it('attaches the written resolution to the case, and replaces a letter on its entry', async () => {
+  it('attaches each letter to its own entry', async () => {
     upload.mockResolvedValue({ id: 'k1' })
     const user = userEvent.setup()
     wrap(<ManualChecks data={BASE} reload={vi.fn()} can={ALL} />)
-    await user.upload(screen.getByLabelText('Attach a file for Signed written resolution on file'),
-      new File(['x'], 'resolution.pdf'))
+    await user.upload(screen.getByLabelText('Attach a file for Resignation letter on file — HO Old'),
+      new File(['x'], 'letter.pdf'))
     await waitFor(() => expect(upload).toHaveBeenCalled())
-    expect(upload.mock.calls[0][0]).toBe('/officer-changes/k1/documents')
-    expect(upload.mock.calls[0][1].get('document_type_code')).toBe('board_resolution')
+    expect(upload.mock.calls[0][0]).toBe('/officer-changes/k1/entries/n3/documents')
+    expect(upload.mock.calls[0][1].get('document_type_code')).toBe('resignation_letter')
     await user.upload(screen.getByLabelText('Replace the file for Resignation letter on file — WONG Mei Ling'),
       new File(['x'], 'letter2.pdf'))
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(2))
@@ -96,7 +98,7 @@ describe('Data Verification gate (A4) and the e-Sign route with a deferred date 
   it('will not validate while a check is open, and says which', () => {
     wrap(<StageDataVerification data={{ ...BASE, signing_method: 'esign' }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Validate with CR Portal' })).toBeDisabled()
-    expect(screen.getByText(/Finish the manual checks first: Signed written resolution on file/)).toBeInTheDocument()
+    expect(screen.getByText(/Finish the manual checks first: Resignation letter on file — HO Old/)).toBeInTheDocument()
   })
 
   it('with a date still blank, e-Sign continues to Signing without CR', async () => {

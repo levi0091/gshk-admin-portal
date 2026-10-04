@@ -45,24 +45,13 @@ def test_resignation_letter_per_cessation_not_by_death():
     assert letters[0]["document_type"] == "resignation_letter"
 
 
-def test_written_resolution_once_per_nd2a_and_satisfied_by_any_board_resolution():
+def test_checks_are_kyc_and_letters_only():
+    """Levi 2026-10-05: the written resolution goes to the client WITH the
+    ND2A, and CR's consent signature is the consent — neither is a check."""
     entries = [cease("N1", "WONG Mei Ling"), appoint("N2", "LEE Ka Ho")]
-    missing = by_code(checks.manual_checks(ND2A, entries, [], route="esign"),
-                      "written_resolution")
-    assert len(missing) == 1 and missing[0]["ok"] is False and missing[0]["entry_id"] is None
-    case_level = by_code(checks.manual_checks(ND2A, entries, [doc(None, "board_resolution")],
-                                              route="esign"), "written_resolution")
-    on_entry = by_code(checks.manual_checks(ND2A, entries, [doc("N2", "board_resolution")],
-                                            route="esign"), "written_resolution")
-    assert case_level[0]["ok"] and on_entry[0]["ok"]
-
-
-def test_consent_check_only_on_the_manual_route():
-    entries = [appoint("N1", "LEE Ka Ho"), appoint("N2", "Sec", capacity="company_secretary")]
-    assert by_code(checks.manual_checks(ND2A, entries, [], route="esign"), "consent_to_act") == []
-    manual = by_code(checks.manual_checks(ND2A, entries, [doc("N1", "consent_to_act")],
-                                          route="manual"), "consent_to_act")
-    assert [(i["label"], i["ok"]) for i in manual] == [("Consent to act signed — LEE Ka Ho", True)]
+    for route in ("esign", "manual"):
+        items = checks.manual_checks(ND2A, entries, [], route=route)
+        assert [i["code"] for i in items] == ["kyc", "resignation_letter"], route
 
 
 def test_the_latest_document_of_a_type_is_the_one_shown():
@@ -80,19 +69,4 @@ def test_nd2b_has_no_checks():
 
 def test_incomplete_names_what_is_left():
     items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling")], [], route="manual")
-    assert checks.incomplete(items) == ["Resignation letter on file — WONG Mei Ling",
-                                        "Signed written resolution on file"]
-
-
-def test_the_draft_resolution_sent_for_signature_does_not_pass_as_signed():
-    """Finding 2: the resolution GSHK uploads at Client Verification to SEND to
-    the client is the unsigned draft; only a copy kept on the case counts."""
-    draft = {**doc(None, "board_resolution", "draft.pdf"), "send_with_email": True}
-    items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling", reason="D")], [draft],
-                                 route="esign")
-    assert by_code(items, "written_resolution")[0]["ok"] is False
-    signed = {**doc(None, "board_resolution", "signed.pdf"), "id": "D9", "send_with_email": False}
-    items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling", reason="D")],
-                                 [draft, signed], route="esign")
-    check = by_code(items, "written_resolution")[0]
-    assert check["ok"] is True and check["document"]["file_name"] == "signed.pdf"
+    assert checks.incomplete(items) == ["Resignation letter on file — WONG Mei Ling"]
