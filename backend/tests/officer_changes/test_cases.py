@@ -729,3 +729,12 @@ def test_a_ready_director_on_a_manual_only_case_is_not_shown_as_esign(db, nd2a, 
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
     view = next(e for e in data["entries"] if e["id"] == a["id"])
     assert view["consent_mode"] == "manual"
+
+
+def test_composite_officers_carry_the_chinese_name(db, nd2a, monkeypatch):
+    """The written resolution signs 'Name: Aldo KRIEL 歐立德' (Levi 2026-10-05)."""
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    db.tables["persons"][0]["full_name_zh"] = "陳大文"
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    officer = next(o for o in data["officers"] if o["person_id"] == db.tables["persons"][0]["id"])
+    assert officer["name_zh"] == "陳大文"

@@ -668,6 +668,9 @@ def _current_officers(entity_id: str, entries: list[dict]) -> list[dict]:
             "corporate_entity_id": party["corporate_entity_id"],
             "name": (person.get("full_name") if party["person_id"]
                      else corp.get("company_name") or r.get("corporate_name")) or "(unnamed)",
+            # The written resolution signs "Name: Aldo KRIEL 歐立德".
+            "name_zh": (person.get("full_name_zh") if party["person_id"]
+                        else corp.get("company_name_zh")) or "",
             "appointed_date": r.get("appointed_date"),
             "date_of_death": person.get("date_of_death"),
             "pending": r["id"] in on_case,

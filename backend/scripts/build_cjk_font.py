@@ -1,10 +1,12 @@
-"""Instance Noto Serif TC's variable font to Bold and save it statically.
+"""Instance the Noto CJK variable fonts to static weights and save them.
 
 BUILD-TIME ONLY. Run this by hand when the CJK face needs regenerating; the
 result is committed. Nothing in the application imports it, so `fonttools`
 stays a developer tool rather than a runtime dependency.
 
-    uv run --with fonttools --with brotli python scripts/build_cjk_font.py
+    uv run --with fonttools --with brotli python scripts/build_cjk_font.py [FILE ...]
+
+Name one or more target files to build only those.
 
 WHY THIS EXISTS AT ALL. Registering the variable font directly gives you its
 DEFAULT instance, which for Noto Serif TC is ExtraLight -- so Chinese company
@@ -43,17 +45,25 @@ from fontTools.varLib import instancer
 #: redundant either: it carries ~1,700 codepoints SC does not.
 _BASE = ("https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
          "Serif/Variable/TTF/Subset/")
+_SANS = ("https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
+         "Sans/Variable/TTF/Subset/")
+#: filename -> (variable source, weight).
+#: NotoSansTC-Regular is the ND2A written resolution's Chinese face (Levi
+#: 2026-10-05): GSHK's sample sets Chinese names in DengXian, a Microsoft sans
+#: that cannot be redistributed; Noto Sans TC Regular is the nearest free face.
 FACES = {
-    "NotoSerifTC-Bold.ttf": _BASE + "NotoSerifTC-VF.ttf",
-    "NotoSerifSC-Bold.ttf": _BASE + "NotoSerifSC-VF.ttf",
+    "NotoSerifTC-Bold.ttf": (_BASE + "NotoSerifTC-VF.ttf", 700),
+    "NotoSerifSC-Bold.ttf": (_BASE + "NotoSerifSC-VF.ttf", 700),
+    "NotoSansTC-Regular.ttf": (_SANS + "NotoSansTC-VF.ttf", 400),
 }
 FONT_DIR = Path(__file__).resolve().parents[1] / "services" / "nar1_form" / "fonts"
-WEIGHT = 700
 
 
-def main() -> int:
+def main(only: list[str]) -> int:
     FONT_DIR.mkdir(parents=True, exist_ok=True)
-    for filename, source in FACES.items():
+    for filename, (source, weight) in FACES.items():
+        if only and filename not in only:
+            continue
         target = FONT_DIR / filename
         print(f"downloading {source}")
         raw = urllib.request.urlopen(source, timeout=300).read()
@@ -64,13 +74,13 @@ def main() -> int:
             # default's name -- ExtraLight -- and every PDF embeds a font
             # announcing a weight it is not.
             static = instancer.instantiateVariableFont(
-                TTFont(cache), {"wght": WEIGHT}, updateFontNames=True)
+                TTFont(cache), {"wght": weight}, updateFontNames=True)
             static.save(target)
         finally:
             cache.unlink(missing_ok=True)
-        print(f"wrote {target} ({target.stat().st_size} bytes) at wght={WEIGHT}")
+        print(f"wrote {target} ({target.stat().st_size} bytes) at wght={weight}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
