@@ -30,7 +30,6 @@ SUPPORT_TYPES = ("resignation_letter", "board_resolution", "consent_to_act",
 #: else GSHK sends with the client email — belongs to the form, not to one
 #: officer, and is filed to the COMPANY's profile.
 CASE_TYPES = ("board_resolution", "officer_change_support")
-SOURCES = ("upload", "econsent", "generated")
 
 
 class AttachmentError(RuntimeError):
@@ -100,10 +99,8 @@ def destination(entry: dict | None, *, case: dict | None = None) -> dict:
 
 async def upload(case: dict, entry: dict | None, *, document_type_code: str,
                  file_name: str, content: bytes, mime_type: str | None, user: dict | None,
-                 send_with_email: bool = False, source: str = "upload",
-                 uploaded_by_name: str | None = None) -> dict:
-    """Hold a file on the case. `entry` None is a CASE-level document; `user`
-    None is a consent signed in G-FlowDesk, named by `uploaded_by_name`."""
+                 send_with_email: bool = False) -> dict:
+    """Hold a file on the case. `entry` None is a CASE-level document."""
     if entry is None:
         if document_type_code not in CASE_TYPES:
             raise ValueError("A document for the whole form is a written resolution "
@@ -111,8 +108,6 @@ async def upload(case: dict, entry: dict | None, *, document_type_code: str,
     elif document_type_code not in SUPPORT_TYPES:
         raise ValueError("A supporting document is a resignation letter, a board "
                          "resolution, a consent to act, or other")
-    if source not in SOURCES:
-        raise ValueError(f"unknown document source {source!r}")
     if not content:
         raise ValueError("The file is empty")
     if _filed(case):
@@ -132,8 +127,7 @@ async def upload(case: dict, entry: dict | None, *, document_type_code: str,
         "mime_type": mime_type, "file_size_bytes": len(content),
         "checksum_sha256": hashlib.sha256(content).hexdigest(),
         "uploaded_by": (user or {}).get("id"), "uploaded_at": _now(),
-        "send_with_email": bool(send_with_email), "source": source,
-        "uploaded_by_name": uploaded_by_name,
+        "send_with_email": bool(send_with_email),
     }).execute().data[0]
 
 
@@ -153,8 +147,6 @@ def _view(row: dict, entries_by_id: dict[str, dict], labels: dict[str, str],
         "type_label": labels.get(row["document_type_code"], row["document_type_code"]),
         "file_name": row["file_name"], "uploaded_at": row.get("uploaded_at"),
         "send_with_email": bool(row.get("send_with_email")),
-        "source": row.get("source") or "upload",
-        "uploaded_by_name": row.get("uploaded_by_name"),
         "destination": where,
         "filed": row.get("filed_at") is not None,
         "filed_document_id": row.get("filed_document_id"),

@@ -2,7 +2,7 @@
 
 TWO HALVES, like 050's. The pure half pins the SQL text; the DB half
 (RUN_DB_TESTS) upgrades a real Postgres and proves the new columns exist and
-that the table holding e-consent tokens cannot be read through PostgREST.
+that entry_id became nullable.
 """
 import importlib.util
 import os
@@ -38,7 +38,7 @@ def test_052_revises_050():
 
 
 def test_052_adds_every_column():
-    for col in ("date_deferred", "send_with_email", "source", "uploaded_by_name",
+    for col in ("date_deferred", "send_with_email",
                 "attach_resolution", "registered_id_type", "registered_id_number"):
         assert f"ADD COLUMN IF NOT EXISTS {col}" in SQL, col
 
@@ -47,28 +47,23 @@ def test_052_entry_id_becomes_nullable():
     assert "ALTER COLUMN entry_id DROP NOT NULL" in SQL
 
 
-def test_052_document_source_is_a_closed_vocabulary():
-    assert "source IN ('upload', 'econsent', 'generated')" in SQL
-
-
 def test_052_registered_id_type_is_hkid_or_passport():
     assert "registered_id_type IS NULL OR registered_id_type IN ('hkid', 'passport')" in SQL
 
 
-def test_052_consents_table_is_locked_down():
-    assert "CREATE TABLE IF NOT EXISTS public.officer_change_consents" in SQL
-    assert "token_hash text NOT NULL" in SQL
-    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_officer_change_consents_token" in SQL
-    lock = _normalise(m._lock_down("officer_change_consents"))
-    assert "ENABLE ROW LEVEL SECURITY" in lock
-    assert "REVOKE ALL ON public.officer_change_consents FROM anon" in lock
-    assert "REVOKE ALL ON public.officer_change_consents FROM authenticated" in lock
+def test_052_carries_no_in_portal_consent():
+    """Levi 2026-10-05: CR's consent signature IS the consent (TPSI API
+    v1.0.14 section 7.1.2), so nothing of the in-portal consent survives."""
+    for gone in ("officer_change_consents", "token_hash", "uploaded_by_name",
+                 "econsent", "ADD COLUMN IF NOT EXISTS source"):
+        assert gone not in SQL, gone
+    assert "officer_change_consents" not in DOWN_SQL
+    assert not any("ECONSENT" in code for code, _ in m.AUDIT_CODES)
 
 
-def test_052_seeds_three_codes_as_g_flowdesk():
+def test_052_seeds_the_waiver_code_as_g_flowdesk():
     codes = {code for code, _name in m.AUDIT_CODES}
-    assert codes == {ev.OFFICER_ECONSENT_LINK_SENT, ev.OFFICER_ECONSENT_SIGNED,
-                     ev.OFFICER_CONFIRMATION_WAIVED}
+    assert codes == {ev.OFFICER_CONFIRMATION_WAIVED}
     seed = _normalise(m.audit_seed_sql())
     assert "'officer_changes', 'g_flowdesk'" in seed
     for code in codes:
@@ -77,7 +72,6 @@ def test_052_seeds_three_codes_as_g_flowdesk():
 
 def test_052_downgrade_refuses_while_data_exists():
     assert "RAISE EXCEPTION" in DOWN_SQL
-    assert "officer_change_consents" in DOWN_SQL
     assert "entry_id IS NULL" in DOWN_SQL
 
 
@@ -126,27 +120,11 @@ def test_052_columns_exist_after_upgrade():
         cols = {(r[0], r[1]) for r in cur.fetchall()}
         for pair in (("officer_change_entries", "date_deferred"),
                      ("officer_change_documents", "send_with_email"),
-                     ("officer_change_documents", "source"),
-                     ("officer_change_documents", "uploaded_by_name"),
                      ("nar1_cases", "attach_resolution"),
                      ("person_eservice_credentials", "registered_id_type"),
-                     ("person_eservice_credentials", "registered_id_number"),
-                     ("officer_change_consents", "token_hash")):
+                     ("person_eservice_credentials", "registered_id_number")):
             assert pair in cols, pair
         cur.execute("SELECT is_nullable FROM information_schema.columns WHERE table_name = "
                     "'officer_change_documents' AND column_name = 'entry_id'")
         nullable = cur.fetchone()[0]
         assert nullable == "YES"
-
-
-@needs_db
-def test_052_consents_have_rls_and_no_policy():
-    import psycopg2
-    with psycopg2.connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
-        cur.execute("SELECT relrowsecurity FROM pg_class WHERE relname = "
-                    "'officer_change_consents'")
-        rls = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM pg_policies WHERE tablename = "
-                    "'officer_change_consents'")
-        policies = cur.fetchone()[0]
-        assert rls is True and policies == 0

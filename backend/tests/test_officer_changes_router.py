@@ -60,7 +60,6 @@ ROUTES = [
     ("put", "/officer-changes/K1/entries/N1/effective-date", {"effective_date": "2026-10-01"}),
     ("patch", "/officer-changes/K1/documents/D1", {"send_with_email": True}),
     ("get", "/officer-changes/K1/resolution", None),
-    ("post", "/officer-changes/K1/entries/N1/econsent-pdf", None),
     ("get", "/officer-changes/K1/preview", None),
     ("get", "/officer-changes/K1/verification/recipients", None),
     ("post", "/officer-changes/K1/verification/send", {"respond_by": "2026-10-10"}),
@@ -635,70 +634,16 @@ def test_preview_public_audience_is_public_only(env):
 
 
 
-# -- e-consent links (Jacqueline A2) ----------------------------------------------
+# -- no in-portal consent (Levi 2026-10-05) --------------------------------------
 
-def test_send_issues_consent_links_and_audits(env):
-    sent = []
-    stack, _r, letter = _send_patches(sent)
-    stack.enter_context(patch.object(oc.nar1_router, "_approval_link_base",
-                                     return_value="https://api.test"))
-    stack.enter_context(patch.object(oc.nar1_approvals, "issue", return_value=[
-        {"email": "lee@example.com", "person_id": "P9", "name": "LEE Ka Ho",
-         "token": "tokA", "expires_at": None}]))
-    stack.enter_context(patch.object(oc.svc, "list_entries", return_value=[
-        {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"}]))
-    stack.enter_context(patch.object(oc.eservice, "metadata_for", return_value={}))
-    issue = stack.enter_context(patch.object(oc.econsent, "issue",
-                                             return_value={"N1": "consentTok"}))
-    with stack:
-        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
-            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
-    assert resp.status_code == 200, resp.text
-    assert [e["id"] for e in issue.call_args.args[1]] == ["N1"]
-    consent = letter.call_args.kwargs["consent"]
-    assert consent["mode"] == "econsent"
-    assert consent["url"] == "https://api.test/public/officer-consent/consentTok"
-    assert _actions(env.audit).count("OFFICER_ECONSENT_LINK_SENT") == 1
-
-
-def test_restart_supersedes_consent_links(env):
-    env.case = {**CASE, "verification_sent_at": "2026-10-01T00:00:00Z"}
-    with patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=0), \
-         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=0), \
-         patch.object(oc.econsent, "supersede", return_value=1) as gone:
-        resp = client.patch("/officer-changes/K1", headers=H,
-                            json={"restart_verification": True})
-    assert resp.status_code == 200
-    gone.assert_called_once_with("K1")
-
-
-def test_close_supersedes_consent_links(env):
-    with patch.object(oc.nar1_cases, "close_case", return_value={"id": "K1"}), \
-         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=0), \
-         patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=0), \
-         patch.object(oc.econsent, "supersede", return_value=1) as gone:
-        resp = client.post("/officer-changes/K1/close", headers=H, json={"reason": "x"})
-    assert resp.status_code == 200
-    gone.assert_called_once_with("K1")
-
-
-
-def test_econsent_pdf_regenerates_and_audits(env):
-    with patch.object(oc.svc, "list_entries", return_value=[
-            {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"}]), \
-         patch.object(oc.econsent, "regenerate", new_callable=AsyncMock, return_value="DOC-2"):
+def test_consent_routes_are_gone():
+    """CR's consent signature IS the consent (TPSI API v1.0.14 section 7.1.2):
+    no consent link, no public consent page, no stamped consent PDF."""
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert not any("econsent" in p or "officer-consent" in p for p in paths)
+    with patch("middleware.auth._resolve_user", return_value=ADMIN):
         resp = client.post("/officer-changes/K1/entries/N1/econsent-pdf", headers=H)
-    assert resp.status_code == 200, resp.text
-    assert env.audit.await_args.kwargs["action_type"] == "OFFICER_SUPPORT_DOC_UPLOADED"
-
-
-def test_econsent_pdf_without_a_signature_is_409(env):
-    with patch.object(oc.svc, "list_entries", return_value=[
-            {"id": "N1", "kind": "appointment", "capacity": "director", "person_id": "P9"}]), \
-         patch.object(oc.econsent, "regenerate", new_callable=AsyncMock,
-                      side_effect=LookupError("no signed consent")):
-        resp = client.post("/officer-changes/K1/entries/N1/econsent-pdf", headers=H)
-    assert resp.status_code == 409
+    assert resp.status_code in (404, 405)
 
 
 # -- ND2B: proceed without the client's confirmation (Jacqueline BQ1) ---------------
@@ -761,7 +706,7 @@ def test_switching_route_clears_the_data_check(env):
 
 def test_a_mixed_board_on_a_manual_only_case_is_never_told_no_signature_is_needed(env):
     """Finding 4: director A has an account, B has none — the case can only go
-    manual, so A gets the in-system consent link, not 'no signature needed'."""
+    manual, so nobody is told 'no signature needed' and nobody gets a link."""
     sent = []
     plan = [{"entry_id": "N1", "signer_person_id": "P9", "ready": True, "signer_name": "LEE"},
             {"entry_id": "N2", "signer_person_id": "P8", "ready": False, "signer_name": "HO",
@@ -777,11 +722,8 @@ def test_a_mixed_board_on_a_manual_only_case_is_never_told_no_signature_is_neede
         {"id": "N2", "kind": "appointment", "capacity": "director", "person_id": "P8"}]))
     stack.enter_context(patch.object(oc.eservice, "metadata_for", return_value={
         "P9": {"eservice_user_id": "LKH1", "eservice_person_name": "LEE", "has_password": True}}))
-    issue = stack.enter_context(patch.object(oc.econsent, "issue",
-                                             return_value={"N1": "consentTok"}))
     with stack:
         resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
             "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
     assert resp.status_code == 200, resp.text
-    assert [e["id"] for e in issue.call_args.args[1]] == ["N1"]
-    assert letter.call_args.kwargs["consent"]["mode"] == "econsent"
+    assert letter.call_args.kwargs["consent"] is None

@@ -83,7 +83,8 @@ def test_consent_plan_names_who_is_missing_a_credential(monkeypatch):
     plan = asyncio.run(prepare.consent_plan(CASE, entries))
     assert [(p["entry_id"], p["bean_id"], p["ready"]) for p in plan] == [
         ("N1", "S1", False), ("N3", "S2", True)]
-    assert plan[0]["reason"] == "HO New has no e-Registry account stored on their profile"
+    assert plan[0]["reason"] == ("HO New has no e-Registry account stored on their profile "
+                                 "— file this ND2A on the manual route (CR portal)")
     assert plan[1]["eservice_user_id"] == "ER2" and plan[1]["signed_at"]
     assert "enc" not in str(plan)
 

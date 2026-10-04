@@ -120,18 +120,12 @@ PI_NOTICE = ("The attached draft includes the protected-information sheet(s) —
 
 
 def _consent_paragraph(consent: dict | None) -> str:
-    """For the incoming director's own letter (Jacqueline A2, A5)."""
+    """For the incoming director's own letter (Jacqueline A5)."""
     mode = (consent or {}).get("mode")
     if mode == "esign":
         return _para("<strong>No signature is needed from you.</strong> We will apply your "
                      "consent to act as a director through the e-Registry account we set "
                      "up with you.", top=14)
-    if mode == "econsent" and (consent or {}).get("url"):
-        return (_para("As a new director, please also sign your consent to act as a "
-                      "director of the company. Use the <strong>Sign consent to act</strong> "
-                      "button below; it asks only for your name and needs no password.",
-                      top=14)
-                + _button(consent["url"], "Sign consent to act", colour=es._INDIGO))
     return ""
 
 
@@ -151,8 +145,10 @@ def officer_change_email(case: dict, entity: dict, entries: list[dict], *,
     """`(subject, html)`.
 
     `attachments` names every file attached, listed under "Attached:".
-    `consent` is set only on an incoming director's own letter:
-    `{"mode": "esign" | "econsent", "url", "name"}`.
+    `consent` is set only on an incoming director's own letter, and only when
+    GSHK PIN-signs their consent from their stored e-Registry account:
+    `{"mode": "esign", "name"}`. There is no in-portal consent (Levi
+    2026-10-05: CR's consent signature is the consent).
 
     `revision` is which verification email this is for the case (Levi
     2026-10-02, migration 051). From the second on it reads exactly as NAR1's

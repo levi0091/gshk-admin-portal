@@ -12,22 +12,17 @@ Design: `docs/superpowers/specs/2026-10-02-nd2-jacqueline-feedback-design.md`.
       A CASE-level document — the written resolution, or anything else GSHK
       sends with the client email (A3) — belongs to the form, not to one
       officer. Filed to the COMPANY's profile when the form is filed.
-  officer_change_documents.send_with_email / source / uploaded_by_name
-      Attached to the verification email; where the file came from (an
-      upload, a consent signed in G-FlowDesk, a generated document); and the
-      signer's name when no portal user uploaded it.
+  officer_change_documents.send_with_email
+      Attached to the verification email.
 
   nar1_cases.attach_resolution
       Attach the generated written resolution to the email (off by default:
       its wording is a standard one, GSHK's sample was not available).
 
-  officer_change_consents
-      A new director's consent to act, signed in G-FlowDesk (A2). One row per
-      link: the token's HASH only, its revision and expiry, and — once signed —
-      the typed name, IP address and browser. Separate from the approval
-      tokens because the first director to Confirm supersedes every other
-      Confirm link, and the incoming director must still be able to sign.
-      RLS on, no policy, revoked from the browser roles, like 050's tables.
+  (No consent table. A consent-to-act signed in G-FlowDesk was here until
+  Levi 2026-10-05 — CR's consent signature over the director's bean IS the
+  consent, TPSI API v1.0.14 section 7.1.2 — and was removed before any
+  database ran this migration.)
 
   person_eservice_credentials.registered_id_type / registered_id_number
       The identity document the e-Registry account was opened with (note 1:
@@ -41,8 +36,8 @@ Design: `docs/superpowers/specs/2026-10-02-nd2-jacqueline-feedback-design.md`.
       the dashboard and the case header agree (review finding 6). Built from
       050's own `_case_view_sql`, so nothing else can drift.
 
-REVERSIBLE; the downgrade refuses while a consent or a case-level document
-exists, rather than drop either, and restores 050's view.
+REVERSIBLE; the downgrade refuses while a case-level document exists, rather
+than drop it, and restores 050's view.
 
 Revision ID: 052
 Revises: 050
@@ -59,8 +54,6 @@ depends_on = None
 
 #: (code, name). origin/category set explicitly — see 050's AUDIT_CODES note.
 AUDIT_CODES = [
-    ("OFFICER_ECONSENT_LINK_SENT", "Consent-to-Act Link Sent"),
-    ("OFFICER_ECONSENT_SIGNED", "Consent to Act Signed in G-FlowDesk"),
     ("OFFICER_CONFIRMATION_WAIVED", "Filed Without Client Confirmation"),
 ]
 
@@ -72,43 +65,11 @@ UPGRADE_SQL = [
     """
     ALTER TABLE public.officer_change_documents
       ALTER COLUMN entry_id DROP NOT NULL,
-      ADD COLUMN IF NOT EXISTS send_with_email boolean NOT NULL DEFAULT false,
-      ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'upload',
-      ADD COLUMN IF NOT EXISTS uploaded_by_name text;
-    ALTER TABLE public.officer_change_documents
-      DROP CONSTRAINT IF EXISTS officer_change_documents_source_valid;
-    ALTER TABLE public.officer_change_documents
-      ADD CONSTRAINT officer_change_documents_source_valid
-      CHECK (source IN ('upload', 'econsent', 'generated'));
+      ADD COLUMN IF NOT EXISTS send_with_email boolean NOT NULL DEFAULT false;
     """,
     """
     ALTER TABLE public.nar1_cases
       ADD COLUMN IF NOT EXISTS attach_resolution boolean NOT NULL DEFAULT false;
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS public.officer_change_consents (
-      id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      case_id       uuid NOT NULL REFERENCES public.nar1_cases(id) ON DELETE CASCADE,
-      entry_id      uuid NOT NULL
-                      REFERENCES public.officer_change_entries(id) ON DELETE CASCADE,
-      person_id     uuid REFERENCES public.persons(id) ON DELETE SET NULL,
-      -- SHA-256 of the token. The token itself is only ever in the email.
-      token_hash text NOT NULL,
-      revision      integer,
-      issued_at     timestamptz NOT NULL DEFAULT now(),
-      expires_at    timestamptz,
-      superseded_at timestamptz,
-      signed_at     timestamptz,
-      signed_name   text,
-      ip_address    inet,
-      user_agent    text,
-      document_id   uuid
-                      REFERENCES public.officer_change_documents(id) ON DELETE SET NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_officer_change_consents_token
-      ON public.officer_change_consents (token_hash);
-    CREATE INDEX IF NOT EXISTS ix_officer_change_consents_case
-      ON public.officer_change_consents (case_id);
     """,
     """
     ALTER TABLE public.person_eservice_credentials
@@ -125,11 +86,6 @@ UPGRADE_SQL = [
 DOWNGRADE_GUARD = """
     DO $$
     BEGIN
-      IF EXISTS (SELECT 1 FROM public.officer_change_consents) THEN
-        RAISE EXCEPTION
-          'migration 052 cannot be downgraded while officer_change_consents has '
-          'rows: they are signed consents to act. Remove them first, knowingly.';
-      END IF;
       IF EXISTS (SELECT 1 FROM public.officer_change_documents WHERE entry_id IS NULL) THEN
         RAISE EXCEPTION
           'migration 052 cannot be downgraded while case-level officer-change '
@@ -186,23 +142,6 @@ def _rebuild_view(sql: str) -> None:
     op.execute(m050._CASE_GRANTS)
 
 
-def _lock_down(table: str) -> str:
-    """050's lock-down, verbatim in effect: RLS on, no policy, revoked from the
-    two browser-facing roles where they exist (vanilla CI Postgres has none)."""
-    return f"""
-        ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY;
-        DO $$
-        BEGIN
-          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-            REVOKE ALL ON public.{table} FROM anon;
-          END IF;
-          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-            REVOKE ALL ON public.{table} FROM authenticated;
-          END IF;
-        END $$;
-    """
-
-
 def audit_seed_sql() -> str:
     values = ", ".join(f"('{code}', '{name}', 'officer_changes', 'g_flowdesk')"
                        for code, name in AUDIT_CODES)
@@ -213,7 +152,6 @@ def audit_seed_sql() -> str:
 def upgrade() -> None:
     for statement in UPGRADE_SQL:
         op.execute(statement)
-    op.execute(_lock_down("officer_change_consents"))
     op.execute(audit_seed_sql())
     _rebuild_view(view_sql())
 
@@ -229,13 +167,9 @@ def downgrade() -> None:
           DROP COLUMN IF EXISTS registered_id_number,
           DROP COLUMN IF EXISTS registered_id_type;
     """)
-    op.execute("DROP TABLE IF EXISTS public.officer_change_consents")
     op.execute("ALTER TABLE public.nar1_cases DROP COLUMN IF EXISTS attach_resolution")
     op.execute("""
         ALTER TABLE public.officer_change_documents
-          DROP CONSTRAINT IF EXISTS officer_change_documents_source_valid,
-          DROP COLUMN IF EXISTS uploaded_by_name,
-          DROP COLUMN IF EXISTS source,
           DROP COLUMN IF EXISTS send_with_email,
           ALTER COLUMN entry_id SET NOT NULL;
     """)

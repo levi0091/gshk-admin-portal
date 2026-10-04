@@ -91,7 +91,10 @@ async def consent_plan(case: dict, entries: list[dict]) -> list[dict]:
         elif not signer:
             reason = "Choose who signs the body corporate's consent"
         elif not account.get("eservice_user_id"):
-            reason = f"{name} has no e-Registry account stored on their profile"
+            # Levi 2026-10-05: no account (or the director will not have GSHK
+            # sign for them) means CR's portal, outside G-FlowDesk.
+            reason = (f"{name} has no e-Registry account stored on their profile "
+                      "— file this ND2A on the manual route (CR portal)")
         elif not account.get("eservice_person_name"):
             reason = f"The name on {name}'s e-Registry account is not recorded"
         elif not account.get("has_password"):

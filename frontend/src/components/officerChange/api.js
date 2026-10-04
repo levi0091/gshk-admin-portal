@@ -68,7 +68,6 @@ export const officerChangeApi = {
   setEffectiveDate: (id, entryId, date, itemKey) =>
     api.put(`${base(id)}/entries/${entryId}/effective-date`,
       { effective_date: date, ...(itemKey ? { item_key: itemKey } : {}) }),
-  regenerateConsentPdf: (id, entryId) => api.post(`${base(id)}/entries/${entryId}/econsent-pdf`, {}),
 
   validate: (id) => api.post(`${base(id)}/validate`, {}),
   // `signingMethod` 'esign' leaves Data Verification with a date still blank:

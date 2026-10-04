@@ -706,13 +706,3 @@ def _entity_or_empty(case: dict) -> dict:
         return nar1_cases.entity_for(case["entity_id"]) or {}
     except Exception:  # noqa: BLE001
         return {}
-
-
-# --------------------------------------------------------------------------- #
-#  The consent-to-act page (Jacqueline A2, 2026-10-01) lives in its own module
-#  but is served by THIS router, so `/public` stays ONE unauthenticated surface
-#  mounted once in main.py. Imported last: it uses the helpers above.
-# --------------------------------------------------------------------------- #
-from routers import public_consent as _public_consent  # noqa: E402
-
-router.include_router(_public_consent.router)

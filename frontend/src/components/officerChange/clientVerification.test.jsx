@@ -146,20 +146,18 @@ describe('Effective date is optional at send (A1)', () => {
   })
 })
 
-describe('Consent line on the change list (A2, A5, AQ6)', () => {
-  it('says how each new director consents', () => {
+describe('Consent line on the change list (A5, Levi 2026-10-05)', () => {
+  it('says e-Sign or the manual route, and never offers an in-portal consent', () => {
     const entries = [
       { id: 'n1', kind: 'appointment', capacity: 'director', party: { name: 'LEE Ka Ho' },
         summary: 'Director', consent_mode: 'esign' },
       { id: 'n2', kind: 'appointment', capacity: 'director', party: { name: 'HO New' },
-        summary: 'Director', consent_mode: 'econsent', econsent: { sent: true, signed_at: '2026-10-02T06:03:00Z' } },
-      { id: 'n3', kind: 'appointment', capacity: 'director', party: { name: 'Island Ltd' },
-        summary: 'Director', consent_mode: 'paper' },
+        summary: 'Director', consent_mode: 'manual' },
     ]
     wrap(<ChangesCard data={{ ...BASE, entries }} reload={vi.fn()} can={ALL} />)
-    expect(screen.getByText(/Consent: e-Sign — e-Registry account on file/)).toBeInTheDocument()
-    expect(screen.getByText(/Consent: signed in G-FlowDesk/)).toBeInTheDocument()
-    expect(screen.getByText(/Consent: on paper/)).toBeInTheDocument()
+    expect(screen.getByText(/Consent: e-Sign — PIN-signed from the e-Registry account on file/)).toBeInTheDocument()
+    expect(screen.getByText(/Consent: manual route — given on the CR portal/)).toBeInTheDocument()
+    expect(screen.queryByText(/G-FlowDesk from their email/)).not.toBeInTheDocument()
   })
 })
 

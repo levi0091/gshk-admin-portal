@@ -61,7 +61,6 @@ describe('officerChangeApi', () => {
     ['resolutionPdf', () => oc.resolutionPdf('c1'), 'blob', '/officer-changes/c1/resolution'],
     ['proceed', () => oc.proceed('c1', 'why'), 'post', '/officer-changes/c1/verification/proceed'],
     ['setEffectiveDate', () => oc.setEffectiveDate('c1', 'n1', '2026-10-01'), 'put', '/officer-changes/c1/entries/n1/effective-date'],
-    ['regenerateConsentPdf', () => oc.regenerateConsentPdf('c1', 'n1'), 'post', '/officer-changes/c1/entries/n1/econsent-pdf'],
   ])('%s calls %s', async (_name, call, verb, path) => {
     await call()
     expect(api[verb].mock.calls.at(-1)[0]).toBe(path)

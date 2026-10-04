@@ -7,21 +7,16 @@ import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
 /**
- * How a new director's consent to act is given (Jacqueline A2, A5, AQ6): GSHK
- * applies it from the e-Registry account it set up with them; they sign it in
- * G-FlowDesk from their email (no account yet — e-Reg takes two business days,
- * and the draft is usually sent before); or it is collected on paper.
+ * How a new director's consent to act is given (Jacqueline A5, Levi
+ * 2026-10-05): GSHK PIN-signs it from the e-Registry account stored on their
+ * profile, or the whole form is filed on CR's portal (the manual route). CR's
+ * consent signature IS the consent, so there is no third, in-portal way.
  */
 function consentLine(entry) {
   if (entry.kind !== 'appointment' || entry.capacity !== 'director' || !entry.consent_mode) return null
-  if (entry.consent_mode === 'esign') return 'Consent: e-Sign — e-Registry account on file'
-  if (entry.consent_mode === 'econsent') {
-    if (entry.econsent?.signed_at) return 'Consent: signed in G-FlowDesk'
-    return entry.econsent?.sent
-      ? 'Consent: link sent — the director signs in G-FlowDesk from their email'
-      : 'Consent: the director signs in G-FlowDesk from their email (no e-Registry account yet)'
-  }
-  return 'Consent: on paper — signed and uploaded at Data Verification'
+  return entry.consent_mode === 'esign'
+    ? 'Consent: e-Sign — PIN-signed from the e-Registry account on file'
+    : 'Consent: manual route — given on the CR portal'
 }
 
 function OfficerRow({ entry, editable, onEdit, onRemove }) {

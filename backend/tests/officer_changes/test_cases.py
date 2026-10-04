@@ -60,8 +60,7 @@ def _tables():
 @pytest.fixture
 def db(monkeypatch):
     fake = FakeSupabase(_tables())
-    from services.officer_changes import econsent
-    for module in (cases, particulars, nar1_cases, econsent):
+    for module in (cases, particulars, nar1_cases):
         monkeypatch.setattr(module, "get_supabase", lambda: fake)
     monkeypatch.setattr(cases.soft_delete, "is_deleted", lambda sb, t, i: False)
     return fake
@@ -629,7 +628,6 @@ def test_manual_checks_open_names_the_leaver(db, nd2a, monkeypatch):
 
 def test_composite_says_how_each_new_director_consents(db, nd2a, monkeypatch):
     monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
-    monkeypatch.setattr(cases.econsent, "status_for", lambda cid: {})
 
     async def plan(case, entries):
         return [{"entry_id": e["id"], "ready": False, "reason": "no account"}
@@ -641,7 +639,8 @@ def test_composite_says_how_each_new_director_consents(db, nd2a, monkeypatch):
                                    "person_id": "P9", "capacity": "director"}, user_id="U1")
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
     view = next(e for e in data["entries"] if e["id"] == entry["id"])
-    assert view["consent_mode"] == "econsent" and view["econsent"] is None
+    # No account: the case goes the manual route (Levi 2026-10-05).
+    assert view["consent_mode"] == "manual" and "econsent" not in view
 
 
 # -- other open cases for the company (Jacqueline AQ3, BQ1) -------------------------
@@ -714,7 +713,6 @@ def test_a_nar1_filed_by_esign_does_not_set_the_nd2b_default(db, monkeypatch):
 def test_a_ready_director_on_a_manual_only_case_is_not_shown_as_esign(db, nd2a, monkeypatch):
     """Finding 4, on the change list."""
     monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
-    monkeypatch.setattr(cases.econsent, "status_for", lambda cid: {})
 
     async def plan(case, entries):
         rows = [e for e in entries if e.get("kind") == "appointment"]
@@ -731,4 +729,4 @@ def test_a_ready_director_on_a_manual_only_case_is_not_shown_as_esign(db, nd2a, 
                            "person_id": "P9", "capacity": "director"}, user_id="U1")
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
     view = next(e for e in data["entries"] if e["id"] == a["id"])
-    assert view["consent_mode"] == "econsent"
+    assert view["consent_mode"] == "manual"

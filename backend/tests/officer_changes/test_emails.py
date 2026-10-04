@@ -171,11 +171,12 @@ def test_esign_director_is_told_no_signature_needed():
     assert "Sign consent to act" not in body
 
 
-def test_econsent_director_gets_the_sign_button():
+def test_no_letter_carries_a_consent_link():
+    """Levi 2026-10-05: the consent is CR's PIN signature from the director's
+    own e-Registry account; there is no in-portal consent to link to."""
     body = _body(consent={"mode": "econsent", "url": "https://x.test/c?t=9",
                             "name": "LEE Ka Ho"})
-    assert "Sign consent to act" in body and "https://x.test/c?t=9" in body
-    assert "consent to act as a director" in body
+    assert "Sign consent to act" not in body and "https://x.test/c?t=9" not in body
 
 
 def test_no_consent_paragraph_for_other_recipients():

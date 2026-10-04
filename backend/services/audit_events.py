@@ -333,14 +333,10 @@ OFFICER_CHANGE_CODES = (
     OFFICER_PARTICULARS_DISMISSED, PERSON_ESERVICE_CRED_SET,
 )
 
-#   Jacqueline's feedback, migration 052: a new director's consent to act signed
-#   in G-FlowDesk, the link that asks for it, and an ND2B filed without the
-#   client's confirmation (with the reason).
-OFFICER_ECONSENT_LINK_SENT = "OFFICER_ECONSENT_LINK_SENT"
-OFFICER_ECONSENT_SIGNED = "OFFICER_ECONSENT_SIGNED"
+#   Jacqueline's feedback, migration 052: an ND2B filed without the client's
+#   confirmation (with the reason). The consent-in-G-FlowDesk codes that sat here
+#   were removed with the feature (Levi 2026-10-05) before any database ran 052.
 OFFICER_CONFIRMATION_WAIVED = "OFFICER_CONFIRMATION_WAIVED"
 
 #: Seeded by migration 052, not 050.
-OFFICER_CHANGE_FEEDBACK_CODES = (
-    OFFICER_ECONSENT_LINK_SENT, OFFICER_ECONSENT_SIGNED, OFFICER_CONFIRMATION_WAIVED,
-)
+OFFICER_CHANGE_FEEDBACK_CODES = (OFFICER_CONFIRMATION_WAIVED,)

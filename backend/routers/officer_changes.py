@@ -28,7 +28,7 @@ from services import (
 from services.audit_service import log_event
 from services.officer_change_form import FormFillError, render as render_form
 from services.officer_changes import (
-    cases as svc, documents, econsent, emails, eservice, prepare,
+    cases as svc, documents, emails, eservice, prepare,
     recipients as recipients_svc, resolution,
 )
 from services.tpsi import filings as tpsi_filings
@@ -207,11 +207,6 @@ async def _restart(case: dict, user: dict, patch: dict) -> None:
     be filed), the client's answer and every signing artefact are cleared."""
     links = nar1_approvals.supersede_outstanding(case["id"])
     superseded = tpsi_filings.supersede_all_for_case(case["id"])
-    try:
-        # The consent links die with the form they belong to (A2).
-        econsent.supersede(case["id"])
-    except Exception as exc:  # noqa: BLE001 — the restart stands
-        print(f"[officer_changes] consent links not superseded: {exc!r}", file=sys.stderr)
     nar1_cases.update_case(case["id"], {
         **patch, "verification_sent_at": None, "verification_xml": None,
         "client_approved": None, "client_response_at": None,
@@ -383,28 +378,6 @@ async def upload_document(case_id: str, entry_id: str, file: UploadFile = File(.
     await audit(case, user, ev.OFFICER_SUPPORT_DOC_UPLOADED, new_value=row["file_name"],
                 metadata={"document_id": row["id"], "document_type_code": document_type_code,
                           **_entry_metadata(entry)})
-    return await respond(case_id, user)
-
-
-@router.post("/{case_id}/entries/{entry_id}/econsent-pdf")
-async def regenerate_econsent_pdf(case_id: str, entry_id: str,
-                                  user=Depends(require_permission(MODULE, "write"))):
-    """Produce again the stamped consent PDF of a consent signed in G-FlowDesk
-    whose first rendering failed (the signature itself was recorded)."""
-    case = load_case(case_id)
-    refuse_if_closed(case, "filing a consent on it")
-    entry = next((e for e in svc.list_entries(case_id) if e["id"] == entry_id), None)
-    if entry is None:
-        raise HTTPException(404, "Entry not found on this case")
-    try:
-        doc_id = await econsent.regenerate(case, entry)
-    except LookupError as exc:
-        raise HTTPException(409, {"message": str(exc), "reason": "not_signed"})
-    except ValueError as exc:
-        raise HTTPException(409, {"message": str(exc), "reason": "already_filed"})
-    await audit(case, user, ev.OFFICER_SUPPORT_DOC_UPLOADED, new_value="consent to act",
-                metadata={"document_id": doc_id, "document_type_code": "consent_to_act",
-                          "source": "econsent", **_entry_metadata(entry)})
     return await respond(case_id, user)
 
 
@@ -690,7 +663,7 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
                                              "again or untick it.",
                                   "reason": "attachment_unreadable"})
     names = [name for name, _ in files]
-    consents, esign_case = await _consent_wording(case, entries)
+    consents = await _consent_wording(case, entries)
 
     board = {(r.get("email") or "").lower(): r
              for r in recipients_svc.default_recipients(case, entries) if r.get("email")}
@@ -708,26 +681,6 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
             print(f"[officer_changes] approval tokens not issued for {case_id}: {exc}",
                   file=sys.stderr)
             link_base = None
-
-    # A new director with no e-Registry account signs their consent to act in
-    # G-FlowDesk (Jacqueline A2): their own letter carries a second link.
-    econsent_links = {}
-    if link_base:
-        try:
-            people = [e["person_id"] for e in entries if e.get("person_id")]
-            mailed = {t["person_id"]: t["email"] for t in targets if t.get("person_id")}
-            wanted = econsent.eligible(entries, eservice.metadata_for(people), mailed,
-                                       esign_case=esign_case)
-            tokens = econsent.issue(case_id, wanted, revision=revision,
-                                    expires_at=deadline_at) if wanted else {}
-            for entry in wanted:
-                econsent_links[entry["person_id"]] = {
-                    "mode": "econsent", "entry_id": entry["id"],
-                    "url": f"{link_base}/public/officer-consent/{tokens[entry['id']]}"}
-        except Exception as exc:  # noqa: BLE001 — the paper consent remains
-            print(f"[officer_changes] consent links not issued for {case_id}: {exc!r}",
-                  file=sys.stderr)
-    consents.update(econsent_links)
 
     entity = nar1_cases.entity_for(case["entity_id"]) or {}
     respond_day = deadline_at.astimezone(nar1_router._HK).date()
@@ -817,16 +770,6 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
                                   if hasattr(expires, "isoformat") else expires,
                                   "revision": revision,
                                   "case_no": case.get("case_no")})
-    for record in sends:
-        link = econsent_links.get(record["target"].get("person_id"))
-        if link:
-            await audit(case, user, ev.OFFICER_ECONSENT_LINK_SENT,
-                        new_value=record["target"].get("name") or record["target"]["email"],
-                        metadata={"recipient_email": record["target"]["email"],
-                                  "person_id": record["target"].get("person_id"),
-                                  "entry_id": link["entry_id"], "revision": revision,
-                                  "expires_at": deadline_at.isoformat(),
-                                  "case_no": case.get("case_no")})
     if "client_approved" in patch:
         await audit(case, user, ev.CASE_STATUS_CHANGED,
                     old_value="approved" if previous else "rejected",
@@ -840,21 +783,20 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
             "respond_by": deadline_at.isoformat(), "approval_links": bool(link_base)}
 
 
-async def _consent_wording(case: dict, entries: list[dict]) -> tuple[dict[str, dict], bool]:
-    """`(person_id -> wording, esign_case)`: what an incoming director's own
-    letter says about their consent to act (Jacqueline A2, A5), and whether the
-    CASE can go e-Sign at all. "No signature is needed" only when it can: on a
-    manual-only case a stored account is never used (review finding 4).
-    Never fails the send; uncertainty reads as "cannot"."""
+async def _consent_wording(case: dict, entries: list[dict]) -> dict[str, dict]:
+    """person_id -> wording: an incoming director is told "no signature is
+    needed" when GSHK will PIN-sign their consent from their stored e-Registry
+    account (Jacqueline A5) — and only when the whole CASE can go e-Sign (review
+    finding 4). Otherwise nothing: the case is filed on CR's portal, outside
+    G-FlowDesk (Levi 2026-10-05). Never fails the send."""
     try:
         plan = await prepare.consent_plan(case, entries)
     except Exception as exc:  # noqa: BLE001 — wording only
         print(f"[officer_changes] consent plan for the letter failed: {exc!r}",
               file=sys.stderr)
-        return {}, False
-    esign_case = all(row.get("ready") for row in plan)
-    if not esign_case:
-        return {}, False
+        return {}
+    if not all(row.get("ready") for row in plan):
+        return {}
     natural = {e["id"]: e for e in entries
                if e.get("kind") == "appointment" and e.get("person_id")}
     out = {}
@@ -863,7 +805,7 @@ async def _consent_wording(case: dict, entries: list[dict]) -> tuple[dict[str, d
         if entry:
             out[entry["person_id"]] = {"mode": "esign", "url": None,
                                        "name": row.get("signer_name")}
-    return out, True
+    return out
 
 
 @router.get("/{case_id}/verification/delivery")
@@ -984,10 +926,6 @@ async def close_case(case_id: str, body: CloseIn,
         revoked = nar1_approvals.supersede_outstanding(case_id)
     except Exception:  # noqa: BLE001
         revoked = None
-    try:
-        econsent.supersede(case_id)
-    except Exception:  # noqa: BLE001 — closed is closed
-        pass
     await audit(case, user, ev.NAR1_CASE_CLOSED, new_value="Closed",
                 metadata={"case_no": case.get("case_no"), "reason": reason,
                           "form_code": case["form_code"], "filings_superseded": superseded,

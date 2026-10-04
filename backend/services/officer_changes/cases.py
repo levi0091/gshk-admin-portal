@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
-    apply, checks, deadlines, documents, econsent, eservice, particulars, prepare, rules,
+    apply, checks, deadlines, documents, eservice, particulars, prepare, rules,
 )
 from services.tpsi import fees
 from services.tpsi import filings as tpsi_filings
@@ -884,25 +884,16 @@ async def composite(case_id: str, *, user: dict) -> dict:
         {**case, "company_name": entity.get("company_name")}, view), [])
     reasons = [c.get("reason") for c in consents if not c.get("ready") and c.get("reason")]
     esign = not reasons
-    # How each new director consents (Jacqueline A2/A5): GSHK applies it from
-    # their stored e-Registry account; they sign it in G-FlowDesk from their
-    # email; or it is collected on paper.
-    signed_in_portal = _soft(problems, "Consents signed in G-FlowDesk",
-                             lambda: econsent.status_for(case_id), {})
+    # How each new director consents (Jacqueline A5, Levi 2026-10-05): GSHK
+    # PIN-signs it from their stored e-Registry account, or the case is filed
+    # on CR's portal (the manual route). There is no third way.
     by_entry = {c.get("entry_id"): c for c in consents}
     for item in view:
         if item.get("kind") != "appointment" or item.get("capacity") != "director":
             continue
         row = by_entry.get(item["id"]) or {}
         # e-Sign only when the whole CASE can go e-Sign (review finding 4).
-        if row.get("ready") and esign:
-            mode = "esign"
-        elif item.get("person_id") and (item.get("party") or {}).get("email"):
-            mode = "econsent"
-        else:
-            mode = "paper"
-        item["consent_mode"] = mode
-        item["econsent"] = signed_in_portal.get(item["id"])
+        item["consent_mode"] = "esign" if row.get("ready") and esign else "manual"
     filing = _soft(problems, "The CR filing", lambda: nar1_cases.current_filing(case_id), None)
 
     return {
