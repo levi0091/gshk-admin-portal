@@ -530,3 +530,28 @@ def test_an_operational_failure_carries_no_problem_list():
             drift.current_xml_for(_filing())
 
     assert exc.value.problems == []
+
+
+def test_nar1_submit_refused_after_an_nd2a_changed_the_directors():
+    """Jacqueline's ND2A question 3 / Levi 2026-10-05: the NAR1 was validated
+    with director p1; an ND2A then filed p1's resignation and p2's appointment,
+    which moved the company record. Submit must stop and say what moved —
+    before any CR call — rather than file the board the client approved."""
+    after_nd2a = graph(
+        officers=[{**DIRECTOR, "person_id": "p2"}],
+        persons={"p2": person("p2", full_name="WONG SIU MING", surname="WONG",
+                              given_names="SIU MING", full_name_zh="黃小明")},
+        addresses=BASE["addresses"],
+    )
+    client = MagicMock()
+    with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
+         patch("services.tpsi.filings.case_of", return_value={}), \
+         patch("services.tpsi.drift.current_xml_for", return_value=xml_for(after_nd2a)):
+        with pytest.raises(filings.DriftDetected) as exc:
+            filings.submit(client, "f1", True, "N00061980009")
+    fields = [d["field"] for d in exc.value.differences]
+    assert any("Director" in f for f in fields), fields
+    assert any(d["validated"] and "CHAN" in str(d["validated"]).upper()
+               or d["current"] and "WONG" in str(d["current"]).upper()
+               for d in exc.value.differences)
+    client.post_form.assert_not_called()
