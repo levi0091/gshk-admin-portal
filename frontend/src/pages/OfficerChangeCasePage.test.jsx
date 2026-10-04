@@ -72,7 +72,7 @@ describe('OfficerChangeCasePage', () => {
   it('opens on Client Verification with the six stages and the deadline', async () => {
     renderPage(ND2A)
     expect(await screen.findByRole('tab', { name: /Client Verification/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getAllByRole('tab')).toHaveLength(6)
+    expect(within(screen.getByRole('tablist', { name: 'Case stages' })).getAllByRole('tab')).toHaveLength(6)
     expect(screen.getByText(/Due in 11 days/)).toBeInTheDocument()
     expect(screen.getAllByText(/ND2A-2026-0001/).length).toBeGreaterThan(0)
   })

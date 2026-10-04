@@ -143,9 +143,22 @@ const SECTIONS = {
   },
 }
 
+// What the three by-company cards read (Levi 2026-10-05).
+const BOOK = {
+  companies: [{ entity_id: 'e1', company_name: 'Skyline Capital', roles: ['director'] }],
+  default_residential_address_id: 'a1',
+  residential: [{ address_id: 'a1', is_default: true, used_by: ['e1'],
+    address: { line1: 'Flat 3B', city: 'Mid-Levels', country: 'HK' } }],
+  correspondence: [],
+  correspondence_same_as_residential: ['e1'],
+  identity: [{ document_id: 'd1', id_type: 'hkid', id_number: 'A123456(3)', is_primary: true,
+    used_by: ['e1'] }],
+}
+
 const mockGet = (data) =>
   api.get.mockImplementation(url => {
     if (url === '/lookups') return Promise.resolve(LOOKUPS)
+    if (url.endsWith('/particulars-by-company')) return Promise.resolve(BOOK)
     if (url === '/form-contract') return Promise.resolve(CONTRACT)
     if (url.startsWith('/documents/sections')) return Promise.resolve(SECTIONS)
     if (url.startsWith('/documents/types')) {
@@ -236,7 +249,8 @@ describe('PersonProfilePage', () => {
   it('lists identity documents with the primary flagged', async () => {
     renderPage()
     await screen.findByText('Personal Information')
-    expect(screen.getByText('A123456(3)')).toBeInTheDocument()
+    // Also named on the Identification by company card — twice is right.
+    expect(screen.getAllByText('A123456(3)').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('987654321')).toBeInTheDocument()
     expect(screen.getByText('PRIMARY')).toBeInTheDocument()
   })
@@ -993,22 +1007,17 @@ describe('PersonProfilePage — soft delete (migration 049)', () => {
   })
 })
 
-describe('PersonProfilePage — residential and correspondence shown apart (Jacqueline B4)', () => {
-  it('labels the residential address and lists each appointment\'s correspondence address', async () => {
-    api.get.mockImplementation(url => {
-      if (url === '/lookups') return Promise.resolve(LOOKUPS)
-      if (url === '/form-contract') return Promise.resolve(CONTRACT)
-      if (url.startsWith('/documents/sections')) return Promise.resolve(SECTIONS)
-      if (url === '/persons/p1/correspondence-addresses') {
-        return Promise.resolve({ correspondence_addresses: [
-          { officer_id: 'o1', entity_id: 'e1', role: 'director', company_name: 'Skyline Capital',
-            address: null }] })
-      }
-      return Promise.resolve(PERSON)
-    })
+describe('PersonProfilePage — identification and addresses by company (Levi 2026-10-05)', () => {
+  it('shows the three by-company cards, and the address only there', async () => {
     renderPage()
-    expect(await screen.findByText('Residential Address')).toBeInTheDocument()
-    expect(await screen.findByText('Correspondence Address')).toBeInTheDocument()
-    expect(screen.getByText('Same as residential address')).toBeInTheDocument()
+    const res = await screen.findByRole('region', { name: 'Residential addresses' })
+    expect(within(res).getByText('Flat 3B')).toBeInTheDocument()
+    expect(within(res).getByText('Default')).toBeInTheDocument()
+    expect(within(res).getByText('Skyline Capital')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Correspondence addresses' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Identification by company' })).toBeInTheDocument()
+    // Personal Information no longer repeats the residential address.
+    expect(screen.queryByText('Residential Address')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Flat 3B')).toHaveLength(1)
   })
 })

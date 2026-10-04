@@ -19,6 +19,7 @@ import AttachmentsCard from './AttachmentsCard.jsx'
 import ParticularsChangeCard from './ParticularsChangeCard.jsx'
 import ChangesCard from './ChangesCard.jsx'
 import OtherOpenCases from '../case/OtherOpenCases.jsx'
+import StageSigning from './StageSigning.jsx'
 
 vi.mock('../../lib/api.js', () => ({
   api: { get: vi.fn(() => Promise.resolve({})), post: vi.fn(), patch: vi.fn(), put: vi.fn(),
@@ -94,5 +95,14 @@ describe.skipIf(!SHOOT)('ND2 feedback visual harness', () => {
     dump('changes-card', <ChangesCard data={CASE} reload={vi.fn()} can={ALL} />)
     dump('nd2b-card', <ParticularsChangeCard data={ND2B} reload={vi.fn()} can={ALL} />)
     dump('other-open-cases', <OtherOpenCases cases={CASE.other_open_cases} />)
+    dump('signing-consents', <StageSigning data={{ ...CASE, signing_method: 'esign',
+      filing: { stage: 'signing_failed' }, dates_missing: [],
+      signatory: { name: 'Get Started HK Limited', default_capacity: 'Company Secretary' },
+      route: { esign_available: true, reasons: [], consents: [
+        { entry_id: 'n1', bean_id: 'S1', signer_name: 'Aldo KRIEL', eservice_user_id: 'AKRIEL01',
+          status: 'signed', error: null },
+        { entry_id: 'n2', bean_id: 'S2', signer_name: 'LEE Ka Ho', eservice_user_id: 'LKH20455',
+          status: 'error', error: 'ERR_MSG_PIN_INVALID: The signing password is not correct.' }] } }}
+      reload={() => {}} can={ALL} goTo={() => {}} />)
   })
 })
