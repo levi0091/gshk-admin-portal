@@ -738,3 +738,62 @@ def test_composite_officers_carry_the_chinese_name(db, nd2a, monkeypatch):
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
     officer = next(o for o in data["officers"] if o["person_id"] == db.tables["persons"][0]["id"])
     assert officer["name_zh"] == "陳大文"
+
+
+# -- consent signature status (Levi point 5, 2026-10-05) -------------------------------
+
+FAILED = {"stage": "signing_failed", "cr_error": {
+    "message": "ERR_PIN: Invalid signing password",
+    "faults": [["ERR_PIN", "Invalid signing password"]]}}
+
+
+def _consents():
+    return [{"entry_id": "N1", "bean_id": "S1", "eservice_user_id": "LKH20455",
+             "signer_name": "LEE Ka Ho", "signed_at": None},
+            {"entry_id": "N2", "bean_id": "S2", "eservice_user_id": "HONEW88",
+             "signer_name": "HO New", "signed_at": None}]
+
+
+def test_consent_status_signed():
+    rows = _consents()
+    rows[0]["signed_at"] = "2026-10-05T01:00:00Z"
+    cases.consent_statuses(rows, {"stage": "signed"})
+    assert (rows[0]["status"], rows[0]["error"]) == ("signed", None)
+
+
+def test_consent_status_not_signed_before_any_attempt():
+    rows = _consents()
+    cases.consent_statuses(rows, {"stage": "validated"})
+    assert [r["status"] for r in rows] == ["not_signed", "not_signed"]
+    cases.consent_statuses(rows, None)
+    assert [r["error"] for r in rows] == [None, None]
+
+
+def test_consent_status_error_on_every_row_when_cr_names_nobody():
+    rows = _consents()
+    cases.consent_statuses(rows, FAILED)
+    assert [r["status"] for r in rows] == ["error", "error"]
+    assert rows[0]["error"] == "ERR_PIN: Invalid signing password"
+
+
+def test_consent_status_error_on_the_named_signer_only():
+    rows = _consents()
+    named = {"stage": "signing_failed", "cr_error": {
+        "message": "ERR_MSG_SIGNATORY_NOT_AUTH: user HONEW88 is not authorised",
+        "faults": [["ERR_MSG_SIGNATORY_NOT_AUTH", "user HONEW88 is not authorised"]]}}
+    cases.consent_statuses(rows, named)
+    assert [r["status"] for r in rows] == ["not_signed", "error"]
+    assert "HONEW88" in rows[1]["error"]
+
+
+def test_composite_consents_carry_their_status(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+
+    async def plan(case, entries):
+        return _consents()[:1]
+
+    monkeypatch.setattr(cases.prepare, "consent_plan", plan)
+    monkeypatch.setattr(cases.nar1_cases, "current_filing", lambda cid: dict(FAILED, id="F1"))
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    row = data["route"]["consents"][0]
+    assert row["status"] == "error" and row["error"] == "ERR_PIN: Invalid signing password"

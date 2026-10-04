@@ -1,6 +1,6 @@
 // Data Verification, Signing and Submission after Jacqueline's feedback
 // (A1, A4, AQ3, N1).
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -163,6 +163,37 @@ describe('Signing with deferred dates (A1) and a stale e-Registry account (N1)',
         id_mismatch: "LEE Ka Ho's e-Registry account was opened with passport X123…" }] } }}
                        reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
     expect(screen.getByText(/opened with passport X123/)).toBeInTheDocument()
+  })
+})
+
+describe('Consent signature status (Levi point 5)', () => {
+  const consents = [
+    { entry_id: 'n2', bean_id: 'S1', signer_name: 'LEE Ka Ho', eservice_user_id: 'LKH20455',
+      ready: true, status: 'signed', error: null },
+    { entry_id: 'n3', bean_id: 'S2', signer_name: 'HO New', eservice_user_id: 'HONEW88',
+      ready: true, status: 'error', error: 'ERR_PIN: Invalid signing password' },
+  ]
+
+  it('shows Signed, or Error with what CR said, for each director', () => {
+    wrap(<StageSigning data={{ ...BASE, signing_method: 'esign', filing: { stage: 'signing_failed' },
+      route: { ...BASE.route, consents } }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    const lee = screen.getByText('LEE Ka Ho').closest('[data-consent]')
+    expect(within(lee).getByText('Signed')).toBeInTheDocument()
+    const ho = screen.getByText('HO New').closest('[data-consent]')
+    expect(within(ho).getByText('Error')).toBeInTheDocument()
+    expect(within(ho).getByText(/ERR_PIN: Invalid signing password/)).toBeInTheDocument()
+  })
+
+  it('reads Apply consent signature, and says whose account signs', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    const user = userEvent.setup()
+    const pending = consents.map(c => ({ ...c, status: 'not_signed', error: null }))
+    wrap(<StageSigning data={{ ...BASE, signing_method: 'esign', filing: { stage: 'validated' },
+      route: { ...BASE.route, consents: pending } }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getAllByText('Not signed')).toHaveLength(2)
+    expect(screen.getByText(/username and password stored on their profile/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Apply consent signature' }))
+    expect(post).toHaveBeenCalledWith('/officer-changes/k1/sign', {})
   })
 })
 

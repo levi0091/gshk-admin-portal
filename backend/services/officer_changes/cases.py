@@ -534,6 +534,46 @@ def dates_missing_for(case_id: str) -> list[str]:
     return rules.dates_missing([{**e, "party": _party_view(e, ctx)} for e in entries])
 
 
+def _cr_message(cr_error: dict | None) -> str | None:
+    """CR's own words for a refused call, as `filings` stored them."""
+    if not cr_error:
+        return None
+    message = str(cr_error.get("message") or "").strip()
+    if message:
+        return message
+    faults = [f"{f[0]}: {f[1]}" for f in cr_error.get("faults") or []
+              if isinstance(f, (list, tuple)) and len(f) == 2]
+    return "; ".join(faults) or "CR refused the signatures"
+
+
+def consent_statuses(rows: list[dict], filing: dict | None) -> None:
+    """Give each consent row `status` and `error` (Levi 2026-10-05, point 5:
+    "If no issues with their username and password, then it will show as
+    'Signed' status. If there is any issue then the status will be 'Error' and
+    it will show the error that CR portal return to us.").
+
+    `signed` once the consent was signed. `error`, with CR's message, while the
+    form's last signing call was refused. CR takes every signature in ONE
+    verifyPinSigning call, so a refusal belongs to every consent — unless CR's
+    words name one signer's bean id or e-Registry user ID, and then to that
+    signer alone. Otherwise `not_signed`."""
+    message = (_cr_message((filing or {}).get("cr_error"))
+               if (filing or {}).get("stage") == "signing_failed" else None)
+    if message:
+        lowered = message.casefold()
+        named = {id(r) for r in rows if any(
+            key and str(key).casefold() in lowered
+            for key in (r.get("eservice_user_id"), f"#{r.get('bean_id')}",
+                        f"{r.get('bean_id')} " if r.get("bean_id") else None))}
+    for row in rows:
+        if row.get("signed_at"):
+            row["status"], row["error"] = "signed", None
+        elif message and (not named or id(row) in named):
+            row["status"], row["error"] = "error", message
+        else:
+            row["status"], row["error"] = "not_signed", None
+
+
 def manual_checks_open(case: dict, *, route: str) -> list[str]:
     """`checks.incomplete` for a case — what the filing routes refuse to leave
     Data Verification without (Jacqueline A4)."""
@@ -898,6 +938,7 @@ async def composite(case_id: str, *, user: dict) -> dict:
         # e-Sign only when the whole CASE can go e-Sign (review finding 4).
         item["consent_mode"] = "esign" if row.get("ready") and esign else "manual"
     filing = _soft(problems, "The CR filing", lambda: nar1_cases.current_filing(case_id), None)
+    consent_statuses(consents, filing)
 
     return {
         **case,

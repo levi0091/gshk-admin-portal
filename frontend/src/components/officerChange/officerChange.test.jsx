@@ -217,7 +217,7 @@ describe('StageSigning', () => {
     wrap(<StageSigning data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
     expect(screen.getByText(/HO New/)).toBeInTheDocument()
     expect(document.querySelector('input[type="password"]')).toBeNull()
-    await userEvent.click(screen.getByRole('button', { name: 'Apply signatures' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Apply consent signature' }))
     expect(post).toHaveBeenCalledWith('/officer-changes/k1/sign', {})
   })
 })

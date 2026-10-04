@@ -17,13 +17,21 @@ const NONE = { configured: false, eservice_user_id: null, eservice_person_name: 
 beforeEach(() => vi.clearAllMocks())
 
 describe('EServiceCredentialCard', () => {
+  it('says the username and password here are what PIN-signs the consent (Levi 2026-10-05)', async () => {
+    get.mockResolvedValue(STORED)
+    render(<EServiceCredentialCard personId="p9" canEdit />)
+    expect(await screen.findByText(/username and password entered here are what G-FlowDesk uses to PIN-sign/)).toBeInTheDocument()
+    expect(screen.getByText(/NAR1 is PIN-signed the same way, with GSHK/)).toBeInTheDocument()
+    expect(screen.getByText(/filed on the CR portal instead/)).toBeInTheDocument()
+  })
+
   it('shows the account and whether a password is stored — never the password', async () => {
     get.mockResolvedValue(STORED)
     render(<EServiceCredentialCard personId="p9" canEdit />)
     expect(await screen.findByText('ER123456')).toBeInTheDocument()
     expect(screen.getByText('Password stored')).toBeInTheDocument()
     expect(get).toHaveBeenCalledWith('/persons/p9/eservice-credential')
-    expect(screen.getByText(/own consent signature on an ND2A/)).toBeInTheDocument()
+    expect(screen.getByText(/PIN-sign this person.s consent to act on an ND2A/)).toBeInTheDocument()
   })
 
   it('is read-only without persons:write — no Edit, no Remove, not even disabled', async () => {

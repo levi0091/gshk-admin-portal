@@ -90,8 +90,10 @@ export default function EServiceCredentialCard({ personId, canEdit }) {
         <div>
           <div className="card-title">e-Registry account</div>
           <div className="card-sub">
-            Used only to apply this person&apos;s own consent signature on an ND2A filed
-            through the portal. Without it, their appointment is filed by wet ink.
+            The e-Registry username and password entered here are what G-FlowDesk uses to
+            PIN-sign this person&apos;s consent to act on an ND2A. NAR1 is PIN-signed the same
+            way, with GSHK&apos;s own account. Without one here, their appointment is filed on
+            the CR portal instead.
           </div>
         </div>
         {canEdit && !editing && meta && !meta.unavailable && (
