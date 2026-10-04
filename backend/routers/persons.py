@@ -21,6 +21,7 @@ from services import (
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
 from services.officer_changes import eservice, particulars
+from services import person_particulars
 from services.tpsi.forms.cr_vocabularies import resolve_country
 
 router = APIRouter()
@@ -1409,3 +1410,157 @@ async def put_correspondence_address(person_id: str, officer_id: str, request: R
                   "entity_id": officer["entity_id"], "role": officer.get("role"),
                   "same_as_residential": after is None})
     return {"correspondence_addresses": _correspondence_rows(sb, person_id)}
+
+
+# --------------------------------------------------------------------------- #
+#  Identification and addresses per company (Levi 2026-10-05, migration 053)
+#
+#  "the residential address field can be a list of addresses now and clicking
+#  on new button allows adding a new residential address. and in each
+#  residential address in the list it shows which companies is using those
+#  addresses. same design applied to correspondence address.. same for
+#  identification". The rules are `services.person_particulars`'; these routes
+#  guard, translate refusals, and audit one CASE_FIELD_UPDATED row per company
+#  whose particulars moved — the ND2B baseline was captured before the write.
+# --------------------------------------------------------------------------- #
+
+class NewAddressIn(AddressIn):
+    kind: str
+    entity_ids: list[str] = []
+    make_default: bool = False
+
+
+class CompaniesIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    kind: Optional[str] = None
+    entity_ids: list[str] = []
+
+
+_UNLINKED = {"residential_address": "the person's default residential address",
+             "correspondence_address": "same as residential address",
+             "identity_document": "the person's primary document",
+             "default_residential_address": "none"}
+
+
+def _describe(sb, field: str, value) -> Optional[str]:
+    """An audit value as staff read it: an address in one line, a document by
+    type and number — never a bare uuid."""
+    if value is None:
+        return _UNLINKED.get(field)
+    if isinstance(value, dict):
+        return _address_line(value)
+    if field == "identity_document":
+        rows = (sb.table("person_identity_documents").select("*").eq("id", value)
+                .execute().data) or []
+        if rows:
+            return f"{str(rows[0].get('id_type') or '').upper()} {rows[0].get('id_number')}"
+        return str(value)
+    rows = sb.table("addresses").select("*").eq("id", value).execute().data or []
+    return _address_line(rows[0]) if rows else str(value)
+
+
+async def _audit_changes(sb, user: dict, person_id: str, changes: list[dict]) -> None:
+    for change in changes:
+        field = change["field"]
+        await _audit_person(
+            sb, user, person_id, audit_events.CASE_FIELD_UPDATED,
+            old_value=_describe(sb, field, change.get("old")),
+            new_value=_describe(sb, field, change.get("new")),
+            metadata={"field": field, "entity_id": change.get("entity_id"),
+                      **({"companies": change["companies"]} if "companies" in change else {}),
+                      **({"kind": change["kind"]} if "kind" in change else {})})
+
+
+def _refused(exc: "person_particulars.Refused") -> HTTPException:
+    return HTTPException(exc.status, {"message": str(exc), "reason": exc.reason})
+
+
+@router.get("/{person_id}/particulars-by-company")
+async def get_particulars_by_company(person_id: str, user=Depends(live_person("read"))):
+    try:
+        return person_particulars.book(person_id)
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+
+
+@router.post("/{person_id}/addresses", status_code=201)
+async def add_person_address(person_id: str, body: NewAddressIn,
+                             user=Depends(live_person("write"))):
+    payload = {k: v for k, v in body.model_dump().items()
+               if k not in ("kind", "entity_ids", "make_default")}
+    sb = get_supabase()
+    try:
+        result = person_particulars.add_address(
+            person_id, kind=body.kind, payload=payload, entity_ids=body.entity_ids,
+            make_default=body.make_default, user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, result["changes"])
+    return {**person_particulars.book(person_id), "address": result["address"]}
+
+
+@router.put("/{person_id}/addresses/{address_id}")
+async def correct_person_address(person_id: str, address_id: str, body: AddressIn,
+                                 user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        result = person_particulars.correct_address(
+            person_id, address_id, payload=body.model_dump(), user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, result["changes"])
+    return {**person_particulars.book(person_id), "address": result["address"]}
+
+
+@router.put("/{person_id}/addresses/{address_id}/companies")
+async def set_person_address_companies(person_id: str, address_id: str, body: CompaniesIn,
+                                       user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.set_address_companies(
+            person_id, address_id, kind=body.kind or "", entity_ids=body.entity_ids,
+            user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)
+
+
+@router.post("/{person_id}/addresses/{address_id}/default")
+async def make_person_address_default(person_id: str, address_id: str,
+                                      user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.make_default(person_id, address_id, user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)
+
+
+@router.delete("/{person_id}/addresses/{address_id}")
+async def remove_person_address(person_id: str, address_id: str,
+                                kind: str = Query(...),
+                                user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.remove_address(person_id, address_id, kind=kind)
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)
+
+
+@router.put("/{person_id}/identity-documents/{document_id}/companies")
+async def set_identity_document_companies(person_id: str, document_id: str, body: CompaniesIn,
+                                          user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.set_document_companies(
+            person_id, document_id, entity_ids=body.entity_ids, user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)
