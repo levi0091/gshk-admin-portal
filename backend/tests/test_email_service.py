@@ -343,6 +343,151 @@ def test_a_company_with_no_name_still_gets_a_usable_subject():
     assert subject == "[Action Required] NAR1 Review & Confirmation"
 
 
+# --- revisions (Levi 2026-10-02: "[Rev. 2] or [Rev. 3] ... for each email we
+# send for confirmation") ----------------------------------------------------
+
+def test_the_first_email_is_the_sample_letter_unchanged():
+    """Rev. 1 has no predecessor to be told apart from, so it carries no tag —
+    and the approved wording stays byte for byte what it was."""
+    assert _letter(revision=1) == _letter()
+    assert _letter(revision=None) == _letter()
+
+
+def test_a_resend_says_which_revision_it_is_in_the_subject():
+    subject, _ = _letter(revision=2)
+    assert subject == ("[Action Required] [Rev. 2] NAR1 Review & Confirmation"
+                       " - Explod Limited")
+
+
+def test_the_revision_counts_up_with_every_send():
+    assert _letter(revision=3)[0].startswith("[Action Required] [Rev. 3] ")
+    assert _letter(revision=12)[0].startswith("[Action Required] [Rev. 12] ")
+
+
+def test_a_revised_letter_says_so_before_anything_else():
+    """The client now holds two emails about one return, and the older one's
+    Confirm button is dead. That is the first thing they read, above "Dear
+    Client" — not a line they find after reviewing the wrong PDF."""
+    _, html = _letter(revision=2)
+    notice = html.index("Revised draft")
+    assert notice < html.index("Dear Client")
+    # The box's label is "Revised draft" alone (Levi 2026-10-03) — the subject,
+    # the masthead and the reference line already carry the number.
+    assert "Revised draft</div>" in html
+    assert "Revised draft &middot;" not in html
+    assert "no longer works" in html
+    # "ANY earlier email", not "the one we sent you": a director added to the
+    # board since, or whose earlier send failed, never received one, and a
+    # notice telling them otherwise is the first thing they read.
+    assert "replaces any earlier email we sent you about this form" in html
+    assert "the one we sent you earlier" not in html
+
+
+#: `G-FlowDesk - revised NAR1 draft v.2.pdf` (Levi 2026-10-03), paragraph by
+#: paragraph, with the deadline slotted in where the sample has XXXXXXX.
+REVISED_WORDING = [
+    "Further to an update of the Director’s particulars (passport and/or "
+    "address information), we enclose a revised draft of the NAR1 for your review.",
+    "We should be grateful if you would examine the draft carefully, with "
+    "particular attention to the following:",
+    "If the details are correct, kindly click Confirm below. No signature is needed.",
+    "If we do not receive a response by 28 August 2026, the draft will be deemed "
+    "confirmed and proceed with the NAR1 filing.",
+    "Changes requested after filing will incur a HK$1,000 service fee.",
+    "To request changes, please do not click Confirm and email "
+    "renewal@getstarted.hk before the deadline.",
+]
+
+
+def _text(html):
+    """What a reader sees: tags out, entities decoded, whitespace collapsed."""
+    import html as _h
+    import re as _re
+    return _re.sub(r"\s+", " ", _h.unescape(_re.sub(r"<[^>]+>", " ", html))).strip()
+
+
+def _paragraph_in(paragraph, html):
+    # Tags split a sentence where it is bolded; collapse the gaps they leave.
+    import re as _re
+    flat = _re.sub(r" ([,.:;])", r"\1", _text(html))
+    return paragraph in flat
+
+
+def test_a_revised_letter_is_the_revised_samples_wording_verbatim():
+    _, html = _letter(revision=2)
+    for paragraph in REVISED_WORDING:
+        assert _paragraph_in(paragraph, html), paragraph
+
+
+def test_a_revised_letter_bolds_what_the_sample_bolds():
+    _, html = _letter(revision=2)
+    assert "<strong>revised draft of the NAR1</strong>" in html
+    assert "kindly click <strong>Confirm</strong> below" in html
+    assert "<strong>do not click Confirm</strong>" in html
+    assert "<strong>28 August 2026</strong>" in html
+
+
+def test_a_revised_letter_drops_the_first_letters_sentences():
+    _, html = _letter(revision=2)
+    text = _text(html)
+    assert "Your draft NAR1 is now available for review" not in text
+    assert "Any changes requested after filing" not in text
+    assert "please review the attached draft carefully" not in text.lower()
+
+
+def test_a_revised_letter_changes_nothing_but_the_wording():
+    """The checklist, the button, the sign-off, the unmonitored notice and the
+    footer are the first letter's, exactly."""
+    _, first = _letter()
+    _, revised = _letter(revision=2)
+    for part in ("Dear Client,", "Kind regards,", "Get Started HK Limited",
+                 ">Confirm NAR1</a>", "Replies to this email are not monitored",
+                 "Page 5", "Continuation Sheet C", "GET STARTED HK LIMITED",
+                 "Explod Limited NAR1 2026.pdf"):
+        assert part in first and part in revised, part
+
+
+def test_a_revised_letter_with_no_link_asks_for_a_reply_as_the_first_does():
+    _, html = _letter(revision=2, approval_url=None)
+    text = _text(html)
+    assert "If the details are correct, kindly reply to this email to confirm. " \
+           "No signature is needed." in text
+    assert "To request changes, please email renewal@getstarted.hk before the " \
+           "deadline." in text
+    assert "do not click Confirm" not in text
+    assert "kindly click" not in text
+
+
+def test_a_revised_letter_with_no_date_keeps_the_sentence_without_one():
+    _, html = _letter(revision=2, deadline=None)
+    assert ("If we do not receive a response, the draft will be deemed confirmed "
+            "and proceed with the NAR1 filing.") in _text(html)
+
+
+def test_the_masthead_and_the_reference_carry_the_revision():
+    _, html = _letter(revision=2)
+    assert "Form NAR1 &middot; Annual Return &middot; Rev. 2" in html
+    assert "Ref NAR-2026-0041 · Rev. 2" in html
+
+
+def test_the_first_letter_carries_no_revision_notice():
+    _, html = _letter()
+    assert "Revised draft" not in html
+    assert "Rev. " not in html
+
+
+@pytest.mark.parametrize("revision, label", [
+    (None, ""), (1, ""), (2, "Rev. 2"), ("3", "Rev. 3"), ("x", ""), (0, ""),
+])
+def test_the_revision_label(revision, label):
+    assert email_service.revision_label(revision) == label
+
+
+def test_a_subject_without_the_action_prefix_is_tagged_at_the_front():
+    assert email_service.with_revision("Hello", 2) == "[Rev. 2] Hello"
+    assert email_service.with_revision("Hello", 1) == "Hello"
+
+
 def test_the_letter_addresses_the_client_generically():
     """"Dear Client", NOT the director's own name (Levi 2026-09-08). This is
     sent unattended, one message per director, and greeting each of them by

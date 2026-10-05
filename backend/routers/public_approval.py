@@ -60,6 +60,9 @@ from services.audit_service import log_event
 # named a different one — or that still said "reply to the email" — would send
 # a client somewhere nobody is reading.
 from services.email_service import RENEWAL_MAILBOX
+# The same "Rev. N" the email printed, from the same function, so the page and
+# the inbox cannot spell a revision differently.
+from services.email_service import revision_label
 from services import audit_subject
 
 router = APIRouter()
@@ -287,7 +290,7 @@ _WARNING_MARK = (
 
 
 def _ask(*, company: str, br_number: str, period: str, case_no: str,
-         deadline: str) -> HTMLResponse:
+         deadline: str, revision: str = "") -> HTMLResponse:
     """The confirmation page, carrying the approved warning panel.
 
     THE WARNING IS SHOWN ON ARRIVAL, not behind a first press. The mock draws
@@ -303,8 +306,12 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
     worse answer to "something is wrong" than the note below, which names the
     mailbox that reads it.
     """
+    # "Revision" only from Rev. 2 (`revision` is "" before that, and the row
+    # is skipped like any other empty one): with two emails in the inbox, it
+    # says which one this page is confirming.
     rows = [("Company", company), ("Business Registration No.", br_number),
-            ("Return period", period), ("Our reference", case_no)]
+            ("Return period", period), ("Our reference", case_no),
+            ("Revision", revision)]
     ledger = "".join(
         f"<dt>{html.escape(label)}</dt><dd>{html.escape(str(value))}</dd>"
         for label, value in rows if value
@@ -400,6 +407,27 @@ def _decided(case: dict) -> HTMLResponse | None:
     return None
 
 
+def _earlier_revision(row: dict, case: dict) -> HTMLResponse | None:
+    """The page for a link from a revision the client has since been re-sent,
+    or None when this link is the current one (Levi 2026-10-02; migration 051).
+
+    ASKED FIRST, ahead of the link's own outcome, because that outcome describes
+    a return that has been replaced. A director who approved Rev. 1 and opens
+    that email again after Rev. 2 went out used to be told "This Annual Return
+    has already been confirmed" — true of a document nobody is filing any more,
+    and false of the one awaiting them in the newer email.
+
+    Otherwise the same answers as a superseded link: if the CASE has since been
+    settled, say so; if not, the one "no longer available" page, whose sub-line
+    already says a newer request may have replaced it. No more specific than
+    that, by the rule at the top of this file — the page does not describe a
+    client's case to whoever holds a link.
+    """
+    if not nar1_approvals.is_stale(row, case):
+        return None
+    return _decided(case) or _unavailable()
+
+
 @router.get("/nar1-approval/{token}", response_class=HTMLResponse)
 async def show_approval(token: str, request: Request):
     """Render the confirmation page. WRITES NOTHING — see the module docstring.
@@ -412,6 +440,9 @@ async def show_approval(token: str, request: Request):
         return _unavailable()
     row, case = resolved
 
+    stale = _earlier_revision(row, case)
+    if stale is not None:
+        return stale
     if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
         return _already(row.get("recipient_name") or "",
                         _hkt(row.get("responded_at")))
@@ -433,6 +464,8 @@ async def show_approval(token: str, request: Request):
         period=str(case.get("ar_period_year") or ""),
         case_no=case.get("case_no") or "",
         deadline=_hkt(row.get("expires_at")),
+        # The LINK's revision, from its own row — a stale one never gets here.
+        revision=revision_label(row.get("revision")),
     )
 
 
@@ -444,6 +477,12 @@ async def record_approval(token: str, request: Request):
         return _unavailable()
     row, case = resolved
 
+    # Before the claim, and before the idempotent replay below: a link from an
+    # earlier revision must not record an approval of a return the client has
+    # since been sent a corrected version of.
+    stale = _earlier_revision(row, case)
+    if stale is not None:
+        return stale
     if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
         # Idempotent: the same director pressing twice, or a browser replaying
         # the POST, sees what they saw the first time rather than an error.
@@ -524,6 +563,9 @@ async def record_approval(token: str, request: Request):
             "user_agent": claimed.get("user_agent"),
             "responded_at": responded,
             "channel": "self_service",
+            # Which emailed revision the director confirmed. NULL for a link
+            # issued before migration 051.
+            "revision": claimed.get("revision", row.get("revision")),
         },
     )
 

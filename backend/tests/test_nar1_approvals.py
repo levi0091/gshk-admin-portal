@@ -25,6 +25,8 @@ class _Table:
         self.rows = rows if rows is not None else []
         self.inserted = []
         self.updated = None
+        #: Every update payload in order — `issue` makes more than one.
+        self.updates = []
         self.filters = []
 
     # -- builder ---------------------------------------------------------- #
@@ -37,6 +39,7 @@ class _Table:
 
     def update(self, payload):
         self.updated = payload
+        self.updates.append(payload)
         return self
 
     def eq(self, column, value):
@@ -155,6 +158,142 @@ def test_no_recipients_writes_nothing():
     with _sb(table):
         assert approvals.issue(case_id="c1", recipients=[]) == []
     assert table.inserted == []
+
+
+# --------------------------------------------------------------------------- #
+#  Revisions (Levi 2026-10-02, migration 051)
+# --------------------------------------------------------------------------- #
+
+def test_each_link_records_the_revision_it_was_mailed_with():
+    """What makes an earlier revision's link refusable even when the supersede
+    did not land — see is_stale."""
+    table = _Table()
+    with _sb(table):
+        issued = approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                                 revision=3)
+    assert table.inserted[0][0]["revision"] == 3
+    assert issued[0]["revision"] == 3
+
+
+def test_a_new_revision_dates_the_links_issued_before_revisions_existed():
+    """A director who approved through a pre-051 link, on a case re-sent since,
+    was still told "already confirmed" — the lock skips NULL. At the moment
+    revision N is issued every link already on the case belongs to an EARLIER
+    send, so stamping the NULL ones N-1 is exact, not inferred, and makes them
+    stale the moment Rev. N is recorded."""
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}], revision=3)
+    supersede, dating = table.updates
+    assert supersede["outcome"] == "superseded"
+    assert dating == {"revision": 2}
+    assert ("is", "revision", None) in table.filters
+    assert ("eq", "nar1_case_id", "c1") in table.filters
+    # The new rows carry their own revision, so the NULL filter cannot reach
+    # them whichever order the writes happen in.
+    assert all(r["revision"] == 3 for r in table.inserted[0])
+
+
+@pytest.mark.parametrize("revision", [None, 1])
+def test_nothing_is_dated_when_there_can_be_no_earlier_send(revision):
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                        revision=revision)
+    assert {"revision": 0} not in table.updates
+    assert len(table.updates) == 1          # the supersede only
+
+
+@pytest.mark.parametrize("sent, expected", [(None, 1), (0, 1), (1, 1), (2, 2), (5, 5)])
+def test_a_send_again_repeats_the_revision_the_client_holds(sent, expected):
+    """Levi 2026-10-03: a send again is the same frozen copy under the same
+    number. At least 1, since such a case has been sent."""
+    assert approvals.current_revision({"verification_revision": sent}) == expected
+
+
+def test_a_send_again_does_not_date_the_pre_051_links():
+    """They may BE the current revision's, so N-1 would be a guess."""
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                        revision=3, new_revision=False)
+    assert len(table.updates) == 1          # the supersede only
+    assert table.inserted[0][0]["revision"] == 3
+
+
+def test_a_dating_write_that_fails_does_not_stop_the_links_going_out():
+    """Best-effort: without it the case behaves exactly as before 051 for those
+    old links. Letting it raise would send the email with no Confirm button."""
+    class _Refusing(_Table):
+        def update(self, payload):
+            if "revision" in payload:
+                raise RuntimeError("store unavailable")
+            return super().update(payload)
+
+    table = _Refusing()
+    with _sb(table):
+        issued = approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                                 revision=2)
+    assert issued[0]["token"] and len(table.inserted) == 1
+
+
+def test_a_caller_naming_no_revision_writes_the_row_it_always_did():
+    """NULL, which the revision lock leaves alone — not a guessed number."""
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}])
+    assert "revision" not in table.inserted[0][0]
+
+
+@pytest.mark.parametrize("sent, expected", [
+    (None, 1), (0, 1), (1, 2), (2, 3), ("4", 5),
+    # Unreadable or negative is "never sent" rather than an exception: a
+    # letter must not fail to go out over its own revision number.
+    ("x", 1), (-3, 1),
+])
+def test_the_next_revision_is_one_more_than_the_emails_already_sent(sent, expected):
+    assert approvals.next_revision({"verification_revision": sent}) == expected
+
+
+def test_a_case_never_mailed_sends_revision_one():
+    assert approvals.next_revision({}) == 1
+    assert approvals.next_revision(None) == 1
+
+
+def test_a_link_from_an_earlier_revision_is_stale():
+    assert approvals.is_stale({"revision": 1}, {"verification_revision": 2})
+
+
+def test_the_current_revisions_link_is_not_stale():
+    assert not approvals.is_stale({"revision": 2}, {"verification_revision": 2})
+
+
+def test_a_link_ahead_of_the_case_is_not_stale():
+    """Issued for a send that never recorded itself on the case — usually one
+    that failed outright, rarely one that went out and then could not write
+    the case. The PUBLIC PAGE must keep honouring it, because in the second
+    path the client holds a genuine link. The auto-approval job treats it
+    differently — see is_ahead."""
+    assert not approvals.is_stale({"revision": 3}, {"verification_revision": 2})
+
+
+def test_a_link_ahead_of_the_case_belongs_to_a_send_never_recorded():
+    """What the auto-approval job refuses to read silence from."""
+    assert approvals.is_ahead({"revision": 3}, {"verification_revision": 2})
+    assert not approvals.is_ahead({"revision": 2}, {"verification_revision": 2})
+    assert not approvals.is_ahead({"revision": 1}, {"verification_revision": 2})
+
+
+def test_a_legacy_link_is_never_ahead():
+    assert not approvals.is_ahead({"revision": None}, {"verification_revision": 0})
+    assert not approvals.is_ahead({}, {})
+
+
+def test_a_link_issued_before_revisions_existed_is_never_stale():
+    """Its send can only be numbered by inference, and an inference one too low
+    would refuse a director's CURRENT link. Its outcome still governs it."""
+    assert not approvals.is_stale({"revision": None}, {"verification_revision": 5})
+    assert not approvals.is_stale({}, {"verification_revision": 5})
 
 
 # --------------------------------------------------------------------------- #

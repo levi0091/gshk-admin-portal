@@ -75,16 +75,52 @@ def _send_capturing_payload(**env):
 # The guarantee
 # ---------------------------------------------------------------------------
 
-def test_the_four_addresses_are_the_hardcoded_list_levi_gave():
+#: Levi 2026-08-30 gave the first four; jacqueline@getstarted.hk was added on
+#: 2026-10-03 ("ONLY in test / dev environment").
+JACQUELINE = "jacqueline@getstarted.hk"
+
+
+def test_the_test_addresses_are_the_hardcoded_list_levi_gave():
     assert email_service.TEST_RECIPIENTS == (
         "levi@zenexflow.com",
         "roy@zenexflow.com",
         "brian@getstarted.hk",
         "vanis@getstarted.hk",
+        JACQUELINE,
     )
 
 
-def test_a_non_production_send_goes_to_the_four_and_not_the_client():
+def test_every_test_address_is_a_named_person_at_zenexflow_or_gshk():
+    """What a future edit to the list must not do: add a client, a stranger, or
+    one of GSHK's SHARED mailboxes. The renewals, incorporation and data
+    resources mailboxes are real working inboxes a test deployment must never
+    reach, and no-reply@ is the sender. A typo'd domain would deliver to
+    whoever owns it."""
+    shared = {"renewal@getstarted.hk", "incorporation@getstarted.hk",
+              "dataresources@getstarted.hk", "no-reply@getstarted.hk"}
+    for address in email_service.TEST_RECIPIENTS:
+        assert address == address.strip().lower(), address
+        assert address.endswith(("@zenexflow.com", "@getstarted.hk")), address
+        assert address not in shared, address
+    assert len(set(email_service.TEST_RECIPIENTS)) == len(email_service.TEST_RECIPIENTS)
+
+
+def test_jacqueline_receives_every_non_production_send():
+    result, payload = _send_capturing_payload(APP_ENV="dev", RESEND_API_KEY="re_x")
+    assert JACQUELINE in payload["to"]
+    assert JACQUELINE in result["to"]
+
+
+def test_jacqueline_is_never_added_to_a_production_send():
+    """ONLY in test/dev. On production the message goes to the client and to
+    nobody else — not on `to`, not copied, not as the reply address."""
+    result, payload = _send_capturing_payload(APP_ENV="prod", RESEND_API_KEY="re_x")
+    assert payload["to"] == [CLIENT, OTHER_CLIENT]
+    assert JACQUELINE not in str(payload)
+    assert result["redirected"] is False
+
+
+def test_a_non_production_send_goes_to_the_test_recipients_and_not_the_client():
     result, payload = _send_capturing_payload(APP_ENV="dev", RESEND_API_KEY="re_x")
     assert payload["to"] == list(email_service.TEST_RECIPIENTS)
     assert CLIENT not in payload["to"]
@@ -142,7 +178,7 @@ def test_production_still_reaches_the_real_client():
 
 
 def test_the_redirected_message_names_who_it_was_really_for():
-    """Four people share these mailboxes across many test cases. A message that
+    """Several people share these mailboxes across many test cases. A message that
     does not say which directors it was standing in for is untestable noise."""
     _, payload = _send_capturing_payload(APP_ENV="dev", RESEND_API_KEY="re_x")
     assert CLIENT in payload["subject"] and OTHER_CLIENT in payload["subject"]
@@ -180,9 +216,9 @@ def _send_with_cc(**env):
 
 
 def test_a_non_production_send_drops_the_cc_rather_than_delivering_it():
-    """Dropped, not redirected: the four addresses are already receiving the
+    """Dropped, not redirected: the test addresses are already receiving the
     message as `to`, so copying them again would put one mailbox on both lines.
-    A case worker who is not one of the four was never going to receive a test
+    A case worker who is not one of them was never going to receive a test
     send, which is the interlock working rather than a gap in it."""
     result, payload = _send_with_cc(APP_ENV="dev", RESEND_API_KEY="re_x")
     assert "cc" not in payload
@@ -209,7 +245,7 @@ def test_a_client_address_on_the_cc_line_cannot_survive_either():
 
 
 def test_the_test_banner_names_who_would_have_been_copied():
-    """Four people share these mailboxes. A banner that says who the message
+    """Several people share these mailboxes. A banner that says who the message
     was for but not who it would have copied hides half of what is being
     tested."""
     _, payload = _send_with_cc(APP_ENV="dev", RESEND_API_KEY="re_x")
@@ -276,8 +312,9 @@ def test_production_still_carries_the_renewals_mailbox_on_both_headers():
 
 
 def test_the_reply_address_is_DROPPED_not_pointed_at_a_test_mailbox():
-    """Substituting one of the four would invent an address no production send
-    ever carries. The four are already on `to`, so Reply All reaches them."""
+    """Substituting a test address would invent one no production send ever
+    carries. The test recipients are already on `to`, so Reply All reaches
+    them."""
     _, payload = _send_with_reply_to(APP_ENV="dev", RESEND_API_KEY="re_x")
     assert "reply_to" not in payload
     assert not any(a in str(payload.get("reply_to", ""))

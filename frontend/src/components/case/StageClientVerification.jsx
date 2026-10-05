@@ -45,6 +45,16 @@ export function describeSendError(err) {
     case 403:
       return { message, hint: 'Your role does not allow sending client verification for this case.' }
     case 409:
+      // A send again re-sends the copy the client was mailed (Levi
+      // 2026-10-03), and a case sent before the portal kept that copy has
+      // none to re-send. Its way on is a restart, not "the case is finished".
+      if (err?.reason === 'no_frozen_copy') {
+        return {
+          message,
+          hint: 'Nothing was sent. Restart verification first — it builds a '
+            + 'fresh return, which you can then send.',
+        }
+      }
       // What state, and what to do about it — not the bare fact that the case
       // is in the wrong one. "Not in a state that allows this" is a sentence
       // an operator can do nothing with (Levi 2026-09-03).
@@ -181,6 +191,14 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
   const filingId = caseRow.filing_id
   const sent = Boolean(caseRow.verification_sent_at)
   const answered = Boolean(caseRow.client_response_at)
+  // HOW MANY VERIFICATION EMAILS HAVE GONE OUT (Levi 2026-10-02, migration
+  // 051), and so which one the next send is. From the second on the client's
+  // email reads "[Rev. N]", so the operator is told the same number before and
+  // after pressing Send. Rev. 1 is unmarked on the email and unmarked here.
+  // NOT reset by Restart verification: the client still has the earlier email.
+  const sentRevision = Number(caseRow.verification_revision) || 0
+  const nextRevision = sentRevision + 1
+  const revisionTag = sentRevision >= 2 ? `Rev. ${sentRevision}` : null
 
   // THE SEED ABOVE IS NOT ENOUGH ONCE RESTART IS ON OFFER HERE (2026-09-19).
   // `useState` reads `verification_sent_at` on mount only, and a restart
@@ -477,7 +495,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           pills={[
             { label: year ? `Annual return ${year}` : 'Form NAR1 + Schedule 1' },
             sent
-              ? { label: approved ? 'Approved by the client' : 'As sent to the client',
+              ? { label: (approved ? 'Approved by the client' : 'As sent to the client')
+                    + (revisionTag ? ` · ${revisionTag}` : ''),
                   tone: 'ok' }
               : validated
                 ? { label: 'Rendered from the CR-validated XML', tone: 'ok' }
@@ -502,8 +521,15 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <div className="alert al-success" role="status" style={{ marginBottom: 14 }}>
             <span className="al-icon">✓</span>
             <div className="al-body">
-              Sent {formatDateTime(caseRow.verification_sent_at)}.
+              {revisionTag ? `${revisionTag} sent` : 'Sent'}{' '}
+              {formatDateTime(caseRow.verification_sent_at)}.
               {!answered && ' Waiting on the client\'s reply.'}
+              {/* Levi 2026-10-03. Here, not in the note beside the button:
+                  this line is on screen whenever the case has been sent,
+                  while that note only reaches its last line once every
+                  field above is filled. */}
+              {' '}Send again re-sends this same frozen copy — to send a
+              corrected return, restart verification first.
             </div>
           </div>
         )}
@@ -681,7 +707,16 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
                       : !respondBy
                         ? 'Choose the date the client must reply by.'
                         : `The return will be attached as a PDF, to ${to.length} `
-                          + `recipient${to.length === 1 ? '' : 's'}.`}
+                          + `recipient${to.length === 1 ? '' : 's'}.`
+                          // Said BEFORE the press, because it is the one
+                          // consequence of a resend the client notices: the
+                          // button in the email they already have goes dead.
+                          // Only after a RESTART: a send again repeats the
+                          // client's current Rev. (Levi 2026-10-03).
+                          + (!sent && nextRevision >= 2
+                            ? ` It goes out as Rev. ${nextRevision}, and the `
+                              + 'Confirm link in the earlier email stops working.'
+                            : '')}
             </div>
             <div className="ab-actions">
               <span className="perm-tag">Requires <b>nar1:write</b></span>

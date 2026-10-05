@@ -573,3 +573,103 @@ def test_the_page_runs_no_script_at_all(client):
     assert "onclick" not in lowered
     assert "onerror" not in lowered
     assert "javascript:" not in lowered
+
+
+# --------------------------------------------------------------------------- #
+#  An earlier revision's link (Levi 2026-10-02, migration 051)
+# --------------------------------------------------------------------------- #
+
+#: The case after Rev. 2 went out. A Rev. 1 link is still OUTSTANDING here —
+#: the supersede that should have killed it did not land — which is exactly
+#: the case the revision lock exists for.
+RESENT = {**CASE, "verification_revision": 2}
+
+
+def test_an_earlier_revisions_link_is_no_longer_available(client):
+    with _Stack(*_world(approval=row(revision=1), case=RESENT)):
+        response = client.get(PATH)
+    assert "no longer available" in response.text
+    assert "Confirm &amp; File</button>" not in response.text
+
+
+def test_an_earlier_revisions_link_cannot_approve(client):
+    with _Stack(*_world(approval=row(revision=1), case=RESENT)) as patched:
+        response = client.post(PATH)
+    claim, update_case = patched[4], patched[3]
+    assert "no longer available" in response.text
+    claim.assert_not_called()
+    update_case.assert_not_called()
+
+
+def test_the_current_revisions_link_still_works(client):
+    with _Stack(*_world(approval=row(revision=2), case=RESENT)):
+        response = client.get(PATH)
+    assert ">Confirm &amp; File</button>" in response.text
+
+
+def test_an_approved_earlier_revision_does_not_claim_the_return_is_confirmed(client):
+    """A director who approved Rev. 1 and opens that email again after Rev. 2
+    went out used to be told the return was already confirmed — true of a
+    document nobody is filing, false of the one awaiting them."""
+    approved_rev1 = row(revision=1, outcome="approved",
+                        responded_at="2026-09-28T03:00:00+00:00")
+    with _Stack(*_world(approval=approved_rev1, case=RESENT)):
+        response = client.get(PATH)
+    assert "already been confirmed" not in response.text
+    assert "no longer available" in response.text
+
+
+def test_once_the_new_revision_is_approved_an_old_link_says_so(client):
+    """The case is settled now, so the honest answer to an old link is that it
+    is done — the same rule a superseded link already follows."""
+    settled = {**RESENT, "client_approved": True}
+    with _Stack(*_world(approval=row(revision=1), case=settled,
+                        approved_row=row(revision=2, outcome="approved",
+                                         recipient_name="BO LEE"))):
+        response = client.get(PATH)
+    assert "already been confirmed" in response.text
+    assert "BO LEE" in response.text
+
+
+def test_the_page_names_the_revision_it_is_confirming(client):
+    """With two emails in the inbox, "check against the form attached to our
+    email" is ambiguous; the page says which one. From the link's own row,
+    never from the request."""
+    with _Stack(*_world(approval=row(revision=2), case=RESENT)):
+        response = client.get(PATH)
+    assert "<dt>Revision</dt><dd>Rev. 2</dd>" in response.text
+
+
+@pytest.mark.parametrize("revision", [1, None])
+def test_a_first_email_or_legacy_link_page_names_no_revision(client, revision):
+    with _Stack(*_world(approval=row(revision=revision),
+                        case={**CASE, "verification_revision": 1})):
+        response = client.get(PATH)
+    assert ">Confirm &amp; File</button>" in response.text
+    assert "<dt>Revision</dt>" not in response.text
+
+
+def test_a_link_ahead_of_the_case_still_works_on_the_page(client):
+    """The job skips such a link (nar1_approvals.is_ahead); the page must not.
+    A send that went out and then failed to write the case leaves the client
+    holding exactly this — a genuine link one revision ahead."""
+    with _Stack(*_world(approval=row(revision=3), case=RESENT)):
+        response = client.get(PATH)
+    assert ">Confirm &amp; File</button>" in response.text
+
+
+def test_a_link_issued_before_revisions_existed_still_works(client):
+    """NULL revision: the lock does not apply, and the outcome still governs."""
+    with _Stack(*_world(approval=row(revision=None), case=RESENT)):
+        response = client.get(PATH)
+    assert ">Confirm &amp; File</button>" in response.text
+
+
+def test_the_approval_records_which_revision_was_confirmed(client):
+    claimed = row(revision=2, outcome="approved",
+                  responded_at="2026-10-02T03:00:00+00:00")
+    with _Stack(*_world(approval=row(revision=2), case=RESENT,
+                        claimed=claimed)) as patched:
+        client.post(PATH)
+    log = patched[7]
+    assert log.call_args.kwargs["metadata"]["revision"] == 2

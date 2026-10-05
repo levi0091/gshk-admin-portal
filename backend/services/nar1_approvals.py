@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import sys
 from datetime import datetime, timedelta, timezone
 
 from db.supabase import get_supabase
@@ -67,9 +68,82 @@ def hash_token(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
+def next_revision(case: dict) -> int:
+    """The revision the NEXT verification email for this case will carry.
+
+    `verification_revision` counts the emails that actually went out (migration
+    051), so the next one is one more — and the first is 1. It is not reset by
+    a restart: the client still holds the earlier email, so the next one has to
+    read as a later revision of it.
+    """
+    try:
+        sent = int((case or {}).get("verification_revision") or 0)
+    except (TypeError, ValueError):
+        sent = 0
+    return max(sent, 0) + 1
+
+
+def current_revision(case: dict) -> int:
+    """The revision the client already holds — what a SEND AGAIN repeats.
+
+    A case that has been sent and not restarted re-sends its frozen copy under
+    the same number (Levi 2026-10-03). At least 1: such a case has been sent,
+    and a count of 0 there can only be a case mailed before anything counted.
+    """
+    return max(next_revision(case) - 1, 1)
+
+
+def is_stale(row: dict, case: dict) -> bool:
+    """Was this link mailed with a revision the case has since moved past?
+
+    THE SECOND LOCK on an earlier revision's link (migration 051). The first is
+    `supersede_outstanding`, which `issue` runs before every new revision —
+    but that is a write, and when it fails the old link would otherwise keep
+    working. This is a read of two numbers, so it holds regardless.
+
+    A token issued before migration 051 has no revision and is never stale by
+    this rule — its send can only be numbered by inference, and an inference
+    one too low would refuse a director's current link. It is still governed
+    by its `outcome`, which the next send supersedes.
+    """
+    issued = (row or {}).get("revision")
+    if issued is None:
+        return False
+    try:
+        return int(issued) < int((case or {}).get("verification_revision") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def is_ahead(row: dict, case: dict) -> bool:
+    """Was this link issued for a send the case never recorded?
+
+    Tokens are issued BEFORE the send loop, and the case's revision is stored
+    only once a message has left. So a link carrying a revision ABOVE the case's
+    belongs to a send that reached nobody — or, rarely, to one that went out and
+    then could not write the case.
+
+    ONLY THE AUTO-APPROVAL JOB ASKS THIS. It approves on silence, and silence
+    about an email that may never have been delivered is not consent; skipping
+    is always the safe direction there. The public page must NOT refuse such a
+    link, because in the second path the client holds a genuine one.
+
+    Legacy (NULL) links are never ahead, by the same reasoning as `is_stale`.
+    """
+    issued = (row or {}).get("revision")
+    if issued is None:
+        return False
+    try:
+        return int(issued) > int((case or {}).get("verification_revision") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
 def issue(*, case_id: str, recipients: list[dict],
           sent_at: datetime | None = None,
-          expires_at: datetime | None = None) -> list[dict]:
+          expires_at: datetime | None = None,
+          revision: int | None = None,
+          new_revision: bool = True) -> list[dict]:
     """One fresh token per recipient. Returns the PLAINTEXT tokens.
 
     The plaintext is returned to the caller once, to put in that person's email,
@@ -80,6 +154,11 @@ def issue(*, case_id: str, recipients: list[dict],
     verification means the previous message's document is no longer the one
     being asked about, and a director holding the older mail must not be able to
     approve it.
+
+    `revision` is the number the email these tokens go in will carry (see
+    `next_revision`). Stored on each row so that a link can be refused for
+    belonging to an earlier revision even if the supersede above did not land
+    — see `is_stale`.
 
     `expires_at` IS THE DEADLINE THE OPERATOR CHOSE, and it is one value doing
     three jobs on purpose (Levi 2026-09-07): the date the email prints, the
@@ -93,12 +172,20 @@ def issue(*, case_id: str, recipients: list[dict],
     expires = expires_at or (sent + timedelta(days=APPROVAL_WINDOW_DAYS))
 
     supersede_outstanding(case_id)
+    # Only ever reaches older rows: it matches `revision IS NULL`, and every
+    # row inserted below carries `revision`.
+    #
+    # And only when this IS a new revision. A send again repeats the client's
+    # current one (`new_revision=False`), and a pre-051 link may BE that
+    # revision's — dating it N-1 would be a guess, the thing 051 refused to do.
+    if new_revision and revision is not None and revision >= 2:
+        _date_legacy_links(case_id, revision - 1)
 
     issued = []
     rows = []
     for recipient in recipients:
         token = secrets.token_urlsafe(_TOKEN_BYTES)
-        rows.append({
+        row = {
             "nar1_case_id": case_id,
             "person_id": recipient.get("person_id"),
             "recipient_email": recipient["email"],
@@ -106,12 +193,46 @@ def issue(*, case_id: str, recipients: list[dict],
             "token_hash": hash_token(token),
             "sent_at": sent.isoformat(),
             "expires_at": expires.isoformat(),
-        })
-        issued.append({**recipient, "token": token, "expires_at": expires})
+        }
+        # Only when given, so a caller that names none writes exactly the row
+        # it always did — NULL, which the revision lock leaves alone.
+        if revision is not None:
+            row["revision"] = revision
+        rows.append(row)
+        issued.append({**recipient, "token": token, "expires_at": expires,
+                       "revision": revision})
 
     if rows:
         get_supabase().table(_TABLE).insert(rows).execute()
     return issued
+
+
+def _date_legacy_links(case_id: str, earlier: int) -> None:
+    """Give this case's pre-051 links (revision NULL) the revision `earlier`.
+
+    EXACT, NOT INFERRED. Called as revision `earlier + 1` is being issued, when
+    every link already on the case belongs to an earlier send — so `earlier` is
+    a true upper bound for all of them, and once the new revision is recorded
+    they are stale. Migration 051 left them NULL on purpose, because numbering
+    them from history alone could come out one low and refuse a current link;
+    at this moment there is no current link left among them to refuse.
+
+    It closes the one case the NULL exemption left open: a director who
+    approved through a pre-051 link, on a case re-sent since, being told the
+    return was "already confirmed" while the new revision waited for them.
+
+    BEST-EFFORT. If it does not land, those links behave exactly as they did
+    before 051; letting it raise would send the email with no Confirm button.
+    """
+    try:
+        (get_supabase().table(_TABLE)
+         .update({"revision": earlier})
+         .eq("nar1_case_id", case_id)
+         .is_("revision", None)
+         .execute())
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        print(f"[nar1_approvals] WARN: could not date the pre-revision links on "
+              f"case {case_id}: {exc}", file=sys.stderr)
 
 
 def supersede_outstanding(case_id: str, *, exclude_id: str | None = None) -> int:

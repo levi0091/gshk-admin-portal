@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import StageDataVerification from './StageDataVerification.jsx'
-import StageClientVerification from './StageClientVerification.jsx'
+import StageClientVerification, { describeSendError } from './StageClientVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
@@ -2544,6 +2544,74 @@ describe('Client Verification is frozen once the client has the return', () => {
   it('reads the preview from the case, which serves the mailed copy once sent', async () => {
     renderIt({ verification_sent_at: '2026-09-10T02:00:00Z' })
     await waitFor(() => expect(blob).toHaveBeenCalledWith('/cases/c1/verification/preview'))
+  })
+})
+
+describe('Client Verification names the revision the client holds (migration 051)', () => {
+  const renderIt = over => render(
+    <StageClientVerification caseRow={at(over)} canWrite onWarn={onWarn}
+                             onChanged={onChanged} onError={onError} />)
+
+  it('a resend reads "Rev. 2 sent", matching the [Rev. 2] in the client\'s inbox', async () => {
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z',
+               verification_revision: 2 })
+    expect(screen.getByText(/Rev\. 2 sent/)).toBeInTheDocument()
+    // The pill is drawn once the preview has loaded.
+    expect(await screen.findByText('As sent to the client · Rev. 2')).toBeInTheDocument()
+  })
+
+  it('the first email is unmarked, as it is in the client\'s inbox', async () => {
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z',
+               verification_revision: 1 })
+    expect(await screen.findByText('As sent to the client')).toBeInTheDocument()
+    expect(screen.queryByText(/Rev\. \d/)).toBeNull()
+  })
+
+  it('before a resend, says which revision it will be and that the old link dies', async () => {
+    // A restart cleared verification_sent_at, but the client still holds the
+    // first email — so the next one is Rev. 2, not a fresh Rev. 1.
+    const user = userEvent.setup()
+    renderIt({ verification_sent_at: null, verification_revision: 1 })
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
+    expect(screen.getByText(/It goes out as Rev\. 2, and the Confirm link in the earlier email stops working/))
+      .toBeInTheDocument()
+  })
+
+  it('once sent, says Send again re-sends the same frozen copy until a restart', () => {
+    // Levi 2026-10-03: a send again mails the copy shown above, under the
+    // same Rev.; only Restart verification sends a corrected one.
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', verification_revision: 2 })
+    expect(screen.getByText(/Send again re-sends this same frozen copy — to send a corrected return, restart verification first\./))
+      .toBeInTheDocument()
+  })
+
+  it('a send again does not promise the next revision', async () => {
+    const user = userEvent.setup()
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', verification_revision: 2 })
+    await screen.findByText('chan@example.com')
+    await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
+    expect(screen.getByText(/The return will be attached as a PDF/)).toBeInTheDocument()
+    expect(screen.queryByText(/goes out as Rev\./)).toBeNull()
+  })
+
+  it('names the way on when a sent case has no kept copy to re-send', () => {
+    const e = Object.assign(new Error('Nothing was sent: …'),
+                            { status: 409, reason: 'no_frozen_copy' })
+    expect(describeSendError(e).hint).toMatch(/Restart verification/)
+    // Not the generic 409, which says the case is finished.
+    expect(describeSendError(e).hint).not.toMatch(/already finished/)
+  })
+
+  it('a first send promises no revision at all', async () => {
+    const user = userEvent.setup()
+    renderIt({ verification_sent_at: null, verification_revision: 0 })
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
+    expect(screen.getByText(/The return will be attached as a PDF/)).toBeInTheDocument()
+    expect(screen.queryByText(/goes out as Rev\./)).toBeNull()
   })
 })
 
