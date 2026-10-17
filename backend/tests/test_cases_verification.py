@@ -1300,6 +1300,7 @@ def _audit_rows(rows):
     table = MagicMock()
     table.select.return_value = table
     table.eq.return_value = table
+    table.is_.return_value = table
     table.order.return_value = table
     table.limit.return_value = table
     table.execute.return_value = MagicMock(data=rows)
@@ -1390,6 +1391,20 @@ def test_delivery_reads_the_CASE_not_the_company_trail(client):
     assert ("entity_type", "nar1_case") in filters
     assert ("action_type", "EMAIL_SENT") in filters
     assert not any(f[0] == "case_id" for f in filters)
+
+
+def test_delivery_never_reads_the_confirmation_receipt_as_the_send(client):
+    """The receipt mailed after Confirm & File is an EMAIL_SENT row on the same
+    case (Levi 2026-10-17), tagged `template: approval_receipt`. Read as "the
+    newest send", it would replace the board's delivery report with one line
+    about the receipt — so the query asks only for rows with no template."""
+    supabase, table = _audit_rows(_SENT_ROW)
+    with _super(), patch("routers.cases.nar1_cases.get_case", return_value=CASE), \
+         supabase, \
+         _statuses({"status": "delivered", "event": "delivered", "detail": None},
+                   {"status": "delivered", "event": "delivered", "detail": None}):
+        client.get("/cases/c1/verification/delivery", headers=H)
+    table.is_.assert_any_call("metadata->>template", "null")
 
 
 def test_delivery_on_a_case_that_was_never_sent_is_empty_not_an_error(client):

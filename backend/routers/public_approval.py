@@ -50,7 +50,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 
 from services import audit_events as ev, nar1_approvals, nar1_cases
@@ -64,6 +64,10 @@ from services.email_service import RENEWAL_MAILBOX
 # the inbox cannot spell a revision differently.
 from services.email_service import revision_label
 from services import audit_subject
+# The receipt mailed after a press that claimed the approval (Levi 2026-10-17).
+# Bound by name so the suite can stub THIS binding (conftest) and still test
+# the service itself.
+from services.approval_receipt import send as send_receipt
 
 router = APIRouter()
 
@@ -465,9 +469,13 @@ async def show_approval(token: str, request: Request):
 
 
 @router.post("/nar1-approval/{token}", response_class=HTMLResponse)
-async def record_approval(token: str, request: Request):
-    """The only mutating half. Takes NO body — there is nothing to supply."""
-    return await _record(token, request, forms=_NAR1_FORMS, confirmed=_confirmed)
+async def record_approval(token: str, request: Request, background: BackgroundTasks):
+    """The only mutating half. Takes NO body — there is nothing to supply.
+
+    (`BackgroundTasks` is injected by FastAPI, not read from the request: the
+    route still parses no body.)"""
+    return await _record(token, request, forms=_NAR1_FORMS, confirmed=_confirmed,
+                         background=background)
 
 
 # --------------------------------------------------------------------------- #
@@ -543,9 +551,10 @@ async def show_officer_change_approval(token: str, request: Request):
 
 
 @router.post("/officer-change-approval/{token}", response_class=HTMLResponse)
-async def record_officer_change_approval(token: str, request: Request):
+async def record_officer_change_approval(token: str, request: Request,
+                                         background: BackgroundTasks):
     return await _record(token, request, forms=_OFFICER_CHANGE_FORMS,
-                         confirmed=None)
+                         confirmed=None, background=background)
 
 
 def _earlier_revision(row: dict, case: dict, forms) -> HTMLResponse | None:
@@ -596,7 +605,8 @@ async def _show(token: str, request: Request, *, forms, ask) -> HTMLResponse:
     return ask(case, _entity_or_empty(case), row)
 
 
-async def _record(token: str, request: Request, *, forms, confirmed) -> HTMLResponse:
+async def _record(token: str, request: Request, *, forms, confirmed,
+                  background: BackgroundTasks | None = None) -> HTMLResponse:
     """The only mutating half. Takes NO body — there is nothing to supply."""
     resolved = _resolve(token, request, forms)
     if resolved is None:
@@ -694,6 +704,13 @@ async def _record(token: str, request: Request, *, forms, confirmed) -> HTMLResp
             "revision": claimed.get("revision", row.get("revision")),
         },
     )
+
+    # THE RECEIPT, mailed after this page is returned (Levi 2026-10-17): the
+    # director gets the moment and the documents they confirmed, renewal@
+    # copied. Only here — past the claim — so a GET, a replay, a stale link and
+    # the director who lost the race never send one. It never raises.
+    if background is not None:
+        background.add_task(send_receipt, case["id"], {**row, **claimed})
 
     page = confirmed or _confirmed_officer_change(case)
     return page(entity.get("company_name") or "")

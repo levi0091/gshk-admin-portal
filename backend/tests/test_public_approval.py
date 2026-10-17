@@ -699,3 +699,65 @@ def test_provenance_says_the_case_proceeds_without_confirmation():
     assert out["source"] == "staff_waiver" and out["name"] is None
     assert out["summary"] == ("Proceeding without the client's confirmation — "
                               "Filing deadline")
+
+
+# --------------------------------------------------------------------------- #
+#  The confirmation receipt (Levi 2026-10-17)
+#
+#  Queued once, by the press that actually claimed the approval, and never by a
+#  GET, a replay, a stale link or the director who lost the race.
+# --------------------------------------------------------------------------- #
+
+CLAIMED = row(outcome="approved", responded_at="2026-10-17T07:31:05+00:00")
+
+
+def test_a_confirmation_queues_one_receipt_for_the_director_who_pressed(
+        client, _no_receipt_mail_in_tests):
+    with _Stack(*_world(approval=row(), claimed=CLAIMED)):
+        response = client.post(PATH)
+    assert "Thank you" in response.text
+    _no_receipt_mail_in_tests.assert_awaited_once()
+    case_id, approval = _no_receipt_mail_in_tests.await_args.args
+    assert case_id == "c1"
+    assert approval["recipient_email"] == "chan@example.com"
+    assert approval["responded_at"] == "2026-10-17T07:31:05+00:00"
+
+
+def test_an_officer_change_confirmation_queues_a_receipt_too(
+        client, _no_receipt_mail_in_tests):
+    nd2a = {**CASE, "case_no": "ND2A-2026-0001", "form_code": "Nd2a"}
+    with _Stack(*_world(approval=row(), case=nd2a, claimed=CLAIMED)):
+        response = client.post(f"/public/officer-change-approval/{TOKEN}")
+    assert "your confirmation is recorded" in response.text
+    _no_receipt_mail_in_tests.assert_awaited_once()
+
+
+def test_opening_the_link_sends_no_receipt(client, _no_receipt_mail_in_tests):
+    with _Stack(*_world(approval=row())):
+        client.get(PATH)
+    _no_receipt_mail_in_tests.assert_not_awaited()
+
+
+def test_a_replayed_press_sends_no_second_receipt(client, _no_receipt_mail_in_tests):
+    with _Stack(*_world(approval=CLAIMED)):
+        client.post(PATH)
+    _no_receipt_mail_in_tests.assert_not_awaited()
+
+
+def test_the_director_who_lost_the_race_gets_no_receipt(client, _no_receipt_mail_in_tests):
+    with _Stack(*_world(approval=row(), claimed=None, approved_row=CLAIMED)):
+        client.post(PATH)
+    _no_receipt_mail_in_tests.assert_not_awaited()
+
+
+def test_a_link_from_an_earlier_revision_sends_no_receipt(client, _no_receipt_mail_in_tests):
+    with _Stack(*_world(approval=row(revision=1),
+                        case={**CASE, "verification_revision": 2})):
+        client.post(PATH)
+    _no_receipt_mail_in_tests.assert_not_awaited()
+
+
+def test_an_expired_link_sends_no_receipt(client, _no_receipt_mail_in_tests):
+    with _Stack(*_world(approval=row(expires_at=_past()))):
+        client.post(PATH)
+    _no_receipt_mail_in_tests.assert_not_awaited()

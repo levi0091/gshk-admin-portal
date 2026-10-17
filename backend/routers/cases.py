@@ -2398,6 +2398,10 @@ async def verification_delivery(
         .eq("entity_id", case_id)
         .eq("entity_type", "nar1_case")
         .eq("action_type", ev.EMAIL_SENT)
+        # NOT the confirmation receipt (Levi 2026-10-17): it is an EMAIL_SENT
+        # row on the same case, tagged with a template, and read as "the
+        # newest send" it would replace the board's report with one line.
+        .is_("metadata->>template", "null")
         .order("created_at", desc=True)
         .limit(1)
         .execute()
