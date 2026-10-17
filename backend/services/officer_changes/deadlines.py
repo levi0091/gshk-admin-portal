@@ -68,40 +68,25 @@ def reply_by_default(deadline: date | None, today: date) -> date:
                today + timedelta(days=REPLY_MIN_DAYS))
 
 
-#: NAR1's filing window: an annual return is due within 42 days after the
-#: incorporation anniversary. An ND2B dated to an anniversary older than this is
-#: not being filed "with the NAR1", which is the whole reason for the default.
-ANNIVERSARY_WINDOW_DAYS = 42
-
-
-def _anniversary_in(year: int, born: date) -> date:
-    try:
-        return born.replace(year=year)
-    except ValueError:  # 29 February in a common year
-        return date(year, 2, 28)
-
-
 def anniversary_default(incorporation_date, *, open_return_date=None,
                         today: date | None = None) -> date | None:
     """The effective date a new ND2B line starts with (Jacqueline B1).
 
     "Unless there is any special request, most of the time we will default the
     effective date to the anniversary date ... so we can submit both forms
-    together." So: the return date of the company's open NAR1 when it has one,
-    else its most recent anniversary when that is no more than 42 days ago (the
-    NAR1 window), else None — an older anniversary would make the ND2B overdue
-    the moment it was opened. Never a date after today: CR records what has
-    happened."""
+    together." So: the return date of the company's OPEN NAR1, and otherwise
+    nothing — Jacqueline, on Levi's suggested change (2026-10-17): "If there is
+    no open NAR1, please keep it blank too. We can decide the effective date,
+    as long as we can fill in the date before the submission." The blank is
+    filled at Signing like any date deferred there. (Until then a company with
+    no open NAR1 took its latest anniversary within 42 days.) Never a date
+    after today: CR records what has happened.
+
+    `incorporation_date` is no longer read; it stays in the signature because
+    the open NAR1's date is derived from it by the caller."""
+    del incorporation_date
     today = today or hk_today()
     open_day = _as_date(open_return_date)
     if open_day is not None and open_day <= today:
         return open_day
-    born = _as_date(incorporation_date)
-    if born is None:
-        return None
-    anniversary = _anniversary_in(today.year, born)
-    if anniversary > today:
-        anniversary = _anniversary_in(today.year - 1, born)
-    if anniversary <= born:
-        return None
-    return anniversary if (today - anniversary).days <= ANNIVERSARY_WINDOW_DAYS else None
+    return None

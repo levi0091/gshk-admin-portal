@@ -96,6 +96,16 @@ export default function ParticularsChangeCard({ data, reload, can }) {
         </div>
       )}
 
+      {!data.anniversary_default && entries.some(e => (e.items || []).some(
+        i => !i.omitted && !i.effective_date)) && (
+        // Jacqueline 2026-10-17: no open NAR1, so no date to follow — blank,
+        // and filled in before the form is filed.
+        <div className="f-hint" style={{ marginBottom: 10 }}>
+          No open NAR1, so the effective date is left blank. Enter it here if the client
+          gave one, or at Signing, before the form is filed.
+        </div>
+      )}
+
       {entries.length === 0 && (
         <div className="empty-state" style={{ padding: 16 }}>Add the officer whose particulars changed.</div>
       )}

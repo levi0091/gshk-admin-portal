@@ -473,14 +473,16 @@ def test_appointment_and_cessation_accept_no_date(db, nd2a):
     assert db.rows("nar1_cases")[0]["filing_deadline"] is None
 
 
-def test_new_nd2b_item_is_dated_the_anniversary(db, monkeypatch):
+def test_new_nd2b_item_without_an_open_nar1_is_left_blank(db, monkeypatch):
+    """Jacqueline 2026-10-17: no open NAR1, no date — even with the anniversary
+    four weeks ago. It is filled in before submission (at Signing)."""
     db.tables["entities"][0]["incorporation_date"] = "2019-09-01"
     monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
     particulars.capture_before_edit(person_id="P1", user_id="U1")
     db.tables["persons"][0]["email"] = "new@example.com"
     case, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
     entry = cases.add_entry(case, {"kind": "change", "officer_id": "O1"}, user_id="U1")
-    assert [i["effective_date"] for i in entry["items"]] == ["2026-09-01"]
+    assert [i["effective_date"] for i in entry["items"]] == [None]
 
 
 def test_nd2b_default_follows_the_open_nar1_return_date(db, monkeypatch):
@@ -684,13 +686,17 @@ def test_other_open_cases_never_raises(monkeypatch):
 
 
 def test_nd2b_composite_names_the_anniversary_default(db, monkeypatch):
-    """Jacqueline B1: the card says which date the lines start on, and why."""
+    """Jacqueline B1: the card says which date the lines start on, and why —
+    the open NAR1's return date, and nothing without one (2026-10-17)."""
     monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
-    db.tables["entities"][0]["incorporation_date"] = "2019-09-01"
+    db.tables["entities"][0]["incorporation_date"] = "2019-03-12"
     monkeypatch.setattr(cases.deadlines, "hk_today", lambda: _date(2026, 10, 2))
     case, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
+    assert asyncio.run(cases.composite(case["id"], user=USER))["anniversary_default"] is None
+    db.tables["nar1_cases"].append({"id": "N1", "entity_id": "E1", "form_code": "Nar1",
+                                    "ar_period_year": 2026, "closed_at": None})
     data = asyncio.run(cases.composite(case["id"], user=USER))
-    assert data["anniversary_default"] == "2026-09-01"
+    assert data["anniversary_default"] == "2026-03-12"
 
 
 def test_a_nar1_filed_by_esign_does_not_set_the_nd2b_default(db, monkeypatch):

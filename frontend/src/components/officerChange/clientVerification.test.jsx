@@ -181,6 +181,18 @@ describe('ND2B card (B1, B3)', () => {
     expect(screen.getByText(/Dated the anniversary, 12 Mar 2026, so this ND2B matches the NAR1/))
       .toBeInTheDocument()
   })
+  it('says why a line is undated when the company has no open NAR1, and when it is filled', () => {
+    // Jacqueline 2026-10-17: "If there is no open NAR1, please keep it blank too.
+    // We can decide the effective date, as long as we can fill in the date
+    // before the submission."
+    const blank = { ...ND2B, anniversary_default: null, entries: [{ ...ND2B.entries[0],
+      items: [{ ...ND2B.entries[0].items[0], effective_date: null }] }] }
+    wrap(<ParticularsChangeCard data={blank} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText(/No open NAR1, so the effective date is left blank/))
+      .toBeInTheDocument()
+    expect(screen.getByText(/at Signing, before the form is filed/)).toBeInTheDocument()
+    expect(screen.queryByText(/Dated the anniversary/)).not.toBeInTheDocument()
+  })
 })
 
 describe('Send card (A8) and the ND2B waiver (BQ1)', () => {

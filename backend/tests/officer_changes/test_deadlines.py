@@ -48,25 +48,25 @@ def test_anniversary_default_prefers_the_open_nar1():
                                   today=date(2026, 10, 2)) == date(2026, 3, 12)
 
 
-def test_anniversary_default_within_42_days():
-    assert dl.anniversary_default("2019-09-01", today=date(2026, 10, 2)) == date(2026, 9, 1)
-
-
-def test_anniversary_default_none_after_42_days():
-    assert dl.anniversary_default("2019-03-12", today=date(2026, 10, 2)) is None
+def test_no_open_nar1_leaves_the_date_blank_even_inside_the_window():
+    """Jacqueline (on Levi's suggested change, 2026-10-17): "If there is no open
+    NAR1, please keep it blank too. We can decide the effective date, as long as
+    we can fill in the date before the submission." The six-week anniversary
+    fallback is gone; the blank is filled at Signing."""
+    assert dl.anniversary_default("2019-09-01", today=date(2026, 10, 2)) is None
+    assert dl.anniversary_default("2019-10-02", today=date(2026, 10, 2)) is None
+    assert dl.anniversary_default(None, today=date(2026, 10, 2)) is None
 
 
 def test_anniversary_default_never_future():
-    # This year's anniversary (20 Oct) has not happened; last year's is >42 days ago.
-    assert dl.anniversary_default("2019-10-20", today=date(2026, 10, 2)) is None
+    # An open NAR1 whose return date has not arrived yet dates nothing.
+    assert dl.anniversary_default("2019-10-20", open_return_date="2026-10-20",
+                                  today=date(2026, 10, 2)) is None
 
 
 def test_anniversary_default_on_the_day():
-    assert dl.anniversary_default("2019-10-02", today=date(2026, 10, 2)) == date(2026, 10, 2)
-
-
-def test_anniversary_default_leap_day():
-    assert dl.anniversary_default("2020-02-29", today=date(2027, 3, 10)) == date(2027, 2, 28)
+    assert dl.anniversary_default("2019-10-02", open_return_date="2026-10-02",
+                                  today=date(2026, 10, 2)) == date(2026, 10, 2)
 
 
 def test_anniversary_default_unreadable_is_none():
