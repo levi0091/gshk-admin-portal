@@ -106,7 +106,10 @@ def test_054_head_lists_match_the_services():
     """The copies the view is built from. One that drifts silently reclassifies
     every case it covers — the job 046/047/050's tests did until 054."""
     m54 = _migration(M054)
-    assert tuple(m54.CR_FILED_STAGES) == tuple(nar1_cases.CR_FILED_STAGES)
+    # The services also hold `registered` for the deploy window; the view does
+    # not need it, because 054 itself removes every such row.
+    assert set(m54.CR_FILED_STAGES) == (set(nar1_cases.CR_FILED_STAGES)
+                                        - {filings.LEGACY_REGISTERED})
     assert m54.FILED == st.FILED
     assert set(m54.FILING_STAGES) == set(filings.FORM_STATUSES) | {filings.STAGE_EDRIVE}
 

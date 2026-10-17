@@ -1,5 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect } from 'vitest'
+import fs from 'node:fs'
+import path from 'node:path'
 
 import {
   WorkflowBadge, FormBadge,
@@ -174,4 +176,17 @@ describe('the two vocabularies stay apart', () => {
     expect(Object.values(WORKFLOW_CLASS).every(c => c.startsWith('bw-'))).toBe(true)
     expect(Object.values(FORM_CLASS).every(c => c.startsWith('bf-'))).toBe(true)
   })
+})
+
+
+describe('every badge class is styled', () => {
+  // The CR-status removal (2026-10-17) cut the `bc-*` block out of index.css and
+  // took four `bf-*` rules with it; "Filed with CR" rendered unstyled on every
+  // case header. A class the maps hand out must have a rule.
+  const css = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf8')
+  for (const cls of new Set([...Object.values(WORKFLOW_CLASS), ...Object.values(FORM_CLASS)])) {
+    it(`.badge.${cls}`, () => {
+      expect(css).toMatch(new RegExp(`\\.badge\\.${cls}\\s*\\{`))
+    })
+  }
 })

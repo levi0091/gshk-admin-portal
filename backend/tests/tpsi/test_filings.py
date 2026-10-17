@@ -636,6 +636,15 @@ def test_there_is_no_registered_stage():
     2026-10-17; migration 054 turned its rows back into `submitted`)."""
     assert "registered" not in filings.FORM_STATUS_LABELS
     assert "registered" not in filings.FORM_STATUSES
-    assert "registered" not in filings.TERMINAL_STAGES
     assert not hasattr(filings, "STAGE_REGISTERED")
     assert not hasattr(filings, "mark_registered")
+
+
+def test_a_legacy_registered_filing_is_still_one_cr_holds():
+    """THE DEPLOY WINDOW (review, 2026-10-17). The code deploys before migration
+    054 turns `registered` rows into `submitted`. In those minutes a registered
+    filing must still be terminal — or `supersede_all_for_case` could retire a
+    return CR holds, 054's UPDATE would then skip it, and the case would read
+    unfiled for good, one press from a second chargeable filing."""
+    assert filings.LEGACY_REGISTERED == "registered"
+    assert filings.LEGACY_REGISTERED in filings.TERMINAL_STAGES

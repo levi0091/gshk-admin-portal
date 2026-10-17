@@ -61,8 +61,17 @@ FORM_STATUS_LABELS = {
     STAGE_EDRIVE: "Sent to CR e-Drive",
 }
 
+#: `registered` was written only by the CR status poll (removed Levi
+#: 2026-10-17), and migration 054 turns every such row into `submitted` and
+#: forbids the value. NOT a stage anybody writes or the UI reports — it is
+#: here for the minutes between the deploy and 054, when a row the poll
+#: promoted must still be one CR holds: left out of TERMINAL_STAGES,
+#: `supersede_all_for_case` could retire a return CR has, 054's UPDATE would
+#: skip it, and the case would read unfiled for good.
+LEGACY_REGISTERED = "registered"
+
 #: Stages a filing can never move on from.
-TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_EDRIVE, STAGE_SUPERSEDED)
+TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_EDRIVE, STAGE_SUPERSEDED, LEGACY_REGISTERED)
 
 #: A failure at any step. Kept as a tuple so callers test membership rather than
 #: string-matching a suffix.

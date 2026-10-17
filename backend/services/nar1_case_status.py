@@ -39,6 +39,7 @@ portal after that first step"). The branch order in `_code` below IS that
 decision; see the comment there for what it cost and why it is worth it.
 """
 from services.tpsi.filings import (
+    LEGACY_REGISTERED,
     STAGE_EDRIVE,
     STAGE_SIGNED,
     STAGE_SIGNING_FAILED,
@@ -102,7 +103,8 @@ LEGACY_CR_CODES = frozenset({
 })
 
 #: Filing stages that mean the document is finished at CR.
-_FINISHED = (STAGE_SUBMITTED, STAGE_EDRIVE)
+#: `LEGACY_REGISTERED` only until migration 054 has run (see filings).
+_FINISHED = (STAGE_SUBMITTED, STAGE_EDRIVE, LEGACY_REGISTERED)
 
 #: 42 days after the anniversary the statutory filing window closes. Negative
 #: days_to_anniversary counts UP from a passed anniversary (migration 019, floor

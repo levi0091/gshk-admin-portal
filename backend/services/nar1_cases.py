@@ -391,6 +391,8 @@ def _format_problems(receipt: dict) -> list[str]:
 CR_FILED_STAGES = (
     tpsi_filings.STAGE_SUBMITTED,
     tpsi_filings.STAGE_EDRIVE,
+    # Until migration 054 runs — see filings.LEGACY_REGISTERED.
+    tpsi_filings.LEGACY_REGISTERED,
 )
 
 

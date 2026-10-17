@@ -132,8 +132,11 @@ describe('what counts as validated / signed / submitted', () => {
     for (const s of ['submitted', 'edrive']) {
       expect(isSubmitted(withStage(s)), s).toBe(true)
     }
-    // `registered` was written only by the CR status poll (removed 2026-10-17).
-    expect(isSubmitted(withStage('registered'))).toBe(false)
+    // `registered` was written only by the CR status poll (removed 2026-10-17),
+    // and 054 turns it into `submitted` — until it runs, it is still a return
+    // CR holds, or Restart and re-filing would be offered on it.
+    expect(isSubmitted(withStage('registered'))).toBe(true)
+    expect(isValidated(withStage('registered'))).toBe(true)
     expect(isSubmitted(withStage('signed'))).toBe(false)
   })
 

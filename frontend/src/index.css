@@ -1316,6 +1316,10 @@ tbody tr.clickable { cursor: pointer; }
    043) went with the CR status stage. */
 .badge.bw-filed     { background: var(--bang-10);   color: var(--bang); }
 .badge.bw-filed::before     { background: var(--bang); }
+.badge.bf-draft      { background: var(--indigo-10); color: var(--indigo); }
+.badge.bf-validated  { background: var(--bang-10);   color: var(--bang); }
+.badge.bf-signed     { background: var(--bang-10);   color: var(--bang); }
+.badge.bf-submitted  { background: var(--bang-10);   color: var(--bang); }
 .badge.bf-failed     { background: #FEE2E2;          color: #C53030; }
 .badge.bf-superseded { background: var(--indigo-10); color: var(--t-muted); }
 

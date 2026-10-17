@@ -1318,3 +1318,9 @@ def test_the_submission_never_uses_the_unconditional_update(client):
 
     assert response.status_code == 200
     unconditional.assert_not_called()
+
+
+def test_a_legacy_registered_filing_still_blocks_the_manual_path():
+    """Deploy window (054 not yet run): a return the poll once promoted to
+    `registered` is still one CR holds."""
+    assert nar1_cases.manual_conflict({"stage": "registered"}, step="submit") is not None

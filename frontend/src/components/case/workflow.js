@@ -29,12 +29,14 @@ export const STAGE_LABELS = [
 ]
 
 /** CR form stages that mean the snapshot exists and is usable. */
+//: `registered` only until migration 054 has run: the CR status poll wrote it,
+//: 054 turns it into `submitted` (see services/tpsi/filings.LEGACY_REGISTERED).
 const VALIDATED_STAGES = new Set([
-  'validated', 'signed', 'submitted', 'edrive',
+  'validated', 'signed', 'submitted', 'edrive', 'registered',
 ])
 
 /** A filing CR has already accepted. Re-validating one of these is refused. */
-const CR_HOLDS = new Set(['submitted', 'edrive'])
+const CR_HOLDS = new Set(['submitted', 'edrive', 'registered'])
 
 /**
  * Has the return been signed off, by whichever route was chosen?

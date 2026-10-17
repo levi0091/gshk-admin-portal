@@ -126,6 +126,11 @@ def test_off_portal_is_false_on_an_ordinary_filing():
     assert st.derive(case(**APPROVED), filing("submitted"))["off_portal"] is False
 
 
+def test_a_legacy_registered_filing_reads_filed():
+    """The deploy window: 054 has not yet turned it into `submitted`."""
+    assert st.derive(case(**APPROVED), filing("registered"))["code"] == st.FILED
+
+
 def test_a_leftover_cr_answer_on_the_row_changes_nothing():
     """A row read before migration 054 dropped the columns may still carry
     what the poll stored. It is not a fact the badge reads any more."""

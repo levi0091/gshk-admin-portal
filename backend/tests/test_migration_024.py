@@ -327,7 +327,10 @@ def test_superseded_filings_are_ignored():
         conn.close()
 
 
-@pytest.mark.parametrize("filed_stage", nar1_cases.CR_FILED_STAGES)
+# Every stage the TABLE can hold: `registered` stays in CR_FILED_STAGES only for
+# the deploy window, and 054's CHECK refuses it.
+@pytest.mark.parametrize("filed_stage", [s for s in nar1_cases.CR_FILED_STAGES
+                                         if s != tpsi_filings.LEGACY_REGISTERED])
 def test_a_filing_cr_already_holds_wins_over_a_newer_draft(filed_stage):
     """THE HAZARD THIS VIEW REFUSES TO INHERIT.
 

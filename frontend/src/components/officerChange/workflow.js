@@ -23,7 +23,8 @@ export const FORM_TITLE = {
   Nd2b: 'Change of officer particulars',
 }
 
-const FILED_STAGES = new Set(['submitted', 'edrive'])
+// `registered` only until migration 054 has run (it becomes `submitted`).
+const FILED_STAGES = new Set(['submitted', 'edrive', 'registered'])
 
 export function isFiled(c) {
   return Boolean(c?.manual_receipt || c?.changes_applied_at

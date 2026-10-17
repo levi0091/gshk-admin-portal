@@ -61,6 +61,8 @@ describe('workflow', () => {
     }
     expect(STAGES).toEqual(['Client Verification', 'Data Verification', 'Signing',
       'Submission', 'Confirmation'])
+    // A legacy `registered` filing (until migration 054 runs) is filed too.
+    expect(stageIndexFor({ client_approved: true, filing: { stage: 'registered' } })).toBe(5)
     expect(stageIndexFor({ closed_at: 'x' })).toBe(0)
     expect(stageDone({ client_approved: true }, 1)).toBe(true)
   })
