@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import StageDataVerification from './StageDataVerification.jsx'
-import StageClientVerification from './StageClientVerification.jsx'
+import StageClientVerification, { describeSendError } from './StageClientVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
@@ -2577,6 +2577,31 @@ describe('Client Verification names the revision the client holds (migration 051
     await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
     expect(screen.getByText(/It goes out as Rev\. 2, and the Confirm link in the earlier email stops working/))
       .toBeInTheDocument()
+  })
+
+  it('once sent, says Send again re-sends the same frozen copy until a restart', () => {
+    // Levi 2026-10-03: a send again mails the copy shown above, under the
+    // same Rev.; only Restart verification sends a corrected one.
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', verification_revision: 2 })
+    expect(screen.getByText(/Send again re-sends this same frozen copy — to send a corrected return, restart verification first\./))
+      .toBeInTheDocument()
+  })
+
+  it('a send again does not promise the next revision', async () => {
+    const user = userEvent.setup()
+    renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', verification_revision: 2 })
+    await screen.findByText('chan@example.com')
+    await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
+    expect(screen.getByText(/The return will be attached as a PDF/)).toBeInTheDocument()
+    expect(screen.queryByText(/goes out as Rev\./)).toBeNull()
+  })
+
+  it('names the way on when a sent case has no kept copy to re-send', () => {
+    const e = Object.assign(new Error('Nothing was sent: …'),
+                            { status: 409, reason: 'no_frozen_copy' })
+    expect(describeSendError(e).hint).toMatch(/Restart verification/)
+    // Not the generic 409, which says the case is finished.
+    expect(describeSendError(e).hint).not.toMatch(/already finished/)
   })
 
   it('a first send promises no revision at all', async () => {

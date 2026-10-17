@@ -33,10 +33,10 @@ function AddUserModal({ roles, onClose, onCreated }) {
       // real user in Supabase Auth who has no password and no way to ask for
       // one, so this cannot be silent — but it is not an error either, because
       // retrying the creation would collide on the email address.
-      // ON A TEST DEPLOYMENT THE MAIL IS REDIRECTED to the four hardcoded
+      // ON A TEST DEPLOYMENT THE MAIL IS REDIRECTED to the hardcoded
       // addresses in `email_service.TEST_RECIPIENTS`. The account is real and
       // it is locked to `must_change_password`, so unless the new user IS one
-      // of those four they can never sign in — and nothing else on this screen
+      // of those they can never sign in — and nothing else on this screen
       // would say why.
       if (created?.welcome_email_redirected) {
         setWarning(
@@ -267,9 +267,9 @@ function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
           )}
 
           {/* The test-environment lock (email_service.TEST_RECIPIENTS) sends
-              every message to four hardcoded mailboxes. The reset is real and
+              every message to the hardcoded test mailboxes. The reset is real and
               the old password is gone, so unless this user is one of those
-              four they are now locked out — and nothing else on this screen
+              mailboxes they are now locked out — and nothing else on this screen
               would say why. */}
           {redirected && (
             <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410' }}>

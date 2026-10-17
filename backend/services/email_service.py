@@ -58,11 +58,18 @@ RESEND_ENDPOINT = "https://api.resend.com/emails"
 #: that it be *impossible*, not merely configured, for one of them to be mailed
 #: from a test deployment. A tuple rather than a list so it cannot be mutated in
 #: place by a caller that got hold of it.
+#:
+#: jacqueline@getstarted.hk added 2026-10-03, at Levi's request and for test /
+#: DEV only — which is all this list ever governs: production never reads it
+#: (`_apply_test_recipient_lock` returns the real recipients there). Every
+#: entry must be a named person at ZenexFlow or GSHK, never one of GSHK's shared
+#: working mailboxes; tests/test_email_test_recipients.py holds it to that.
 TEST_RECIPIENTS = (
     "levi@zenexflow.com",
     "roy@zenexflow.com",
     "brian@getstarted.hk",
     "vanis@getstarted.hk",
+    "jacqueline@getstarted.hk",
 )
 
 #: A hung Resend must not hang the request thread holding the case open — the
@@ -323,10 +330,10 @@ def _apply_test_cc_lock(cc, is_production):
     """A CC is a recipient, so the same rule binds it: on a non-production
     deployment it is DROPPED, not redirected.
 
-    Dropped rather than substituted because the four addresses are already
+    Dropped rather than substituted because the test addresses are already
     receiving the message as `to` -- copying them again would put the same
     mailbox on both lines. The case worker who would have been copied is one of
-    the four on a test deployment; if they are not, they were never going to
+    them on a test deployment; if they are not, they were never going to
     receive a test send in the first place, which is the interlock working.
 
     The intended list is still reported, so the audit trail records who a
@@ -355,7 +362,7 @@ def _apply_test_reply_to_lock(reply_to, is_production):
     mailbox has been dropped outside production since it was introduced, and
     leaving the other header pointing there made that drop half a measure.
 
-    DROPPED, not substituted with a test address. The four `TEST_RECIPIENTS`
+    DROPPED, not substituted with a test address. The `TEST_RECIPIENTS`
     are already on `to`, so a reply goes back to them by hitting Reply All;
     and pointing `reply_to` somewhere merely to have it set would invent an
     address that no production send would ever carry, which is the opposite of
@@ -766,8 +773,9 @@ def revision_notice(revision) -> str:
         f'cellspacing="0" border="0" style="margin:0 0 22px">'
         f'<tr><td bgcolor="{_GROUND}" style="background:{_GROUND};'
         f'border:1px solid {_BORDER};border-radius:6px;padding:12px 16px">'
-        f'<div style="{_LABEL}padding-bottom:4px">Revised draft &middot; '
-        f"{_html.escape(label)}</div>"
+        # "Revised draft" alone (Levi 2026-10-03): the subject, the masthead and
+        # the reference line already carry the number.
+        f'<div style="{_LABEL}padding-bottom:4px">Revised draft</div>'
         f'<div style="font-family:{_FONT};font-size:14px;line-height:1.55;'
         # "ANY earlier email", not "the one we sent you": a director added to
         # the board since, or whose earlier send failed, never had one.
@@ -875,16 +883,34 @@ def verification_email(case: dict, entity: dict,
     )
 
     when = _deadline_text(deadline)
-    # "If we do not hear from you by <date>" — the date omitted entirely when
-    # there is none, rather than rendered as a blank where a legal deadline
-    # should be. The rest of the sentence stands either way: what silence means
-    # is the fact the client most needs, and it does not depend on the date.
-    by_when = (f"If we do not hear from you by "
-               f"<strong>{_html.escape(when)}</strong>, the draft will be "
-               f"deemed confirmed and we will proceed with the NAR1 filing."
-               if when else
-               "If we do not hear from you, the draft will be deemed confirmed "
-               "and we will proceed with the NAR1 filing.")
+    if rev:
+        # A REVISED LETTER HAS ITS OWN WORDING (Levi 2026-10-03), and only the
+        # wording: the layout, the checklist, the button, the sign-off and
+        # the footer are the first letter's. See `_revised_wording`.
+        words = _revised_wording(approval_url, when)
+    else:
+        # "If we do not hear from you by <date>" — the date omitted entirely
+        # when there is none, rather than rendered as a blank where a legal
+        # deadline should be. The rest of the sentence stands either way: what
+        # silence means is the fact the client most needs, and it does not
+        # depend on the date.
+        words = {
+            "opening": "Your draft NAR1 is now available for review.",
+            "ask": ("Please review the attached draft carefully, with "
+                    "particular attention to the following:"),
+            "confirm": _confirm_instruction(approval_url),
+            "by_when": (f"If we do not hear from you by "
+                        f"<strong>{_html.escape(when)}</strong>, the draft will "
+                        f"be deemed confirmed and we will proceed with the NAR1 "
+                        f"filing."
+                        if when else
+                        "If we do not hear from you, the draft will be deemed "
+                        "confirmed and we will proceed with the NAR1 filing."),
+            # One paragraph in the first letter, two in the revised one.
+            "charges": [f"Any changes requested after filing will be subject "
+                        f"to a {_html.escape(AMENDMENT_FEE)} service fee. "
+                        f"{_change_instruction(approval_url)}"],
+        }
 
     attached = ""
     if attachment_name:
@@ -953,18 +979,17 @@ def verification_email(case: dict, entity: dict,
         f'color:{_T_BODY};padding-bottom:16px">Dear Client,</div>'
 
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY}">Your draft NAR1 is now available for review.</div>'
+        f'color:{_T_BODY}">{words["opening"]}</div>'
 
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY};padding-top:14px">Please review the attached draft '
-        f"carefully, with particular attention to the following:</div>"
+        f'color:{_T_BODY};padding-top:14px">{words["ask"]}</div>'
 
         f'<table role="presentation" cellpadding="0" cellspacing="0" '
         f'border="0" style="margin:10px 0 0">{bullets}</table>'
 
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
         f'color:{_T_BODY};padding-top:20px">'
-        f"{_confirm_instruction(approval_url)}</div>"
+        f'{words["confirm"]}</div>'
 
         # The deadline and the amendment charge — the two sentences in this
         # message with money and a statutory filing behind them, so they get the
@@ -975,12 +1000,12 @@ def verification_email(case: dict, entity: dict,
         f'style="width:3px;background:{_CARROT};border-radius:2px">&nbsp;</td>'
         f'<td style="padding:2px 0 2px 18px">'
         f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY}">{by_when}</div>'
-        f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
-        f'color:{_T_BODY};padding-top:12px">Any changes requested after filing '
-        f"will be subject to a {_html.escape(AMENDMENT_FEE)} service fee. "
-        f"{_change_instruction(approval_url)}</div>"
-        f"</td></tr></table>"
+        f'color:{_T_BODY}">{words["by_when"]}</div>'
+        + "".join(
+            f'<div style="font-family:{_FONT};font-size:15px;line-height:1.65;'
+            f'color:{_T_BODY};padding-top:12px">{charge}</div>'
+            for charge in words["charges"])
+        + f"</td></tr></table>"
 
         # The attachment chip BEFORE the disclaimer, so the sample's last two
         # lines — "replies are not monitored", then the sign-off — stay
@@ -1021,6 +1046,55 @@ def verification_email(case: dict, entity: dict,
         f"</table></td></tr></table>"
     )
     return subject, body
+
+
+def _revised_wording(approval_url: str | None, when: str) -> dict:
+    """The sentences of a REVISED letter (Rev. 2 onward), as HTML fragments.
+
+    VERBATIM FROM `G-FlowDesk - revised NAR1 draft v.2.pdf` (Levi 2026-10-03:
+    "nothing changes except for the wordings. slot in the date where it is
+    required"). The sample's XXXXXXX is the deadline the operator chose, bold
+    as the first letter sets it; the sample's own bold is kept on "revised
+    draft of the NAR1", "Confirm" and "do not click Confirm". Its fee and its
+    request-changes sentences are two paragraphs, as the sample sets them.
+
+    THE ONLY DEPARTURES ARE THE FIRST LETTER'S, for the same reasons: with no
+    approval link there is no Confirm to click, so the reader is asked to
+    reply and the "do not click Confirm" clause goes (see
+    `_confirm_instruction` / `_change_instruction`); with no date the deadline
+    sentence stands without one rather than with a blank.
+
+    It says the revision follows an update of the director's particulars on
+    EVERY revised letter, because that is the sample's wording; a revision for
+    another reason reads the same.
+    """
+    mailbox = _html.escape(RENEWAL_MAILBOX)
+    return {
+        "opening": ("Further to an update of the Director&rsquo;s particulars "
+                    "(passport and/or address information), we enclose a "
+                    "<strong>revised draft of the NAR1</strong> for your review."),
+        "ask": ("We should be grateful if you would examine the draft carefully, "
+                "with particular attention to the following:"),
+        "confirm": ("If the details are correct, kindly click "
+                    "<strong>Confirm</strong> below. No signature is needed."
+                    if approval_url else
+                    "If the details are correct, kindly reply to this email to "
+                    "confirm. No signature is needed."),
+        "by_when": (f"If we do not receive a response by "
+                    f"<strong>{_html.escape(when)}</strong>, the draft will be "
+                    f"deemed confirmed and proceed with the NAR1 filing."
+                    if when else
+                    "If we do not receive a response, the draft will be deemed "
+                    "confirmed and proceed with the NAR1 filing."),
+        "charges": [
+            f"Changes requested after filing will incur a "
+            f"{_html.escape(AMENDMENT_FEE)} service fee.",
+            (f"To request changes, please <strong>do not click Confirm</strong> "
+             f"and email {mailbox} before the deadline."
+             if approval_url else
+             f"To request changes, please email {mailbox} before the deadline."),
+        ],
+    }
 
 
 def _confirm_instruction(approval_url: str | None) -> str:
@@ -1365,7 +1439,7 @@ def _test_banner(intended_to: list[str], intended_cc: list[str]) -> str:
     """The band that says this send never left the test environment.
 
     Styled to match the message below it rather than bolted on as a bare
-    paragraph: four people share these mailboxes across every test case, and a
+    paragraph: several people share these mailboxes across every test case, and a
     banner they skim past is a banner that fails at the one job it has.
     """
     joined = ", ".join(intended_to)

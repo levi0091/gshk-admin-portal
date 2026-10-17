@@ -204,6 +204,23 @@ def test_nothing_is_dated_when_there_can_be_no_earlier_send(revision):
     assert len(table.updates) == 1          # the supersede only
 
 
+@pytest.mark.parametrize("sent, expected", [(None, 1), (0, 1), (1, 1), (2, 2), (5, 5)])
+def test_a_send_again_repeats_the_revision_the_client_holds(sent, expected):
+    """Levi 2026-10-03: a send again is the same frozen copy under the same
+    number. At least 1, since such a case has been sent."""
+    assert approvals.current_revision({"verification_revision": sent}) == expected
+
+
+def test_a_send_again_does_not_date_the_pre_051_links():
+    """They may BE the current revision's, so N-1 would be a guess."""
+    table = _Table()
+    with _sb(table):
+        approvals.issue(case_id="c1", recipients=[{"email": "a@x.com"}],
+                        revision=3, new_revision=False)
+    assert len(table.updates) == 1          # the supersede only
+    assert table.inserted[0][0]["revision"] == 3
+
+
 def test_a_dating_write_that_fails_does_not_stop_the_links_going_out():
     """Best-effort: without it the case behaves exactly as before 051 for those
     old links. Letting it raise would send the email with no Confirm button."""

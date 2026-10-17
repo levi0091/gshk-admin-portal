@@ -59,7 +59,7 @@ def _approval_tokens():
     in the email body is assertable, and keeps the shape `issue` returns.
     """
     def issue(*, case_id, recipients, sent_at=None, expires_at=None,
-              revision=None):
+              revision=None, new_revision=True):
         # ECHOES `expires_at` BACK. The route now passes the operator's chosen
         # deadline down, and a stub that ignored it would let the email print a
         # date nobody picked while every test still passed. `revision` is
@@ -1584,7 +1584,7 @@ def test_the_chosen_deadline_is_what_the_tokens_expire_on(client):
     issued = {}
 
     def issue(*, case_id, recipients, sent_at=None, expires_at=None,
-              revision=None):
+              revision=None, new_revision=True):
         issued["expires_at"] = expires_at
         return [{**r, "token": "tok", "expires_at": expires_at}
                 for r in recipients]
@@ -1880,8 +1880,11 @@ def test_resending_supersedes_the_previous_client_answer(client):
     async def fake_log(**kwargs):
         logged.append(kwargs)
 
+    # Carries the copy it was sent: a send again re-sends exactly that (Levi
+    # 2026-10-03), and a case with none is refused — tested further down.
     rejected = {**CASE, "verification_sent_at": "2026-08-01T00:00:00Z",
-                "client_approved": False, "client_response_at": "2026-08-02T00:00:00Z"}
+                "client_approved": False, "client_response_at": "2026-08-02T00:00:00Z",
+                "verification_xml": "<as-mailed/>", "verification_revision": 1}
     with _super(), _Stack(*_sendable(case=rejected)), \
          patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
          patch("routers.cases.nar1_cases.update_case", return_value=rejected) as spy, \
@@ -2135,12 +2138,12 @@ def test_the_first_send_is_revision_one_and_unmarked(client):
         "NAR1-NAR-2026-0041.pdf"
 
 
-def test_a_resend_is_the_next_revision_everywhere_the_client_looks(client):
+def test_a_send_after_a_restart_is_the_next_revision_everywhere_the_client_looks(client):
     """Subject, letter and file name — a client with both PDFs downloaded must
-    be able to tell them apart without opening either."""
-    resent = {**CASE, "verification_sent_at": "2026-09-30T02:00:00+00:00",
-              "verification_revision": 1}
-    transport, issued, update, _, response = _send_revision(client, resent)
+    be able to tell them apart without opening either. A RESTART is what moves
+    the revision on (Levi 2026-10-03); a plain Send again repeats it."""
+    restarted = {**CASE, "verification_sent_at": None, "verification_revision": 1}
+    transport, issued, update, _, response = _send_revision(client, restarted)
     assert response.status_code == 200
     kwargs = transport.call_args.kwargs
     assert kwargs["subject"].startswith("[Action Required] [Rev. 2] ")
@@ -2186,3 +2189,118 @@ def test_the_trail_records_which_revision_was_sent(client):
     assert by_code["EMAIL_SENT"][0]["metadata"]["revision"] == 2
     assert all(row["metadata"]["revision"] == 2
                for row in by_code["CLIENT_APPROVAL_LINK_SENT"])
+
+
+# ---------------------------------------------------------------------------
+# Send again re-sends the FROZEN copy (Levi 2026-10-03): "when they click send
+# to client multiple times it will send the same frozen snapshot until they
+# actually click restart verification". Until then a draft case was REBUILT
+# from the live company record on every send, while the screen went on showing
+# the copy from the previous one — the client could be mailed a document the
+# operator had never been shown.
+# ---------------------------------------------------------------------------
+
+#: Sent once as Rev. 2 and not restarted since: the screen shows <as-mailed/>.
+FROZEN = {**CASE, "verification_sent_at": "2026-09-30T02:00:00+00:00",
+          "verification_xml": "<as-mailed/>", "verification_revision": 2}
+
+
+def test_send_again_mails_the_frozen_copy_not_a_rebuild(client):
+    """A draft filing would have been rebuilt from the record; not any more."""
+    draft = {**VALIDATED, "stage": "draft", "request_xml": "<draft/>",
+             "validated_xml": None}
+    build = AsyncMock(return_value="<rebuilt-from-the-record/>")
+    with _super(), _Stack(*_sendable(case=FROZEN, filing=draft)), \
+         patch("routers.cases.nar1_prepare.build_form_xml", new=build), \
+         patch("routers.cases.tpsi_filings.rebuild_draft") as rebuild, \
+         patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF") as render, \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=FROZEN) as update, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+    assert response.status_code == 200, response.text
+    assert render.call_args.args[0] == "<as-mailed/>"
+    build.assert_not_awaited()
+    rebuild.assert_not_called()
+    assert update.call_args.args[1]["verification_xml"] == "<as-mailed/>"
+
+
+def test_send_again_mails_the_frozen_copy_even_over_crs_validated_one(client):
+    """The screen shows the copy the client was sent; so does the email.
+    VALIDATED (the helper's default filing) carries "<x/>" — not that."""
+    with _super(), _Stack(*_sendable(case=FROZEN)), \
+         patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF") as render, \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=FROZEN), \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        client.post("/cases/c1/verification/send", headers=H, json=SEND)
+    assert render.call_args.args[0] == "<as-mailed/>"
+
+
+def test_send_again_keeps_the_revision_the_client_already_has(client):
+    """Same document, same Rev. — subject, file name, links and the case."""
+    transport, issued, update, _, response = _send_revision(client, FROZEN)
+    assert response.status_code == 200, response.text
+    kwargs = transport.call_args.kwargs
+    assert kwargs["subject"].startswith("[Action Required] [Rev. 2] ")
+    assert kwargs["attachments"][0][0] == "NAR1-NAR-2026-0041-Rev2.pdf"
+    assert issued.call_args.kwargs["revision"] == 2
+    # Not a new revision, so the pre-051 links are not dated as an earlier one.
+    assert issued.call_args.kwargs["new_revision"] is False
+    assert update.call_args.args[1]["verification_revision"] == 2
+    assert response.json()["revision"] == 2
+    assert response.json()["resent_unchanged"] is True
+
+
+def test_a_first_email_sent_again_stays_unmarked(client):
+    transport, issued, *_ = _send_revision(client, {**FROZEN, "verification_revision": 1})
+    assert "[Rev." not in transport.call_args.kwargs["subject"]
+    assert issued.call_args.kwargs["revision"] == 1
+
+
+def test_send_again_on_a_case_with_no_kept_copy_is_refused_and_mails_nobody(client):
+    """Sent before the portal kept the mailed copy (migration 046), so there is
+    nothing to re-send unchanged; rebuilding instead would break the promise
+    the screen makes. Restart verification is the way on."""
+    unkept = {**CASE, "verification_sent_at": "2026-08-01T00:00:00Z",
+              "verification_xml": None, "verification_revision": 1}
+    with _super(), _Stack(*_sendable(case=unkept)), \
+         patch("routers.cases.email_service.send") as transport, \
+         patch("routers.cases.nar1_cases.update_case") as update, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["reason"] == "no_frozen_copy"
+    assert "Restart verification" in detail["message"]
+    transport.assert_not_called()
+    update.assert_not_called()
+
+
+def test_the_trail_says_whether_a_send_repeated_the_frozen_copy(client):
+    def email_row(case):
+        _, _, _, log, _ = _send_revision(client, case)
+        return next(c.kwargs for c in log.call_args_list
+                    if c.kwargs["action_type"] == "EMAIL_SENT")["metadata"]
+    assert email_row(FROZEN)["resent_unchanged"] is True
+    assert email_row(CASE)["resent_unchanged"] is False
+
+
+def test_after_a_restart_the_return_is_built_afresh(client):
+    restarted = {**CASE, "verification_sent_at": None, "verification_xml": None,
+                 "verification_revision": 2}
+    build = AsyncMock(return_value="<fresh/>")
+    with _super(), _Stack(*_sendable(case=restarted, filing=NO_FILING)), \
+         patch("routers.cases.nar1_prepare.build_form_xml", new=build), \
+         patch("routers.cases.tpsi_filings.create_filing",
+               return_value={"id": "f2", "form_code": "Nar1", "stage": "draft",
+                             "request_xml": "<fresh/>"}), \
+         patch("routers.cases.nar1_form_fill.render", return_value=b"%PDF") as render, \
+         patch("routers.cases.email_service.send", return_value={"id": "m1"}), \
+         patch("routers.cases.nar1_cases.update_case", return_value=restarted) as update, \
+         patch("routers.cases.log_event", new=AsyncMock()):
+        response = client.post("/cases/c1/verification/send", headers=H, json=SEND)
+    assert response.status_code == 200, response.text
+    build.assert_awaited()
+    assert render.call_args.args[0] == "<fresh/>"
+    assert update.call_args.args[1]["verification_revision"] == 3
