@@ -87,15 +87,18 @@ def test_balance_returns_the_amount(client):
     assert response.json()["balance"] == "1831538.0"
 
 
-def test_doc_status_passes_criteria_through(client):
-    rows = [{"caseNo": "180256934", "documentStatus": "Registered"}]
-    with _super(), \
-         patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
-         patch("routers.tpsi.reads.case_status", return_value=rows) as spy, \
-         patch("routers.tpsi.log_event", new=AsyncMock()):
-        response = client.get("/tpsi/doc-status?case_no=180256934", headers=H)
-    assert response.status_code == 200
-    assert spy.call_args.kwargs["case_no"] == "180256934"
+@pytest.mark.parametrize("method, path", [
+    ("post", "/tpsi/cases/c1/refresh-status"),
+    ("get", "/tpsi/doc-status?case_no=180256934"),
+])
+def test_cr_status_routes_are_gone(client, method, path):
+    """Levi 2026-10-17: CR will not report a document's status after filing
+    through docStatusEnquiry, so Check now and the ad-hoc lookup went with the
+    poll. Nothing may reach CR from either path."""
+    with _super(), patch("routers.tpsi.client_for") as reached:
+        response = getattr(client, method)(path, headers=H)
+    assert response.status_code in (404, 405)
+    reached.assert_not_called()
 
 
 def test_endpoints_require_authentication(client):
@@ -205,17 +208,6 @@ def test_password_expiry_persistence_failure_does_not_fail_the_request(client):
     assert response.json()["balance"] == "1"
     # audit_auth still fires TPSI_AUTH after swallowing the persistence error.
     assert "TPSI_AUTH" in events
-
-
-def test_bad_case_status_criteria_is_a_clean_400_not_a_500(client):
-    """reads.case_status raises ValueError on invalid/missing criteria; _handle
-    maps ValueError -> 400 centrally so any future ValueError-raising check
-    in the balance/doc-status call graph gets the same treatment, not a 500."""
-    with _super(), \
-         patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
-         patch("routers.tpsi.reads.case_status", side_effect=ValueError("bad criteria")):
-        response = client.get("/tpsi/doc-status", headers=H)
-    assert response.status_code == 400
 
 
 # ---- filings: POST /tpsi/filings --------------------------------------------

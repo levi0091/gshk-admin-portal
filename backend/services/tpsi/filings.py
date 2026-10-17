@@ -31,11 +31,10 @@ STAGE_SIGNED = "signed"
 STAGE_SIGNING_FAILED = "signing_failed"
 STAGE_SUBMITTED = "submitted"
 STAGE_SUBMISSION_FAILED = "submission_failed"
-STAGE_REGISTERED = "registered"
 STAGE_SUPERSEDED = "superseded"
 STAGE_EDRIVE = "edrive"
 
-#: The nine the UI reports, in lifecycle order. `edrive` is a valid stored value
+#: The eight the UI reports, in lifecycle order. `edrive` is a valid stored value
 #: (upload_edrive() still works) but is not offered in the UI, so it is not here.
 FORM_STATUSES = (
     STAGE_DRAFT,
@@ -45,7 +44,6 @@ FORM_STATUSES = (
     STAGE_SIGNING_FAILED,
     STAGE_SUBMITTED,
     STAGE_SUBMISSION_FAILED,
-    STAGE_REGISTERED,
     STAGE_SUPERSEDED,
 )
 
@@ -59,13 +57,12 @@ FORM_STATUS_LABELS = {
     STAGE_SIGNING_FAILED: "Rejected at signing",
     STAGE_SUBMITTED: "Filed with CR",
     STAGE_SUBMISSION_FAILED: "Rejected at submission",
-    STAGE_REGISTERED: "Registered by CR",
     STAGE_SUPERSEDED: "Superseded by a later attempt",
     STAGE_EDRIVE: "Sent to CR e-Drive",
 }
 
 #: Stages a filing can never move on from.
-TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE, STAGE_SUPERSEDED)
+TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_EDRIVE, STAGE_SUPERSEDED)
 
 #: A failure at any step. Kept as a tuple so callers test membership rather than
 #: string-matching a suffix.
@@ -136,39 +133,6 @@ def supersede(filing_id: str) -> bool:
         .update({"stage": STAGE_SUPERSEDED})
         .eq("id", filing_id)
         .not_.in_("stage", list(TERMINAL_STAGES))
-        .execute()
-        .data
-    )
-    return bool(rows)
-
-
-def mark_registered(filing_id: str) -> bool:
-    """CR confirmed the filing is on the register. Returns whether a row moved.
-
-    THE SECOND STAGE NOTHING EVER WROTE. `STAGE_REGISTERED` has been in the
-    vocabulary since migration 018, whose own docstring defines it as "CR
-    confirmed the filing via docStatusEnquiry" — and until `nar1_cr_status`
-    there was nothing doing the enquiring. `StageConfirmation` carried a comment
-    saying so, and the Confirmation step sat permanently at IN PROGRESS because
-    `stageDone(5)` waited on a value no code path could produce.
-
-    Conditional on `stage = 'submitted'` INSIDE the update, not
-    read-then-written, and for a sharper reason than `supersede`'s: this runs
-    from a nightly job walking hundreds of cases, so the window between a read
-    and a write is as long as the rest of the run. The only row this can ever
-    move is one that is still `submitted` at the instant Postgres applies it.
-
-    Never `edrive` and never a manual filing: e-Drive is finished in CR's own
-    wizard and an off-portal filing has no submitted row at all. Both carry
-    their CR status on the CASE (`nar1_cases.cr_doc_status_code`), which is why
-    this promotion is a nicety for the FORM badge rather than the fact anything
-    depends on.
-    """
-    rows = (
-        get_supabase().table(_TABLE)
-        .update({"stage": STAGE_REGISTERED})
-        .eq("id", filing_id)
-        .eq("stage", STAGE_SUBMITTED)
         .execute()
         .data
     )

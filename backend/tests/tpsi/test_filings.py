@@ -438,10 +438,11 @@ def test_sign_failure_records_signing_failed_not_a_generic_failure(monkeypatch):
     assert saved["stage"] != filings.STAGE_VALIDATION_FAILED
 
 
-def test_form_statuses_are_the_nine_the_ui_reports():
+def test_form_statuses_are_the_eight_the_ui_reports():
     # edrive is a valid stored value but is not offered in the UI, so it must
     # not appear in the reported vocabulary.
-    assert len(filings.FORM_STATUSES) == 9
+    # Eight since `registered` went with the CR status poll (2026-10-17).
+    assert len(filings.FORM_STATUSES) == 8
     assert filings.STAGE_EDRIVE not in filings.FORM_STATUSES
     # Every reported status needs a label, or the UI renders a raw enum.
     for status in filings.FORM_STATUSES:
@@ -628,3 +629,13 @@ def test_a_validated_filing_is_not_rebuildable():
     assert set(filings.REBUILDABLE_STAGES) == {
         filings.STAGE_DRAFT, filings.STAGE_VALIDATION_FAILED,
     }
+
+
+def test_there_is_no_registered_stage():
+    """`registered` was written only by the CR status poll (removed Levi
+    2026-10-17; migration 054 turned its rows back into `submitted`)."""
+    assert "registered" not in filings.FORM_STATUS_LABELS
+    assert "registered" not in filings.FORM_STATUSES
+    assert "registered" not in filings.TERMINAL_STAGES
+    assert not hasattr(filings, "STAGE_REGISTERED")
+    assert not hasattr(filings, "mark_registered")
