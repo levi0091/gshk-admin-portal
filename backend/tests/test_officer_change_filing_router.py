@@ -275,11 +275,15 @@ def test_signed_form_needs_mark_checked_first_and_a_pdf(env):
 
 # -- undo -------------------------------------------------------------------------------
 
-def test_undo_only_after_a_cr_rejection(env):
-    assert client.post("/officer-changes/K1/undo", headers=H,
-                       json={"confirm": True}).json()["detail"]["reason"] == "not_rejected"
-    env.case = {**CASE, "cr_doc_status_code": "cr_rejected",
-                "changes_applied_at": "2026-10-01T00:00:00Z"}
+def test_undo_refuses_an_unfiled_case(env):
+    """Undo answers a rejection the operator heard about from CR (Levi
+    2026-10-17: the portal no longer asks CR), so it needs a FILED case."""
+    resp = client.post("/officer-changes/K1/undo", headers=H, json={"confirm": True})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "not_filed"
+
+
+def test_undo_works_on_a_filed_case_without_any_cr_answer(env):
+    env.case = {**CASE, "changes_applied_at": "2026-10-01T00:00:00Z"}
     applied = {"id": "K1", "entries": [{"id": "N1", "kind": "cessation",
                                         "applied": {"officer": {"id": "O1", "before": {}}}}]}
     with patch.object(ocf.svc, "composite", new_callable=AsyncMock, return_value=applied), \
@@ -293,7 +297,7 @@ def test_undo_only_after_a_cr_rejection(env):
 def test_undo_reaches_a_write_back_that_stopped_part_way(env):
     # changes_applied_at is set only when EVERY entry applied; an ND2A whose
     # appointment failed after its cessation applied must still be undoable.
-    env.case = {**CASE, "cr_doc_status_code": "cr_rejected", "changes_applied_at": None}
+    env.case = {**CASE, "manual_receipt": {"caseNo": "1"}, "changes_applied_at": None}
     partial = {"id": "K1", "entries": [
         {"id": "N1", "kind": "cessation", "applied": {"officer": {"id": "O1", "before": {}}}},
         {"id": "N2", "kind": "appointment", "applied": None}]}
@@ -305,7 +309,7 @@ def test_undo_reaches_a_write_back_that_stopped_part_way(env):
 
 
 def test_undo_with_nothing_applied_is_refused(env):
-    env.case = {**CASE, "cr_doc_status_code": "cr_rejected"}
+    env.case = {**CASE, "manual_receipt": {"caseNo": "1"}}
     resp = client.post("/officer-changes/K1/undo", headers=H, json={"confirm": True})
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "nothing_to_undo"
 

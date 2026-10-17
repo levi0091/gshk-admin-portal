@@ -10,17 +10,21 @@ every off-portal fact (manual_receipt). This module WRITES NOTHING -- it is a
 pure function of those two records, so the badge cannot drift out of step with
 the facts underneath it, and there is no third place for them to disagree.
 
-`COMPLETED` IS GONE (Levi 2026-09-16: "completed should not be there.. it should
-be the steps throughout the workflow plus the final CR statuses"). It said
-nothing CR had agreed to: a case went green the instant `submitFormNar1`
-returned a receipt, while CR had only RECEIVED the return and could still refuse
-it. In its place are the five CR codes from services/tpsi/doc_status, which are
-what the register actually says -- starting at `cr_not_checked`, which is the
-honest answer for a filed return nobody has asked CR about yet.
+A FILED RETURN IS `FILED`, AND THAT IS THE LAST THING THE PORTAL KNOWS (Levi
+2026-10-17). From 2026-09-16 a filed case wore one of six CR codes read off
+`docStatusEnquiry` by a 15-minute poll, and the stepper had a sixth stage to
+show them. CR has since said it will not report a document's status after
+filing through that API -- "at best we will know that the submission was
+successful and we get payment details and receipt" -- so the poll, the stage
+and the six codes are gone (migration 054), and the receipt is the end of the
+workflow. `completed`, retired on 2026-09-16, stays retired: `filed` says what
+happened, not that the statutory job is finished.
 
 Removed, not aliased. A code no row can carry but that every filter, count and
 test still offers is worse than one that is gone: it renders an always-zero tab
-on the dashboard and invites the next writer to set it.
+on the dashboard and invites the next writer to set it. `LEGACY_CR_CODES` below
+is not an alias: it exists only so the dashboard renders during the minutes
+between the deploy and migration 054.
 
 The first six codes are the six badges wireframe_v11 renders for the stages
 (bw-data, bw-verify, bw-awaiting, bw-rejected, bw-sign, bw-submit). CLOSED was
@@ -34,14 +38,8 @@ to the client and then make the necessary changes ... before validating with CR
 portal after that first step"). The branch order in `_code` below IS that
 decision; see the comment there for what it cost and why it is worth it.
 """
-from services.tpsi.doc_status import (
-    CR_STATUS_CODES,
-    CR_STATUS_LABELS,
-    NOT_CHECKED as CR_NOT_CHECKED,
-)  # noqa: F401 -- CR_NOT_CHECKED is re-exported for callers of this module
 from services.tpsi.filings import (
     STAGE_EDRIVE,
-    STAGE_REGISTERED,
     STAGE_SIGNED,
     STAGE_SIGNING_FAILED,
     STAGE_SUBMISSION_FAILED,
@@ -56,6 +54,11 @@ CLIENT_REJECTED = "client_rejected"
 SIGNING = "signing"
 SUBMISSION = "submission"
 
+#: CR has the return: submitFormNar1 (or Nd2a/Nd2b) returned a receipt, the
+#: return went to e-Drive, or an off-portal receipt was recorded. The end of
+#: the workflow since Levi 2026-10-17 -- see the module docstring.
+FILED = "filed"
+
 #: The client no longer wants the return filed. TERMINAL AND PERMANENT: there is
 #: no route back out of it, by design (Levi 2026-09-05).
 #:
@@ -66,7 +69,7 @@ SUBMISSION = "submission"
 #: these out of the work.
 CLOSED = "closed"
 
-#: The stages, then the CR codes, then closed. Order is the order the dashboard
+#: The stages, then filed, then closed. Order is the order the dashboard
 #: filter offers them in, which is the order a case moves through them — so
 #: CLIENT_VERIFICATION leads since 2026-09-17, when the client's approval became
 #: the first step rather than the second.
@@ -75,7 +78,7 @@ GSHK_STATUSES = (
     SIGNING, SUBMISSION,
 )
 
-WORKFLOW_STATUSES = GSHK_STATUSES + CR_STATUS_CODES + (CLOSED,)
+WORKFLOW_STATUSES = GSHK_STATUSES + (FILED, CLOSED)
 
 WORKFLOW_LABELS = {
     DATA_VERIFICATION: "Data Verification",
@@ -84,12 +87,22 @@ WORKFLOW_LABELS = {
     CLIENT_REJECTED: "Client Rejected",
     SIGNING: "Signing",
     SUBMISSION: "Submission",
-    **CR_STATUS_LABELS,
+    FILED: "Filed",
     CLOSED: "Closed",
 }
 
+#: The six codes migration 043's view gave a filed case. Read back as FILED by
+#: `badge_from_row` and nowhere else: the code deploys before migration 054
+#: runs (jobs/README.md), and for those minutes the view still answers with
+#: these. A KeyError on them would 500 every dashboard page holding a filed
+#: case -- the failure 043's own rollout notes describe.
+LEGACY_CR_CODES = frozenset({
+    "cr_not_checked", "cr_pending", "cr_approved", "cr_registered",
+    "cr_rejected", "cr_unknown",
+})
+
 #: Filing stages that mean the document is finished at CR.
-_FINISHED = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE)
+_FINISHED = (STAGE_SUBMITTED, STAGE_EDRIVE)
 
 #: 42 days after the anniversary the statutory filing window closes. Negative
 #: days_to_anniversary counts UP from a passed anniversary (migration 019, floor
@@ -100,15 +113,7 @@ FILING_WINDOW_DAYS = 42
 #: The badges that mean nobody is waiting on GSHK to FILE anything. Used by the
 #: overdue overlay below, and by the dashboard, which must not put them in a
 #: queue for a filing that has already gone.
-#:
-#: EVERY CR code is here, `cr_rejected` included. The overlay answers "somebody
-#: still has to file this before the window shuts", and on a rejected return
-#: that is a statement about a deadline which has already been missed in a
-#: different way -- the red badge is the alarm, and stacking an overdue marker
-#: on top of it says the same thing twice while implying the filing never
-#: happened. (The dashboard does treat `cr_rejected` as Action Required; that is
-#: a separate judgement about whose move it is, made in DashboardPage.jsx.)
-TERMINAL_STATUSES = CR_STATUS_CODES + (CLOSED,)
+TERMINAL_STATUSES = (FILED, CLOSED)
 
 #: The forms that are NOT an annual return (migration 050). ND2A and ND2B share
 #: `nar1_cases` and this badge with NAR1; the two places they differ are below,
@@ -144,7 +149,7 @@ def _code(case: dict, filing: dict | None) -> str:
     # is still sitting at 'validated' while the return is genuinely with CR.
     # Testing the stage first would report a filed case as still Signing.
     if case.get("manual_receipt") or stage in _FINISHED:
-        return _cr_code(case)
+        return FILED
 
     # THE CLIENT COMES FIRST (Levi 2026-09-17). These three branches used to sit
     # BELOW the validation test, so a case could not reach Client Verification
@@ -220,22 +225,6 @@ def _code(case: dict, filing: dict | None) -> str:
     return SIGNING
 
 
-def _cr_code(case: dict) -> str:
-    """What CR says about a return it has already received.
-
-    The STORED code, never re-derived from `cr_doc_status`: the dashboard sorted,
-    filtered and counted on what is stored (migration 043 restates this branch
-    in SQL), and re-deriving here would let a case's own screen disagree with
-    the listing that opened it.
-
-    Falls back to `cr_not_checked` rather than to anything CR-flavoured. A
-    deployment with no poller running has a filed return and no CR answer, and
-    that is exactly what `cr_not_checked` says.
-    """
-    code = case.get("cr_doc_status_code")
-    return code if code in CR_STATUS_CODES else CR_NOT_CHECKED
-
-
 def badge_from_row(row: dict) -> dict:
     """The same badge, for a row that already carries the answer.
 
@@ -248,19 +237,17 @@ def badge_from_row(row: dict) -> dict:
 
     It does NOT re-derive. Re-deriving in Python would silently paper over a
     divergence between the two implementations, and tests/test_migration_024.py
-    exists precisely to make that divergence loud.
+    exists precisely to make that divergence loud. The one translation is a
+    LEGACY CR code, read as FILED -- see `LEGACY_CR_CODES`.
     """
     code = row["workflow_status"]
+    if code in LEGACY_CR_CODES:
+        code = FILED
     return {
         "code": code,
         "label": WORKFLOW_LABELS[code],
         "off_portal": bool(row.get("workflow_off_portal")),
         "overdue": bool(row.get("workflow_overdue")),
-        # CR's own words, carried beside the code for the same reason
-        # `doc_status.describe` carries them: on `cr_unknown` they are the only
-        # informative thing there is, and on a recognised code they are the
-        # evidence an operator quotes back to CR.
-        "cr_text": row.get("cr_doc_status") or None,
     }
 
 
@@ -279,7 +266,6 @@ def derive(case: dict, filing: dict | None) -> dict:
         # so the case is complete but not by us. The UI has no badge for it
         # (Levi, 2026-08-02: e-Drive is not offered), hence a flag, not a code.
         "off_portal": (filing or {}).get("stage") == STAGE_EDRIVE,
-        "cr_text": case.get("cr_doc_status") or None,
         # An independent overlay, never a stage: a case can be overdue at any
         # step. Meaningless once filed -- whether it was filed LATE is a
         # different question this badge does not answer.
@@ -300,7 +286,7 @@ def derive(case: dict, filing: dict | None) -> dict:
         # alarm about work that was deliberately cancelled -- which is exactly
         # the noise closing a case exists to remove.
         #
-        # nar1_case_registry (024, restated by 033, 039, 043 and 050) carries
+        # nar1_case_registry (024, restated by 033, 039, 043, 050 and 054) carries
         # the identical predicate; the two must not diverge.
         "overdue": code not in TERMINAL_STATUSES and _past_its_window(case, days),
     }

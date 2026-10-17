@@ -27,8 +27,10 @@ from typing import Optional
 #: Long enough to explain, short enough to be a reason and not a document.
 REASON_MAX = 500
 
-#: A case in any state but these still needs somebody to see it.
-FINISHED_CASE_STATES = frozenset({"closed", "cr_registered"})
+#: A case in any state but these still needs somebody to see it. FILED counts
+#: as finished since Levi 2026-10-17: it used to wait for CR to register the
+#: return, which CR will never report.
+FINISHED_CASE_STATES = frozenset({"closed", "filed"})
 
 _RELATION_LABELS = {
     "director": "Director",

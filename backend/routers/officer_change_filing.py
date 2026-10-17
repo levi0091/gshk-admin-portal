@@ -26,10 +26,10 @@ from pydantic import BaseModel
 
 from middleware.auth import require_permission
 from routers import tpsi as tpsi_router
-from routers.officer_changes import MODULE, audit, load_case, refuse_if_closed, respond
+from routers.officer_changes import MODULE, audit, filed, load_case, refuse_if_closed, respond
 from services import audit_events as ev, document_service, nar1_cases
 from services.officer_changes import apply, cases as svc, documents, eservice, prepare, signing
-from services.tpsi import credentials, doc_status, filings
+from services.tpsi import credentials, filings
 
 router = APIRouter()
 
@@ -545,14 +545,21 @@ async def record_filing(case_id: str, body: RecordFilingIn,
 @router.post("/{case_id}/undo")
 async def undo(case_id: str, body: ConfirmIn,
                user=Depends(require_permission("tpsi", "submit"))):
-    """After CR REJECTS a filed change: put the profiles back as they were."""
+    """After CR REJECTS a filed change: put the profiles back as they were.
+
+    THE OPERATOR SAYS CR REJECTED IT, NOT THE PORTAL (Levi 2026-10-17). This
+    was gated on the CR status poll's `cr_rejected`; CR will not report a
+    document's status after filing, so the rejection reaches GSHK by CR's own
+    notice and the operator records it here. The gate is therefore that the
+    change was FILED — before that there is nothing CR could have rejected.
+    """
     if body.confirm is not True:
         raise HTTPException(400, "Confirm the undo")
     case = load_case(case_id)
-    if case.get("cr_doc_status_code") != doc_status.REJECTED:
-        raise HTTPException(409, {"message": "Undo is only for a change the Companies "
-                                             "Registry has rejected.",
-                                  "reason": "not_rejected"})
+    if not filed(case):
+        raise HTTPException(409, {"message": "Undo is only for a change that has been "
+                                             "filed with the Companies Registry.",
+                                  "reason": "not_filed"})
     data = await svc.composite(case_id, user=user)
     # Gated on what was actually applied, entry by entry — not on
     # `changes_applied_at`, which a write-back that stopped part-way never

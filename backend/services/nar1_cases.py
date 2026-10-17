@@ -4,12 +4,8 @@ This module owns the client facts and the off-portal facts. It never writes a CR
 fact: tpsi_filings owns those, and nar1_case_status.derive() reads both to
 produce the badge.
 
-ONE EXCEPTION, and it is a deliberate one: the CR DOCUMENT STATUS (migration
-043) is stored on `nar1_cases`, not on `tpsi_filings`. A return filed on paper
-has a CR case number and no submitted filing row at all — writing "CR registered
-it" onto a row whose own stage says it was never sent would be a record that
-contradicts itself. `services/nar1_cr_status.py` is its only writer; this module
-only reads it back. `manual_receipt` — CR's own receipt — is the precedent.
+(Migration 043 stored CR's document status here, as the one exception; it was
+removed with the CR status stage by migration 054, Levi 2026-10-17.)
 """
 import asyncio
 import re
@@ -22,7 +18,6 @@ from services import (
     nar1_approvals, nar1_case_status, nar1_return_year, nar1_verification,
     soft_delete, table_filters as tf,
 )
-from services.tpsi import doc_status
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.filings import form_status
 
@@ -395,7 +390,6 @@ def _format_problems(receipt: dict) -> list[str]:
 #: return, and nothing downstream could say which one CR actually has.
 CR_FILED_STAGES = (
     tpsi_filings.STAGE_SUBMITTED,
-    tpsi_filings.STAGE_REGISTERED,
     tpsi_filings.STAGE_EDRIVE,
 )
 
@@ -612,11 +606,7 @@ _LIST_COLS = (
     # Migration 050. The 15-day deadline of an officer-change case, and how far
     # off it is — signed like days_to_anniversary, negative once it has passed.
     # Both NULL on an annual return, whose deadline is the anniversary's.
-    "form_code, filing_deadline, days_to_deadline, "
-    # CR's own words, for the one badge that cannot be labelled without them:
-    # `cr_unknown` renders what CR said, because that is the only informative
-    # thing there is about a status this portal does not recognise.
-    "cr_doc_status, cr_status_checked_at"
+    "form_code, filing_deadline, days_to_deadline"
 )
 
 
@@ -875,15 +865,6 @@ def composite(case_id: str) -> dict:
         "client_approval": nar1_approvals.provenance(case),
         "workflow_status": nar1_case_status.derive(case, filing),
         "form_status": form_status(filing) if filing else None,
-        # THE THIRD VOCABULARY (Levi 2026-09-16), and it is not either of the
-        # other two: `workflow_status` is where the case is with GSHK,
-        # `form_status` is where the document got to in OUR chain, and this is
-        # what CR's own register says about a document it has already received.
-        # Stage 6 renders it; see services/tpsi/doc_status.
-        "cr_status": doc_status.describe(
-            case.get("cr_doc_status"), case.get("cr_doc_status_code")),
-        "cr_status_checked_at": case.get("cr_status_checked_at"),
-        "cr_document_ref_no": case.get("cr_document_ref_no"),
         "receipt": (filing or {}).get("receipt") or case.get("manual_receipt"),
         # HAS THE RETURN MOVED SINCE THE CLIENT APPROVED IT (migration 046)?
         #
