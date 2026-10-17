@@ -319,7 +319,9 @@ def test_declared_signatory_id_reads_the_named_person():
                           "<cr:selectPersonId></cr:selectPersonId>"),  # empty
     VALIDATED_XML.replace("<cr:formCode>NAR1</cr:formCode>",
                           "<cr:selectPersonId>   </cr:selectPersonId>"),
-])
+# Explicit ids: VALIDATED_XML embeds a certificate generated at import, so ids
+# derived from the value differ per process and pytest-xdist refuses to run.
+], ids=["none", "empty", "no_tag", "empty_tag", "blank_tag"])
 def test_declared_signatory_id_is_none_when_no_person_is_named(xml):
     """An absent OR empty tag both mean "signed by a body corporate", which is
     the normal GSHK case — neither may be read as a signatory called "" that
