@@ -1,48 +1,52 @@
-/* Identification and addresses by company (Levi 2026-10-05).
-   One colour per company, the same on every card: the thing to follow down the
-   page. Kept off carrot (attention) and bang green (approved), as the document
+/* Identification and addresses by company (Levi 2026-10-05; one Addresses card
+   since 2026-10-17). One colour per company, the same on every entry: the thing
+   to follow down the page. Kept off carrot (attention) and bang green (approved), as the document
    chips are; the company is always named, the colour only helps. */
 
 .pb-card .card-hdr { margin-bottom: 4px; flex-wrap: nowrap; align-items: flex-start; gap: 16px; }
 .pb-card .card-hdr > div:first-child { flex: 1; min-width: 0; }
 .pb-card .card-hdr > .btn { flex-shrink: 0; }
 
-/* An address here is read, not edited: CR's five lines, tight, no rules, the
-   label column as wide as CR's longest label so none breaks mid-word. */
-.pb-entry .addr-block {
-  display: grid; grid-template-columns: max-content minmax(0, 1fr);
-  column-gap: 18px; row-gap: 5px;
-}
-.pb-entry .addr-block .kv-row { display: contents; }
-.pb-entry .addr-block .kv-key { width: auto; padding-right: 0; }
-.pb-entry .addr-block > :not(.kv-row) { grid-column: 1 / -1; }
-@media (max-width: 640px) {
-  .pb-entry .addr-block { display: block; }
-  .pb-entry .addr-block .kv-row { display: flex; padding: 3px 0; border-bottom: none; }
-  .pb-entry .addr-block .kv-key { width: 140px; }
-}
-.pb-entry {
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
-  padding: 14px 0; border-bottom: 1px solid var(--border);
-}
+/* One card, two groups (Levi 2026-10-17: "not bloated"). The group heading is a
+   quiet sentence-case label with what it means for the register beside it. */
+.pb-group { margin-top: 12px; }
+.pb-group + .pb-group { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.pb-group-hd { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
+.pb-group-title { font-size: 13px; font-weight: 600; color: var(--t-head); }
+.pb-group-note { font-size: 12px; color: var(--t-muted); flex: 1; min-width: 0; }
+.pb-group-hd .btn { align-self: center; flex-shrink: 0; }
+
+/* An address is ONE line, CR's lines in CR's order; the companies and the
+   actions share the row beneath it. */
+.pb-entry { padding: 11px 0; border-bottom: 1px solid var(--border); }
 .pb-entry:last-child { border-bottom: none; }
-.pb-entry-main { flex: 1; min-width: 0; }
-.pb-entry-same { padding-top: 12px; }
-.pb-same { font-size: 12.5px; font-weight: 600; color: var(--t-head); margin-bottom: 8px; }
-.pb-empty { font-size: 12.5px; color: var(--t-muted); padding: 10px 0 4px; }
+.pb-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.pb-addr { font-size: 14px; font-weight: 500; color: var(--t-head); line-height: 1.45; }
+.pb-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 7px; }
+.pb-foot .pb-chips { margin-top: 0; flex: 1; min-width: 0; }
+.pb-foot .pb-unused { margin-top: 0; flex: 1; }
+.pb-same { font-size: 12.5px; font-weight: 600; color: var(--t-head); }
+.pb-empty { font-size: 12.5px; color: var(--t-muted); padding: 8px 0 2px; }
 .pb-unused { font-size: 12px; color: var(--t-muted); margin-top: 8px; }
+/* A line CR would refuse, named — the one-line view must not hide it. */
+.pb-warn { margin: 6px 0 0; padding-left: 16px; font-size: 12px; color: var(--carrot); }
+
+/* On an Identity Documents entry: which companies file it. */
+.pb-filed {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+}
+.pb-filed-lbl { font-size: 12px; color: var(--t-muted); }
+.pb-filed .pb-chips { margin-top: 0; }
+.pb-filed .pb-unused { margin-top: 0; }
+.pb-filed-btn { margin-left: auto; }
 
 .pb-badge {
-  display: inline-block; margin-bottom: 8px; padding: 2px 9px; border-radius: 999px;
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
   font-size: 11px; font-weight: 600; color: var(--indigo);
   background: var(--indigo-5); border: 1px solid var(--indigo-10);
 }
-.pb-doc { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 13px; }
-.pb-doc .pb-badge { margin-bottom: 0; }
-.pb-doc-type { color: var(--t-muted); font-size: 12px; }
-.pb-doc-number { color: var(--t-head); font-weight: 600; letter-spacing: 0.02em; }
-
-.pb-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
+.pb-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; margin-left: auto; }
 
 .pb-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .co-chip {
@@ -76,7 +80,10 @@
 .pb-pick-name { font-weight: 600; display: block; }
 .pb-pick-role { font-size: 11.5px; color: var(--t-muted); display: block; }
 
+/* A phone: the companies take the row, the actions go under them. */
 @media (max-width: 640px) {
-  .pb-entry { flex-direction: column; }
-  .pb-actions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .pb-foot, .pb-filed { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .pb-foot .pb-chips, .pb-filed .pb-chips { width: 100%; }
+  .pb-actions, .pb-filed-btn { margin-left: -8px; flex-wrap: wrap; }
+  .pb-group-hd { flex-wrap: wrap; }
 }

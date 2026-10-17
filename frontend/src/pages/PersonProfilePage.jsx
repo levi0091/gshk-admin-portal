@@ -11,7 +11,9 @@ import {
   DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
 } from '../components/DocumentSections.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
-import ParticularsByCompany from '../components/particulars/ParticularsByCompany.jsx'
+import {
+  AddressesCard, BookUnavailable, DocumentCompanies, useParticularsBook,
+} from '../components/particulars/ParticularsByCompany.jsx'
 import { useLookups } from '../lib/lookups.js'
 import { useFormContract, fieldWarning } from '../lib/formContract.js'
 import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
@@ -129,6 +131,9 @@ function IdentityDocument({
   // person, not an upload. Its SCAN is a document, so downloading it asks
   // `documents:read` instead. Two facts, two permissions.
   canWrite = true, canDownloadScan = true,
+  // Which companies file this document (Levi 2026-10-17): drawn here rather
+  // than on a second card that listed the same passports again.
+  companies = null,
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({})
@@ -232,6 +237,7 @@ function IdentityDocument({
           ))}
         </div>
       )}
+      {companies}
     </div>
   )
 }
@@ -288,6 +294,15 @@ export default function PersonProfilePage() {
   }, [personId])
 
   useEffect(() => { load() }, [load])
+
+  // Which address and identity document each company files (Levi 2026-10-05),
+  // read once and shared by the Addresses card and the Identity Documents card
+  // (2026-10-17). A move reloads the person, so the ND2B alert above picks up
+  // what it created; a deleted person is not asked about.
+  const particulars = useParticularsBook({
+    personId, refreshKey: person?.identity_documents, onChanged: load,
+    enabled: Boolean(person) && !person?.deleted_at,
+  })
 
   function startEdit() {
     setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, person[f.key] ?? ''])))
@@ -592,13 +607,14 @@ export default function PersonProfilePage() {
             )}
           </div>
 
-          {/* Identification, residential and correspondence addresses, each
-              naming the companies that file it (Levi 2026-10-05, Jacqueline's
-              ND2B question 2). A move reloads the person, so the ND2B alert
-              above picks up what it created. */}
-          {!isDeleted && (
-            <ParticularsByCompany personId={personId} canEdit={canWrite} lookups={lookups}
-                                  contract={contract} refreshKey={idDocs} onChanged={load} />
+          {/* Residential and correspondence addresses, each naming the
+              companies that file it (Levi 2026-10-05, Jacqueline's ND2B
+              question 2) — one card since 2026-10-17. Identification by company
+              is on the Identity Documents card below. */}
+          {!isDeleted && particulars.failed && <BookUnavailable />}
+          {!isDeleted && particulars.book && (
+            <AddressesCard book={particulars.book} canEdit={canWrite} lookups={lookups}
+                           contract={contract} write={particulars.write} />
           )}
 
           {/* The person's own e-Registry account (answers 1, 8): beside their
@@ -660,6 +676,10 @@ export default function PersonProfilePage() {
                   onSave={changed => saveIdentityDocument(d.id, changed)}
                   onMakePrimary={() => saveIdentityDocument(d.id, { is_primary: true })}
                   onRemove={() => setRemoving({ kind: 'identity', doc: d })}
+                  companies={!isDeleted && particulars.book ? (
+                    <DocumentCompanies book={particulars.book} documentId={d.id}
+                                       canEdit={canWrite} write={particulars.write} />
+                  ) : null}
                 />
               ))}
             </DocumentSection>

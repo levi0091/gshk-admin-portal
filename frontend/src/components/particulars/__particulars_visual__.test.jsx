@@ -10,7 +10,22 @@ import { describe, it, vi } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import ParticularsByCompany from './ParticularsByCompany.jsx'
+import { AddressesCard, DocumentCompanies, useParticularsBook } from './ParticularsByCompany.jsx'
+
+// As the profile composes them (one Addresses card; each document's companies).
+function Cards() {
+  const { book, write } = useParticularsBook({ personId: 'p1' })
+  if (!book) return null
+  return (
+    <>
+      <AddressesCard book={book} canEdit lookups={LOOKUPS} write={write} />
+      {book.identity.map(d => (
+        <div key={d.document_id} data-doc={d.document_id}><span>{d.id_number}</span>
+          <DocumentCompanies book={book} documentId={d.document_id} canEdit write={write} /></div>
+      ))}
+    </>
+  )
+}
 
 const BOOK = {
   companies: [{ entity_id: 'e-kanenas', company_name: 'Kanenas Holding Limited', roles: ['director'] },
@@ -48,11 +63,10 @@ const write = (name, html) => {
 describe.skipIf(!SHOOT)('by-company cards — visual dump', () => {
   it('dumps the cards and both dialogs', async () => {
     const user = userEvent.setup()
-    const { container } = render(<ParticularsByCompany personId="p1" canEdit lookups={LOOKUPS} />)
+    const { container } = render(<Cards />)
     await screen.findByRole('region', { name: 'Residential addresses' })
     write('particulars-cards', container.innerHTML)
-    const ids = screen.getByRole('region', { name: 'Identification by company' })
-    await user.click(within(within(ids).getByText('567201934').closest('[data-entry]'))
+    await user.click(within(screen.getByText('567201934').closest('[data-doc]'))
       .getByRole('button', { name: 'Companies…' }))
     write('particulars-picker', document.querySelector('.overlay').outerHTML)
     await user.click(screen.getByRole('button', { name: 'Cancel' }))

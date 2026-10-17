@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState } from 'react'
 import { api } from '../../lib/api.js'
-import { countryName } from '../../lib/crAddress.js'
+import { CR_ADDRESS_LABELS, crAddressLines } from '../../lib/crAddress.js'
 import { fieldWarning } from '../../lib/formContract.js'
 import AddressBlock from '../AddressBlock.jsx'
 import ConfirmDialog from '../ConfirmDialog.jsx'
@@ -13,12 +13,23 @@ import './particulars.css'
  * apply to addresses too ... in each residential address in the list it shows
  * which companies is using those addresses").
  *
- * Three cards, one rule: every entry names the companies that use it, and each
- * company keeps ONE colour across all three, so "what does Second Limited
- * file?" is answered by following one hue down the page. The colour is
- * reinforcement only — the company is always named — and the palette stays
- * clear of carrot (needs attention) and green (approved), as the document
- * chips do.
+ * One rule: every entry names the companies that use it, and each company keeps
+ * ONE colour on every entry, so "what does Second Limited file?" is answered by
+ * following one hue down the page. The colour is reinforcement only — the
+ * company is always named — and the palette stays clear of carrot (needs
+ * attention) and green (approved), as the document chips do.
+ *
+ * SIMPLER SINCE LEVI 2026-10-17 ("keep the design as simple as possible and not
+ * too complicated ... make sure the profile page is not bloated"). It was three
+ * cards — identification, residential, correspondence — above an Identity
+ * Documents card that listed the same passports again, with every address
+ * printed as CR's five labelled rows. Now: ONE Addresses card, both kinds in
+ * it, each address on one line in CR's order; and a document's companies on
+ * the Identity Documents card it already lives on (`DocumentCompanies`). The
+ * five labelled fields are still what Edit shows, and a line over CR's length
+ * is named under the address, so the one-line view hides nothing CR would
+ * refuse. The page owns the book (`useParticularsBook`) so both cards read one
+ * fetch.
  *
  * Every write returns the refreshed book. The backend captures what CR holds
  * for each company before anything moves, so a company moved here appears on
@@ -39,6 +50,14 @@ const EMPTY = Object.fromEntries(ADDRESS_KEYS.map(k => [k, '']))
 export function companyColours(companies) {
   return Object.fromEntries((companies || []).map((c, i) => [c.entity_id, i % CO_COLOURS]))
 }
+
+/** CR's lines in CR's order, one line: "Flat A, 10/F, Harbour View, …". */
+export function oneLine(address, lookups) {
+  return crAddressLines(address, lookups).map(l => l.value).filter(Boolean).join(', ')
+}
+
+//: The columns behind CR's five lines, for naming a line that breaks a rule.
+const LINE_COLUMNS = [['line1', 0], ['line2', 1], ['line3', 2], ['city', 3], ['country', 4]]
 
 function errorText(e, fallback) {
   return e?.detail?.message || (typeof e?.detail === 'string' ? e.detail : null)
@@ -198,32 +217,27 @@ function AddressForm({ title, kind, companies, start, usedBy, correcting, lookup
   )
 }
 
-function AddressCard({ kind, data, canEdit, lookups, contract, write }) {
-  const titleId = useId()
+function AddressGroup({ kind, book, canEdit, lookups, contract, write }) {
   const [open, setOpen] = useState(null)
   const [error, setError] = useState(null)
   // For the actions that open no dialog of their own to show a refusal in.
   const act = promise => { setError(null); return write(promise).catch(e => {
     setError(errorText(e, 'That change could not be saved.')); setOpen(null) }) }
   const residential = kind === 'residential'
-  const entries = data[kind] || []
-  const companies = data.companies || []
-  const title = residential ? 'Residential addresses' : 'Correspondence addresses'
-  const warnings = address => Object.fromEntries(
-    ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
-      [k, fieldWarning(contract, 'addresses', k, address?.[k])]))
+  const entries = book[kind] || []
+  const companies = book.companies || []
+  const problems = address => LINE_COLUMNS.map(([column, line]) => {
+    const warning = fieldWarning(contract, 'addresses', column, address?.[column])
+    return warning ? `${CR_ADDRESS_LABELS[line]}: ${warning.message}` : null
+  }).filter(Boolean)
 
   return (
-    <section className="card mb-16 pb-card" aria-labelledby={titleId}>
-      <div className="card-hdr">
-        <div>
-          <div className="card-title" id={titleId}>{title}</div>
-          <div className="card-sub">
-            {residential
-              ? 'Filed privately with the Companies Registry. A company not given its own address files the default.'
-              : 'Shown on the public register. A company not given one uses its residential address.'}
-          </div>
-        </div>
+    <section className="pb-group" aria-label={residential ? 'Residential addresses' : 'Correspondence addresses'}>
+      <div className="pb-group-hd">
+        <span className="pb-group-title">{residential ? 'Residential' : 'Correspondence'}</span>
+        <span className="pb-group-note">
+          {residential ? 'Not on the public register' : 'On the public register'}
+        </span>
         {canEdit && (
           <button className="btn btn-outline btn-sm" onClick={() => setOpen({ type: 'new' })}>New</button>
         )}
@@ -232,46 +246,52 @@ function AddressCard({ kind, data, canEdit, lookups, contract, write }) {
       {entries.length === 0 && (
         <div className="pb-empty">
           {residential ? 'No residential address on record.' : 'No company has its own correspondence address.'}
-          {canEdit ? ' Add one with New.' : ''}
         </div>
       )}
-      {entries.map(entry => (
-        <div className="pb-entry" key={entry.address_id} data-entry={entry.address_id}>
-          <div className="pb-entry-main">
-            {entry.is_default && <span className="pb-badge">Default</span>}
-            <AddressBlock value={entry.address} readOnly lookups={lookups}
-                          warnings={warnings(entry.address)} />
-            <CompanyChips ids={entry.used_by} companies={companies}
-                          empty="No company uses this address." />
-          </div>
-          {canEdit && (
-            <div className="pb-actions">
-              {companies.length > 0 && (
-                <button className="btn btn-ghost btn-sm" onClick={() => setOpen({ type: 'companies', entry })}>
-                  Companies…
-                </button>
-              )}
-              <button className="btn btn-ghost btn-sm" onClick={() => setOpen({ type: 'edit', entry })}>Edit</button>
-              {residential && !entry.is_default && (
-                <button className="btn btn-ghost btn-sm"
-                        onClick={() => act(api.post(`/persons/${data.personId}/addresses/${entry.address_id}/default`, {}))}>
-                  Make default
-                </button>
-              )}
-              {!entry.is_default && entry.used_by.length === 0 && (
-                <button className="btn btn-ghost btn-sm" onClick={() => setOpen({ type: 'remove', entry })}>
-                  Remove
-                </button>
+      {entries.map(entry => {
+        const warnings = problems(entry.address)
+        return (
+          <div className="pb-entry" key={entry.address_id} data-entry={entry.address_id}>
+            <div className="pb-line">
+              <span className="pb-addr">{oneLine(entry.address, lookups) || '—'}</span>
+              {entry.is_default && <span className="pb-badge">Default</span>}
+            </div>
+            {warnings.length > 0 && (
+              <ul className="pb-warn">{warnings.map(w => <li key={w}>{w}</li>)}</ul>
+            )}
+            <div className="pb-foot">
+              <CompanyChips ids={entry.used_by} companies={companies}
+                            empty="No company uses this address." />
+              {canEdit && (
+                <div className="pb-actions">
+                  {companies.length > 0 && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => setOpen({ type: 'companies', entry })}>
+                      Companies…
+                    </button>
+                  )}
+                  <button className="btn btn-ghost btn-sm" onClick={() => setOpen({ type: 'edit', entry })}>Edit</button>
+                  {residential && !entry.is_default && (
+                    <button className="btn btn-ghost btn-sm"
+                            onClick={() => act(api.post(`/persons/${book.personId}/addresses/${entry.address_id}/default`, {}))}>
+                      Make default
+                    </button>
+                  )}
+                  {!entry.is_default && entry.used_by.length === 0 && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => setOpen({ type: 'remove', entry })}>
+                      Remove
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
-      ))}
-      {!residential && (data.correspondence_same_as_residential || []).length > 0 && (
-        <div className="pb-entry pb-entry-same" data-entry="same-as-residential">
-          <div className="pb-entry-main">
-            <div className="pb-same">Same as residential address</div>
-            <CompanyChips ids={data.correspondence_same_as_residential} companies={companies} />
+          </div>
+        )
+      })}
+      {!residential && (book.correspondence_same_as_residential || []).length > 0 && (
+        <div className="pb-entry" data-entry="same-as-residential">
+          <div className="pb-foot">
+            <span className="pb-same">Same as residential</span>
+            <CompanyChips ids={book.correspondence_same_as_residential} companies={companies} />
           </div>
         </div>
       )}
@@ -282,14 +302,14 @@ function AddressCard({ kind, data, canEdit, lookups, contract, write }) {
       {open?.type === 'new' && (
         <AddressForm title={`New ${kind} address`} kind={kind} companies={companies}
                      lookups={lookups} onClose={() => setOpen(null)}
-                     onSave={body => write(api.post(`/persons/${data.personId}/addresses`, body))
+                     onSave={body => write(api.post(`/persons/${book.personId}/addresses`, body))
                        .then(() => setOpen(null))} />
       )}
       {open?.type === 'edit' && (
         <AddressForm title="Correct this address" kind={kind} companies={companies}
                      start={open.entry.address} usedBy={open.entry.used_by} correcting
                      lookups={lookups} onClose={() => setOpen(null)}
-                     onSave={body => write(api.put(`/persons/${data.personId}/addresses/${open.entry.address_id}`, body))
+                     onSave={body => write(api.put(`/persons/${book.personId}/addresses/${open.entry.address_id}`, body))
                        .then(() => setOpen(null))} />
       )}
       {open?.type === 'companies' && (
@@ -304,13 +324,13 @@ function AddressCard({ kind, data, canEdit, lookups, contract, write }) {
             ? 'A company ticked here stops using its current residential address.'
             : 'A company unticked here goes back to using its residential address.'}
           onClose={() => setOpen(null)}
-          onSave={ids => write(api.put(`/persons/${data.personId}/addresses/${open.entry.address_id}/companies`,
+          onSave={ids => write(api.put(`/persons/${book.personId}/addresses/${open.entry.address_id}/companies`,
             { kind, entity_ids: ids })).then(() => setOpen(null))} />
       )}
       {open?.type === 'remove' && (
         <ConfirmDialog title="Remove address" onCancel={() => setOpen(null)}
                        confirmLabel="Remove"
-                       onConfirm={() => act(api.del(`/persons/${data.personId}/addresses/${open.entry.address_id}?kind=${kind}`))
+                       onConfirm={() => act(api.del(`/persons/${book.personId}/addresses/${open.entry.address_id}?kind=${kind}`))
                          .then(() => setOpen(null))}>
           <p>This address leaves {kind === 'residential' ? 'the residential' : 'the correspondence'} list.
             No company uses it, so nothing is filed differently.</p>
@@ -320,61 +340,60 @@ function AddressCard({ kind, data, canEdit, lookups, contract, write }) {
   )
 }
 
-function IdentityCard({ data, canEdit, lookups, write }) {
+/** Both kinds of address in one card. */
+export function AddressesCard({ book, canEdit, lookups, contract = null, write }) {
   const titleId = useId()
-  const [open, setOpen] = useState(null)
-  const companies = data.companies || []
-  const docs = data.identity || []
   return (
     <section className="card mb-16 pb-card" aria-labelledby={titleId}>
       <div className="card-hdr">
         <div>
-          <div className="card-title" id={titleId}>Identification by company</div>
+          <div className="card-title" id={titleId}>Addresses</div>
           <div className="card-sub">
-            Each company files one document of each type; a company not given one files the
-            primary. Add or remove documents under Identity Documents.
+            What each company files. A company with no address of its own files the default.
           </div>
         </div>
       </div>
-      {docs.length === 0 && <div className="pb-empty">No identity document on record.</div>}
-      {docs.map(doc => (
-        <div className="pb-entry" key={doc.document_id} data-entry={doc.document_id}>
-          <div className="pb-entry-main">
-            <div className="pb-doc">
-              <span className="pb-doc-type">{ID_TYPE[doc.id_type] || doc.id_type}</span>
-              <span className="pb-doc-number">{doc.id_number}</span>
-              {doc.issuing_country && (
-                <span className="td-muted">{countryName(doc.issuing_country, lookups)}</span>
-              )}
-              {doc.is_primary && <span className="pb-badge">Primary</span>}
-            </div>
-            <CompanyChips ids={doc.used_by} companies={companies}
-                          empty="No company files this document." />
-          </div>
-          {canEdit && companies.length > 0 && (
-            <div className="pb-actions">
-              <button className="btn btn-ghost btn-sm" onClick={() => setOpen(doc)}>Companies…</button>
-            </div>
-          )}
-        </div>
-      ))}
-      {open && (
-        <CompanyPicker
-          title={`Companies filing this document — ${ID_TYPE[open.id_type] || open.id_type} ${open.id_number}`}
-          companies={companies} initial={open.used_by}
-          locked={open.is_primary ? open.used_by : []}
-          lockedNote="A company filing the primary stays on it until you choose another document for it."
-          note="A company ticked here files this document in place of its current one of the same type."
-          onClose={() => setOpen(null)}
-          onSave={ids => write(api.put(`/persons/${data.personId}/identity-documents/${open.document_id}/companies`,
-            { entity_ids: ids })).then(() => setOpen(null))} />
-      )}
+      <AddressGroup kind="residential" book={book} canEdit={canEdit} lookups={lookups}
+                    contract={contract} write={write} />
+      <AddressGroup kind="correspondence" book={book} canEdit={canEdit} lookups={lookups}
+                    contract={contract} write={write} />
     </section>
   )
 }
 
-export default function ParticularsByCompany({ personId, canEdit, lookups, contract = null,
-                                               refreshKey, onChanged }) {
+/** One identity document's companies, for its entry on the Identity Documents
+ * card: "Filed for" and the chips, and Companies… to change them. */
+export function DocumentCompanies({ book, documentId, canEdit, write }) {
+  const [open, setOpen] = useState(false)
+  const doc = (book?.identity || []).find(d => d.document_id === documentId)
+  if (!doc) return null
+  const companies = book.companies || []
+  return (
+    <div className="pb-filed">
+      <span className="pb-filed-lbl">Filed for</span>
+      <CompanyChips ids={doc.used_by} companies={companies} empty="No company files this document." />
+      {canEdit && companies.length > 0 && (
+        <button className="btn btn-ghost btn-sm pb-filed-btn" onClick={() => setOpen(true)}>Companies…</button>
+      )}
+      {open && (
+        <CompanyPicker
+          title={`Companies filing this document — ${ID_TYPE[doc.id_type] || doc.id_type} ${doc.id_number}`}
+          companies={companies} initial={doc.used_by}
+          locked={doc.is_primary ? doc.used_by : []}
+          lockedNote="A company filing the primary stays on it until you choose another document for it."
+          note="A company ticked here files this document in place of its current one of the same type."
+          onClose={() => setOpen(false)}
+          onSave={ids => write(api.put(`/persons/${book.personId}/identity-documents/${doc.document_id}/companies`,
+            { entity_ids: ids })).then(() => setOpen(false))} />
+      )}
+    </div>
+  )
+}
+
+/** The person's book: loaded once by the page, read by both cards. Every write
+ * answers with the refreshed book; a refusal is rethrown so the dialog that
+ * asked can show it where the operator is looking. */
+export function useParticularsBook({ personId, refreshKey, onChanged, enabled = true }) {
   const [data, setData] = useState(null)
   const [failed, setFailed] = useState(false)
 
@@ -384,10 +403,8 @@ export default function ParticularsByCompany({ personId, canEdit, lookups, contr
       .catch(() => setFailed(true))
   }, [personId])
 
-  useEffect(() => { load() }, [load, refreshKey])
+  useEffect(() => { if (enabled) load() }, [load, refreshKey, enabled])
 
-  // Every write answers with the refreshed book. A refusal is rethrown so the
-  // dialog that asked can show it where the operator is looking.
   async function write(promise) {
     const next = await promise
     if (next && Array.isArray(next.residential)) setData(next)
@@ -396,26 +413,18 @@ export default function ParticularsByCompany({ personId, canEdit, lookups, contr
     return next
   }
 
-  if (failed) {
-    return (
-      <div className="card mb-16">
-        <div className="card-title">Identification and addresses</div>
-        <div className="card-note card-note-warn" role="status">
-          This person&apos;s addresses and identity documents by company could not be loaded.
-          Reload the page to try again.
-        </div>
-      </div>
-    )
-  }
-  if (!data || !Array.isArray(data.residential)) return null
-  const book = { ...data, personId }
+  const book = data && Array.isArray(data.residential) ? { ...data, personId } : null
+  return { book, failed: enabled && failed, write }
+}
+
+export function BookUnavailable() {
   return (
-    <>
-      <IdentityCard data={book} canEdit={canEdit} lookups={lookups} write={write} />
-      <AddressCard kind="residential" data={book} canEdit={canEdit} lookups={lookups}
-                   contract={contract} write={write} />
-      <AddressCard kind="correspondence" data={book} canEdit={canEdit} lookups={lookups}
-                   contract={contract} write={write} />
-    </>
+    <div className="card mb-16">
+      <div className="card-title">Addresses</div>
+      <div className="card-note card-note-warn" role="status">
+        This person&apos;s addresses and identity documents by company could not be loaded.
+        Reload the page to try again.
+      </div>
+    </div>
   )
 }

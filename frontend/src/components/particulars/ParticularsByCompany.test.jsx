@@ -1,11 +1,14 @@
 // Identification and addresses by company (Levi 2026-10-05, Jacqueline's ND2B
 // question 2): each entry lists the companies using it; New adds one;
-// Companies… chooses who uses it.
+// Companies… chooses who uses it. SIMPLER since Levi 2026-10-17 ("keep the
+// design as simple as possible ... make sure the profile page is not
+// bloated"): one Addresses card, each address on one line, and a document's
+// companies on the Identity Documents card rather than a second card.
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-import ParticularsByCompany from './ParticularsByCompany.jsx'
+import { AddressesCard, BookUnavailable, DocumentCompanies, useParticularsBook } from './ParticularsByCompany.jsx'
 
 const get = vi.fn(); const post = vi.fn(); const put = vi.fn(); const del = vi.fn()
 vi.mock('../../lib/api.js', () => ({
@@ -40,12 +43,34 @@ const BOOK = {
 const LOOKUPS = { cr_country: [{ code: 'HK', label: 'Hong Kong' }, { code: 'FR', label: 'France' },
   { code: 'US', label: 'United States' }] }
 
+// How the profile composes them: the page owns the book, the Addresses card
+// and each identity document read it.
+function Harness({ canEdit = true, onChanged, contract = null }) {
+  const { book, failed, write } = useParticularsBook({ personId: 'p1', onChanged })
+  if (failed) return <BookUnavailable />
+  if (!book) return null
+  return (
+    <>
+      <AddressesCard book={book} canEdit={canEdit} lookups={LOOKUPS} contract={contract}
+                     write={write} />
+      {book.identity.map(d => (
+        <div key={d.document_id} data-doc={d.document_id}>
+          <span>{d.id_number}</span>
+          <DocumentCompanies book={book} documentId={d.document_id} canEdit={canEdit}
+                             write={write} />
+        </div>
+      ))}
+    </>
+  )
+}
+
 function renderCards(props = {}) {
   const onChanged = vi.fn()
-  render(<ParticularsByCompany personId="p1" canEdit lookups={LOOKUPS} onChanged={onChanged}
-                               {...props} />)
+  render(<Harness onChanged={onChanged} {...props} />)
   return { onChanged }
 }
+
+const doc = number => screen.getByText(number).closest('[data-doc]')
 
 const card = name => screen.getByRole('region', { name })
 
@@ -56,34 +81,49 @@ beforeEach(() => {
 })
 
 describe('ParticularsByCompany', () => {
-  it('lists each address and document with the companies using it', async () => {
+  it('is ONE Addresses card, residential then correspondence, each address on one line', async () => {
     renderCards()
-    const res = await screen.findByRole('region', { name: 'Residential addresses' })
-    const home = within(res).getByText('Flat A, 10/F').closest('[data-entry]')
+    const card = await screen.findByRole('region', { name: 'Addresses' })
+    const res = within(card).getByRole('region', { name: 'Residential addresses' })
+    const corr = within(card).getByRole('region', { name: 'Correspondence addresses' })
+    const home = within(res).getByText("Flat A, 10/F, Harbour View, 1 Queen's Road, CENTRAL, Hong Kong")
+      .closest('[data-entry]')
     expect(within(home).getByText('Default')).toBeInTheDocument()
     expect(within(home).getByText('Kanenas Holding Limited')).toBeInTheDocument()
-    const paris = within(res).getByText('12 Rue de Rivoli').closest('[data-entry]')
+    const paris = within(res).getByText('12 Rue de Rivoli, PARIS 75001, France').closest('[data-entry]')
     expect(within(paris).getByText('Second Limited')).toBeInTheDocument()
-    expect(within(paris).getByText('France')).toBeInTheDocument()
-    const old = within(res).getByText('Old Flat').closest('[data-entry]')
+    const old = within(res).getByText('Old Flat, CENTRAL, Hong Kong').closest('[data-entry]')
     expect(within(old).getByText('No company uses this address.')).toBeInTheDocument()
-
-    const corr = card('Correspondence addresses')
-    expect(within(corr).getByText('Room 1201')).toBeInTheDocument()
-    const same = within(corr).getByText('Same as residential address').closest('[data-entry]')
+    expect(within(corr).getByText('Room 1201, CENTRAL, Hong Kong')).toBeInTheDocument()
+    const same = within(corr).getByText('Same as residential').closest('[data-entry]')
     expect(within(same).getByText('Second Limited')).toBeInTheDocument()
-
-    const ids = card('Identification by company')
-    const fr = within(ids).getByText('F1111111').closest('[data-entry]')
-    expect(within(fr).getByText('Primary')).toBeInTheDocument()
-    expect(within(fr).getByText('Kanenas Holding Limited')).toBeInTheDocument()
-    expect(within(within(ids).getByText('K7654321').closest('[data-entry]'))
-      .getByText('Second Limited')).toBeInTheDocument()
+    // Not CR's five labelled rows any more: the read view is one line.
+    expect(screen.queryByText('Flat/Floor/Block etc.')).not.toBeInTheDocument()
+    // And no separate identification card.
+    expect(screen.queryByRole('region', { name: 'Identification by company' })).not.toBeInTheDocument()
   })
 
-  it('gives a company the same colour on every card', async () => {
+  it("names a line that is over CR's length, so the one-line view hides nothing", async () => {
+    get.mockResolvedValue({ ...BOOK, residential: [{ address_id: 'a9', is_default: true,
+      used_by: ['e1'], address: { line1: 'x'.repeat(75), city: 'CENTRAL', country: 'HK' } }] })
+    renderCards({ contract: { addresses: { line1: { max_length: 60, mandatory: false } } } })
+    const res = await screen.findByRole('region', { name: 'Residential addresses' })
+    expect(within(res).getByText(/Flat\/Floor\/Block etc\.: 75 characters — the Companies Registry accepts 60/))
+      .toBeInTheDocument()
+  })
+
+  it('shows each document\'s companies beside it', async () => {
     renderCards()
-    await screen.findByRole('region', { name: 'Residential addresses' })
+    await screen.findByRole('region', { name: 'Addresses' })
+    const fr = doc('F1111111')
+    expect(within(fr).getByText('Filed for')).toBeInTheDocument()
+    expect(within(fr).getByText('Kanenas Holding Limited')).toBeInTheDocument()
+    expect(within(doc('K7654321')).getByText('Second Limited')).toBeInTheDocument()
+  })
+
+  it('gives a company the same colour on every entry', async () => {
+    renderCards()
+    await screen.findByRole('region', { name: 'Addresses' })
     const chips = screen.getAllByText('Second Limited').map(el => el.closest('.co-chip').className)
     expect(chips.length).toBe(3)
     expect(new Set(chips).size).toBe(1)
@@ -120,7 +160,7 @@ describe('ParticularsByCompany', () => {
     const user = userEvent.setup()
     renderCards()
     const res = await screen.findByRole('region', { name: 'Residential addresses' })
-    const paris = within(res).getByText('12 Rue de Rivoli').closest('[data-entry]')
+    const paris = within(res).getByText(/12 Rue de Rivoli/).closest('[data-entry]')
     await user.click(within(paris).getByRole('button', { name: 'Companies…' }))
     const dialog = screen.getByRole('dialog', { name: /Companies using this address/ })
     await user.click(within(dialog).getByLabelText(/Kanenas Holding Limited/))
@@ -133,7 +173,7 @@ describe('ParticularsByCompany', () => {
     const user = userEvent.setup()
     renderCards()
     const res = await screen.findByRole('region', { name: 'Residential addresses' })
-    const home = within(res).getByText('Flat A, 10/F').closest('[data-entry]')
+    const home = within(res).getByText(/Flat A, 10\/F/).closest('[data-entry]')
     await user.click(within(home).getByRole('button', { name: 'Companies…' }))
     const dialog = screen.getByRole('dialog', { name: /Companies using this address/ })
     expect(within(dialog).getByLabelText(/Kanenas Holding Limited/)).toBeDisabled()
@@ -144,7 +184,7 @@ describe('ParticularsByCompany', () => {
     const user = userEvent.setup()
     renderCards()
     const res = await screen.findByRole('region', { name: 'Residential addresses' })
-    const home = within(res).getByText('Flat A, 10/F').closest('[data-entry]')
+    const home = within(res).getByText(/Flat A, 10\/F/).closest('[data-entry]')
     await user.click(within(home).getByRole('button', { name: 'Edit' }))
     const dialog = screen.getByRole('dialog', { name: 'Correct this address' })
     expect(within(dialog).getByText(/Kanenas Holding Limited/)).toBeInTheDocument()
@@ -160,13 +200,13 @@ describe('ParticularsByCompany', () => {
     const user = userEvent.setup()
     renderCards()
     const res = await screen.findByRole('region', { name: 'Residential addresses' })
-    const home = within(res).getByText('Flat A, 10/F').closest('[data-entry]')
+    const home = within(res).getByText(/Flat A, 10\/F/).closest('[data-entry]')
     expect(within(home).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
-    const paris = within(res).getByText('12 Rue de Rivoli').closest('[data-entry]')
+    const paris = within(res).getByText(/12 Rue de Rivoli/).closest('[data-entry]')
     expect(within(paris).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
     await user.click(within(paris).getByRole('button', { name: 'Make default' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/persons/p1/addresses/a2/default', {}))
-    const old = within(res).getByText('Old Flat').closest('[data-entry]')
+    const old = within(res).getByText(/Old Flat/).closest('[data-entry]')
     await user.click(within(old).getByRole('button', { name: 'Remove' }))
     await user.click(within(screen.getByRole('alertdialog', { name: 'Remove address' }))
       .getByRole('button', { name: 'Remove' }))
@@ -176,9 +216,8 @@ describe('ParticularsByCompany', () => {
   it('links a passport to the chosen companies', async () => {
     const user = userEvent.setup()
     renderCards()
-    const ids = await screen.findByRole('region', { name: 'Identification by company' })
-    const us = within(ids).getByText('K7654321').closest('[data-entry]')
-    await user.click(within(us).getByRole('button', { name: 'Companies…' }))
+    await screen.findByRole('region', { name: 'Addresses' })
+    await user.click(within(doc('K7654321')).getByRole('button', { name: 'Companies…' }))
     const dialog = screen.getByRole('dialog', { name: /Companies filing this document/ })
     await user.click(within(dialog).getByLabelText(/Kanenas Holding Limited/))
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
@@ -191,7 +230,7 @@ describe('ParticularsByCompany', () => {
     const user = userEvent.setup()
     renderCards()
     const res = await screen.findByRole('region', { name: 'Residential addresses' })
-    const paris = within(res).getByText('12 Rue de Rivoli').closest('[data-entry]')
+    const paris = within(res).getByText(/12 Rue de Rivoli/).closest('[data-entry]')
     await user.click(within(paris).getByRole('button', { name: 'Companies…' }))
     await user.click(within(screen.getByRole('dialog', { name: /Companies using/ }))
       .getByRole('button', { name: 'Save' }))
