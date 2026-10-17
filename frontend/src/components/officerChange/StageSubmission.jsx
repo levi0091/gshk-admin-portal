@@ -41,7 +41,8 @@ export default function StageSubmission({ data, reload, can, goTo }) {
 
   function writeBackWarning(res) {
     const errors = [...(res?.write_back?.errors || []),
-      ...(res?.documents_filed || []).filter(d => d.error).map(d => `${d.file_name || 'A document'}: ${d.error}`)]
+      ...(res?.documents_filed || []).filter(d => d.error).map(d => `${d.file_name || 'A document'}: ${d.error}`),
+      ...(res?.filed_form?.error ? [res.filed_form.error] : [])]
     setWarning(errors.length ? errors : null)
   }
 

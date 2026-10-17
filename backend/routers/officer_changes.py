@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from middleware.auth import require_permission
 from routers import cases as nar1_router
 from services import (
-    audit_events as ev, email_service, nar1_approvals, nar1_cases,
+    audit_events as ev, audit_subject, email_service, nar1_approvals, nar1_cases,
 )
 from services.audit_service import log_event
 from services.officer_change_form import FormFillError, render as render_form
@@ -69,6 +69,27 @@ async def audit(case: dict, user: dict, action_type: str, **fields) -> None:
                         **nar1_router._audit_target(case), **fields)
     except Exception as exc:  # noqa: BLE001
         print(f"[officer_changes] audit {action_type} failed: {exc!r}", file=sys.stderr)
+
+
+async def audit_person_field(case: dict, user: dict, row: dict) -> None:
+    """A profile field the filing wrote, or Undo put back, on the PERSON's own
+    trail — the row an edit on the profile writes — so the person's history
+    shows where their date of death came from. Never fails the request."""
+    try:
+        await log_event(
+            case_id=None, user_id=user["id"], user_display_name=user["display_name"],
+            action_type="PERSON_FIELD_UPDATED",
+            event_code=ev.person_field_code(row["field"]),
+            company_name=row.get("name"),
+            **audit_subject.for_person({"id": row["person_id"]}),
+            entity_type="person", entity_id=str(row["person_id"]),
+            old_value=row.get("old"), new_value=row.get("new"),
+            before_state={"field": row["field"], "old": row.get("old")},
+            after_state={"field": row["field"], "new": row.get("new")},
+            metadata={"source": "officer_change", "officer_change_case_id": case.get("id"),
+                      "case_no": case.get("case_no")})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[officer_changes] person audit failed: {exc!r}", file=sys.stderr)
 
 
 async def respond(case_id: str, user: dict) -> dict:

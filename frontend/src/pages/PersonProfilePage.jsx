@@ -54,6 +54,10 @@ const EDITABLE = [
   { key: 'alias_en', label: 'Alias (English)' },
   { key: 'alias_zh', label: 'Alias (Chinese)' },
   { key: 'date_of_birth', label: 'Date of Birth', type: 'date' },
+  // Written by a filed ND2A cessation for a death (Levi 2026-10-18), and
+  // editable here like any field. Read-only only when there is one: a row
+  // reading "Date of Death —" on every living client is noise.
+  { key: 'date_of_death', label: 'Date of Death', type: 'date', onlyWhenSet: true },
   { key: 'gender', label: 'Gender', lookup: 'gender' },
   { key: 'nationality', label: 'Nationality', lookup: 'nationality' },
   { key: 'nationality_origin', label: 'Nationality Origin', lookup: 'nationality' },
@@ -595,7 +599,7 @@ export default function PersonProfilePage() {
               </div>
             ) : (
               <div className="kv-list">
-                {EDITABLE.map(f => (
+                {EDITABLE.filter(f => !f.onlyWhenSet || person[f.key]).map(f => (
                   <Kv key={f.key} label={f.label}
                       warning={warnFor('persons', f.key, person[f.key])}>
                     {f.type === 'date'

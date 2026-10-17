@@ -334,6 +334,22 @@ describe('PersonProfilePage — the CR form fields', () => {
 
   // -- Labels (B12, B13, §10.5) --------------------------------------------
 
+  it('shows a date of death only for someone who has one, and edits it like any field', async () => {
+    // Levi 2026-10-18: a Deceased cessation writes it here once filed.
+    const user = userEvent.setup()
+    const { unmount } = renderPage()
+    await screen.findByText('Personal Information')
+    expect(screen.queryByText('Date of Death')).not.toBeInTheDocument()
+    const card = screen.getByText('Personal Information').closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+    expect(screen.getByLabelText('Date of Death')).toBeInTheDocument()
+    unmount()
+    mockGet({ ...PERSON, date_of_death: '2026-09-20' })
+    renderPage()
+    await screen.findByText('Personal Information')
+    expect(screen.getByText('Date of Death')).toBeInTheDocument()
+  })
+
   it('names the fields as NAR1 names them', async () => {
     renderPage()
     await screen.findByText('Personal Information')

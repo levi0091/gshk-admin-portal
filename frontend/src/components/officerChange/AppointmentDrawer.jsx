@@ -9,6 +9,26 @@ import { errorOf } from './workflow.js'
 const CONSENT_CAPACITIES = ['Director', 'Company Secretary', 'Authorized Person']
 const BLANK_ADDRESS = { line1: '', line2: '', line3: '', city: '', country: '' }
 
+/**
+ * Get Started HK Limited's BR number. GSHK is the company secretary of nearly
+ * every client, so appointing a secretary lists it first (Levi 2026-10-18) —
+ * found by its BRN, the one identifier of it that never changes.
+ */
+export const GSHK_BRN = '67169839'
+
+function useGshk(enabled) {
+  const [gshk, setGshk] = useState(null)
+  useEffect(() => {
+    if (!enabled || gshk) return undefined
+    let live = true
+    api.get(`/companies?search=${GSHK_BRN}&page_size=5`)
+      .then(d => { if (live) setGshk((d.companies || []).find(c => c.br_number === GSHK_BRN) || null) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [enabled, gshk])
+  return enabled ? gshk : null
+}
+
 function usePartySearch(kind, term) {
   const [results, setResults] = useState([])
   useEffect(() => {
@@ -26,10 +46,17 @@ function usePartySearch(kind, term) {
   return results
 }
 
-function PartyPicker({ kind, selected, onSelect, label }) {
+function PartyPicker({ kind, selected, onSelect, label, first = null }) {
   const [term, setTerm] = useState('')
-  const results = usePartySearch(kind, term)
+  const found = usePartySearch(kind, term)
   const nameOf = r => r.full_name || r.company_name || r.name
+  // `first` leads the list: alone before anything is typed, and ahead of the
+  // matches when it is one of them.
+  const searching = term.trim().length >= 2
+  const results = !first ? found
+    : !searching ? [first]
+      : found.some(r => r.id === first.id) ? [first, ...found.filter(r => r.id !== first.id)]
+        : found
   if (selected) {
     return (
       <div className="f-group">
@@ -65,7 +92,7 @@ function PartyPicker({ kind, selected, onSelect, label }) {
 
 /**
  * Add or edit an appointment (spec §2, answers 3, 4, 6). The drawer asks only
- * what nothing else holds: who, as what, from when — plus, where it applies,
+ * what nothing else holds: as what, who, from when — plus, where it applies,
  * whether the correspondence address is the residential one, the Section 5
  * confirmation for a natural-person secretary, and who signs a body corporate
  * director's consent.
@@ -90,6 +117,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   const natural = kind === 'person'
   const corporateDirector = !natural && capacity === 'director'
   const naturalSecretary = natural && capacity === 'company_secretary'
+  const gshk = useGshk(!editing && !natural && capacity === 'company_secretary')
 
   function payload() {
     const body = { capacity, effective_date: date }
@@ -135,6 +163,14 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
                 {saving ? 'Saving…' : editing ? 'Save changes' : 'Add appointment'}
               </button>
             </>}>
+      <fieldset className="f-group" style={{ border: 0, padding: 0, margin: 0 }}>
+        <legend className="f-label">Capacity <span className="f-req">*</span></legend>
+        <label className="check-row"><input type="radio" name="oc-cap" checked={capacity === 'director'}
+          onChange={() => setCapacity('director')} /> Director</label>
+        <label className="check-row"><input type="radio" name="oc-cap" checked={capacity === 'company_secretary'}
+          onChange={() => setCapacity('company_secretary')} /> Company Secretary</label>
+      </fieldset>
+
       {!editing && (
         <div className="oc-seg" role="group" aria-label="Who is appointed">
           <button type="button" aria-pressed={natural}
@@ -148,17 +184,9 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
         <div className="f-group"><span className="f-label">Appointee</span>
           <div className="f-static">{entry.party?.name}</div></div>
       ) : (
-        <PartyPicker kind={kind} selected={party} onSelect={setParty}
+        <PartyPicker kind={kind} selected={party} onSelect={setParty} first={gshk}
                      label={natural ? 'Person' : 'Body corporate'} />
       )}
-
-      <fieldset className="f-group" style={{ border: 0, padding: 0, margin: 0 }}>
-        <legend className="f-label">Capacity <span className="f-req">*</span></legend>
-        <label className="check-row"><input type="radio" name="oc-cap" checked={capacity === 'director'}
-          onChange={() => setCapacity('director')} /> Director</label>
-        <label className="check-row"><input type="radio" name="oc-cap" checked={capacity === 'company_secretary'}
-          onChange={() => setCapacity('company_secretary')} /> Company Secretary</label>
-      </fieldset>
 
       <div className="f-group">
         <label className="f-label" htmlFor="oc-app-date">Date of appointment</label>

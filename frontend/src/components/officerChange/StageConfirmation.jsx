@@ -18,13 +18,21 @@ import { formatDateTime } from '../../lib/format.js'
  * will not report that, so a rejection reaches GSHK by CR's own notice and the
  * operator records it here: the button says what it records, and the backend
  * takes it only on a filed case.
+ *
+ * THE e-SIGN ROUTE'S SIGNED FORM IS SAVED TO THE COMPANY (Levi 2026-10-18), as
+ * the manual route's upload always was. Filing saves it; if that failed — or
+ * the case was filed before it was done at all — this stage says so and saves
+ * it on request, through the same idempotent retry as the profile update.
  */
 export default function StageConfirmation({ data, reload, can }) {
   const receipt = data.receipt || data.manual_receipt || {}
   const unfinished = !data.applied_at && !data.undone_at
+  const esign = data.signing_method !== 'manual' && !data.manual_receipt
+  const formUnsaved = esign && !data.filed_form_document_id && !data.undone_at
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [left, setLeft] = useState(null)
+  const [formError, setFormError] = useState(null)
   const [confirmUndo, setConfirmUndo] = useState(false)
   // Any entry applied, not only a complete write-back: the backend's Undo gate.
   const anyApplied = Boolean(data.applied_at) || (data.entries || []).some(e => e.applied)
@@ -37,10 +45,11 @@ export default function StageConfirmation({ data, reload, can }) {
   }
 
   async function finish() {
-    setBusy(true); setError(null)
+    setBusy(true); setError(null); setFormError(null)
     try {
       const res = await officerChangeApi.retryApply(data.id)
       setLeft(res?.write_back?.errors?.length ? res.write_back.errors : null)
+      setFormError(res?.filed_form?.error || null)
       await reload(res)
     } catch (e) { setError(errorOf(e).message) } finally { setBusy(false) }
   }
@@ -68,7 +77,33 @@ export default function StageConfirmation({ data, reload, can }) {
           <span className="kv-val">{data.signing_method === 'manual' ? 'Manual (CR portal)' : 'e-Sign via CR'}</span></div>
         {data.applied_at && <div className="kv-row"><span className="kv-key">Profiles updated</span>
           <span className="kv-val">{formatDateTime(data.applied_at)}</span></div>}
+        {esign && data.filed_form_document_id && (
+          <div className="kv-row"><span className="kv-key">Signed form</span>
+            <span className="kv-val">
+              Saved to the company&apos;s documents (version {data.filed_form_document_version || 1})
+            </span></div>
+        )}
       </div>
+
+      {formUnsaved && !unfinished && (
+        <div className="alert al-warn" role="alert" style={{ marginTop: 16 }}>
+          <div className="al-body">
+            <b>The signed form was not saved to the company&apos;s documents.</b> CR has the form;
+            the company&apos;s copy is missing.
+            {formError && <div style={{ marginTop: 6 }}>{formError}</div>}
+            {can?.tpsiSubmit ? (
+              <div style={{ marginTop: 8 }}>
+                <button className="btn btn-outline btn-sm" disabled={busy} onClick={finish}>
+                  {busy ? 'Saving…' : 'Save the signed form'}
+                </button>
+              </div>
+            ) : (
+              <div style={{ marginTop: 6 }}>Saving it needs Companies Registry filing (File with CR).</div>
+            )}
+            {error && <div style={{ marginTop: 6 }}>{error}</div>}
+          </div>
+        </div>
+      )}
 
       {unfinished && (
         <div className="alert al-warn" role="alert" style={{ marginTop: 16 }}>
@@ -107,7 +142,7 @@ export default function StageConfirmation({ data, reload, can }) {
           )}
         </div>
       )}
-      {error && !unfinished && (
+      {error && !unfinished && !formUnsaved && (
         <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>
           <div className="al-body">{error}</div></div>
       )}

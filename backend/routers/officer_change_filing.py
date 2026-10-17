@@ -26,9 +26,13 @@ from pydantic import BaseModel
 
 from middleware.auth import require_permission
 from routers import tpsi as tpsi_router
-from routers.officer_changes import MODULE, audit, filed, load_case, refuse_if_closed, respond
+from routers.officer_changes import (
+    MODULE, audit, audit_person_field, filed, load_case, refuse_if_closed, respond,
+)
 from services import audit_events as ev, document_service, nar1_cases
-from services.officer_changes import apply, cases as svc, documents, eservice, prepare, signing
+from services.officer_changes import (
+    apply, cases as svc, documents, eservice, filed_form, prepare, signing,
+)
 from services.tpsi import credentials, filings
 
 router = APIRouter()
@@ -144,6 +148,8 @@ async def _write_back(case_id: str, user: dict, case: dict | None = None
                                          "filed_document_id": d.get("filed_document_id"),
                                          "destination": d.get("destination"),
                                          "error": d.get("error")} for d in filed_docs]})
+    for row in result.get("person_fields") or []:
+        await audit_person_field(case, user, row)
     # Levi 2026-10-05: the same change, now filed here, is no longer reported
     # for the party's other companies — and the trail says so, and why.
     for row in result.get("dismissed_elsewhere") or []:
@@ -316,15 +322,30 @@ async def submit(case_id: str, body: ConfirmIn,
                 metadata={"filing_id": filing["id"], "case_no_cr": receipt.get("caseNo"),
                           "ref_no": receipt.get("refNo")})
     write_back, filed_docs = await _write_back(case_id, user, case)
-    return await _filed_response(case_id, user, case, write_back, filed_docs)
+    signed = await _save_filed_form(case, user)
+    return await _filed_response(case_id, user, case, write_back, filed_docs, signed)
+
+
+async def _save_filed_form(case: dict, user: dict) -> dict:
+    """The e-Sign route's signed form, to the company's documents (Levi
+    2026-10-18) — audited as the manual route's upload is. Never raises."""
+    result = await filed_form.save(case, user)
+    if result.get("document_id"):
+        await audit(case, user, ev.OFFICER_SIGNED_FORM_UPLOADED,
+                    new_value=result.get("file_name"),
+                    metadata={"route": "esign", "document_id": result["document_id"],
+                              "version": result.get("version")})
+    return result
 
 
 async def _filed_response(case_id: str, user: dict, case: dict, write_back: dict,
-                          filed_docs: list[dict]) -> dict:
+                          filed_docs: list[dict], signed: dict | None = None) -> dict:
     """The answer to a form that IS filed. It must not become a 500: CR has the
     form whatever happens next, so a failure to re-read the case is reported
     beside the filing rather than in place of it."""
     extra = {"write_back": {"errors": write_back["errors"]}, "documents_filed": filed_docs}
+    if signed is not None:
+        extra["filed_form"] = signed
     try:
         return {**await respond(case_id, user), **extra}
     except Exception as exc:  # noqa: BLE001
@@ -342,7 +363,9 @@ async def retry_write_back(case_id: str, body: ConfirmIn,
 
     The write-back is per entry and idempotent (an entry already applied is
     skipped), so this completes exactly what is missing. Same permission as the
-    filing that would have run it."""
+    filing that would have run it. On the e-Sign route it also saves the
+    signed form to the company's documents if filing did not (Levi
+    2026-10-18) — including a case filed before that was done at all."""
     if body.confirm is not True:
         raise HTTPException(400, "Confirm the profile update")
     case = load_case(case_id)
@@ -356,11 +379,15 @@ async def retry_write_back(case_id: str, body: ConfirmIn,
         raise HTTPException(409, {"message": "The profile update was undone after CR "
                                              "rejected the form; it is not re-applied.",
                                   "reason": "undone"})
-    if case.get("changes_applied_at"):
+    form_missing = not case.get("manual_receipt") and not case.get("filed_form_document_id")
+    if case.get("changes_applied_at") and not form_missing:
         raise HTTPException(409, {"message": "The profiles are already up to date.",
                                   "reason": "already_applied"})
-    write_back, filed_docs = await _write_back(case_id, user, case)
-    return await _filed_response(case_id, user, case, write_back, filed_docs)
+    write_back, filed_docs = {"errors": []}, []
+    if not case.get("changes_applied_at"):
+        write_back, filed_docs = await _write_back(case_id, user, case)
+    signed = await _save_filed_form(case, user) if form_missing else None
+    return await _filed_response(case_id, user, case, write_back, filed_docs, signed)
 
 
 # -- manual route (CR portal) -----------------------------------------------------------
@@ -571,4 +598,6 @@ async def undo(case_id: str, body: ConfirmIn,
     await audit(case, user, ev.OFFICER_CHANGES_UNDONE,
                 new_value=f"{len(result['applied'])} change(s)",
                 metadata={"undone": result["applied"], "errors": result["errors"]})
+    for row in result.get("person_fields") or []:
+        await audit_person_field(case, user, row)
     return {**await respond(case_id, user), "undo": {"errors": result["errors"]}}

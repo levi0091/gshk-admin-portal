@@ -19,11 +19,23 @@ function reasonFor(o) {
   return o?.party_type === 'individual' ? (o.date_of_death ? 'D' : 'R') : ''
 }
 
+function todayIso() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 /**
  * Add or edit a cessation (spec §2): the officer, CR's reason — for a natural
  * person only, pre-set to Deceased when the profile carries a date of death —
  * and the date. Nothing else: the officer's particulars come from their
  * profile, and alternate directors are out of scope.
+ *
+ * A DEATH ASKS FOR ITS DATE (Levi 2026-10-18). Deceased used to be pre-set only
+ * for people whose imported record already carried a date of death, and there
+ * was nowhere to enter one. It is required on a death, pre-filled from the
+ * profile, and written to the person's profile once the form is filed. A
+ * person ceases on the day they die, so the cessation date follows it — until
+ * the operator types one of their own.
  *
  * `preselect` is an `officerRef`, set when the operator pressed Cease on an
  * officer's row on the company profile.
@@ -40,26 +52,36 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
   const officer = officers.find(o => officerRef(o) === officerId)
   const individual = editing ? entry.party_type === 'individual' : officer?.party_type === 'individual'
   const [reason, setReason] = useState(entry?.cessation_reason || reasonFor(initial))
-  const [date, setDate] = useState(entry?.effective_date || '')
+  const [died, setDied] = useState(entry?.date_of_death || initial?.date_of_death || '')
+  const [date, setDate] = useState(entry?.effective_date || initial?.date_of_death || '')
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
+  const name = editing ? entry.party?.name : officer?.name
 
   function choose(id) {
+    const next = officers.find(o => officerRef(o) === id)
     setOfficerId(id)
-    setReason(reasonFor(officers.find(o => officerRef(o) === id)))
+    setReason(reasonFor(next))
+    setDied(next?.date_of_death || '')
+    if (!date || date === died) setDate(next?.date_of_death || '')
+  }
+
+  function changeDied(value) {
+    if (!date || date === died) setDate(value)
+    setDied(value)
   }
 
   async function save() {
     setError(null); setSaving(true)
     const who = officerId.startsWith('cs:')
       ? { secretary_id: officerId.slice(3) } : { officer_id: officerId }
+    const person = individual
+      ? { cessation_reason: reason, date_of_death: reason === 'D' ? died : null } : {}
     try {
       const next = editing
-        ? await officerChangeApi.updateEntry(data.id, entry.id, {
-          effective_date: date, ...(individual ? { cessation_reason: reason } : {}) })
+        ? await officerChangeApi.updateEntry(data.id, entry.id, { effective_date: date, ...person })
         : await officerChangeApi.addEntry(data.id, {
-          kind: 'cessation', ...who, effective_date: date,
-          ...(individual ? { cessation_reason: reason } : {}) })
+          kind: 'cessation', ...who, effective_date: date, ...person })
       onSaved(next)
     } catch (e) {
       setError(errorOf(e).message)
@@ -70,6 +92,7 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
 
   // The date may wait until Signing (Jacqueline A1).
   const ready = (editing || officerId) && (!individual || reason)
+    && (!individual || reason !== 'D' || died)
   return (
     <Drawer title={editing ? 'Edit cessation' : 'Add cessation'}
             sub="An officer leaving the company. CR is told the date and, for a person, the reason."
@@ -114,10 +137,18 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
             <input type="radio" name="oc-reason" value="D" checked={reason === 'D'}
                    onChange={() => setReason('D')} /> Deceased
           </label>
-          {officer?.date_of_death && (
-            <div className="f-hint">The profile records a date of death ({officer.date_of_death}).</div>
-          )}
         </fieldset>
+      )}
+
+      {individual && reason === 'D' && (
+        <div className="f-group">
+          <label className="f-label" htmlFor="oc-died">Date of death <span className="f-req">*</span></label>
+          <input id="oc-died" type="date" className="f-input" value={died} max={todayIso()}
+                 onChange={e => changeDied(e.target.value)} />
+          <div className="f-hint">
+            Not on CR&apos;s form. It is saved to {name || 'the person'}&apos;s profile once the form is filed.
+          </div>
+        </div>
       )}
 
       <div className="f-group">

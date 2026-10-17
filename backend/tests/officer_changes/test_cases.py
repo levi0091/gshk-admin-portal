@@ -196,6 +196,56 @@ def test_update_returns_before_and_after_and_moves_the_deadline(db, nd2a):
     assert db.rows("nar1_cases")[0]["filing_deadline"] is None
 
 
+# -- a death and its date (Levi 2026-10-18) ------------------------------------------
+
+DEATH = {"kind": "cessation", "officer_id": "O1", "cessation_reason": "D",
+         "date_of_death": "2026-09-20", "effective_date": "2026-09-20"}
+
+
+def test_a_death_keeps_its_date_on_the_entry(db, nd2a):
+    entry = cases.add_entry(nd2a, DEATH, user_id="U1")
+    assert entry["date_of_death"] == "2026-09-20"
+    assert "Deceased on 20 Sep 2026" in cases._summary(entry)
+
+
+def test_a_death_needs_its_date(db, nd2a):
+    with pytest.raises(ValueError, match="date of death"):
+        cases.add_entry(nd2a, {**DEATH, "date_of_death": None}, user_id="U1")
+
+
+def test_a_resignation_carries_no_date_of_death(db, nd2a):
+    entry = cases.add_entry(nd2a, {**DEATH, "cessation_reason": "R"}, user_id="U1")
+    assert entry["date_of_death"] is None
+
+
+@pytest.mark.parametrize("over, message", [
+    ({"date_of_death": "2099-01-01"}, "future"),
+    ({"date_of_death": "20/09/2026"}, "date of death"),
+    ({"effective_date": "2026-09-19"}, "before the date of death"),
+])
+def test_a_date_of_death_that_cannot_be_right_is_refused(db, nd2a, over, message):
+    with pytest.raises(ValueError, match=message):
+        cases.add_entry(nd2a, {**DEATH, **over}, user_id="U1")
+
+
+def test_an_edit_to_deceased_needs_the_date_and_back_to_resignation_clears_it(db, nd2a):
+    entry = cases.add_entry(nd2a, {**DEATH, "cessation_reason": "R"}, user_id="U1")
+    with pytest.raises(ValueError, match="date of death"):
+        cases.update_entry(nd2a, entry["id"], {"cessation_reason": "D"}, user_id="U1")
+    _, after = cases.update_entry(nd2a, entry["id"], {
+        "cessation_reason": "D", "date_of_death": "2026-09-18"}, user_id="U1")
+    assert after["date_of_death"] == "2026-09-18"
+    _, after = cases.update_entry(nd2a, entry["id"], {"cessation_reason": "R"},
+                                  user_id="U1")
+    assert after["date_of_death"] is None
+
+
+def test_a_body_corporate_has_no_date_of_death(db, nd2a):
+    entry = cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O3",
+                                   "date_of_death": "2026-09-20"}, user_id="U1")
+    assert entry["date_of_death"] is None
+
+
 # -- ND2B ----------------------------------------------------------------------------
 
 @pytest.fixture
@@ -250,7 +300,8 @@ def test_an_nd2b_case_refuses_appointments(db, nd2b):
 
 def test_composite_survives_unbuilt_parts_and_reports_them(db, nd2a, monkeypatch):
     cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O2",
-                           "effective_date": "2026-09-28", "cessation_reason": "D"},
+                           "effective_date": "2026-09-28", "cessation_reason": "D",
+                           "date_of_death": "2026-09-20"},
                     user_id="U1")
     monkeypatch.setattr(nar1_cases, "composite", lambda cid: {"id": cid})
 
@@ -395,6 +446,15 @@ def test_ceasing_a_register_only_secretary_promotes_it_to_an_officer_row(db, nd2
                                                "officer_id": promoted[0]["id"]}
     # The register row is untouched until the form is filed.
     assert db.tables["company_secretaries"][0]["is_current"] is True
+
+
+def test_a_register_only_secretary_who_died_is_not_promoted_without_the_date(db, nd2a):
+    _register_only(db, person_id="P1", secretary_name=None, is_gshk=False)
+    with pytest.raises(ValueError, match="date of death"):
+        cases.add_entry(nd2a, {"kind": "cessation", "secretary_id": "S1",
+                               "cessation_reason": "D"}, user_id="U1")
+    assert not any(o["role"] == "company_secretary" and o.get("person_id") == "P1"
+                   for o in db.rows("entity_officers"))
 
 
 def test_a_register_only_individual_secretary_is_ceased_with_a_reason(db, nd2a):

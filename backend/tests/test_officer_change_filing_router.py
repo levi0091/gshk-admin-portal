@@ -38,8 +38,11 @@ def env():
          patch.object(ocf.nar1_cases, "blocking_filing", side_effect=lambda cid: m.filing), \
          patch.object(ocf.nar1_cases, "update_case") as update, \
          patch.object(ocf.tpsi_router, "client_for", side_effect=no_cr) as cr, \
+         patch.object(ocf.filed_form, "save", new_callable=AsyncMock,
+                      return_value={"document_id": "DOC9", "version": 1,
+                                    "file_name": "ND2A-ND2A-2026-0001-signed.pdf"}) as save, \
          patch("routers.officer_changes.log_event", new_callable=AsyncMock) as audit:
-        m.update, m.audit, m.cr = update, audit, cr
+        m.update, m.audit, m.cr, m.save = update, audit, cr, save
         yield m
 
 
@@ -197,7 +200,7 @@ def test_a_write_back_failure_never_turns_a_filing_into_an_error(env):
     assert resp.json()["write_back"]["errors"] == ["HO New: timeout"]
     assert resp.json()["documents_filed"][0]["error"] == "storage down"
     assert _actions(env.audit) == ["TPSI_SUBMISSION_ATTEMPTED", "TPSI_SUBMISSION_SUCCESS",
-                                   "OFFICER_CHANGES_APPLIED"]
+                                   "OFFICER_CHANGES_APPLIED", "OFFICER_SIGNED_FORM_UPLOADED"]
 
 
 def test_a_cr_refusal_on_submit_is_audited_as_failed(env):
@@ -241,6 +244,8 @@ def test_the_manual_route_reaches_filed_without_a_cr_client(env):
                        "transactionTime": None, "refNo": "ND2A-REF", "totalAmount": "0.00"}
     env.cr.assert_not_called()
     assert "OFFICER_FILING_RECORDED" in _actions(env.audit)
+    # The operator uploaded the signed form; nothing is rendered in its place.
+    env.save.assert_not_awaited()
 
 
 def test_record_filing_refuses_a_future_date_and_a_second_record(env):
@@ -491,3 +496,102 @@ def test_record_filing_rechecks_the_manual_list(env):
         resp = client.post("/officer-changes/K1/record-filing", headers=H, json={
             "receipt": {"caseNo": "1", "transactionDate": "01/10/2026"}, "confirm": True})
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "checks_incomplete"
+
+
+# -- e-Sign: the signed form goes to the company's documents (Levi 2026-10-18) ----------
+#
+# "On the e-Sign route, the signed ND2A isn't saved to the company's documents."
+# The manual route's upload always was; the e-Sign route now saves CR's copy to
+# the same place, and a failure is reported beside the filing, never as one.
+
+def _submit(env, save=None):
+    env.cr.side_effect = None
+    env.filing = {"id": "F1", "stage": "signed"}
+    if save is not None:
+        env.save.return_value = save
+    with patch.object(ocf.signing, "submit", return_value={"receipt": {"caseNo": "9"}}), \
+         patch.object(ocf.apply, "apply_changes", new_callable=AsyncMock,
+                      return_value={"applied": [], "errors": []}), \
+         patch.object(ocf.documents, "file_to_profiles", new_callable=AsyncMock,
+                      return_value=[]):
+        return client.post("/officer-changes/K1/submit", headers=H, json={"confirm": True})
+
+
+def test_an_esign_filing_saves_the_signed_form_to_the_company(env):
+    resp = _submit(env)
+    assert resp.status_code == 200
+    assert env.save.await_args.args[0]["id"] == "K1"
+    assert resp.json()["filed_form"]["document_id"] == "DOC9"
+    row = next(c.kwargs for c in env.audit.await_args_list
+               if c.kwargs["action_type"] == "OFFICER_SIGNED_FORM_UPLOADED")
+    assert row["metadata"] == {"route": "esign", "document_id": "DOC9", "version": 1}
+
+
+def test_a_signed_form_that_could_not_be_saved_is_reported_not_raised(env):
+    resp = _submit(env, save={"error": "storage down"})
+    assert resp.status_code == 200
+    assert resp.json()["filed_form"] == {"error": "storage down"}
+    assert "OFFICER_SIGNED_FORM_UPLOADED" not in _actions(env.audit)
+
+
+ESIGN_FILED = {"changes_applied_at": "2026-10-01T00:00:00Z"}
+
+
+def test_retry_saves_a_signed_form_an_esign_filing_did_not(env):
+    env.case = {**CASE, **ESIGN_FILED}
+    env.filing = {"id": "F1", "stage": "submitted"}
+    with patch.object(ocf.apply, "apply_changes", new_callable=AsyncMock) as apply:
+        resp = client.post("/officer-changes/K1/apply", headers=H, json={"confirm": True})
+    assert resp.status_code == 200, resp.text
+    apply.assert_not_awaited()
+    env.save.assert_awaited_once()
+    assert resp.json()["filed_form"]["document_id"] == "DOC9"
+
+
+def test_retry_is_refused_once_the_esign_form_is_saved_too(env):
+    env.case = {**CASE, **ESIGN_FILED, "filed_form_document_id": "DOC9"}
+    env.filing = {"id": "F1", "stage": "submitted"}
+    resp = client.post("/officer-changes/K1/apply", headers=H, json={"confirm": True})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "already_applied"
+    env.save.assert_not_awaited()
+
+
+# -- a death: the date written to the profile is on the person's trail ------------------
+
+DEATH_ROW = {"person_id": "P1", "name": "CHAN Tai Man", "field": "date_of_death",
+             "old": None, "new": "2026-09-25"}
+
+
+def _person_rows(audit):
+    return [c.kwargs for c in audit.await_args_list
+            if c.kwargs["action_type"] == "PERSON_FIELD_UPDATED"]
+
+
+def test_a_date_of_death_written_at_filing_is_audited_on_the_person(env):
+    env.case = {**CASE, "manual_receipt": {"caseNo": "1"}, "changes_applied_at": None}
+    result = {"applied": [{"entry_id": "N1"}], "errors": [], "person_fields": [DEATH_ROW]}
+    with patch.object(ocf.apply, "apply_changes", new_callable=AsyncMock, return_value=result), \
+         patch.object(ocf.documents, "file_to_profiles", new_callable=AsyncMock, return_value=[]):
+        resp = client.post("/officer-changes/K1/apply", headers=H, json={"confirm": True})
+    assert resp.status_code == 200
+    [row] = _person_rows(env.audit)
+    assert row["entity_type"] == "person" and row["entity_id"] == "P1"
+    assert row["subject_kind"] == "person" and row["module"] == "natural_person"
+    assert row["before_state"] == {"field": "date_of_death", "old": None}
+    assert row["after_state"] == {"field": "date_of_death", "new": "2026-09-25"}
+    assert row["metadata"]["case_no"] == "ND2A-2026-0001"
+
+
+def test_undo_puts_the_date_of_death_back_on_the_persons_trail_too(env):
+    env.case = {**CASE, "changes_applied_at": "2026-10-01T00:00:00Z"}
+    applied = {"id": "K1", "entries": [{"id": "N1", "kind": "cessation",
+                                        "applied": {"officer": {"id": "O1", "before": {}}}}]}
+    back = {**DEATH_ROW, "old": "2026-09-25", "new": None}
+    with patch.object(ocf.svc, "composite", new_callable=AsyncMock, return_value=applied), \
+         patch.object(ocf.apply, "undo_changes", new_callable=AsyncMock,
+                      return_value={"applied": [{"entry_id": "N1"}], "errors": [],
+                                    "person_fields": [back]}):
+        resp = client.post("/officer-changes/K1/undo", headers=H, json={"confirm": True})
+    assert resp.status_code == 200
+    [row] = _person_rows(env.audit)
+    assert row["old_value"] == "2026-09-25" and row["new_value"] is None

@@ -263,3 +263,53 @@ def test_undo_restores_the_companies_the_filing_dismissed(db):
     assert "baseline_before" not in str(out["dismissed_elsewhere"])
     _run(apply.undo_changes, CASE, db.rows("officer_change_entries"))
     assert {r["entity_id"] for r in particulars.pending_for_person("P1")} == {"E1", "E2"}
+
+
+# -- a death: the date reaches the person's profile (Levi 2026-10-18) -------------
+#
+# "enable a date of death field in the workflow, and then store it in natural
+# person profile once the workflow is confirmed": written with the rest of the
+# write-back, when the form is filed, and taken back by Undo.
+
+DIED = {**CEASE_DIRECTOR, "date_of_death": "2026-09-25"}
+
+
+def test_plan_says_the_date_of_death_goes_to_the_persons_profile(db):
+    rows = apply.plan(CASE, [DIED])
+    assert [r["text"] for r in rows] == [
+        "Mark CHAN Tai Man as a former director (ceased 28 Sep 2026, Deceased)",
+        "Record CHAN Tai Man's date of death, 25 Sep 2026, on the profile"]
+    assert rows[1]["target"] == {"kind": "person", "id": "P1", "name": "CHAN Tai Man"}
+
+
+def test_a_death_records_its_date_on_the_persons_profile(db):
+    out = _run(apply.apply_changes, CASE, _entries(db, DIED))
+    assert out["errors"] == []
+    assert db.rows("persons")[0]["date_of_death"] == "2026-09-25"
+    assert out["person_fields"] == [{
+        "person_id": "P1", "name": "CHAN Tai Man", "field": "date_of_death",
+        "old": None, "new": "2026-09-25"}]
+
+
+def test_undo_puts_back_the_date_of_death_the_profile_had(db):
+    db.tables["persons"][0]["date_of_death"] = "2026-09-01"
+    _run(apply.apply_changes, CASE, _entries(db, DIED))
+    assert db.rows("persons")[0]["date_of_death"] == "2026-09-25"
+    out = _run(apply.undo_changes, CASE, db.rows("officer_change_entries"))
+    assert out["errors"] == []
+    assert db.rows("persons")[0]["date_of_death"] == "2026-09-01"
+    assert out["person_fields"] == [{
+        "person_id": "P1", "name": "CHAN Tai Man", "field": "date_of_death",
+        "old": "2026-09-25", "new": "2026-09-01"}]
+
+
+@pytest.mark.parametrize("entry", [
+    {**CEASE_DIRECTOR, "cessation_reason": "R", "date_of_death": "2026-09-25"},
+    # Added before the field existed: nothing to record.
+    {**CEASE_DIRECTOR, "date_of_death": None},
+])
+def test_no_date_of_death_is_written_without_a_death_and_its_date(db, entry):
+    out = _run(apply.apply_changes, CASE, _entries(db, entry))
+    assert out["errors"] == [] and out["person_fields"] == []
+    assert db.rows("persons")[0].get("date_of_death") is None
+    assert len(apply.plan(CASE, [entry])) == 1

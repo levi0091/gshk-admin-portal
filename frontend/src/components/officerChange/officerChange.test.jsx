@@ -419,3 +419,154 @@ describe('StageClientVerification — the revision the client holds (migration 0
     expect(screen.queryByText(/goes out as Rev\./)).not.toBeInTheDocument()
   })
 })
+
+// -- Levi 2026-10-18 -----------------------------------------------------------------
+
+describe('CessationDrawer — the date of death', () => {
+  it('asks for it on a death, pre-filled from the profile, and sends it', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o2')
+    expect(screen.getByLabelText(/Date of death/)).toHaveValue('2026-09-20')
+    // A person ceases on the day they die, so the cessation date follows.
+    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('2026-09-20')
+    expect(screen.getByText(/saved to LEE Dead's profile once the form is filed/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries', {
+      kind: 'cessation', officer_id: 'o2', effective_date: '2026-09-20',
+      cessation_reason: 'D', date_of_death: '2026-09-20' }))
+  })
+
+  it('cannot add a death without its date', async () => {
+    wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o1')
+    expect(screen.queryByLabelText(/Date of death/)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByLabelText('Deceased'))
+    const add = screen.getByRole('button', { name: 'Add cessation' })
+    expect(add).toBeDisabled()
+    await userEvent.type(screen.getByLabelText(/Date of death/), '2026-09-18')
+    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('2026-09-18')
+    expect(add).toBeEnabled()
+  })
+
+  it('leaves a cessation date the operator typed alone', async () => {
+    wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o1')
+    await userEvent.type(screen.getByLabelText(/Date of cessation/), '2026-09-25')
+    await userEvent.click(screen.getByLabelText('Deceased'))
+    await userEvent.type(screen.getByLabelText(/Date of death/), '2026-09-18')
+    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('2026-09-25')
+  })
+
+  it('sends no date of death for a resignation', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o2')
+    await userEvent.click(screen.getByLabelText('Resignation / Others'))
+    await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries', {
+      kind: 'cessation', officer_id: 'o2', effective_date: '2026-09-20',
+      cessation_reason: 'R', date_of_death: null }))
+  })
+
+  it('shows the date an entry already holds when it is edited', () => {
+    const entry = { id: 'n1', kind: 'cessation', party_type: 'individual', officer_id: 'o1',
+      capacity: 'director', cessation_reason: 'D', date_of_death: '2026-09-17',
+      effective_date: '2026-09-17', party: { name: 'CHAN Tai Man' } }
+    wrap(<CessationDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
+    expect(screen.getByLabelText(/Date of death/)).toHaveValue('2026-09-17')
+  })
+})
+
+describe('AppointmentDrawer — Get Started HK Limited first for a secretary', () => {
+  const GSHK = { id: 'g1', company_name: 'Get Started HK Limited', br_number: '67169839' }
+  const OTHER = { id: 'c2', company_name: 'Alpha Secretarial Limited', br_number: '12345678' }
+
+  beforeEach(() => {
+    get.mockImplementation(path => Promise.resolve(
+      path.startsWith('/companies?search=67169839') ? { companies: [GSHK] }
+        : path.startsWith('/companies?search=') ? { companies: [OTHER, GSHK] } : {}))
+  })
+
+  it('offers it before anything is typed, and picks it in one press', async () => {
+    wrap(<AppointmentDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.click(screen.getByLabelText('Company Secretary'))
+    await userEvent.click(screen.getByRole('button', { name: 'Body corporate' }))
+    await userEvent.click(await screen.findByRole('option', { name: /Get Started HK Limited/ }))
+    expect(screen.getByText('Get Started HK Limited', { selector: '.f-static' })).toBeInTheDocument()
+  })
+
+  it('lists it first among the search results', async () => {
+    wrap(<AppointmentDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.click(screen.getByLabelText('Company Secretary'))
+    await userEvent.click(screen.getByRole('button', { name: 'Body corporate' }))
+    await userEvent.type(screen.getByLabelText(/Body corporate/, { selector: 'input' }), 'Limited')
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(2))
+    expect(screen.getAllByRole('option').map(o => o.textContent)[0]).toMatch(/Get Started HK Limited/)
+  })
+
+  it('asks the capacity before who is appointed', () => {
+    wrap(<AppointmentDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    const capacity = screen.getByLabelText('Director')
+    const search = screen.getByLabelText(/Person/, { selector: 'input' })
+    expect(capacity.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('does not steer a director appointment to it', async () => {
+    wrap(<AppointmentDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Body corporate' }))
+    expect(screen.queryByRole('option', { name: /Get Started HK Limited/ })).not.toBeInTheDocument()
+    expect(get.mock.calls.some(([p]) => p.startsWith('/companies?search=67169839'))).toBe(false)
+  })
+})
+
+describe('the e-Sign route\'s signed form, on the company', () => {
+  const esign = { ...BASE, signing_method: 'esign', applied_at: 'x', profile_changes: [],
+    documents: [], filing: { stage: 'submitted', submitted_at: '2026-10-17T07:05:00Z' },
+    receipt: { caseNo: '141946253' } }
+
+  it('says where it was saved', () => {
+    wrap(<StageConfirmation data={{ ...esign, filed_form_document_id: 'DOC9',
+      filed_form_document_version: 2 }} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText(/Saved to the company's documents \(version 2\)/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save the signed form' })).not.toBeInTheDocument()
+  })
+
+  it('offers to save one that filing did not', async () => {
+    post.mockResolvedValue({ ...esign, filed_form: { document_id: 'DOC9', version: 1 },
+      write_back: { errors: [] } })
+    const reload = vi.fn()
+    wrap(<StageConfirmation data={esign} reload={reload} can={ALL} />)
+    expect(screen.getByText(/The signed form was not saved to the company's documents/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Save the signed form' }))
+    expect(post).toHaveBeenCalledWith('/officer-changes/k1/apply', { confirm: true })
+    await waitFor(() => expect(reload).toHaveBeenCalled())
+  })
+
+  it('says why, when saving it fails again', async () => {
+    post.mockResolvedValue({ ...esign, filed_form: { error: 'storage down' },
+      write_back: { errors: [] } })
+    wrap(<StageConfirmation data={esign} reload={vi.fn()} can={ALL} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Save the signed form' }))
+    expect(await screen.findByText('storage down')).toBeInTheDocument()
+  })
+
+  it('is not asked of the manual route, whose upload is the signed form', () => {
+    wrap(<StageConfirmation data={{ ...BASE, signing_method: 'manual', applied_at: 'x',
+      manual_receipt: { caseNo: '1' }, profile_changes: [], documents: [] }}
+                            reload={vi.fn()} can={ALL} />)
+    expect(screen.queryByText(/signed form was not saved/)).not.toBeInTheDocument()
+  })
+
+  it('reports a failed save as a warning on the filing', async () => {
+    post.mockResolvedValue({ id: 'k1', write_back: { errors: [] }, documents_filed: [],
+      filed_form: { error: 'storage down' } })
+    const data = { ...BASE, signing_method: 'esign', filing: { stage: 'signed' },
+      profile_changes: [], documents: [] }
+    wrap(<StageSubmission data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    await userEvent.click(screen.getByLabelText(/Filing it with the Companies Registry cannot be undone/))
+    await userEvent.click(screen.getByRole('button', { name: 'File ND2A with CR' }))
+    await userEvent.click(screen.getByRole('button', { name: 'File with CR' }))
+    expect(await screen.findByText(/storage down/)).toBeInTheDocument()
+  })
+})

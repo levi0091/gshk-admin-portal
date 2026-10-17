@@ -3,13 +3,15 @@
 Spec B-5 (PRD Q10): the profiles change when the form is FILED — CR accepted
 the e-filing, or the CR-portal filing was recorded — not when CR registers it
 days later. A CR rejection after that is answered by *Undo profile update* on
-the CR Status stage, which reverses exactly what this module recorded.
+the Confirmation stage, which reverses exactly what this module recorded.
 
   * cessation  → the `entity_officers` row is marked former (is_current=false,
     resigned_date, resignation_reason from CR's reason), and so is the matching
     current `company_secretaries` row: the NAR1 mapper reads that register
     FIRST, so leaving it current would file a departed secretary on the next
-    annual return.
+    annual return. A death also writes the entry's date of death to the
+    person's profile (Levi 2026-10-18) — CR's form has no box for it, so this
+    is the only place the portal keeps it.
   * appointment → a new `entity_officers` row (written to `entry.officer_id`),
     and the appointment's ND2B baseline, carrying the correspondence address
     the ND2A filed (spec B-15). No `company_secretaries` row is written: the
@@ -69,6 +71,12 @@ def plan(case: dict, entries: list[dict]) -> list[dict]:
             rows.append({"entry_id": e["id"], "target": company,
                          "text": f"Mark {_name(e)} as a former {capacity} "
                                  f"(ceased {_day(e.get('effective_date'))}{reason})"})
+            if _records_death(e):
+                rows.append({"entry_id": e["id"],
+                             "target": {"kind": "person", "id": e["person_id"],
+                                        "name": _name(e)},
+                             "text": f"Record {_name(e)}'s date of death, "
+                                     f"{_day(e['date_of_death'])}, on the profile"})
         elif e.get("kind") == "appointment":
             rows.append({"entry_id": e["id"], "target": company,
                          "text": f"Add {_name(e)} as a {capacity} from "
@@ -101,6 +109,31 @@ def _secretary_rows(sb, case: dict, entry: dict) -> list[dict]:
             and norm(r.get("secretary_name")) == name]
 
 
+def _records_death(entry: dict) -> bool:
+    """A natural person's death with its date. An entry added before the field
+    existed has no date, and writes nothing to the profile rather than a guess."""
+    return bool(entry.get("cessation_reason") == "D" and entry.get("person_id")
+                and entry.get("date_of_death"))
+
+
+def _person_field(entry: dict, old, new) -> dict:
+    return {"person_id": entry["person_id"], "name": _name(entry),
+            "field": "date_of_death", "old": old, "new": new}
+
+
+def _record_death(sb, entry: dict) -> dict | None:
+    """Write the date of death to the profile; `{"id", "before"}` for Undo."""
+    if not _records_death(entry):
+        return None
+    person = (sb.table("persons").select("*").eq("id", entry["person_id"])
+              .execute().data or [None])[0]
+    if person is None:
+        raise LookupError("the person's profile no longer exists")
+    sb.table("persons").update({"date_of_death": entry["date_of_death"]}) \
+        .eq("id", person["id"]).execute()
+    return {"id": person["id"], "before": {"date_of_death": person.get("date_of_death")}}
+
+
 def _apply_cessation(sb, case, entry) -> dict:
     officer = (sb.table("entity_officers").select("*").eq("id", entry["officer_id"])
                .execute().data or [None])[0]
@@ -119,8 +152,12 @@ def _apply_cessation(sb, case, entry) -> dict:
             sb.table("company_secretaries").update({"is_current": False}) \
                 .eq("id", row["id"]).execute()
             secretaries.append({"id": row["id"], "before": {"is_current": True}})
-    return {"officer": {"id": officer["id"], "before": before},
-            "company_secretaries": secretaries}
+    record = {"officer": {"id": officer["id"], "before": before},
+              "company_secretaries": secretaries}
+    person = _record_death(sb, entry)
+    if person:
+        record["person"] = person
+    return record
 
 
 def _apply_appointment(sb, case, entry, user) -> dict:
@@ -223,10 +260,11 @@ def _split_before(elsewhere: dict) -> tuple[dict, list[dict]]:
 
 
 async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
-    """`{"applied": [...], "errors": [str], "dismissed_elsewhere": [...]}`.
-    Idempotent."""
+    """`{"applied": [...], "errors": [str], "dismissed_elsewhere": [...],
+    "person_fields": [...]}` — the last is each profile field written, for the
+    router to audit on the person. Idempotent."""
     sb = get_supabase()
-    applied, errors, dismissed = [], [], []
+    applied, errors, dismissed, person_fields = [], [], [], []
     texts = {r["entry_id"]: r["text"] for r in plan(case, entries)}
     for entry in entries:
         record = entry.get("applied") or {}
@@ -253,6 +291,10 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
         try:
             if entry["kind"] == "cessation":
                 record = _apply_cessation(sb, case, entry)
+                if record.get("person"):
+                    person_fields.append(_person_field(
+                        entry, record["person"]["before"]["date_of_death"],
+                        entry["date_of_death"]))
             elif entry["kind"] == "appointment":
                 record = _apply_appointment(sb, case, entry, user)
             else:
@@ -273,7 +315,8 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
     if not errors:
         sb.table("nar1_cases").update({"changes_applied_at": _now(),
                                        "updated_at": _now()}).eq("id", case["id"]).execute()
-    return {"applied": applied, "errors": errors, "dismissed_elsewhere": dismissed}
+    return {"applied": applied, "errors": errors, "dismissed_elsewhere": dismissed,
+            "person_fields": person_fields}
 
 
 def _restore_baseline(sb, case, entry, before, user) -> None:
@@ -290,7 +333,7 @@ def _restore_baseline(sb, case, entry, before, user) -> None:
 async def undo_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
     """Reverse exactly what `applied` records. Same shape as `apply_changes`."""
     sb = get_supabase()
-    undone, errors = [], []
+    undone, errors, person_fields = [], [], []
     for entry in entries:
         record = entry.get("applied")
         if not record:
@@ -303,6 +346,11 @@ async def undo_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
                 for row in record.get("company_secretaries") or []:
                     sb.table("company_secretaries").update(row["before"]) \
                         .eq("id", row["id"]).execute()
+                person = record.get("person")
+                if person:
+                    sb.table("persons").update(person["before"]).eq("id", person["id"]).execute()
+                    person_fields.append(_person_field(
+                        entry, entry.get("date_of_death"), person["before"]["date_of_death"]))
             elif entry["kind"] == "appointment":
                 sb.table("entity_officers").delete().eq("id", record["officer_id"]).execute()
                 sb.table("officer_change_entries").update({"officer_id": None}) \
@@ -328,4 +376,4 @@ async def undo_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
     if not errors:
         sb.table("nar1_cases").update({"changes_undone_at": _now(),
                                        "updated_at": _now()}).eq("id", case["id"]).execute()
-    return {"applied": undone, "errors": errors}
+    return {"applied": undone, "errors": errors, "person_fields": person_fields}

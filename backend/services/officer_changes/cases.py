@@ -20,7 +20,7 @@ that refuses the request; routers turn them into 400 / 409 and do the auditing.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
@@ -46,7 +46,7 @@ _ADDRESS_KEYS = ("line1", "line2", "line3", "city", "state_region", "postal_code
 #: row is derived (the party of a cessation, the items of a change) or owned by
 #: a later stage (KYC, consent, what filing applied).
 _WRITABLE = {
-    "cessation": {"effective_date", "cessation_reason"},
+    "cessation": {"effective_date", "cessation_reason", "date_of_death"},
     "appointment": {"capacity", "effective_date", "correspondence_same_as_residential",
                     "correspondence_address", "section5_confirmed",
                     "consent_person_id", "consent_capacity"},
@@ -134,6 +134,26 @@ def _store_deadline(case_id: str) -> None:
 
 
 # -- validating an entry -------------------------------------------------------------
+
+def _death_date(reason, date_of_death, effective_date) -> str | None:
+    """The date of death a natural person's cessation keeps (Levi 2026-10-18):
+    required for a death, and nothing for a resignation. CR's form has no box
+    for it; filing writes it to the person's profile (`apply`)."""
+    if reason != "D":
+        return None
+    if not date_of_death:
+        raise ValueError("Enter the date of death")
+    try:
+        died = date.fromisoformat(str(date_of_death))
+    except ValueError:
+        raise ValueError("The date of death must be a date (YYYY-MM-DD)") from None
+    if died > deadlines.hk_today():
+        raise ValueError("The date of death cannot be in the future")
+    ceased = deadlines._as_date(effective_date)
+    if ceased and ceased < died:
+        raise ValueError("The date of cessation cannot be before the date of death")
+    return died.isoformat()
+
 
 def _current_officer(case: dict, officer_id: str | None) -> dict:
     if not officer_id:
@@ -311,9 +331,12 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
                 # date or reason never leaves a promotion behind.
                 reg = (get_supabase().table("company_secretaries").select("*")
                        .eq("id", payload["secretary_id"]).execute().data or [None])[0] or {}
-                if reg.get("person_id") and payload.get("cessation_reason") not in ("R", "D"):
-                    raise ValueError("Choose the reason for cessation: Resignation / "
-                                     "Others, or Deceased")
+                if reg.get("person_id"):
+                    if payload.get("cessation_reason") not in ("R", "D"):
+                        raise ValueError("Choose the reason for cessation: Resignation / "
+                                         "Others, or Deceased")
+                    _death_date(payload["cessation_reason"], payload.get("date_of_death"),
+                                payload.get("effective_date"))
             officer, was_promoted = _officer_for_secretary(case, payload["secretary_id"])
             if was_promoted:
                 promoted = {"secretary_id": payload["secretary_id"], "officer_id": officer["id"]}
@@ -333,8 +356,12 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
                     raise ValueError("Choose the reason for cessation: Resignation / "
                                      "Others, or Deceased")
                 row["cessation_reason"] = payload["cessation_reason"]
+                row["date_of_death"] = _death_date(
+                    payload["cessation_reason"], payload.get("date_of_death"),
+                    row["effective_date"])
             else:
                 row["cessation_reason"] = None
+                row["date_of_death"] = None
             if promoted:
                 # Not a column: `add_entry` lifts it off before the insert and
                 # hands it to the router, which puts it in the audit row.
@@ -418,8 +445,14 @@ def update_entry(case: dict, entry_id: str, patch: dict, *, user_id) -> tuple[di
         changes["effective_date"] = changes["effective_date"] or None
     merged = {**before, **changes}
     if before["kind"] == "cessation":
-        if merged.get("party_type") == "individual" and merged.get("cessation_reason") not in ("R", "D"):
-            raise ValueError("Choose the reason for cessation")
+        if merged.get("party_type") == "individual":
+            if merged.get("cessation_reason") not in ("R", "D"):
+                raise ValueError("Choose the reason for cessation")
+            changes["date_of_death"] = _death_date(
+                merged["cessation_reason"], merged.get("date_of_death"),
+                merged.get("effective_date"))
+        elif "date_of_death" in changes:
+            changes["date_of_death"] = None
     if before["kind"] == "appointment":
         others = [e for e in list_entries(case["id"]) if e["id"] != entry_id]
         _check_appointment(case, merged, others, exclude_id=entry_id)
@@ -807,7 +840,9 @@ def _summary(entry: dict) -> str:
     capacity = _CAPACITY_LABEL.get(entry.get("capacity"), "Officer")
     if entry.get("kind") == "cessation":
         bits = [capacity, f"ceases {_day(entry.get('effective_date'))}"]
-        if entry.get("cessation_reason"):
+        if entry.get("cessation_reason") == "D" and entry.get("date_of_death"):
+            bits.append(f"Deceased on {_day(entry['date_of_death'])}")
+        elif entry.get("cessation_reason"):
             bits.append(_REASON_LABEL[entry["cessation_reason"]])
         return " · ".join(bits)
     if entry.get("kind") == "appointment":
