@@ -83,3 +83,15 @@
 **Files:** `CLAUDE.md` (stage-6, CR vocabulary, 043/044 notes rewritten as removed; receipt paragraph), `backend/jobs/README.md` (done in Task 2), spec `2026-09-16-…` gets a "Reversed by" line.
 
 - [ ] Write; `grep -n "CR Status\|cr_not_checked\|poll_cr_status" CLAUDE.md` shows only history lines. Commit.
+
+### Task 8: ND2B effective date — blank when there is no open NAR1 (Levi 2026-10-17, Jacqueline)
+
+Jacqueline on Levi's suggested change: "If there is no open NAR1, please keep it blank too. We can decide the effective date, as long as we can fill in the date before the submission."
+
+- [ ] Test first: a new ND2B with an open NAR1 takes its return date (unchanged); with no open NAR1 the date is blank even when an anniversary fell in the last six weeks. Run → FAIL; drop the six-week fallback → PASS. The blank date is entered at Signing (existing deferred-date path). Commit.
+
+### Task 9: person profile — multiple IDs and addresses per company, simpler (Levi 2026-10-17)
+
+"make sure it is possible for a person to have multiple correspondence and residential addresses and these addresses could be linked to different companies ... the same for multiple identification documents ... keep the design as simple as possible ... make sure the profile page is not bloated." frontend-design skill.
+
+- [ ] Screenshot the current three cards; list what is bloat (repeated controls, prose, empty states). Tests first for the simplified layout (each entry still shows its companies; New / Companies… / Edit / Make default / Remove still reachable); implement; screenshot; full frontend suite. Commit.
