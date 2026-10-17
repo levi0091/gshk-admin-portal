@@ -60,7 +60,8 @@ def test_the_officer_changes_migration_follows_this_one_in_a_single_line():
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
     # 052 (Jacqueline's ND2 feedback) follows 050, and 053 (Levi's per-company
     # particulars) follows 052 — still one line.
-    assert script.get_heads() == ["053"]
+    assert script.get_heads() == ["054"]
+    assert script.get_revision("054").down_revision == "053"
     assert script.get_revision("053").down_revision == "052"
     assert script.get_revision("052").down_revision == "050"
     assert script.get_revision("050").down_revision == "051"

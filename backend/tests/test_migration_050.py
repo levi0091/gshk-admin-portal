@@ -102,12 +102,17 @@ def test_the_recreate_restates_the_grants():
             in m50._CASE_GRANTS)
 
 
-def test_the_stage_lists_match_the_services():
+def test_the_stage_lists_are_the_ones_050_shipped():
+    """History. 050's copies were in step with the services when it shipped;
+    migration 054 (Levi 2026-10-17) removed `registered` and the CR codes, and
+    test_migration_054 holds the HEAD's lists to the services now."""
     m50 = _migration(M050)
-    assert set(m50.CR_FILED_STAGES) == set(nar1_cases.CR_FILED_STAGES)
+    assert tuple(m50.CR_FILED_STAGES) == ("submitted", "registered", "edrive")
     assert m50.FILING_WINDOW_DAYS == st.FILING_WINDOW_DAYS
-    assert tuple(m50.CR_STATUS_CODES) == tuple(st.CR_STATUS_CODES)
-    assert m50.CR_NOT_CHECKED == st.CR_NOT_CHECKED
+    assert tuple(m50.CR_STATUS_CODES) == (
+        "cr_not_checked", "cr_pending", "cr_approved", "cr_registered",
+        "cr_rejected", "cr_unknown")
+    assert m50.CR_NOT_CHECKED == "cr_not_checked"
     assert set(m50.FORM_CODES) == {"Nar1"} | set(st.OFFICER_CHANGE_FORMS)
 
 
@@ -239,11 +244,10 @@ def officer_change_rows():
                 f"SELECT r.id, r.workflow_status, r.workflow_off_portal, "
                 f"       r.workflow_overdue, r.days_to_anniversary, "
                 f"       r.days_to_deadline, r.filing_deadline, r.filing_stage, "
-                f"       r.case_type, r.form_code, r.cr_doc_status, "
+                f"       r.case_type, r.form_code, "
                 f"       c.verification_sent_at, c.client_approved, "
                 f"       c.manual_receipt, c.closed_at, c.signing_method, "
-                f"       c.data_checked_at, c.manual_signed_document_id, "
-                f"       c.cr_doc_status_code "
+                f"       c.data_checked_at, c.manual_signed_document_id "
                 f"FROM {VIEW} r JOIN nar1_cases c ON c.id = r.id "
                 f"WHERE r.entity_id = %s",
                 (entity_id,),
@@ -261,8 +265,7 @@ def _expected(row: dict) -> dict:
     case = {key: row[key] for key in (
         "form_code", "verification_sent_at", "client_approved",
         "manual_receipt", "closed_at", "signing_method", "data_checked_at",
-        "manual_signed_document_id", "cr_doc_status_code", "cr_doc_status",
-        "days_to_anniversary", "days_to_deadline")}
+        "manual_signed_document_id", "days_to_anniversary", "days_to_deadline")}
     filing = {"stage": row["filing_stage"]} if row["filing_stage"] else None
     return st.derive(case, filing)
 

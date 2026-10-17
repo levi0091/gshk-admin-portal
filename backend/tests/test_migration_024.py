@@ -51,7 +51,6 @@ STAGES = [
     tpsi_filings.STAGE_SIGNING_FAILED,
     tpsi_filings.STAGE_SUBMITTED,
     tpsi_filings.STAGE_SUBMISSION_FAILED,
-    tpsi_filings.STAGE_REGISTERED,
     tpsi_filings.STAGE_EDRIVE,
 ]
 SENT = [None, "2026-08-16T00:00:00Z"]
@@ -70,19 +69,10 @@ MANUAL = [None, '{"caseNo": "1"}', "{}", "null"]
 #: 240 rows become 480, still one batched insert and one read.
 CLOSED = [None, "2026-09-05T02:00:00Z"]
 
-#: Migration 043. A SIXTH axis, for the same reason the fifth is one: CR's answer
-#: now REPLACES the branch that used to say 'completed', so it has to be checked
-#: against every combination of stage, receipt and closure — not only against the
-#: filed ones. The cases where it is NOT read (nothing filed) are exactly where a
-#: mis-ordered branch would leak a CR badge onto a case still in Data
-#: Verification, and only the full product catches that.
-#:
-#: `None` first: it is what every row in the book carries today, and the view has
-#: to read it as `cr_not_checked` rather than as NULL.
-CR_CODES = [None] + list(st.CR_STATUS_CODES)
-
-COMBINATIONS = list(itertools.product(STAGES, SENT, APPROVED, MANUAL, CLOSED,
-                                      CR_CODES))
+#: (Migration 043 added a sixth axis, CR's stored answer. Migration 054 removed
+#: CR status altogether, Levi 2026-10-17, and the axis with it: a filed case
+#: reads `filed` whatever the row once carried.)
+COMBINATIONS = list(itertools.product(STAGES, SENT, APPROVED, MANUAL, CLOSED))
 
 
 def _conn():
@@ -102,8 +92,6 @@ def _expected(row: dict) -> dict:
         "manual_receipt": row["manual_receipt"],
         "days_to_anniversary": row["days_to_anniversary"],
         "closed_at": row["closed_at"],
-        "cr_doc_status_code": row["cr_doc_status_code"],
-        "cr_doc_status": row["cr_doc_status"],
     }
     filing = {"stage": row["filing_stage"]} if row["filing_stage"] else None
     return st.derive(case, filing)
@@ -129,15 +117,10 @@ def registry_rows():
 
             cases, filings = [], []
             for index, combination in enumerate(COMBINATIONS):
-                stage, sent, approved, manual, closed, cr_code = combination
+                stage, sent, approved, manual, closed = combination
                 case_id = str(uuid.uuid4())
-                # `cr_doc_status` is CR's own words and rides along with the
-                # code: `badge_from_row` carries it through, so a row with a
-                # code and no text would compare unequal for a reason that has
-                # nothing to do with the branch under test.
-                cr_text = f"CR says {cr_code}" if cr_code else None
                 cases.append((case_id, entity_id, f"PARITY-{index:04d}",
-                              sent, approved, manual, closed, cr_code, cr_text))
+                              sent, approved, manual, closed))
                 if stage:
                     filings.append((entity_id, case_id, "Nar1", stage))
                 ids[combination] = case_id
@@ -146,10 +129,9 @@ def registry_rows():
                 cur,
                 "INSERT INTO nar1_cases (id, entity_id, nar1_type, case_no, "
                 "verification_sent_at, client_approved, manual_receipt, "
-                "closed_at, cr_doc_status_code, cr_doc_status) VALUES %s",
+                "closed_at) VALUES %s",
                 cases,
-                template="(%s, %s, 'annual_return', %s, %s, %s, %s::jsonb, %s, "
-                         "%s, %s)",
+                template="(%s, %s, 'annual_return', %s, %s, %s, %s::jsonb, %s)",
             )
             execute_values(
                 cur,
@@ -164,8 +146,6 @@ def registry_rows():
                 f"       r.filing_id, r.manual_receipt_present, r.case_no, "
                 f"       r.company_name, r.br_number, r.case_type, r.entity_id, "
                 f"       r.closed_by_name, r.closed_reason, "
-                f"       r.cr_doc_status, r.cr_doc_status_code, "
-                f"       r.cr_status_checked_at, "
                 f"       c.verification_sent_at, c.client_approved, "
                 f"       c.manual_receipt, c.closed_at "
                 f"FROM {VIEW} r JOIN nar1_cases c ON c.id = r.id "
@@ -202,7 +182,7 @@ def test_the_view_and_the_python_function_agree_on_every_reachable_state(registr
     ]
     assert not disagreements, (
         f"{len(disagreements)} of {len(registry_rows)} states disagree "
-        f"(stage, sent, approved, manual, closed, cr_code) -> view != derive():\n"
+        f"(stage, sent, approved, manual, closed) -> view != derive():\n"
         + "\n".join(f"  {c}: {got} != {want}" for c, got, want in disagreements[:20])
     )
 
@@ -231,64 +211,42 @@ def test_manual_receipt_present_mirrors_pythons_truthiness_not_null_ness(registr
 
 
 # --------------------------------------------------------------------------- #
-#  CR's own answer (migration 043) — the branch that replaced `completed`
+#  Filed (migration 054) — the branch that replaced CR's answer
 # --------------------------------------------------------------------------- #
 
-def test_a_filed_return_wears_crs_answer_and_never_the_word_completed(registry_rows):
-    """`completed` is gone from the vocabulary, not aliased.
-
-    A code no row can carry but that every filter, count and test still offers
-    renders an always-zero tab on the dashboard and invites the next writer to
-    set it. If this ever finds one, the view and the Python function have been
-    changed apart.
-    """
-    assert "completed" not in {row["workflow_status"] for row in registry_rows.values()}
+def _is_filed(combination) -> bool:
+    return (combination[3] == '{"caseNo": "1"}'
+            or combination[0] in nar1_cases.CR_FILED_STAGES)
 
 
-def test_a_filed_case_with_no_cr_answer_reads_not_checked_not_null(registry_rows):
-    """Every case in the book carries NULL here today. A filed one must read
-    `cr_not_checked` — "filed, and nobody has asked CR yet" — rather than
-    falling through to a stage branch or emitting NULL."""
-    hits = [
-        row for combination, row in registry_rows.items()
-        # filed by either route, not closed, and CR never asked
-        if combination[5] is None and combination[4] is None
-        and (combination[3] == '{"caseNo": "1"}'
-             or combination[0] in nar1_cases.CR_FILED_STAGES)
-    ]
-    assert hits, "the fixture no longer produces a filed, unchecked case"
-    assert {row["workflow_status"] for row in hits} == {st.CR_NOT_CHECKED}
+def test_a_filed_return_reads_filed_and_never_completed(registry_rows):
+    """Levi 2026-10-17: the receipt is the last thing CR tells us, so a return
+    CR holds reads `filed` — and `completed`, retired on 2026-09-16, stays
+    gone. No CR code survives in the view either."""
+    hits = [row for combination, row in registry_rows.items()
+            if _is_filed(combination) and combination[4] is None]
+    assert hits, "the fixture no longer produces a filed, open case"
+    assert {row["workflow_status"] for row in hits} == {st.FILED}
+    emitted = {row["workflow_status"] for row in registry_rows.values()}
+    assert "completed" not in emitted
+    assert not [code for code in emitted if code.startswith("cr_")]
 
 
-def test_an_unfiled_case_never_wears_a_cr_badge(registry_rows):
-    """THE ORDERING THIS AXIS EXISTS FOR. `cr_doc_status_code` is set on every
-    combination, filed or not. A branch that read it before testing whether CR
-    has the return would put "Registered by CR" on a case still in Data
-    Verification."""
-    leaked = [
-        combination for combination, row in registry_rows.items()
-        if row["workflow_status"] in st.CR_STATUS_CODES
-        and not (combination[3] == '{"caseNo": "1"}'
-                 or combination[0] in nar1_cases.CR_FILED_STAGES)
-    ]
-    assert not leaked, f"{len(leaked)} unfiled cases wear a CR badge: {leaked[:5]}"
+def test_an_unfiled_case_never_reads_filed(registry_rows):
+    leaked = [combination for combination, row in registry_rows.items()
+              if row["workflow_status"] == st.FILED and not _is_filed(combination)]
+    assert not leaked, f"{len(leaked)} unfiled cases read filed: {leaked[:5]}"
 
 
-def test_closure_still_beats_crs_answer(registry_rows):
-    """`closed` is the FIRST branch and stays first. A closed case that a repair
-    left carrying `cr_registered` is still closed — the decision to stop is not
-    something a status lookup may overrule."""
+def test_closure_still_beats_filed(registry_rows):
     for combination, row in registry_rows.items():
         if combination[4]:
             assert row["workflow_status"] == "closed", combination
 
 
-def test_no_cr_code_is_ever_flagged_overdue(registry_rows):
-    """`workflow_overdue` gained the five CR codes alongside 'closed'. A filed
-    return is not work waiting to be filed, whatever CR has since said about
-    it."""
+def test_a_filed_case_is_never_flagged_overdue(registry_rows):
     assert not [c for c, r in registry_rows.items()
-                if r["workflow_status"] in st.CR_STATUS_CODES and r["workflow_overdue"]]
+                if r["workflow_status"] == st.FILED and r["workflow_overdue"]]
 
 
 # --------------------------------------------------------------------------- #
@@ -386,8 +344,7 @@ def test_a_filing_cr_already_holds_wins_over_a_newer_draft(filed_stage):
     otherwise. Parametrised over CR_FILED_STAGES so widening that constant
     without widening the view fails here.
 
-    Since 043 the answer is `cr_not_checked` rather than `completed`: nothing
-    has asked CR about this fixture, and that is what the badge now says.
+    Since 054 the answer is `filed` (043 had made it `cr_not_checked`).
     """
     entity_id, case_id = str(uuid.uuid4()), str(uuid.uuid4())
     conn = _conn()
@@ -417,7 +374,7 @@ def test_a_filing_cr_already_holds_wins_over_a_newer_draft(filed_stage):
             )
             stage, status = cur.fetchone()
         assert stage == filed_stage
-        assert status == st.CR_NOT_CHECKED
+        assert status == st.FILED
     finally:
         conn.rollback()
         conn.close()
@@ -587,13 +544,11 @@ def test_the_view_carries_every_column_the_dashboard_lists_on(registry_rows):
         "filing_stage", "filing_id", "verification_sent_at", "client_approved",
         "manual_receipt_present", "days_to_anniversary", "workflow_status",
         "workflow_off_portal", "workflow_overdue",
-        # Migration 043. `cr_doc_status` is what `badge_from_row` renders on an
-        # unrecognised CR answer, and `cr_status_checked_at` is what stops a
-        # three-week-old green badge reading as this morning's.
-        "cr_doc_status", "cr_doc_status_code", "cr_status_checked_at",
     }
     row = next(iter(registry_rows.values()))
     assert required <= set(row)
+    # Migration 054 took CR's answer out of the relation.
+    assert not {"cr_doc_status", "cr_doc_status_code", "cr_status_checked_at"} & set(row)
 
 
 def test_case_type_says_nar1(registry_rows):
