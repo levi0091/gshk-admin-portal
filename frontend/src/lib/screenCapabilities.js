@@ -54,6 +54,17 @@ export function companyProfileCaps(can) {
     // editing a company is not the right to make it disappear.
     deleteCompany: can('companies', 'delete'),
     restoreCompany: can('companies', 'delete'),
+    // POST /officer-changes (ND2A / ND2B, migration 050) — the Report a change
+    // menu and each officer's Cease / Change particulars. Its own module for the
+    // same reason `openCase` is not `companies:write`: it drives a filing.
+    startOfficerChange: can('officer_changes', 'write'),
+    // GET /officer-changes/pending — the "Change pending" chips.
+    viewOfficerChanges: can('officer_changes', 'read'),
+    // GET / POST /companies/{id}/particulars-changes[/dismiss] — the alert on a
+    // body corporate officer's own profile. Reading it is reading the company;
+    // dismissing it moves what the company record holds as CR's view.
+    viewParticularsChanges: can('companies', 'read'),
+    dismissParticularsChange: can('companies', 'write'),
   }
 }
 
@@ -91,6 +102,16 @@ export function personProfileCaps(can) {
     // POST /persons/{id}/delete and /restore (migration 049).
     deletePerson: can('persons', 'delete'),
     restorePerson: can('persons', 'delete'),
+    // GET / PUT / DELETE /persons/{id}/eservice-credential (migration 050). The
+    // person's e-Registry account is part of the person, like their passport.
+    viewEServiceCredential: can('persons', 'read'),
+    editEServiceCredential: can('persons', 'write'),
+    // GET / POST /persons/{id}/particulars-changes[/dismiss].
+    viewParticularsChanges: can('persons', 'read'),
+    dismissParticularsChange: can('persons', 'write'),
+    // POST /officer-changes — Start ND2B from the alert; opening one is a read.
+    startOfficerChange: can('officer_changes', 'write'),
+    viewOfficerChanges: can('officer_changes', 'read'),
   }
 }
 
@@ -153,6 +174,30 @@ export function caseWorkflowCaps(can) {
     // POST /cases/{id}/manual-submit and /manual-receipt. Same permission as a
     // real submit, because it closes the case as filed just the same.
     recordOffPortalFiling: can('tpsi', 'submit'),
+  }
+}
+
+/**
+ * The ND2A / ND2B case (`GET /officer-changes/{id}`, opened by
+ * `officer_changes:read`). The same split as the NAR1 case: the case on its own
+ * module, talking to CR on `tpsi:write`, and committing the filing on
+ * `tpsi:submit` — on both routes, because recording a CR-portal filing updates
+ * the profiles exactly as the e-Sign submit does.
+ */
+export function officerChangeCaps(can) {
+  return {
+    // PATCH /officer-changes/{id}, entries, KYC, documents, send, response,
+    // close, mark-checked, signed-form.
+    editCase: can('officer_changes', 'write'),
+    // POST /officer-changes/{id}/validate and /sign.
+    validate: can('tpsi', 'write'),
+    sign: can('tpsi', 'write'),
+    // POST /officer-changes/{id}/submit, /receipt, /record-filing, /undo.
+    submit: can('tpsi', 'submit'),
+    recordOffPortalFiling: can('tpsi', 'submit'),
+    undoProfileUpdate: can('tpsi', 'submit'),
+    // POST /tpsi/cases/{id}/refresh-status — the poller NAR1 uses.
+    checkCrStatus: can('tpsi', 'read'),
   }
 }
 

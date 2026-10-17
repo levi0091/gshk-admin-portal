@@ -250,6 +250,12 @@ export default function PersonsRegistryPage() {
                           ? `${(p.primary_id_type || '').toUpperCase()} · ${p.primary_id_number}`
                           : '—'}
                       </span>
+                      {/* A client may hold two passports, each given to a
+                          different company (Levi 2026-10-05); the profile
+                          shows which company files which. */}
+                      {p.id_count > 1 && (
+                        <span className="td-muted reg-more-ids">+{p.id_count - 1} more ID</span>
+                      )}
                     </td>
                     <td data-label="Nationality">
                       <span className="td-muted">{p.nationality || '—'}</span>

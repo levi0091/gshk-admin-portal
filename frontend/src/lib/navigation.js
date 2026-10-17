@@ -17,9 +17,14 @@
  */
 export const LANDINGS = [
   {
+    // ND2A / ND2B cases (migration 050) are listed here too, one row each,
+    // and open on `/officer-changes/:id` under `officer_changes:read`. That
+    // route is NOT a landing: a case is reached from this list or from the
+    // company and person profiles, never browsed to on its own. The list
+    // itself stays on `nar1:read`, which is what `GET /cases` asks.
     to: '/dashboard',
     label: 'Post-incorporation',
-    description: 'Open NAR1 cases — data verification through to submission',
+    description: 'Open NAR1, ND2A and ND2B cases — client verification through to CR status',
     module: 'nar1',
     permission: 'read',
     section: 'main',

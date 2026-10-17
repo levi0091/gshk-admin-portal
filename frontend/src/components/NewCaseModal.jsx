@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { api } from '../lib/api.js'
+import { useAuth } from '../context/AuthContext.jsx'
+import { officerChangeApi } from './officerChange/api.js'
+import './officerChange/entryPoints.css'
 
 /**
- * Open a NAR1 case — from the Post-incorporation dashboard or a company profile.
+ * Open a case — from the Post-incorporation dashboard or a company profile.
  *
  * The dashboard lists CASES, so its primary action is opening one. It used to
  * be "+ Add Company", which is a different job on a different screen (the
@@ -13,8 +16,28 @@ import { api } from '../lib/api.js'
  * the operator searches for one. A company may hold more than one open case —
  * two outstanding returns is a normal state — so this never refuses on the
  * grounds that a case already exists. The backend decides that.
+ *
+ * THREE FORMS, EACH ON ITS OWN PERMISSION (migration 050). An annual return is
+ * `nar1:write`; an ND2A or ND2B is `officer_changes:write`. A form the role may
+ * not open is not drawn at all — the portal's rule for every permission-gated
+ * control — so a role holding one of the two sees a picker of one, worded as a
+ * fact rather than as a choice. `onCreated` receives the case with its
+ * `form_code`, and the caller routes it (`casePath`).
  */
-export default function NewCaseModal({ entity, onClose, onCreated }) {
+export const FORMS = [
+  { code: 'Nar1', label: 'Annual Return (NAR1)', module: 'nar1',
+    hint: 'The annual return is filed for this company.' },
+  { code: 'Nd2a', label: 'Appointment / cessation of officers (ND2A)', module: 'officer_changes',
+    hint: 'A director or secretary joins or leaves. Add who on the next screen.' },
+  { code: 'Nd2b', label: "Change of an officer's particulars (ND2B)", module: 'officer_changes',
+    hint: 'Particulars already edited on a profile. The next screen lists what changed.' },
+]
+
+export default function NewCaseModal({ entity, onClose, onCreated, initialForm }) {
+  const { hasPermission } = useAuth()
+  const forms = FORMS.filter(f => hasPermission?.(f.module, 'write'))
+  const [form, setForm] = useState(
+    forms.find(f => f.code === initialForm)?.code || forms[0]?.code || null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -22,6 +45,7 @@ export default function NewCaseModal({ entity, onClose, onCreated }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const searching = useRef(false)
+  const chosen = forms.find(f => f.code === form)
 
   useEffect(() => {
     const t = setTimeout(() => setQuery(search.trim()), 300)
@@ -40,14 +64,16 @@ export default function NewCaseModal({ entity, onClose, onCreated }) {
   }, [query, entity])
 
   async function create() {
-    if (!picked) return
+    if (!picked || !chosen) return
     setError(null); setBusy(true)
     try {
-      const created = await api.post('/cases', {
-        entity_id: picked.id,
-        form_code: 'Nar1',
-      })
-      onCreated(created)
+      if (chosen.code === 'Nar1') {
+        const created = await api.post('/cases', { entity_id: picked.id, form_code: 'Nar1' })
+        onCreated(created)
+      } else {
+        const res = await officerChangeApi.create(picked.id, chosen.code)
+        onCreated({ ...res.case, form_code: chosen.code })
+      }
     } catch (e) {
       setError(e)
     } finally {
@@ -59,7 +85,7 @@ export default function NewCaseModal({ entity, onClose, onCreated }) {
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
-          <div className="modal-title">Open a NAR1 case</div>
+          <div className="modal-title">Open a case</div>
           <div className="modal-close" onClick={onClose} role="button" aria-label="Close">×</div>
         </div>
 
@@ -84,9 +110,6 @@ export default function NewCaseModal({ entity, onClose, onCreated }) {
               <div className="f-input" style={{ display: 'flex', alignItems: 'center' }}>
                 {entity.company_name}
               </div>
-              <span className="f-hint">
-                The annual return is filed for this company.
-              </span>
             </div>
           ) : (
             <>
@@ -128,12 +151,28 @@ export default function NewCaseModal({ entity, onClose, onCreated }) {
           )}
 
           <div className="f-group" style={{ marginTop: 14 }}>
-            <label className="f-label">Case type</label>
-            <div className="f-input" style={{ display: 'flex', alignItems: 'center' }}>
-              NAR1 — Annual Return
-            </div>
-            {/* NNC1 is not built. An enabled-looking picker with one option
-                that cannot change is worse than saying so. */}
+            {forms.length > 1 ? (
+              <fieldset className="nc-forms">
+                <legend className="f-label">Case type</legend>
+                {forms.map(f => (
+                  <label key={f.code} className={`nc-form${form === f.code ? ' on' : ''}`}>
+                    <input type="radio" name="nc-form" value={f.code}
+                           checked={form === f.code} onChange={() => setForm(f.code)} />
+                    <span>{f.label}</span>
+                  </label>
+                ))}
+              </fieldset>
+            ) : (
+              <>
+                <label className="f-label">Case type</label>
+                <div className="f-input" style={{ display: 'flex', alignItems: 'center' }}>
+                  {chosen?.label || '—'}
+                </div>
+              </>
+            )}
+            {chosen && <span className="f-hint">{chosen.hint}</span>}
+            {/* NNC1 is not built. An enabled-looking choice that cannot be
+                opened is worse than saying so. */}
             <span className="f-hint">
               NNC1 (incorporation) cases are not available yet.
             </span>
@@ -142,7 +181,7 @@ export default function NewCaseModal({ entity, onClose, onCreated }) {
 
         <div className="modal-footer">
           <button className="btn btn-outline" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-action" onClick={create} disabled={!picked || busy}>
+          <button className="btn btn-action" onClick={create} disabled={!picked || !chosen || busy}>
             {busy ? 'Opening…' : 'Open case'}
           </button>
         </div>

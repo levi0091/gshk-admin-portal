@@ -50,6 +50,23 @@ def test_it_revises_049_leaving_050_to_the_officer_changes_branch():
     assert m.down_revision == "049"
 
 
+def test_the_officer_changes_migration_follows_this_one_in_a_single_line():
+    """On `nd2a_nd2b`: 050 was re-pointed to revise 051, so the chain runs
+    049 -> 051 -> 050 with ONE head. Two heads would make `alembic upgrade
+    head` refuse, and CI's migrations job with it."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
+    # 052 (Jacqueline's ND2 feedback) follows 050, and 053 (Levi's per-company
+    # particulars) follows 052 — still one line.
+    assert script.get_heads() == ["053"]
+    assert script.get_revision("053").down_revision == "052"
+    assert script.get_revision("052").down_revision == "050"
+    assert script.get_revision("050").down_revision == "051"
+    assert script.get_revision("051").down_revision == "049"
+
+
 def test_the_backfill_runs_with_the_updated_at_trigger_off():
     """Left on, `trg_set_updated_at` would stamp every case ever mailed with the
     moment this migration ran, and the dashboard's Last Updated column would

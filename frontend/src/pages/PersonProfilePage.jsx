@@ -11,8 +11,7 @@ import {
   DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
 } from '../components/DocumentSections.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
-import AddressBlock from '../components/AddressBlock.jsx'
-import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
+import ParticularsByCompany from '../components/particulars/ParticularsByCompany.jsx'
 import { useLookups } from '../lib/lookups.js'
 import { useFormContract, fieldWarning } from '../lib/formContract.js'
 import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
@@ -23,6 +22,8 @@ import {
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
 import { personProfileCaps, asDeleted } from '../lib/screenCapabilities.js'
+import EServiceCredentialCard from '../components/officerChange/EServiceCredentialCard.jsx'
+import ParticularsChangeAlert from '../components/officerChange/ParticularsChangeAlert.jsx'
 import {
   DeleteRecordModal, DeletedBanner, RecordGone, createdOn,
 } from '../components/SoftDelete.jsx'
@@ -288,12 +289,8 @@ export default function PersonProfilePage() {
 
   useEffect(() => { load() }, [load])
 
-  // A separate row from the person, so drafted and saved separately.
-  const [addrDraft, setAddrDraft] = useState(null)
-
   function startEdit() {
     setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, person[f.key] ?? ''])))
-    setAddrDraft({ ...EMPTY_ADDRESS, ...(person.residential_address || {}) })
     setEditing(true)
   }
 
@@ -304,11 +301,6 @@ export default function PersonProfilePage() {
     )
     try {
       if (Object.keys(changed).length) await api.patch(`/persons/${personId}`, changed)
-      // Second, and separately: a rejected address (a line over CR's 60) must
-      // not silently discard the field edits that already succeeded.
-      if (addrDraft && addressChanged(addrDraft, person.residential_address)) {
-        await api.put(`/persons/${personId}/residential-address`, addressPayload(addrDraft))
-      }
       setEditing(false)
       load()
     } catch (err) {
@@ -397,13 +389,10 @@ export default function PersonProfilePage() {
 
   // What CR would refuse, read off the same contract the API enforces (§5.3).
   const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
-  const addressWarnings = Object.fromEntries(
-    ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
-      [k, warnFor('addresses', k, person.residential_address?.[k])]))
-  const personWarnings = [
-    ...EDITABLE.map(f => warnFor('persons', f.key, person[f.key])),
-    ...Object.values(addressWarnings),
-  ].filter(Boolean)
+  // The residential address's own warnings are on the Residential addresses
+  // card now, beside the address they are about.
+  const personWarnings = EDITABLE.map(f => warnFor('persons', f.key, person[f.key]))
+    .filter(Boolean)
 
   // Header pills: "Director ×2" — count how many companies per relation.
   const roleCounts = roles.reduce((acc, r) => {
@@ -544,6 +533,16 @@ export default function PersonProfilePage() {
         <ReadOnlyNote module="persons" what="this person's details and identity documents" />
       )}
 
+      {/* Particulars CR holds for one of this person's appointments changed
+          here and no ND2B has told CR (answers 14, 16). */}
+      {!isDeleted && (
+        <ParticularsChangeAlert kind="person" id={personId}
+          refreshKey={person} caps={{
+          view: caps.viewParticularsChanges, dismiss: caps.dismissParticularsChange,
+          start: caps.startOfficerChange, open: caps.viewOfficerChanges,
+        }} />
+      )}
+
       <div className="detail-grid client-off">
         <div>
           {/* Personal Information */}
@@ -578,17 +577,6 @@ export default function PersonProfilePage() {
                     onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
                   />
                 ))}
-                <div className="f-group full">
-                  <div className="tile-sec-lbl">Residential Address</div>
-                  <AddressBlock
-                    value={addrDraft}
-                    lookups={lookups}
-                    warnings={Object.fromEntries(
-                      ['line1', 'line2', 'line3', 'city', 'country'].map(k =>
-                        [k, warnFor('addresses', k, addrDraft?.[k])]))}
-                    onChange={(k, v) => setAddrDraft(a => ({ ...a, [k]: v }))}
-                  />
-                </div>
               </div>
             ) : (
               <div className="kv-list">
@@ -600,12 +588,24 @@ export default function PersonProfilePage() {
                       : displayValue(f, person[f.key], lookups)}
                   </Kv>
                 ))}
-                {/* The lines CR receives, not a joined string. */}
-                <AddressBlock value={person.residential_address} readOnly
-                              warnings={addressWarnings} />
               </div>
             )}
           </div>
+
+          {/* Identification, residential and correspondence addresses, each
+              naming the companies that file it (Levi 2026-10-05, Jacqueline's
+              ND2B question 2). A move reloads the person, so the ND2B alert
+              above picks up what it created. */}
+          {!isDeleted && (
+            <ParticularsByCompany personId={personId} canEdit={canWrite} lookups={lookups}
+                                  contract={contract} refreshKey={idDocs} onChanged={load} />
+          )}
+
+          {/* The person's own e-Registry account (answers 1, 8): beside their
+              particulars, because it is set up when they are, by GSHK. */}
+          {caps.viewEServiceCredential && (
+            <EServiceCredentialCard personId={personId} canEdit={caps.editEServiceCredential} />
+          )}
 
           {/* "Unavailable" is not "none". If the section catalogue could not be
               loaded, say so — rendering an empty Identity Documents card would

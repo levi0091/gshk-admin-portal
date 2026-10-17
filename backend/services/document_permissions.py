@@ -70,6 +70,19 @@ _OWNER_COLUMNS = ("entity_id", "person_id", "nar1_case_id")
 _LEVEL = {"read": "read", "write": "write", "delete": "write"}
 
 
+#: A case-owned document (a CR receipt) takes its CASE's module: an ND2A or
+#: ND2B case is `officer_changes`, not `nar1` (migration 050).
+_OFFICER_CHANGE_FORMS = ("Nd2a", "Nd2b")
+
+
+def _case_module(case_id: str) -> str:
+    rows = (get_supabase().table("nar1_cases").select("form_code")
+            .eq("id", case_id).limit(1).execute().data or [])
+    if rows and rows[0].get("form_code") in _OFFICER_CHANGE_FORMS:
+        return "officer_changes"
+    return MODULE_FOR_OWNER_COLUMN["nar1_case_id"]
+
+
 def module_for_document(document_id: str) -> str:
     """Which permission module governs this document. Raises 404 if unknown.
 
@@ -87,6 +100,8 @@ def module_for_document(document_id: str) -> str:
 
     for column in _OWNER_COLUMNS:
         if row[0].get(column):
+            if column == "nar1_case_id":
+                return _case_module(row[0][column])
             return MODULE_FOR_OWNER_COLUMN[column]
 
     # Fails closed. A document with no owner at all cannot be attributed to a

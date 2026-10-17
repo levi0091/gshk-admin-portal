@@ -125,6 +125,21 @@ SECTIONS = [
         "file_required": True,
     },
     {
+        # Migration 050. What a director or secretary signed to take or leave
+        # office: a resignation letter, the board resolution, a consent to act.
+        # Filed on the OFFICER's profile — a person, or the body corporate's own
+        # company record — when the ND2A that relied on them is filed. Its own
+        # section rather than "Other Documents", because these are the evidence
+        # behind a statutory filing and "which resolution appointed her" is a
+        # question somebody will come back to ask.
+        "key": "officer_change",
+        "label": "Appointment & Cessation Documents",
+        "description": "Resignation letters, board resolutions and consents "
+                       "behind an ND2A or ND2B",
+        "owner_types": ["person", "company"],
+        "file_required": True,
+    },
+    {
         "key": "kyc",
         "label": "KYC Documents",
         "description": "Screening and due-diligence material",

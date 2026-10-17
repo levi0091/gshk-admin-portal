@@ -49,6 +49,14 @@ beforeEach(() => {
 })
 
 describe('PersonsRegistryPage', () => {
+  it('says when a person holds more than one identity document (Levi 2026-10-05)', async () => {
+    api.get.mockResolvedValue({ ...PAYLOAD, persons: [
+      { ...PAYLOAD.persons[0], id_count: 2 }, { ...PAYLOAD.persons[1], id_count: 1 }] })
+    renderPage()
+    expect(await screen.findByText('+1 more ID')).toBeInTheDocument()
+    expect(screen.getAllByText(/more ID/)).toHaveLength(1)
+  })
+
   it('shows a loading state first', () => {
     api.get.mockReturnValue(new Promise(() => {}))
     renderPage()

@@ -54,6 +54,19 @@ const MODULES = [
         + 'Edit is needed to open a case and to move one forward.',
   },
   {
+    // Migration 050 seeds the module; the API guards every ND2A / ND2B route
+    // on it. Its own grant for the reason nar1 is not companies:write — it
+    // drives a statutory filing.
+    id: 'officer_changes',
+    label: 'Officer changes (ND2A / ND2B)',
+    permissions: [READ, EDIT],
+    hint: 'Read opens ND2A and ND2B cases and shows which officers have a '
+        + 'filing under way; the cases are listed on the Post-incorporation '
+        + 'dashboard, which needs NAR1 cases (Read). Edit opens a case, builds '
+        + 'its change list, sends it to the client and records the signed form. '
+        + 'Filing with CR also needs Companies Registry filing.',
+  },
+  {
     id: 'tpsi',
     label: 'Companies Registry filing',
     permissions: [READ, EDIT, SUBMIT],

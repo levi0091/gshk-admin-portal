@@ -673,3 +673,29 @@ def test_the_approval_records_which_revision_was_confirmed(client):
         client.post(PATH)
     log = patched[7]
     assert log.call_args.kwargs["metadata"]["revision"] == 2
+
+
+# --------------------------------------------------------------------------- #
+#  An ND2B filed without the client's confirmation (Jacqueline BQ1)
+# --------------------------------------------------------------------------- #
+
+WAIVED = {"id": "c1", "case_no": "ND2B-2026-0003", "entity_id": "e1", "form_code": "Nd2b",
+          "client_approved": True, "client_approval_source": "staff_waiver",
+          "client_approval_name": "Filing deadline"}
+
+
+def test_the_client_can_still_confirm_after_a_waiver(client):
+    path = f"/public/officer-change-approval/{TOKEN}"
+    with _Stack(*_world(approval=row(), case=WAIVED)):
+        shown = client.get(path)
+        assert ">Confirm &amp; File</button>" in shown.text
+        assert "already" not in shown.text.lower()
+        done = client.post(path)
+    assert "your confirmation is recorded" in done.text
+
+
+def test_provenance_says_the_case_proceeds_without_confirmation():
+    out = approvals.provenance(WAIVED)
+    assert out["source"] == "staff_waiver" and out["name"] is None
+    assert out["summary"] == ("Proceeding without the client's confirmation — "
+                              "Filing deadline")

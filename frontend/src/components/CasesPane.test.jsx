@@ -128,7 +128,28 @@ describe('CasesPane', () => {
 
     await user.click(screen.getByRole('button', { name: /Open case/ }))
 
-    expect(onOpen).toHaveBeenCalledWith('c-sign')
+    // The second argument carries the form, so the caller routes an ND2 to its
+    // own screen (migration 050).
+    expect(onOpen).toHaveBeenCalledWith('c-sign', { id: 'c-sign', form_code: 'Nar1' })
+  })
+
+  it('draws an ND2A as its own form, with its File by date, on the same six stages', async () => {
+    const user = userEvent.setup()
+    const onOpen = vi.fn()
+    const nd2a = {
+      id: 'k1', case_no: 'ND2A-2026-0001', form_code: 'Nd2a', case_type: 'ND2A',
+      workflow_status: { code: 'data_verification', label: 'Data Verification' },
+      filing_deadline: '2026-10-13', created_by_name: 'Levi Z.',
+      created_at: '2026-09-30T02:00:00+00:00', updated_at: '2026-09-30T02:00:00+00:00',
+    }
+    render(<CasesPane cases={{ nar1: [nd2a] }} onOpen={onOpen} />)
+    expect(screen.getByText('ND2A')).toBeInTheDocument()
+    expect(screen.getByText('Officer appointment / cessation')).toBeInTheDocument()
+    expect(screen.queryByText(/not set/)).not.toBeInTheDocument()
+    expect(screen.getByText('File by')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Stage 2 of 6: Data Verification' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Open case/ }))
+    expect(onOpen).toHaveBeenCalledWith('k1', { id: 'k1', form_code: 'Nd2a' })
   })
 
   it('draws where the case is on the six stages', () => {

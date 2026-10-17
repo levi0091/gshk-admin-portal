@@ -10,6 +10,11 @@ fresh clone. These are runtime assets, exactly like `form/NAR1_fillable.pdf`.
 | `Tinos-Regular.ttf` | Tinos Regular | OFL-1.1 | github.com/googlefonts/Tinos |
 | `NotoSerifTC-Bold.ttf` | Noto Serif TC | OFL-1.1 | Built by `scripts/build_cjk_font.py` |
 | `NotoSerifSC-Bold.ttf` | Noto Serif SC | OFL-1.1 | Built by `scripts/build_cjk_font.py` |
+| `NotoSansTC-Regular.ttf` | Noto Sans TC | OFL-1.1 | Built by `scripts/build_cjk_font.py` (wght=400) |
+
+`NotoSansTC-Regular.ttf` is the ND2A written resolution's Chinese face (Levi
+2026-10-05): GSHK's own sample sets Chinese names in DengXian, a Microsoft sans
+that cannot be redistributed, and Noto Sans TC Regular is the nearest free one.
 
 `OFL.txt`, beside these files, is the licence text itself -- OFL-1.1 asks
 for it to travel with the fonts, not just be linked to from here.

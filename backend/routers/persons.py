@@ -5,9 +5,10 @@ Person Profile carries fields, identity documents, residential address, a role
 roll-up (read-only from the link tables), and document history.
 """
 import asyncio
+import sys
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from pydantic import BaseModel
 
 from middleware.auth import require_permission, has_permission
@@ -20,6 +21,8 @@ from services import (
 )
 from routers.companies import AddressIn, _address_audit_entries
 from services.hkid import is_valid_hkid
+from services.officer_changes import eservice, particulars
+from services import person_particulars
 from services.tpsi.forms.cr_vocabularies import resolve_country
 
 router = APIRouter()
@@ -300,6 +303,38 @@ _FILTERABLE = {
 }
 
 
+def _people_with_id_number(sb, search: str) -> list[str]:
+    """Person ids holding ANY identity document whose number contains `search`
+    (the registry view carries only the primary one). Never raises."""
+    try:
+        rows = (sb.table("person_identity_documents").select("person_id")
+                .ilike("id_number", f"%{search}%").limit(25).execute().data) or []
+        # At most 25 ids: they ride in every query's URL (review, 2026-10-05).
+        return sorted({str(r["person_id"]) for r in rows if r.get("person_id")})[:25]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[persons] identity-number search skipped: {exc!r}", file=sys.stderr)
+        return []
+
+
+def _attach_id_counts(sb, rows: list[dict]) -> None:
+    """`id_count` on each row, so the list can say a person holds more than one
+    identity document. Never raises: without it the row reads as before."""
+    ids = [r["id"] for r in rows if r.get("id")]
+    if not ids:
+        return
+    try:
+        docs = (sb.table("person_identity_documents").select("person_id")
+                .in_("person_id", ids).execute().data) or []
+    except Exception as exc:  # noqa: BLE001
+        print(f"[persons] identity counts skipped: {exc!r}", file=sys.stderr)
+        return
+    counts: dict[str, int] = {}
+    for doc in docs:
+        counts[str(doc.get("person_id"))] = counts.get(str(doc.get("person_id")), 0) + 1
+    for row in rows:
+        row["id_count"] = counts.get(str(row.get("id")), 0)
+
+
 @router.get("")
 async def list_persons(
     search: Optional[str] = Query(None),
@@ -330,6 +365,10 @@ async def list_persons(
         raise HTTPException(status_code=422, detail=str(exc))
 
     sb = get_supabase()
+    # Any of the person's ID numbers, not only the primary (Levi 2026-10-05: "We
+    # do have clients holding 2 passports"). Best-effort: a failed read leaves
+    # the search as it was rather than failing the list.
+    also = _people_with_id_number(sb, search) if search and len(search.strip()) >= 4 else []
 
     def base(cols: str, count: Optional[str] = None):
         q = (sb.table("person_registry").select(cols, count=count) if count
@@ -343,6 +382,7 @@ async def list_persons(
                 f"full_name_zh.ilike.%{search}%,"
                 f"email.ilike.%{search}%,"
                 f"primary_id_number.ilike.%{search}%"
+                + (f",id.in.({','.join(also)})" if also else "")
             )
         return q
 
@@ -372,6 +412,7 @@ async def list_persons(
     for n, v in zip(names, results[1:-1]):
         role_counts[n] = v
     rows = results[-1]
+    _attach_id_counts(sb, rows)
 
     total = role_counts[role] if role else role_counts["all"]
     return {
@@ -503,6 +544,11 @@ async def update_person(
     ).data
     if not current:
         raise HTTPException(status_code=404, detail="Person not found")
+
+    # What CR holds, taken BEFORE the write (spec §4): the first edit of a
+    # tracked particular is what an ND2B will later be diffed against.
+    if particulars.TRACKED_PERSON_FIELDS & updates.keys():
+        particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
 
     updated = (
         sb.table("persons").update(updates).eq("id", person_id).execute()
@@ -792,6 +838,9 @@ async def update_identity_document(
         updates["issuing_country"] = _clean_issuing_country(
             updates["issuing_country"])
 
+    # An identity number is ND2B items (g)/(h): baseline first (spec §4).
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
+
     updated = (
         sb.table("person_identity_documents").update(updates)
         .eq("id", document_id).execute()
@@ -884,6 +933,9 @@ async def save_identity_document(
     ).data
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
+
+    # A new or replaced HKID / passport is ND2B item (g)/(h): baseline first.
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
 
     held = (
         sb.table("person_identity_documents").select("*")
@@ -1001,6 +1053,9 @@ async def delete_identity_document(
 
     person = _person_subject(sb, person_id)
 
+    # Removing a number CR holds is an ND2B item too: baseline first.
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
+
     # The scan first. If Storage or the documents table refuses, the identity
     # row is still here and the operator retries one action — rather than
     # finding the number gone and the file still listed as current.
@@ -1070,6 +1125,9 @@ async def update_residential_address(
             .eq("id", current["residential_address_id"]).single().execute()
         ).data
 
+    # ND2B items (d) and (e): the address as CR holds it, before it moves.
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"])
+
     try:
         result = address_service.save(
             sb,
@@ -1126,3 +1184,422 @@ async def upload_person_document(
         document_type_code=document_type_code, file_name=file.filename,
         content=content, mime_type=file.content_type, title=title, user=user,
     )
+
+
+# --------------------------------------------------------------------------- #
+#  The person's own CR e-Registry account (Levi 2026-09-30, answers 1, 2, 8)
+#
+#  GSHK sets up a new director's e-Registry account and keeps it, so the ND2A
+#  consent signature can be applied from it. The password goes in and never
+#  comes back out of any route — not even masked (spec B-9).
+# --------------------------------------------------------------------------- #
+
+_ESERVICE_FIELDS = ("eservice_user_id", "eservice_person_name", "password",
+                    # The identity document the account was opened with
+                    # (Jacqueline, note 1 of 1 Oct 2026). Optional.
+                    "registered_id_type", "registered_id_number")
+
+
+async def _eservice_body(request: Request) -> dict:
+    """The PUT body, read by hand: NO PYDANTIC MODEL, ON PURPOSE.
+
+    FastAPI's 422 echoes the rejected input, so a model refusing a missing name
+    or a stale key (`eservice_password`) answered with the password in the
+    response body — the leak `tpsi.SignIn` documents. Every refusal here is a
+    fixed sentence naming at most a FIELD, never a value."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — any unreadable body is the same answer
+        raise HTTPException(400, "Send the account as a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Send the account as a JSON object")
+    unknown = sorted(k for k in body if k not in _ESERVICE_FIELDS)
+    if unknown:
+        raise HTTPException(400, f"Unknown field(s): {', '.join(map(str, unknown))}. "
+                                 f"Send {', '.join(_ESERVICE_FIELDS)}.")
+    for key in ("eservice_user_id", "eservice_person_name"):
+        if not isinstance(body.get(key), str):
+            raise HTTPException(400, f"{key} is required and must be text")
+    if body.get("password") is not None and not isinstance(body["password"], str):
+        raise HTTPException(400, "password must be text")
+    kind = body.get("registered_id_type")
+    if kind is not None and (not isinstance(kind, str)
+                             or (kind.strip() and kind.strip().lower()
+                                 not in eservice.REGISTERED_ID_TYPES)):
+        raise HTTPException(400, "registered_id_type must be hkid or passport")
+    if body.get("registered_id_number") is not None \
+            and not isinstance(body["registered_id_number"], str):
+        raise HTTPException(400, "registered_id_number must be text")
+    return body
+
+
+async def _audit_person(sb, user: dict, person_id: str, action: str, **fields):
+    person = _person_subject(sb, person_id)
+    await log_event(
+        case_id=None, user_id=user["id"], user_display_name=user["display_name"],
+        action_type=action, event_code=action,
+        company_name=person.get("full_name"),
+        **audit_subject.for_person(
+            person, id_number=audit_subject.primary_id_number(sb, person_id)),
+        entity_type="person", entity_id=str(person_id), **fields,
+    )
+
+
+def _with_mismatch(sb, person_id: str, meta: dict) -> dict:
+    """The metadata plus whether the profile still holds the identity document
+    the account was opened with (Jacqueline, note 1)."""
+    try:
+        docs = (sb.table("person_identity_documents").select("*")
+                .eq("person_id", person_id).execute().data) or []
+    except Exception:  # noqa: BLE001 — a warning is decoration, never a 500
+        docs = []
+    return {**meta, "registered_id_mismatch": eservice.identity_mismatch(meta, docs)}
+
+
+@router.get("/{person_id}/eservice-credential")
+async def get_eservice_credential(person_id: str, user=Depends(live_person("read"))):
+    return _with_mismatch(get_supabase(), person_id, eservice.metadata(person_id))
+
+
+@router.put("/{person_id}/eservice-credential")
+async def put_eservice_credential(
+    person_id: str,
+    request: Request,
+    user=Depends(live_person("write")),
+):
+    body = await _eservice_body(request)
+    password = body.get("password")
+    sb = get_supabase()
+    before = eservice.metadata(person_id)
+    try:
+        meta = eservice.save(
+            person_id, eservice_user_id=body["eservice_user_id"],
+            eservice_person_name=body["eservice_person_name"],
+            password=password if password is not None else eservice.UNSET,
+            user_id=user["id"],
+            registered_id_type=body.get("registered_id_type", eservice.UNSET),
+            registered_id_number=body.get("registered_id_number", eservice.UNSET))
+    except ValueError as exc:
+        # The message names the field, never the value (eservice.save).
+        raise HTTPException(status_code=400, detail=str(exc))
+    await _audit_person(
+        sb, user, person_id, audit_events.PERSON_ESERVICE_CRED_SET,
+        old_value=before.get("eservice_user_id"), new_value=meta["eservice_user_id"],
+        # The account, never the password, its length or a hint of it.
+        # Nor the registered identity NUMBER: only which kind of document.
+        metadata={"eservice_user_id": meta["eservice_user_id"],
+                  "password_changed": password is not None,
+                  "first_set": not before["configured"],
+                  "registered_id_type": meta.get("registered_id_type")})
+    return _with_mismatch(sb, person_id, meta)
+
+
+@router.delete("/{person_id}/eservice-credential")
+async def delete_eservice_credential(person_id: str, user=Depends(live_person("write"))):
+    sb = get_supabase()
+    before = eservice.metadata(person_id)
+    removed = eservice.clear(person_id)
+    if removed:
+        await _audit_person(
+            sb, user, person_id, audit_events.PERSON_ESERVICE_CRED_SET,
+            old_value=before.get("eservice_user_id"), new_value="removed",
+            metadata={"eservice_user_id": before.get("eservice_user_id"),
+                      "removed": True})
+    return {"removed": removed, **eservice.metadata(person_id)}
+
+
+# --------------------------------------------------------------------------- #
+#  "Changed on the profile, CR not told yet" (spec §4, answers 14 and 16)
+# --------------------------------------------------------------------------- #
+
+def _change_rows(rows: list[dict]) -> list[dict]:
+    """The pending rows as the alert reads them: items carry no dates yet."""
+    return [{**row, "items": [
+        {k: v for k, v in item.items() if k not in ("effective_date", "omitted")}
+        for item in row["items"]]} for row in rows]
+
+
+@router.get("/{person_id}/particulars-changes")
+async def get_particulars_changes(person_id: str, user=Depends(live_person("read"))):
+    return {"changes": _change_rows(particulars.pending_for_person(person_id))}
+
+
+class DismissIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    #: One company only (Jacqueline BQ2); absent means every appointment.
+    entity_id: Optional[str] = None
+
+
+@router.post("/{person_id}/particulars-changes/dismiss")
+async def dismiss_particulars_changes(person_id: str, body: Optional[DismissIn] = None,
+                                      user=Depends(live_person("write"))):
+    """'This was data loading, not a real-world change' (answer 16). Moves the
+    baseline for every appointment — or, given `entity_id`, for that company's
+    only (Jacqueline BQ2: "we would not assume that the change applies to all
+    the companies"). The trail keeps what was dismissed."""
+    sb = get_supabase()
+    entity_id = body.entity_id if body else None
+    pending = [r for r in particulars.pending_for_person(person_id)
+               if not entity_id or r["entity_id"] == entity_id]
+    dismissed = particulars.dismiss(person_id=person_id, user_id=user["id"],
+                                    entity_id=entity_id)
+    if dismissed:
+        await _audit_person(
+            sb, user, person_id, audit_events.OFFICER_PARTICULARS_DISMISSED,
+            new_value=f"{dismissed} appointment(s)",
+            metadata={"appointments": dismissed, "entity_id": entity_id, "dismissed": [
+                {"entity_id": r["entity_id"], "company_name": r.get("company_name"),
+                 "capacity": r["capacity"],
+                 "items": [i["label"] for i in r["items"]]} for r in pending]})
+    return {"dismissed": dismissed}
+
+
+# --------------------------------------------------------------------------- #
+#  The correspondence address belongs to each appointment (Jacqueline AQ5, B4)
+# --------------------------------------------------------------------------- #
+
+def _correspondence_rows(sb, person_id: str) -> list[dict]:
+    rows = particulars.appointment_correspondence(person_id)
+    ids = sorted({r["entity_id"] for r in rows})
+    names = {}
+    if ids:
+        names = {e["id"]: e.get("company_name") for e in (
+            sb.table("entities").select("id, company_name").in_("id", ids)
+            .execute().data or [])}
+    return [{**r, "company_name": names.get(r["entity_id"])} for r in rows]
+
+
+def _address_line(address: Optional[dict]) -> Optional[str]:
+    if not address:
+        return None
+    return ", ".join(str(address.get(k)) for k in
+                     ("line1", "line2", "line3", "city", "state_region", "postal_code",
+                      "country") if address.get(k))
+
+
+@router.get("/{person_id}/correspondence-addresses")
+async def get_correspondence_addresses(person_id: str, user=Depends(live_person("read"))):
+    """Each current directorship's and secretaryship's correspondence address —
+    None meaning "same as the residential address"."""
+    return {"correspondence_addresses": _correspondence_rows(get_supabase(), person_id)}
+
+
+@router.put("/{person_id}/appointments/{officer_id}/correspondence-address")
+async def put_correspondence_address(person_id: str, officer_id: str, request: Request,
+                                     user=Depends(live_person("write"))):
+    """Set one appointment's correspondence address, or `{"same_as_residential":
+    true}`. The ND2B baseline for THAT company is captured first, so the change
+    is reported as item (e) on that company only.
+
+    Always written to a NEW address row: `address_service.count_references`
+    does not count officer rows, and a Viewpoint correspondence id may share
+    the person's residential row — editing that in place would move their home
+    address too."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Send the address as a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Send the address as a JSON object")
+    sb = get_supabase()
+    rows = (sb.table("entity_officers").select("*").eq("id", officer_id)
+            .execute().data) or []
+    officer = rows[0] if rows else None
+    if (not officer or officer.get("person_id") != person_id
+            or officer.get("is_current") is False
+            or officer.get("role") not in ("director", "company_secretary")):
+        raise HTTPException(404, "That is not a current appointment of this person")
+    before = None
+    if officer.get("correspondence_address_id"):
+        found = (sb.table("addresses").select("*")
+                 .eq("id", officer["correspondence_address_id"]).execute().data) or []
+        before = found[0] if found else None
+    same = body.get("same_as_residential") is True
+    if same and len(body) != 1:
+        raise HTTPException(400, "Send either the address or same_as_residential, not both")
+    payload = None
+    if not same:
+        try:
+            payload = AddressIn(**body).model_dump()
+        except Exception:  # noqa: BLE001 — pydantic's message names the fields
+            raise HTTPException(422, "Send the address fields line1, line2, line3, city, "
+                                     "state_region, postal_code and country")
+    particulars.capture_before_edit(person_id=person_id, user_id=user["id"],
+                                    entity_id=officer["entity_id"])
+    if same:
+        sb.table("entity_officers").update({"correspondence_address_id": None}) \
+            .eq("id", officer_id).execute()
+        after = None
+    else:
+        try:
+            result = address_service.save(
+                sb, owner_table="entity_officers", owner_id=officer_id,
+                owner_column="correspondence_address_id", current_address_id=None,
+                payload=payload)
+        except address_service.AddressError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        after = result["address"]
+    await _audit_person(
+        sb, user, person_id, audit_events.CASE_FIELD_UPDATED,
+        old_value=_address_line(before) or "same as residential address",
+        new_value=_address_line(after) or "same as residential address",
+        metadata={"field": "correspondence_address", "officer_id": officer_id,
+                  "entity_id": officer["entity_id"], "role": officer.get("role"),
+                  "same_as_residential": after is None})
+    return {"correspondence_addresses": _correspondence_rows(sb, person_id)}
+
+
+# --------------------------------------------------------------------------- #
+#  Identification and addresses per company (Levi 2026-10-05, migration 053)
+#
+#  "the residential address field can be a list of addresses now and clicking
+#  on new button allows adding a new residential address. and in each
+#  residential address in the list it shows which companies is using those
+#  addresses. same design applied to correspondence address.. same for
+#  identification". The rules are `services.person_particulars`'; these routes
+#  guard, translate refusals, and audit one CASE_FIELD_UPDATED row per company
+#  whose particulars moved — the ND2B baseline was captured before the write.
+# --------------------------------------------------------------------------- #
+
+class NewAddressIn(AddressIn):
+    kind: str
+    entity_ids: list[str] = []
+    make_default: bool = False
+
+
+class CompaniesIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    kind: Optional[str] = None
+    entity_ids: list[str] = []
+
+
+_UNLINKED = {"residential_address": "the person's default residential address",
+             "correspondence_address": "same as residential address",
+             "identity_document": "the person's primary document",
+             "default_residential_address": "none"}
+
+
+def _describe(sb, field: str, value) -> Optional[str]:
+    """An audit value as staff read it: an address in one line, a document by
+    type and number — never a bare uuid."""
+    if value is None:
+        return _UNLINKED.get(field)
+    if isinstance(value, dict):
+        return _address_line(value)
+    if field == "identity_document":
+        rows = (sb.table("person_identity_documents").select("*").eq("id", value)
+                .execute().data) or []
+        if rows:
+            return f"{str(rows[0].get('id_type') or '').upper()} {rows[0].get('id_number')}"
+        return str(value)
+    rows = sb.table("addresses").select("*").eq("id", value).execute().data or []
+    return _address_line(rows[0]) if rows else str(value)
+
+
+async def _audit_changes(sb, user: dict, person_id: str, changes: list[dict]) -> None:
+    for change in changes:
+        field = change["field"]
+        await _audit_person(
+            sb, user, person_id, audit_events.CASE_FIELD_UPDATED,
+            old_value=_describe(sb, field, change.get("old")),
+            new_value=_describe(sb, field, change.get("new")),
+            metadata={"field": field, "entity_id": change.get("entity_id"),
+                      **({"companies": change["companies"]} if "companies" in change else {}),
+                      **({"kind": change["kind"]} if "kind" in change else {})})
+
+
+def _refused(exc: "person_particulars.Refused") -> HTTPException:
+    return HTTPException(exc.status, {"message": str(exc), "reason": exc.reason})
+
+
+@router.get("/{person_id}/particulars-by-company")
+async def get_particulars_by_company(person_id: str, user=Depends(live_person("read"))):
+    try:
+        return person_particulars.book(person_id)
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+
+
+@router.post("/{person_id}/addresses", status_code=201)
+async def add_person_address(person_id: str, body: NewAddressIn,
+                             user=Depends(live_person("write"))):
+    payload = {k: v for k, v in body.model_dump().items()
+               if k not in ("kind", "entity_ids", "make_default")}
+    sb = get_supabase()
+    try:
+        result = person_particulars.add_address(
+            person_id, kind=body.kind, payload=payload, entity_ids=body.entity_ids,
+            make_default=body.make_default, user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, result["changes"])
+    return {**person_particulars.book(person_id), "address": result["address"]}
+
+
+@router.put("/{person_id}/addresses/{address_id}")
+async def correct_person_address(person_id: str, address_id: str, body: AddressIn,
+                                 user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        result = person_particulars.correct_address(
+            person_id, address_id, payload=body.model_dump(), user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, result["changes"])
+    return {**person_particulars.book(person_id), "address": result["address"]}
+
+
+@router.put("/{person_id}/addresses/{address_id}/companies")
+async def set_person_address_companies(person_id: str, address_id: str, body: CompaniesIn,
+                                       user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.set_address_companies(
+            person_id, address_id, kind=body.kind or "", entity_ids=body.entity_ids,
+            user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)
+
+
+@router.post("/{person_id}/addresses/{address_id}/default")
+async def make_person_address_default(person_id: str, address_id: str,
+                                      user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.make_default(person_id, address_id, user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)
+
+
+@router.delete("/{person_id}/addresses/{address_id}")
+async def remove_person_address(person_id: str, address_id: str,
+                                kind: str = Query(...),
+                                user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.remove_address(person_id, address_id, kind=kind)
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)
+
+
+@router.put("/{person_id}/identity-documents/{document_id}/companies")
+async def set_identity_document_companies(person_id: str, document_id: str, body: CompaniesIn,
+                                          user=Depends(live_person("write"))):
+    sb = get_supabase()
+    try:
+        changes = person_particulars.set_document_companies(
+            person_id, document_id, entity_ids=body.entity_ids, user_id=user["id"])
+    except person_particulars.Refused as exc:
+        raise _refused(exc)
+    await _audit_changes(sb, user, person_id, changes)
+    return person_particulars.book(person_id)

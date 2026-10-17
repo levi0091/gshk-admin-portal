@@ -42,9 +42,14 @@ docs/
 !/docs/superpowers/specs/2026-08-30-nar1-form-facsimile-design.md
 !/docs/superpowers/specs/2026-08-30-workflow-vs-wireframe-v11.md
 !/docs/superpowers/specs/2026-09-01-nar1-client-approval-and-form-fidelity-design.md
+# ND2A/ND2B: the build design, including what Levi's seventeen answers of
+# 2026-09-30 reversed in the PRD and every assumption the build made. The code
+# cites it for WHY, as it cites the NAR1 specs above.
+!/docs/superpowers/specs/2026-09-30-nd2a-nd2b-officer-changes-design.md
 !/docs/superpowers/plans/
 /docs/superpowers/plans/*
 !/docs/superpowers/plans/2026-09-01-block-a-nar1-form-fidelity.md
+!/docs/superpowers/plans/2026-09-30-nd2a-nd2b-officer-changes.md
 
 # Python
 __pycache__/

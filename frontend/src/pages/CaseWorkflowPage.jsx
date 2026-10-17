@@ -99,6 +99,12 @@ export default function CaseWorkflowPage() {
   const load = useCallback(async () => {
     try {
       const data = await api.get(`/cases/${caseId}`)
+      // An ND2A / ND2B shares this table and this id space (migration 050);
+      // its workflow is its own page. A bookmark or an old link lands here.
+      if (data?.form_code && data.form_code !== 'Nar1') {
+        navigate(`/officer-changes/${caseId}`, { replace: true })
+        return null
+      }
       setCaseRow(data)
       // Open on the furthest stage that is actually reachable, the first time
       // only — re-reading after an action must not yank the operator forward
@@ -110,7 +116,7 @@ export default function CaseWorkflowPage() {
       setCaseRow(null)
       return null
     }
-  }, [caseId])
+  }, [caseId, navigate])
 
   useEffect(() => { load() }, [load])
 

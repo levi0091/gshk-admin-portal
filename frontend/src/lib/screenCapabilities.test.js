@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   companyProfileCaps, personProfileCaps, companyRegistryCaps,
   personsRegistryCaps, caseWorkflowCaps, crCredentialsCaps, asDeleted,
+  officerChangeCaps,
 } from './screenCapabilities.js'
 
 /**
@@ -11,7 +12,7 @@ import {
  *
  * A render test can only ask what one screen does for one role. This asks what
  * every screen does for EVERY role, by enumerating the whole power set of the
- * portal's permissions — 2^13 = 8192 combinations — and asserting two
+ * portal's permissions — 2^14 = 16384 combinations — and asserting two
  * properties of each capability:
  *
  *   1. IT IS TRUE EXACTLY WHEN ITS OWN PERMISSION IS HELD. Not "when a related
@@ -39,11 +40,13 @@ const ALL = [
   'nar1:read', 'nar1:write',
   'tpsi:read', 'tpsi:write', 'tpsi:submit',
   'audit_trail:read',
+  // ND2A / ND2B (migration 050). 2^14 = 16384 combinations now.
+  'officer_changes:read', 'officer_changes:write',
 ]
 
 const canFrom = held => (module, permission) => held.has(`${module}:${permission}`)
 
-/** Every subset of ALL — 8192 of them. */
+/** Every subset of ALL — 16384 of them. */
 function* everyCombination() {
   for (let mask = 0; mask < (1 << ALL.length); mask++) {
     const held = new Set()
@@ -78,6 +81,11 @@ const CONTRACT = [
     // NOT companies:write -- editing a company is not the right to delete it.
     deleteCompany: 'companies:delete',
     restoreCompany: 'companies:delete',
+    // NOT companies:write and NOT nar1:write — an ND2 is its own module.
+    startOfficerChange: 'officer_changes:write',
+    viewOfficerChanges: 'officer_changes:read',
+    viewParticularsChanges: 'companies:read',
+    dismissParticularsChange: 'companies:write',
   }],
   ['personProfile', personProfileCaps, {
     editPerson: 'persons:write',
@@ -89,6 +97,13 @@ const CONTRACT = [
     removeDocument: 'persons:write',
     deletePerson: 'persons:delete',
     restorePerson: 'persons:delete',
+    // The e-Registry account is part of the person (spec B-9).
+    viewEServiceCredential: 'persons:read',
+    editEServiceCredential: 'persons:write',
+    viewParticularsChanges: 'persons:read',
+    dismissParticularsChange: 'persons:write',
+    startOfficerChange: 'officer_changes:write',
+    viewOfficerChanges: 'officer_changes:read',
   }],
   ['companyRegistry', companyRegistryCaps, {
     addCompany: 'companies:write',
@@ -110,6 +125,16 @@ const CONTRACT = [
     submit: 'tpsi:submit',
     recordOffPortalFiling: 'tpsi:submit',
   }],
+  ['officerChange', officerChangeCaps, {
+    editCase: 'officer_changes:write',
+    validate: 'tpsi:write',
+    sign: 'tpsi:write',
+    submit: 'tpsi:submit',
+    // Recording a CR-portal filing updates the profiles as a real submit does.
+    recordOffPortalFiling: 'tpsi:submit',
+    undoProfileUpdate: 'tpsi:submit',
+    checkCrStatus: 'tpsi:read',
+  }],
   ['crCredentials', crCredentialsCaps, {
     editOwnCredential: 'tpsi:write',
   }],
@@ -117,7 +142,7 @@ const CONTRACT = [
 
 describe.each(CONTRACT)('%s — every permission combination', (_name, caps, contract) => {
   it('grants each capability exactly when its own permission is held', () => {
-    // 8192 combinations × every capability on the screen. Collected into a
+    // 16384 combinations × every capability on the screen. Collected into a
     // list rather than asserted in the loop, so a failure names every
     // disagreement at once instead of stopping at the first.
     const wrong = []
