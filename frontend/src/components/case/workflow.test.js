@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   STAGE_LABELS, reachedStage, stageDone, signedOff, isValidated, isSubmitted,
   describeError, verificationBlock, persistedFailure, isClosed,
-  crStatus, stageTone, CR_TONE, CR_MEANING, canRestart,
+  canRestart,
 } from './workflow.js'
+import * as workflow from './workflow.js'
 
 // A case at the very start: nothing validated, nothing sent, nothing signed.
 const fresh = (over = {}) => ({
@@ -16,15 +17,20 @@ const withStage = (stage, over = {}) =>
   fresh({ form_status: { code: stage }, ...over })
 
 describe('the stage gate', () => {
-  it('has six stages — the client first, the fifth ours, the sixth CR\'s', () => {
+  it('has five stages — the client first, Confirmation last', () => {
     // THE REORDER (Levi 2026-09-17). The first two swapped: the email goes out
     // before the return is validated with CR, so the client's corrections
     // arrive before the filing is prepared rather than after it.
-    expect(STAGE_LABELS).toHaveLength(6)
-    expect(STAGE_LABELS[0]).toBe('Client Verification')
-    expect(STAGE_LABELS[1]).toBe('Data Verification')
-    expect(STAGE_LABELS[4]).toBe('Confirmation')
-    expect(STAGE_LABELS[5]).toBe('CR Status')
+    // FIVE AGAIN (Levi 2026-10-17): CR will not report a document's status
+    // after filing, so the sixth stage, CR Status, is gone.
+    expect(STAGE_LABELS).toEqual(['Client Verification', 'Data Verification',
+      'Signing', 'Submission', 'Confirmation'])
+  })
+
+  it('exports nothing about CR status any more', () => {
+    for (const name of ['crStatus', 'stageTone', 'CR_TONE', 'CR_MEANING']) {
+      expect(workflow[name], name).toBeUndefined()
+    }
   })
 
   it('holds a brand-new case at Client Verification', () => {
@@ -95,16 +101,12 @@ describe('the stage gate', () => {
     expect(reachedStage(c)).toBe(3)
   })
 
-  it('opens BOTH Confirmation and CR Status once the return is filed', () => {
-    // They are two views of one event — the receipt proves delivery, CR's
-    // status is what happened to it afterwards — and there is no action
-    // between them to gate on. Locking stage 6 behind a "done" flag on stage 5
-    // would hide a CR rejection behind a receipt nobody needs to read twice.
-    expect(reachedStage(approved({ form_status: { code: 'submitted' } }))).toBe(6)
+  it('opens Confirmation, the last stage, once the return is filed', () => {
+    expect(reachedStage(approved({ form_status: { code: 'submitted' } }))).toBe(5)
     expect(reachedStage(approved({
       signing_method: 'manual', manual_signed_document_id: 'd',
       manual_submitted_at: '2026-08-20T00:00:00Z',
-    }))).toBe(6)
+    }))).toBe(5)
   })
 
   it('treats a null case as the very beginning rather than throwing', () => {
@@ -115,7 +117,7 @@ describe('the stage gate', () => {
 
 describe('what counts as validated / signed / submitted', () => {
   it('counts every stage at or past validation as validated', () => {
-    for (const s of ['validated', 'signed', 'submitted', 'registered', 'edrive']) {
+    for (const s of ['validated', 'signed', 'submitted', 'edrive']) {
       expect(isValidated(withStage(s)), s).toBe(true)
     }
   })
@@ -127,9 +129,11 @@ describe('what counts as validated / signed / submitted', () => {
   })
 
   it('counts a return CR already holds as submitted', () => {
-    for (const s of ['submitted', 'registered', 'edrive']) {
+    for (const s of ['submitted', 'edrive']) {
       expect(isSubmitted(withStage(s)), s).toBe(true)
     }
+    // `registered` was written only by the CR status poll (removed 2026-10-17).
+    expect(isSubmitted(withStage('registered'))).toBe(false)
     expect(isSubmitted(withStage('signed'))).toBe(false)
   })
 
@@ -174,7 +178,7 @@ describe('canRestart — is there anything for Restart verification to undo?', (
   })
 
   it('never once the return is filed, by either road', () => {
-    for (const s of ['submitted', 'registered', 'edrive']) {
+    for (const s of ['submitted', 'edrive']) {
       expect(canRestart(withStage(s, { verification_sent_at: SENT })), s).toBe(false)
     }
     expect(canRestart(fresh({ verification_sent_at: SENT,
@@ -197,7 +201,7 @@ describe('stageDone — the green ticks', () => {
     expect(stageDone(c, 3)).toBe(false)  // not signed
     expect(stageDone(c, 4)).toBe(false)  // not filed
     expect(stageDone(c, 5)).toBe(false)  // no receipt
-    expect(stageDone(c, 6)).toBe(false)  // CR has said nothing
+    expect(stageDone(c, 6)).toBe(false)  // there is no sixth stage
   })
 
   it('does not tick Client Verification when the client declined', () => {
@@ -210,14 +214,13 @@ describe('stageDone — the green ticks', () => {
     expect(stageDone(c, 2)).toBe(true)
   })
 
-  it('TICKS CONFIRMATION WHEN THE RECEIPT EXISTS, not when CR registers', () => {
+  it('TICKS CONFIRMATION WHEN THE RECEIPT EXISTS — the end of the workflow', () => {
     // THE REPORTED DEFECT (Levi 2026-09-16): a case with a CR receipt on
     // screen showed Confirmation as IN PROGRESS. It read
     // `form_status.code === 'registered'` — a stage NOTHING EVER WROTE — so
     // step 5 was permanently orange. This stage's own work is that the return
     // was delivered and the receipt recorded, and it was.
     expect(stageDone(withStage('submitted'), 5)).toBe(true)
-    expect(stageDone(withStage('registered'), 5)).toBe(true)
     expect(stageDone(fresh({
       signing_method: 'manual', manual_submitted_at: '2026-08-20T00:00:00Z',
     }), 5)).toBe(true)
@@ -225,79 +228,9 @@ describe('stageDone — the green ticks', () => {
     expect(stageDone(withStage('signed'), 5)).toBe(false)
   })
 
-  it('ticks CR Status only when CR has REGISTERED the return', () => {
-    const filed = over => withStage('submitted', over)
-    expect(stageDone(filed({ cr_status: { code: 'cr_registered' } }), 6)).toBe(true)
-    for (const code of ['cr_not_checked', 'cr_pending', 'cr_approved',
-                        'cr_rejected', 'cr_unknown']) {
-      expect(stageDone(filed({ cr_status: { code } }), 6), code).toBe(false)
-    }
-    // No CR payload at all is "nobody has asked", not "registered".
-    expect(stageDone(filed(), 6)).toBe(false)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Stage 6 — CR's own answer (Levi 2026-09-16)
-// ---------------------------------------------------------------------------
-
-describe('crStatus', () => {
-  it('reads the composite object the backend sends', () => {
-    const s = crStatus({ cr_status: {
-      code: 'cr_registered', label: 'Registered by CR',
-      cr_text: 'Registered', terminal: true,
-    } })
-    expect(s.code).toBe('cr_registered')
-    expect(s.cr_text).toBe('Registered')
-  })
-
-  it('falls back to "nobody has asked" rather than to a blank', () => {
-    // Filed returns have always been in this state. A payload with no
-    // `cr_status` is a case read before migration 043, not a case CR said
-    // nothing about.
-    for (const c of [null, undefined, {}, { cr_status: null },
-                     { cr_status: 'cr_registered' }]) {
-      expect(crStatus(c).code).toBe('cr_not_checked')
-    }
-    expect(crStatus({}).terminal).toBe(false)
-  })
-
-  it('has a colour and a plain-English meaning for every code', () => {
-    for (const code of Object.keys(CR_TONE)) {
-      expect(CR_MEANING[code], code).toBeTruthy()
-    }
-    expect(Object.keys(CR_MEANING).sort()).toEqual(Object.keys(CR_TONE).sort())
-  })
-})
-
-describe('stageTone — the one medallion coloured by DATA', () => {
-  const filed = code => withStage('submitted', { cr_status: { code } })
-
-  it('colours only stage 6, and only once the return is filed', () => {
-    for (let n = 1; n <= 5; n++) {
-      expect(stageTone(filed('cr_rejected'), n), `stage ${n}`).toBeNull()
-    }
-    expect(stageTone(withStage('signed'), 6)).toBeNull()
-    expect(stageTone(null, 6)).toBeNull()
-  })
-
-  it('maps each CR answer to its own treatment', () => {
-    expect(stageTone(filed('cr_not_checked'), 6)).toBe('wait')
-    expect(stageTone(filed('cr_pending'), 6)).toBe('info')
-    expect(stageTone(filed('cr_approved'), 6)).toBe('warn')
-    expect(stageTone(filed('cr_registered'), 6)).toBe('ok')
-    expect(stageTone(filed('cr_rejected'), 6)).toBe('bad')
-  })
-
-  it('shares grey between "not asked" and "could not read the answer"', () => {
-    // Neither tells you anything actionable, and the badge itself carries CR's
-    // own words to tell them apart. A sixth colour would be spent on a state
-    // whose whole content is the text beside it.
-    expect(stageTone(filed('cr_unknown'), 6)).toBe('wait')
-  })
-
-  it('does not leave an unrecognised code uncoloured', () => {
-    expect(stageTone(filed('cr_something_new'), 6)).toBe('wait')
+  it('ticks all five on a filed case', () => {
+    const c = withStage('submitted', { verification_sent_at: '2026-08-01', client_approved: true })
+    for (const n of [1, 2, 3, 4, 5]) expect(stageDone(c, n), `stage ${n}`).toBe(true)
   })
 })
 
@@ -646,13 +579,13 @@ describe('a closed case', () => {
 
   it('has no reachable stage, however far the work had got', () => {
     // `CaseWorkflowPage` renders the closed panel instead of the stepper, so
-    // nothing asks — but this must not answer "6" to whatever does, because
+    // nothing asks — but this must not answer "5" to whatever does, because
     // every button behind the later stages writes.
     const done = withStage('submitted', {
       verification_sent_at: '2026-08-01', client_approved: true,
       manual_submitted_at: '2026-08-18',
     })
-    expect(reachedStage(done)).toBe(6)
+    expect(reachedStage(done)).toBe(5)
     expect(reachedStage({ ...done, closed_at: '2026-09-05T02:00:00Z' })).toBe(0)
   })
 

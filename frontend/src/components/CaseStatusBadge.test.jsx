@@ -14,17 +14,18 @@ const WORKFLOW_CODES = [
   // `completed` is GONE (Levi 2026-09-16). It was a word of ours standing in
   // for a decision only CR makes — a case went green the instant
   // submitFormNar1 returned a receipt, while CR had only RECEIVED the return.
-  'cr_not_checked', 'cr_pending', 'cr_approved', 'cr_registered',
-  'cr_rejected', 'cr_unknown',
+  // The six CR codes that replaced it are gone too (Levi 2026-10-17): CR will
+  // not report a status after filing, so a filed return reads Filed.
+  'filed',
   'closed',
 ]
 const FORM_CODES = [
   'draft', 'validated', 'validation_failed', 'signed', 'signing_failed',
-  'submitted', 'submission_failed', 'registered', 'superseded', 'edrive',
+  'submitted', 'submission_failed', 'superseded', 'edrive',
 ]
 
 describe('WorkflowBadge', () => {
-  it('labels every one of the thirteen workflow statuses', () => {
+  it('labels every one of the eight workflow statuses', () => {
     for (const code of WORKFLOW_CODES) {
       expect(WORKFLOW_LABEL[code], `no label for ${code}`).toBeTruthy()
       expect(WORKFLOW_CLASS[code], `no class for ${code}`).toBeTruthy()
@@ -36,12 +37,12 @@ describe('WorkflowBadge', () => {
     expect(Object.keys(WORKFLOW_CLASS).sort()).toEqual([...WORKFLOW_CODES].sort())
   })
 
-  it('does not dress a closed case in the colour of a registered one', () => {
-    // Both are finished; only one is on the register. Reading them as the same
-    // thing at a glance is the one mistake this badge must not invite (Levi
-    // 2026-09-05).
-    expect(WORKFLOW_CLASS.closed).not.toBe(WORKFLOW_CLASS.cr_registered)
+  it('does not dress a closed case in the colour of a filed one', () => {
+    // Both are finished; only one was filed. Reading them as the same thing at
+    // a glance is the one mistake this badge must not invite (Levi 2026-09-05).
+    expect(WORKFLOW_CLASS.closed).not.toBe(WORKFLOW_CLASS.filed)
     expect(WORKFLOW_LABEL.closed).toBe('Closed')
+    expect(WORKFLOW_LABEL.filed).toBe('Filed')
   })
 
   it('has no `completed` left to send', () => {
@@ -52,39 +53,9 @@ describe('WorkflowBadge', () => {
     expect(WORKFLOW_CLASS.completed).toBeUndefined()
   })
 
-  it('gives every CR answer its own colour, except the two greys', () => {
-    // Five treatments over six codes. `cr_unknown` shares grey with
-    // `cr_not_checked` because neither tells you anything actionable — and the
-    // badge itself carries CR's own words to tell them apart.
-    const cr = ['cr_not_checked', 'cr_pending', 'cr_approved', 'cr_registered',
-                'cr_rejected', 'cr_unknown']
-    expect(new Set(cr.map(c => WORKFLOW_CLASS[c])).size).toBe(6)
-    expect(WORKFLOW_CLASS.cr_pending).not.toBe(WORKFLOW_CLASS.cr_registered)
-    expect(WORKFLOW_CLASS.cr_rejected).not.toBe(WORKFLOW_CLASS.cr_registered)
-  })
-
-  it('shows CR\'s own words when the label alone says nothing', () => {
-    // "Other CR status" is true and useless; what CR actually said is the only
-    // informative thing there is.
-    render(<WorkflowBadge status={{
-      code: 'cr_unknown', label: 'Other CR status', cr_text: 'Vetting/2',
-    }} />)
-    expect(screen.getByText('Vetting/2')).toBeInTheDocument()
-  })
-
-  it('keeps CR\'s words in the title on a status it DOES recognise', () => {
-    // The Workflow column is scanned. CR's wording matters when you stop on one
-    // row, not on every row at once.
-    render(<WorkflowBadge status={{
-      code: 'cr_registered', label: 'Registered by CR', cr_text: 'Registered',
-    }} />)
-    const badge = screen.getByText('Registered by CR')
-    expect(badge).toHaveAttribute('title', expect.stringContaining('Registered'))
-  })
-
-  it('renders a bare code with no CR words at all', () => {
-    render(<WorkflowBadge status="cr_pending" />)
-    expect(screen.getByText('Pending at CR')).toBeInTheDocument()
+  it('renders a bare filed code as Filed', () => {
+    render(<WorkflowBadge status="filed" />)
+    expect(screen.getByText('Filed')).toBeInTheDocument()
   })
 
   it('renders the label, not the raw code', () => {
@@ -126,15 +97,15 @@ describe('WorkflowBadge', () => {
   it('marks an off-portal filing beside the badge', () => {
     // e-Drive: finished at CR, but not by us. v11 has no badge for it.
     render(<WorkflowBadge status={{
-      code: 'cr_registered', label: 'Registered by CR', off_portal: true, overdue: false,
+      code: 'filed', label: 'Filed', off_portal: true, overdue: false,
     }} />)
-    expect(screen.getByText('Registered by CR')).toBeInTheDocument()
+    expect(screen.getByText('Filed')).toBeInTheDocument()
     expect(screen.getByText('Off-portal')).toBeInTheDocument()
   })
 
   it('does not render an off-portal marker for a normal case', () => {
     render(<WorkflowBadge status={{
-      code: 'cr_registered', label: 'Registered by CR', off_portal: false, overdue: false,
+      code: 'filed', label: 'Filed', off_portal: false, overdue: false,
     }} />)
     expect(screen.queryByText('Off-portal')).not.toBeInTheDocument()
   })
@@ -198,18 +169,9 @@ describe('the two vocabularies stay apart', () => {
   })
 
   it('prefixes each family distinctly', () => {
-    // THREE families now. `bc-*` is what CR's own register says about a
-    // document it has already received — a third question, not a variant of
-    // the other two, and the workflow badge is where it surfaces on a listing.
-    // Sharing a prefix would let a reviewer take "where the case is" and "what
-    // CR decided" for one vocabulary.
-    expect(Object.values(WORKFLOW_CLASS)
-      .every(c => c.startsWith('bw-') || c.startsWith('bc-'))).toBe(true)
+    // Two families again: the third, `bc-*` (what CR's register said), went
+    // with the CR status stage on 2026-10-17.
+    expect(Object.values(WORKFLOW_CLASS).every(c => c.startsWith('bw-'))).toBe(true)
     expect(Object.values(FORM_CLASS).every(c => c.startsWith('bf-'))).toBe(true)
-    // And every CR code uses `bc-`, so the families cannot quietly mix.
-    for (const code of Object.keys(WORKFLOW_CLASS)) {
-      const expected = code.startsWith('cr_') ? 'bc-' : 'bw-'
-      expect(WORKFLOW_CLASS[code].startsWith(expected), code).toBe(true)
-    }
   })
 })

@@ -31,7 +31,7 @@ export const ND2A = {
   id: 'k1', case_no: 'ND2A-2026-0001', form_code: 'Nd2a', case_type: 'ND2A',
   entity_id: 'e1', company_name: 'Kanenas Holding Limited', br_number: '69123456',
   workflow_status: { code: 'client_verification', label: 'Client Verification', overdue: false },
-  form_status: null, cr_status: { code: 'cr_not_checked', label: 'Not checked' },
+  form_status: null,
   editable: true, verification_sent_at: null, client_approved: null,
   deadline: { date: '2026-10-13', days: 11, overdue: false, basis: '' },
   reply_by_default: '2026-10-08', problems: [],
@@ -69,10 +69,10 @@ beforeEach(() => {
 })
 
 describe('OfficerChangeCasePage', () => {
-  it('opens on Client Verification with the six stages and the deadline', async () => {
+  it('opens on Client Verification with the five stages and the deadline', async () => {
     renderPage(ND2A)
     expect(await screen.findByRole('tab', { name: /Client Verification/ })).toHaveAttribute('aria-selected', 'true')
-    expect(within(screen.getByRole('tablist', { name: 'Case stages' })).getAllByRole('tab')).toHaveLength(6)
+    expect(within(screen.getByRole('tablist', { name: 'Case stages' })).getAllByRole('tab')).toHaveLength(5)
     expect(screen.getByText(/Due in 11 days/)).toBeInTheDocument()
     expect(screen.getAllByText(/ND2A-2026-0001/).length).toBeGreaterThan(0)
   })
@@ -137,5 +137,13 @@ describe('OfficerChangeCasePage', () => {
     renderPage({ ...ND2A, closed_at: '2026-10-01T00:00:00Z', closed_reason: 'Client not proceeding' })
     expect(await screen.findByText(/This case was closed/)).toBeInTheDocument()
     expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+  })
+
+  it('opens a filed case on Confirmation, the last stage, every stage ticked', async () => {
+    renderPage({ ...ND2A, client_approved: true, verification_sent_at: 'x', editable: false,
+      manual_receipt: { caseNo: '1' }, applied_at: 'x', profile_changes: [] })
+    const tab = await screen.findByRole('tab', { name: /Confirmation/ })
+    expect(tab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: /CR Status/ })).not.toBeInTheDocument()
   })
 })

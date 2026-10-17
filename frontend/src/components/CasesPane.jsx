@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 import { WorkflowBadge } from './CaseStatusBadge.jsx'
 import StatusBadge from './StatusBadge.jsx'
-import { CR_TONE, STAGE_LABELS } from './case/workflow.js'
+import { STAGE_LABELS } from './case/workflow.js'
 import { formatDate, formatDateTime } from '../lib/format.js'
 
 /**
@@ -21,11 +21,10 @@ import { formatDate, formatDateTime } from '../lib/format.js'
  * sits under the title, never in the year's place.
  */
 
-//: Where OUR five-stage part of the workflow puts each code, and the colour of
-//: that stage: `act` is ours to do, `info` is waiting on somebody else, `bad` is
-//: a refusal. Same semantics as the dashboard badges. Anything with CR (stage 6)
-//: takes its tone from `workflow.CR_TONE`, the one table that decides what CR's
-//: answer looks like on the stepper — this bar must not have a second opinion.
+//: Where the five-stage workflow puts each code, and the colour of that stage:
+//: `act` is ours to do, `info` is waiting on somebody else, `bad` is a refusal,
+//: `ok` is finished. Same semantics as the dashboard badges. `filed` is the last
+//: stage, done — CR reports nothing after the receipt (Levi 2026-10-17).
 const OUR_STAGE = {
   client_verification: [1, 'act'],
   awaiting_client: [1, 'info'],
@@ -33,20 +32,18 @@ const OUR_STAGE = {
   data_verification: [2, 'act'],
   signing: [3, 'act'],
   submission: [4, 'act'],
+  filed: [5, 'ok'],
 }
 
 //: Codes after which nothing more will happen on the case. These collapse.
 //: `client_rejected` is NOT one: the client said no, and somebody now has to
 //: fix the data and restart verification — hiding it would hide the work.
-//: `cr_pending` / `cr_approved` / `cr_not_checked` are not either: the return is
-//: still on its way to the register.
-const NAR1_ENDED = new Set(['cr_registered', 'cr_rejected', 'closed'])
+const NAR1_ENDED = new Set(['filed', 'closed'])
 const NNC1_ENDED = new Set(['approved', 'rejected'])
 
-/** `{stage, tone}` on the six-stage bar, or null for a code with no position. */
+/** `{stage, tone}` on the five-stage bar, or null for a code with no position. */
 export function stageOf(code) {
   if (OUR_STAGE[code]) return { stage: OUR_STAGE[code][0], tone: OUR_STAGE[code][1] }
-  if (code in CR_TONE) return { stage: STAGE_LABELS.length, tone: CR_TONE[code] }
   return null
 }
 
@@ -56,7 +53,7 @@ function codeOf(status) {
 }
 
 //: ND2A / ND2B (migration 050) live in the NAR1 table, so they arrive in
-//: `cases.nar1`; `form_code` tells them apart. Same six stages, same codes.
+//: `cases.nar1`; `form_code` tells them apart. Same five stages, same codes.
 const OFFICER_FORMS = {
   Nd2a: { code: 'ND2A', title: 'Officer appointment / cessation' },
   Nd2b: { code: 'ND2B', title: "Change of officer's particulars" },
@@ -155,7 +152,7 @@ function CaseCard({ row, open, onToggle, onOpen }) {
   const bodyId = `case-body-${row.id}`
   const nar1 = row.kind === 'nar1'
   const officer = row.kind === 'nd2' ? OFFICER_FORMS[row.formCode] : null
-  // Both run the six-stage workflow, so both draw the bar and the badge.
+  // Both run the five-stage workflow, so both draw the bar and the badge.
   const staged = nar1 || Boolean(officer)
   const position = staged ? stageOf(row.code) : null
 
@@ -239,10 +236,10 @@ function CaseCard({ row, open, onToggle, onOpen }) {
 }
 
 /**
- * The six stages as one thin bar — the case screen's stepper, at a size that
+ * The five stages as one thin bar — the case screen's stepper, at a size that
  * fits a dozen cases down a side pane. Done stages are green; the current one
- * wears its tone; the rest are empty. `cr_registered` is the one state where
- * the last stage is done rather than current.
+ * wears its tone; the rest are empty. `filed` is the one state where the last
+ * stage is done rather than current.
  *
  * No printed "Stage 3 of 6": the badge beside the year already says where the
  * case is, in words. The count is the bar's label and its tooltip.

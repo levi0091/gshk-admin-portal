@@ -55,7 +55,6 @@ describe('officerChangeApi', () => {
     ['undo', () => oc.undo('c1'), 'post', '/officer-changes/c1/undo'],
     ['retryApply', () => oc.retryApply('c1'), 'post', '/officer-changes/c1/apply'],
     ['close', () => oc.close('c1', 'x'), 'post', '/officer-changes/c1/close'],
-    ['refreshCrStatus', () => oc.refreshCrStatus('c1'), 'post', '/tpsi/cases/c1/refresh-status'],
     // Jacqueline's feedback (1 Oct 2026)
     ['setSendWithEmail', () => oc.setSendWithEmail('c1', 'd1', true), 'patch', '/officer-changes/c1/documents/d1'],
     ['proceed', () => oc.proceed('c1', 'why'), 'post', '/officer-changes/c1/verification/proceed'],
@@ -105,5 +104,11 @@ describe('officerChangeApi — bodies added for Jacqueline\'s feedback', () => {
       { signing_method: 'esign' })
     await oc.markChecked('c1')
     expect(api.post).toHaveBeenLastCalledWith('/officer-changes/c1/mark-checked', {})
+  })
+})
+
+describe('the CR status call', () => {
+  it('is gone with the CR status stage (Levi 2026-10-17)', () => {
+    expect(oc.refreshCrStatus).toBeUndefined()
   })
 })

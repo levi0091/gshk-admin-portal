@@ -196,8 +196,6 @@ export function officerChangeCaps(can) {
     submit: can('tpsi', 'submit'),
     recordOffPortalFiling: can('tpsi', 'submit'),
     undoProfileUpdate: can('tpsi', 'submit'),
-    // POST /tpsi/cases/{id}/refresh-status — the poller NAR1 uses.
-    checkCrStatus: can('tpsi', 'read'),
   }
 }
 

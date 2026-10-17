@@ -41,9 +41,9 @@ const PAYLOAD = {
   counts: {
     all: 3, data_verification: 2, client_verification: 0, awaiting_client: 1,
     client_rejected: 0, signing: 0, submission: 0,
-    // `completed` is gone (Levi 2026-09-16); CR's own answers took its place.
-    cr_not_checked: 0, cr_pending: 0, cr_approved: 0, cr_registered: 0,
-    cr_rejected: 0, cr_unknown: 0, closed: 0,
+    // `completed` is gone (Levi 2026-09-16), and so are the CR codes that
+    // replaced it (Levi 2026-10-17): a filed return reads Filed.
+    filed: 0, closed: 0,
   },
   rows: [
     {
@@ -149,9 +149,9 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
   it('counts the two stat tiles from the per-status counts', async () => {
     renderPage()
     await screen.findByText('NAR-2025-0028')
-    // Action Required = the six statuses whose next move is ours (2 here).
+    // Action Required = the five statuses whose next move is ours (2 here).
     expect(screen.getByText('Action Required').parentElement).toHaveTextContent('2')
-    // Pending = awaiting_client plus the three CR codes we are waiting on (1).
+    // Pending = awaiting_client, the client's move (1).
     expect(screen.getByText('Pending').parentElement).toHaveTextContent('1')
   })
 
@@ -228,31 +228,27 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
         // Client Verification leads since 2026-09-17 — the order the case
         // moves through, which is the order the tile asks for.
         'workflow_status=client_verification,data_verification,client_rejected,'
-        + 'signing,submission,cr_rejected'
+        + 'signing,submission'
       ))).toBe(true)
     })
   })
 
-  it('counts a CR REJECTION as work waiting on GSHK', async () => {
-    // It is the most urgent row on the screen: CR refused a return the fee was
-    // already taken for, and a corrected one has to be filed as a new case
-    // before the statutory window shuts. Putting it in Pending would file it
-    // under "somebody else's move".
+  it('puts a filed case in neither tile', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('NAR-2025-0028')
     await user.click(screen.getByRole('button', { name: /Action Required/ }))
+    await user.click(screen.getByRole('button', { name: /Pending/ }))
     await waitFor(() => {
-      expect(urls().some(u => u.includes('cr_rejected'))).toBe(true)
+      expect(urls().filter(u => u.includes('workflow_status=')).length).toBeGreaterThan(1)
     })
     expect(urls().filter(u => u.includes('workflow_status='))
-      .every(u => !u.includes('cr_registered'))).toBe(true)
+      .every(u => !u.includes('filed') && !u.includes('cr_'))).toBe(true)
   })
 
   it('filters to somebody ELSE\'S move when Pending is clicked, and clears on a second click', async () => {
-    // The client, or the Companies Registry. `cr_unknown` is deliberately NOT
-    // here: an answer nobody can read is something to look at, not something to
-    // wait on, and a tile labelled Pending would bury it.
+    // The client. (CR's queue was here until 2026-10-17; CR reports nothing
+    // after filing, so there is no CR queue to wait on.)
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('NAR-2025-0028')
@@ -260,30 +256,31 @@ describe('DashboardPage — the NAR1 case dashboard (v11 s2)', () => {
     await user.click(tile)
     await waitFor(() => {
       expect(urls().some(u => u.includes(
-        'workflow_status=awaiting_client,cr_not_checked,cr_pending,cr_approved'
+        'workflow_status=awaiting_client'
       ))).toBe(true)
     })
     expect(urls().filter(u => u.includes('workflow_status='))
-      .every(u => !u.includes('cr_unknown'))).toBe(true)
+      .every(u => !u.includes('cr_'))).toBe(true)
     expect(tile).toHaveAttribute('aria-pressed', 'true')
     await user.click(tile)
     await waitFor(() => expect(tile).toHaveAttribute('aria-pressed', 'false'))
   })
 
-  it('offers every CR answer in the Workflow column filter, and no `completed`', async () => {
+  it('offers Filed in the Workflow column filter, and no CR answer or `completed`', async () => {
     // Four files have to agree on this vocabulary: the label map here, the
-    // class map, the SQL view (migration 043) and `WORKFLOW_STATUSES`. This is
+    // class map, the SQL view (migration 054) and `WORKFLOW_STATUSES`. This is
     // the one that an operator actually reads.
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('NAR-2025-0028')
     await user.click(screen.getByRole('button', { name: /^Filter Workflow/ }))
     const panel = within(screen.getByRole('dialog', { name: 'Filter Workflow' }))
+    expect(panel.getByText('Filed')).toBeInTheDocument()
     for (const label of ['Awaiting CR status', 'Pending at CR', 'Approved by CR',
-                         'Registered by CR', 'Rejected by CR', 'Other CR status']) {
-      expect(panel.getByText(label), label).toBeInTheDocument()
+                         'Registered by CR', 'Rejected by CR', 'Other CR status',
+                         'Completed']) {
+      expect(panel.queryByText(label), label).toBeNull()
     }
-    expect(panel.queryByText('Completed')).toBeNull()
   })
 
   it('debounces search and sends it to the server', async () => {
@@ -588,7 +585,7 @@ describe('DashboardPage — ND2A / ND2B rows (migration 050)', () => {
   })
 
   it('stops counting once the form is with CR', async () => {
-    withNd2({ ...ND2, workflow_status: badge('cr_pending', 'Pending at CR') })
+    withNd2({ ...ND2, workflow_status: badge('filed', 'Filed') })
     renderPage()
     const row = (await screen.findByText('ND2A-2026-0001')).closest('tr')
     expect(row).not.toHaveTextContent('overdue')

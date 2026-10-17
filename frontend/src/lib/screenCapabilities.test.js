@@ -133,7 +133,6 @@ const CONTRACT = [
     // Recording a CR-portal filing updates the profiles as a real submit does.
     recordOffPortalFiling: 'tpsi:submit',
     undoProfileUpdate: 'tpsi:submit',
-    checkCrStatus: 'tpsi:read',
   }],
   ['crCredentials', crCredentialsCaps, {
     editOwnCredential: 'tpsi:write',

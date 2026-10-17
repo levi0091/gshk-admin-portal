@@ -2,7 +2,7 @@
 // every render (GET /officer-changes/:id), never stored, so the page cannot
 // drift from what the backend knows — the same rule the NAR1 page follows.
 //
-// The six stages are NAR1's (spec §5). What differs is how a case moves through
+// The five stages are NAR1's (spec §5). What differs is how a case moves through
 // stages 2-4: on the e-Sign route CR's filing stage moves it; on the manual
 // route "Mark as checked" and the uploaded signed form do, because nothing is
 // sent to CR until the operator records the filing made on CR's portal.
@@ -13,8 +13,9 @@ export const STAGES = [
   'Data Verification',
   'Signing',
   'Submission',
+  // The last stage since Levi 2026-10-17: CR will not report a document's
+  // status after filing, so the sixth, CR Status, is gone.
   'Confirmation',
-  'CR Status',
 ]
 
 export const FORM_TITLE = {
@@ -22,7 +23,7 @@ export const FORM_TITLE = {
   Nd2b: 'Change of officer particulars',
 }
 
-const FILED_STAGES = new Set(['submitted', 'registered', 'edrive'])
+const FILED_STAGES = new Set(['submitted', 'edrive'])
 
 export function isFiled(c) {
   return Boolean(c?.manual_receipt || c?.changes_applied_at
@@ -40,10 +41,7 @@ export function isManual(c) {
 /** The furthest stage the case has reached (1-based); 0 for a closed case. */
 export function stageIndexFor(c) {
   if (!c || isClosed(c)) return 0
-  // Filed reaches CR Status at once, as NAR1's `reachedStage` does: that is
-  // where "Check now" lives, and Confirmation has no act that completes it.
-  // A freshly filed case is often not listed by CR for days.
-  if (isFiled(c)) return 6
+  if (isFiled(c)) return 5
   if (c.client_approved !== true) return 1
   if (isManual(c)) {
     if (c.manual_signed_document_id) return 4
@@ -62,7 +60,7 @@ export function stageIndexFor(c) {
 /** Stage `i` is finished (it gets the tick). */
 export function stageDone(c, i) {
   if (!c || isClosed(c)) return false
-  if (isFiled(c)) return i <= 5 || (i === 6 && c.cr_status?.code === 'cr_registered')
+  if (isFiled(c)) return i <= 5
   return i < stageIndexFor(c)
 }
 
@@ -83,7 +81,6 @@ export function capsFor(can) {
     write: caps.editCase,
     tpsiWrite: caps.validate,
     tpsiSubmit: caps.submit,
-    tpsiRead: caps.checkCrStatus,
   }
 }
 

@@ -180,7 +180,6 @@ describe('CaseWorkflowPage — the stage gate is enforced, not just drawn', () =
     await renderPage()
     expect(screen.getByRole('tab', { name: /Signing/ })).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('tab', { name: /Confirmation/ })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByRole('tab', { name: /CR Status/ })).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('refuses to open a locked stage and says what would unlock it', async () => {
@@ -207,110 +206,34 @@ describe('CaseWorkflowPage — the stage gate is enforced, not just drawn', () =
 })
 
 // ---------------------------------------------------------------------------
-// Stage 6 — CR Status (Levi 2026-09-16)
+// A filed case ends at Confirmation (Levi 2026-10-17: no CR Status stage)
 // ---------------------------------------------------------------------------
 
-describe('CaseWorkflowPage — CR Status', () => {
+describe('CaseWorkflowPage — a filed case', () => {
   const filed = over => caseAt({
-    workflow_status: { code: 'cr_not_checked', label: 'Awaiting CR status',
-                       off_portal: false, overdue: false, cr_text: null },
+    workflow_status: { code: 'filed', label: 'Filed', off_portal: false, overdue: false },
     form_status: { code: 'submitted', label: 'Filed with CR', failed: false, faults: [] },
     receipt: { caseNo: '151120654', brNo: '78799952' },
-    cr_status: { code: 'cr_not_checked', label: 'Awaiting CR status',
-                 cr_text: null, terminal: false },
     ...over,
   })
 
-  it('OPENS on CR Status once the return is filed', async () => {
-    // The furthest reachable stage. Filing unlocks Confirmation and CR Status
-    // together — they are two views of one event, and there is no action
-    // between them to gate on.
+  it('OPENS on Confirmation, the last of five stages, every one ticked', async () => {
     routeGet(filed())
-    await renderPage()
-    expect(await screen.findByText('CR Status', { selector: '.pg-title' }))
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    expect(await screen.findByText('Confirmation', { selector: '.pg-title' }))
       .toBeInTheDocument()
+    const tabs = within(screen.getByRole('tablist', { name: 'Case stages' })).getAllByRole('tab')
+    expect(tabs).toHaveLength(5)
+    for (const tab of tabs) expect(within(tab).getByText('Done')).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /CR Status/ })).not.toBeInTheDocument()
   })
 
-  it('TICKS Confirmation on a filed case — the reported defect', async () => {
-    // Levi 2026-09-16, off a live case: "when the workflow is completed and we
-    // get a receipt from CR portal, the progress bar is still indicating
-    // in-progress for confirmation stage". `stageDone(5)` read
-    // `form_status.code === 'registered'`, a stage nothing ever wrote.
+  it('asks CR for nothing', async () => {
     routeGet(filed())
-    await renderPage()
-    const confirmation = screen.getByRole('tab', { name: /Confirmation/ })
-    expect(within(confirmation).getByText('Done')).toBeInTheDocument()
-  })
-
-  it('draws the sixth medallion in CR\'s colour, not in ours', async () => {
-    // The one place a step is coloured by DATA. An operator should be able to
-    // read the register's verdict off the progress bar without opening it.
-    routeGet(filed({
-      cr_status: { code: 'cr_rejected', label: 'Rejected by CR',
-                   cr_text: 'Rejected', terminal: true },
-    }))
-    await renderPage()
-    const step = screen.getByRole('tab', { name: /CR Status/ })
-    expect(step.className).toMatch(/tone-bad/)
-    expect(within(step).getByText('Rejected by CR')).toBeInTheDocument()
-  })
-
-  it('ticks CR Status, without a tone, once CR has registered the return', async () => {
-    // `cr_registered` is the tone AND the tick. A green medallion without a
-    // tick would make the finished case the one state with no tick anywhere.
-    routeGet(filed({
-      cr_status: { code: 'cr_registered', label: 'Registered by CR',
-                   cr_text: 'Registered', terminal: true },
-    }))
-    await renderPage()
-    const step = screen.getByRole('tab', { name: /CR Status/ })
-    expect(step.className).toMatch(/\bdone\b/)
-    expect(step.className).not.toMatch(/tone-/)
-  })
-
-  it('checks with CR and re-reads the case', async () => {
-    const user = userEvent.setup()
-    routeGet(filed({
-      cr_status: { code: 'cr_pending', label: 'Pending at CR',
-                   cr_text: 'Pending', terminal: false },
-    }))
-    await renderPage()
-    await user.click(screen.getByRole('button', { name: /Check with CR now/ }))
-    await waitFor(() => expect(post).toHaveBeenCalledWith(
-      '/tpsi/cases/c1/refresh-status', {}))
-    // Two reads: the first render, then the re-read after the answer.
-    await waitFor(() => expect(
-      get.mock.calls.filter(c => c[0] === '/cases/c1').length).toBeGreaterThan(1))
-  })
-
-  it('reports a CR outage in the page banner, at the top', async () => {
-    const user = userEvent.setup()
-    routeGet(filed({
-      cr_status: { code: 'cr_pending', label: 'Pending at CR',
-                   cr_text: 'Pending', terminal: false },
-    }))
-    post.mockRejectedValueOnce(Object.assign(new Error('cannot reach TPSI'),
-                                             { status: 503, kind: 'unreachable' }))
-    await renderPage()
-    await user.click(screen.getByRole('button', { name: /Check with CR now/ }))
-    expect(await screen.findByRole('alert')).toHaveTextContent(/cannot reach TPSI/)
-    // One error surface, scrolled to (Levi 2026-08-31).
-    await waitFor(() => expect(scrollToTop).toHaveBeenCalled())
-  })
-
-  it('clears the locked-stage note once the operator moves somewhere', async () => {
-    // Left up, it would explain a refusal that has already been moved past.
-    const user = userEvent.setup()
-    routeGet(caseAt({ form_status: { code: 'validated' }, verification_sent_at: null,
-                      client_approved: null }))
-    await renderPage()
-    await user.click(screen.getByRole('tab', { name: /Signing/ }))
-    expect(await screen.findByText(/to unlock/)).toBeInTheDocument()
-
-    // Stage 1, which is CLIENT Verification since 2026-09-17 — a case whose
-    // client has not been asked has not reached Data Verification either.
-    await user.click(screen.getByRole('tab', { name: /Client Verification/ }))
-    expect(screen.queryByText(/to unlock/)).not.toBeInTheDocument()
+    render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
+    await screen.findByText('Confirmation', { selector: '.pg-title' })
+    expect(screen.queryByRole('button', { name: /Check with CR/ })).toBeNull()
+    expect(post).not.toHaveBeenCalled()
   })
 })
 
@@ -848,12 +771,10 @@ describe('CaseWorkflowPage — closing a case', () => {
       form_status: { code: 'submitted', label: 'Filed with CR',
                      failed: false, faults: [] },
     }))
-    // Not `renderPage()`: a filed case opens on CR Status, which prints the
+    // Not `renderPage()`: a filed case opens on Confirmation, which prints the
     // case number a second time, and its `findByText` then finds two.
     render(<MemoryRouter><CaseWorkflowPage /></MemoryRouter>)
-    // Stage 6 since 2026-09-16: filing unlocks Confirmation and CR Status
-    // together, and `reachedStage` opens on the furthest reachable one.
-    await screen.findByText('CR Status', { selector: '.pg-title' })
+    await screen.findByText('Confirmation', { selector: '.pg-title' })
     expect(screen.queryByRole('button', { name: 'Close case' })).toBeNull()
   })
 

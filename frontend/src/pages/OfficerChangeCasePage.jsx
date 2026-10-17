@@ -4,7 +4,6 @@ import { useAuth } from '../context/AuthContext.jsx'
 import { formatDate, formatDateTime } from '../lib/format.js'
 import { WorkflowBadge, FormBadge } from '../components/CaseStatusBadge.jsx'
 import CloseCaseModal from '../components/case/CloseCaseModal.jsx'
-import { crStatus, stageTone } from '../components/case/workflow.js'
 import { ClosedPanel } from './CaseWorkflowPage.jsx'
 import { officerChangeApi } from '../components/officerChange/api.js'
 import {
@@ -16,7 +15,6 @@ import StageDataVerification from '../components/officerChange/StageDataVerifica
 import StageSigning from '../components/officerChange/StageSigning.jsx'
 import StageSubmission from '../components/officerChange/StageSubmission.jsx'
 import StageConfirmation from '../components/officerChange/StageConfirmation.jsx'
-import StageCrStatus from '../components/officerChange/StageCrStatus.jsx'
 import '../components/officerChange/officerChange.css'
 
 const Tick = () => (
@@ -193,16 +191,13 @@ export default function OfficerChangeCasePage() {
               const done = stageDone(c, n)
               const unlocked = n <= Math.max(reached, 1)
               const active = n === current
-              const tone = n === 6 ? stageTone(c, 6) : null
               let cls = 'step'
               if (done) cls += ' done'
               else if (active) cls += ' active'
               else if (unlocked) cls += ' avail'
               else cls += ' locked'
               if (unlocked) cls += ' clickable'
-              if (tone && !done) cls += ` tone-${tone}`
-              const state = n === 6 && unlocked ? crStatus(c).label
-                : done ? 'Done' : active ? 'In progress' : unlocked ? 'Available' : 'Locked'
+              const state = done ? 'Done' : active ? 'In progress' : unlocked ? 'Available' : 'Locked'
               return (
                 <div key={label} className={cls} role="tab" aria-selected={active}
                      aria-disabled={!unlocked} tabIndex={unlocked ? 0 : -1}
@@ -223,7 +218,6 @@ export default function OfficerChangeCasePage() {
           {current === 3 && <StageSigning {...stageProps} />}
           {current === 4 && <StageSubmission {...stageProps} />}
           {current === 5 && <StageConfirmation {...stageProps} />}
-          {current === 6 && <StageCrStatus {...stageProps} />}
         </>
       )}
 

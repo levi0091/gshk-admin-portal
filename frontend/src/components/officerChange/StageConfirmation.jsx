@@ -12,13 +12,29 @@ import { formatDateTime } from '../../lib/format.js'
  * to finish it: the update is per entry and idempotent, so pressing it again
  * completes only what is missing. Undone after a CR rejection, it is not
  * offered — that case is put back on purpose.
+ *
+ * THE LAST STAGE, AND WHERE UNDO LIVES (Levi 2026-10-17). A sixth stage, CR
+ * Status, used to follow and offered Undo when CR's poll said "rejected". CR
+ * will not report that, so a rejection reaches GSHK by CR's own notice and the
+ * operator records it here: the button says what it records, and the backend
+ * takes it only on a filed case.
  */
-export default function StageConfirmation({ data, reload, can, goTo }) {
+export default function StageConfirmation({ data, reload, can }) {
   const receipt = data.receipt || data.manual_receipt || {}
   const unfinished = !data.applied_at && !data.undone_at
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [left, setLeft] = useState(null)
+  const [confirmUndo, setConfirmUndo] = useState(false)
+  // Any entry applied, not only a complete write-back: the backend's Undo gate.
+  const anyApplied = Boolean(data.applied_at) || (data.entries || []).some(e => e.applied)
+  const canUndo = anyApplied && !data.undone_at && Boolean(can?.tpsiSubmit)
+
+  async function undo() {
+    setConfirmUndo(false); setBusy(true); setError(null)
+    try { await reload(await officerChangeApi.undo(data.id)) }
+    catch (e) { setError(errorOf(e).message) } finally { setBusy(false) }
+  }
 
   async function finish() {
     setBusy(true); setError(null)
@@ -77,9 +93,40 @@ export default function StageConfirmation({ data, reload, can, goTo }) {
       )}
 
       <ProfileChangesList changes={data.profile_changes} documents={data.documents} done={!unfinished} />
-      <div className="oc-send-row">
-        <button className="btn btn-primary" onClick={() => goTo(6)}>Continue to CR Status →</button>
-      </div>
+
+      {(canUndo || data.undone_at) && (
+        <div className="oc-send-row">
+          {canUndo && (
+            <button className="btn btn-danger-outline btn-outline" disabled={busy}
+                    onClick={() => setConfirmUndo(true)}>
+              CR rejected it — undo profile update
+            </button>
+          )}
+          {data.undone_at && (
+            <span className="f-hint">Profile update undone {formatDateTime(data.undone_at)}.</span>
+          )}
+        </div>
+      )}
+      {error && !unfinished && (
+        <div className="alert al-danger" role="alert" style={{ marginTop: 12 }}>
+          <div className="al-body">{error}</div></div>
+      )}
+      {confirmUndo && (
+        <div className="modal-confirm" role="alertdialog" aria-label="Undo profile update">
+          <div className="modal-confirm-card">
+            <div className="modal-confirm-title">Undo the profile update?</div>
+            <div className="modal-confirm-text">
+              Only when the Companies Registry rejected this filing. Officers this form appointed
+              are removed, officers it ceased are restored, and the particulars CR holds go back
+              to what they were. The supporting documents stay on the profiles.
+            </div>
+            <div className="modal-confirm-actions">
+              <button className="btn btn-outline" onClick={() => setConfirmUndo(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={undo}>Undo profile update</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

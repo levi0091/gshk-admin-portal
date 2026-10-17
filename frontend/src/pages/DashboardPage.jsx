@@ -46,27 +46,19 @@ const PAGE_SIZE = 50
 // "Action Required" vs "Pending" on the two stat cards: the split is who the
 // next move belongs to. Each tile IS the filter for its own set, so the number
 // and the rows can never disagree.
-//
-// `cr_rejected` IS ACTION REQUIRED, and it is the most urgent row on the
-// screen: CR refused a return the fee was already taken for, and a corrected
-// one has to be filed as a new case before the statutory window shuts.
 const ACTION_STATUSES = ['client_verification', 'data_verification', 'client_rejected',
-                         'signing', 'submission', 'cr_rejected']
+                         'signing', 'submission']
 
-// Waiting on somebody who is not GSHK. The client, or the Companies Registry —
-// the three CR codes below are a queue at CR, which nobody here can shorten.
-// `cr_unknown` is NOT here: an answer nobody can read is something to look at,
-// not something to wait on, and putting it in a tile labelled Pending would
-// bury it. It stays filterable from the column like every other badge.
-const PENDING_STATUSES = ['awaiting_client', 'cr_not_checked', 'cr_pending',
-                          'cr_approved']
+// Waiting on somebody who is not GSHK: the client. (CR's queue was here too
+// until Levi 2026-10-17 — CR reports nothing after filing, so there is none.)
+const PENDING_STATUSES = ['awaiting_client']
 
-// The order a case moves through them: our six stages, then CR's answer, then
-// closed. `completed` is gone (Levi 2026-09-16) — it was a word of ours
-// standing in for a decision only CR makes.
+// The order a case moves through them: the stage codes, then filed, then
+// closed. `completed` is gone (Levi 2026-09-16) and so are the six CR codes
+// that replaced it (Levi 2026-10-17).
 //
-// `cr_registered` and `closed` are in NEITHER stat tile. A registered return
-// and an abandoned case are both finished, and "Action Required" is work
+// `filed` and `closed` are in NEITHER stat tile. A filed return and an
+// abandoned case are both finished, and "Action Required" is work
 // waiting on GSHK while "Pending" is work waiting on someone else. They stay in
 // the listing and stay filterable — finishing ends the work, not the record —
 // so the badge column is how you include or exclude them.
@@ -77,8 +69,7 @@ const PENDING_STATUSES = ['awaiting_client', 'cr_not_checked', 'cr_pending',
 const WORKFLOW_ORDER = [
   'client_verification', 'awaiting_client', 'client_rejected',
   'data_verification', 'signing', 'submission',
-  'cr_not_checked', 'cr_pending', 'cr_approved', 'cr_registered',
-  'cr_rejected', 'cr_unknown', 'closed',
+  'filed', 'closed',
 ]
 
 const CASE_TYPES = ['NAR1', 'ND2A', 'ND2B']
@@ -157,7 +148,7 @@ function buildColumns(meId, counts) {
 
 //: Codes after which an ND2's deadline no longer has anything to chase: the
 //: form is with CR, or the case is shut. The date still shows; the count stops.
-const DEADLINE_SPENT = /^(cr_|closed)/
+const DEADLINE_SPENT = /^(filed|closed)$/
 
 /** `{text, overdue}` for an ND2 row's File by cell, or null for a NAR1 row. */
 export function officerDeadline(row) {

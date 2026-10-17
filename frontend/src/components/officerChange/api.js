@@ -83,8 +83,4 @@ export const officerChangeApi = {
   // Re-runs an unfinished profile update of a FILED form (idempotent per entry).
   retryApply: (id) => api.post(`${base(id)}/apply`, { confirm: true }),
   close: (id, reason) => api.post(`${base(id)}/close`, { reason }),
-
-  // CR's register is asked through the route NAR1 already uses; it is keyed on
-  // the case, not the form.
-  refreshCrStatus: (id) => api.post(`/tpsi/cases/${id}/refresh-status`, {}),
 }

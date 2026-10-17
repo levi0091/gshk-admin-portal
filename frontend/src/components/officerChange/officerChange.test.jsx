@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -9,10 +9,9 @@ import ParticularsChangeCard from './ParticularsChangeCard.jsx'
 import StageDataVerification from './StageDataVerification.jsx'
 import StageSigning from './StageSigning.jsx'
 import StageSubmission from './StageSubmission.jsx'
-import StageCrStatus from './StageCrStatus.jsx'
 import StageConfirmation from './StageConfirmation.jsx'
 import StageClientVerification from './StageClientVerification.jsx'
-import { stageIndexFor, stageDone, deadlineText } from './workflow.js'
+import { STAGES, stageIndexFor, stageDone, deadlineText } from './workflow.js'
 
 const get = vi.fn(); const post = vi.fn(); const patch = vi.fn(); const upload = vi.fn()
 vi.mock('../../lib/api.js', () => ({
@@ -53,12 +52,15 @@ describe('workflow', () => {
     expect(stageIndexFor({ client_approved: true, signing_method: 'manual', data_checked_at: 'x' })).toBe(3)
     expect(stageIndexFor({ client_approved: true, signing_method: 'manual', data_checked_at: 'x',
       manual_signed_document_id: 'd' })).toBe(4)
-    // Filed opens CR Status even before CR has listed it — "Check now" lives there.
-    expect(stageIndexFor({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_not_checked' } })).toBe(6)
-    expect(stageDone({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_pending' } }, 5)).toBe(true)
-    expect(stageDone({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_pending' } }, 6)).toBe(false)
-    expect(stageDone({ manual_receipt: { caseNo: '1' }, cr_status: { code: 'cr_registered' } }, 6)).toBe(true)
-    expect(stageIndexFor({ changes_applied_at: 'x', cr_status: { code: 'cr_pending' } })).toBe(6)
+    // Filed is the last stage, Confirmation, all five ticked (Levi 2026-10-17:
+    // there is no CR Status stage after it).
+    expect(stageIndexFor({ manual_receipt: { caseNo: '1' } })).toBe(5)
+    expect(stageIndexFor({ changes_applied_at: 'x' })).toBe(5)
+    for (const n of [1, 2, 3, 4, 5]) {
+      expect(stageDone({ manual_receipt: { caseNo: '1' } }, n), `stage ${n}`).toBe(true)
+    }
+    expect(STAGES).toEqual(['Client Verification', 'Data Verification', 'Signing',
+      'Submission', 'Confirmation'])
     expect(stageIndexFor({ closed_at: 'x' })).toBe(0)
     expect(stageDone({ client_approved: true }, 1)).toBe(true)
   })
@@ -289,21 +291,15 @@ describe('the case stages draw nothing a role may not use (#21)', () => {
     expect(screen.queryAllByRole('button').filter(b => b.disabled)).toEqual([])
   })
 
-  it('Signing and CR Status: no Apply signatures, no Check now', () => {
+  it('Signing: no Apply signatures; Confirmation: no Undo', () => {
     const esign = { ...BASE, signing_method: 'esign', filing: { stage: 'validated' },
       route: { consents: [] } }
     const { unmount } = wrap(<StageSigning data={esign} reload={vi.fn()} can={READER} goTo={vi.fn()} />)
     expect(screen.queryByRole('button', { name: 'Apply signatures' })).not.toBeInTheDocument()
     unmount()
-    wrap(<StageCrStatus data={{ ...BASE, cr_status: { code: 'cr_pending', label: 'Pending' } }}
-                        reload={vi.fn()} can={READER} />)
-    expect(screen.queryByRole('button', { name: 'Check now' })).not.toBeInTheDocument()
-  })
-
-  it("CR Status prints CR's own words, on the badge when the answer is unknown", () => {
-    wrap(<StageCrStatus data={{ ...BASE, cr_status: { code: 'cr_unknown', label: 'Other CR status',
-      cr_text: 'Withdrawn by presenter' } }} reload={vi.fn()} can={ALL} />)
-    expect(screen.getAllByText(/Withdrawn by presenter/).length).toBeGreaterThan(1)
+    wrap(<StageConfirmation data={{ ...BASE, manual_receipt: { caseNo: '1' }, applied_at: 'x',
+      profile_changes: [], documents: [] }} reload={vi.fn()} can={READER} />)
+    expect(screen.queryByRole('button', { name: /Undo profile update/ })).not.toBeInTheDocument()
   })
 })
 
@@ -341,6 +337,11 @@ describe('StageConfirmation — an unfinished profile update', () => {
                             goTo={vi.fn()} />)
     expect(screen.queryByText(/did not finish/)).not.toBeInTheDocument()
   })
+
+  it('offers no way on to a stage after it — it is the last one', () => {
+    wrap(<StageConfirmation data={{ ...filed, applied_at: 'x' }} reload={vi.fn()} can={ALL} />)
+    expect(screen.queryByRole('button', { name: /CR Status/ })).not.toBeInTheDocument()
+  })
 })
 
 describe('ParticularsChangeCard — the secretary register (#19)', () => {
@@ -357,15 +358,35 @@ describe('ParticularsChangeCard — the secretary register (#19)', () => {
   })
 })
 
-describe('StageCrStatus', () => {
-  it('offers Undo only on a rejection with changes applied', () => {
-    const { unmount } = wrap(<StageCrStatus data={{ ...BASE, cr_status: { code: 'cr_pending', label: 'Pending at CR' },
-      applied_at: 'x' }} reload={vi.fn()} can={ALL} />)
-    expect(screen.queryByRole('button', { name: 'Undo profile update' })).not.toBeInTheDocument()
+describe('StageConfirmation — Undo after CR rejects the change', () => {
+  // The portal no longer asks CR (Levi 2026-10-17), so the operator records
+  // the rejection CR sent them; the button lives on the last stage.
+  const filed = { ...BASE, manual_receipt: { caseNo: '1' }, applied_at: 'x',
+    profile_changes: [], documents: [] }
+
+  it('offers Undo on a filed case with changes applied, and says what it records', async () => {
+    post.mockResolvedValue({ ...filed, undone_at: 'z' })
+    const reload = vi.fn()
+    wrap(<StageConfirmation data={filed} reload={reload} can={ALL} />)
+    await userEvent.click(screen.getByRole('button', { name: 'CR rejected it — undo profile update' }))
+    const dialog = screen.getByRole('alertdialog', { name: 'Undo profile update' })
+    expect(within(dialog).getByText(/Companies Registry rejected/)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Undo profile update' }))
+    expect(post).toHaveBeenCalledWith('/officer-changes/k1/undo', { confirm: true })
+    await waitFor(() => expect(reload).toHaveBeenCalled())
+  })
+
+  it('offers no Undo with nothing applied, once undone, or without File with CR', () => {
+    const { unmount } = wrap(<StageConfirmation data={{ ...filed, applied_at: null, entries: [] }}
+                                                reload={vi.fn()} can={ALL} />)
+    expect(screen.queryByRole('button', { name: /undo profile update/ })).not.toBeInTheDocument()
     unmount()
-    wrap(<StageCrStatus data={{ ...BASE, cr_status: { code: 'cr_rejected', label: 'Rejected by CR' },
-      applied_at: 'x' }} reload={vi.fn()} can={ALL} />)
-    expect(screen.getByRole('button', { name: 'Undo profile update' })).toBeInTheDocument()
+    const again = wrap(<StageConfirmation data={{ ...filed, undone_at: 'y' }} reload={vi.fn()} can={ALL} />)
+    expect(screen.queryByRole('button', { name: /undo profile update/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/Profile update undone/)).toBeInTheDocument()
+    again.unmount()
+    wrap(<StageConfirmation data={filed} reload={vi.fn()} can={{ ...ALL, tpsiSubmit: false }} />)
+    expect(screen.queryByRole('button', { name: /undo profile update/ })).not.toBeInTheDocument()
   })
 })
 

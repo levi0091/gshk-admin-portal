@@ -1,9 +1,9 @@
 /**
  * The two NAR1 case status vocabularies — kept apart on purpose.
  *
- * `WorkflowBadge` answers "where is this case in GSHK's process" (13 values).
+ * `WorkflowBadge` answers "where is this case in GSHK's process" (8 values).
  * `FormBadge` answers "what has the Companies Registry done with the filing"
- * (10 stages). wireframe_v11 shows them side by side on the same row, and the
+ * (9 stages). wireframe_v11 shows them side by side on the same row, and the
  * backend derives them from two different records (D-6, the single-writer
  * split: `tpsi_filings.stage` owns CR facts, `nar1_cases` owns client facts).
  *
@@ -18,13 +18,10 @@
  */
 
 /**
- * `completed` IS GONE (Levi 2026-09-16: "completed should not be there.. it
- * should be the steps throughout the workflow plus the final CR statuses").
- *
- * It said nothing CR had agreed to: a case went green the instant
- * `submitFormNar1` returned a receipt, while CR had only RECEIVED the return
- * and could still refuse it. The five `cr_*` codes are what the register
- * actually says, starting at `cr_not_checked` — filed, and nobody has asked.
+ * A FILED RETURN READS "FILED" (Levi 2026-10-17). From 2026-09-16 it wore one
+ * of six `cr_*` codes read off CR's docStatusEnquiry; CR will not report a
+ * status after filing, so the receipt is the last fact anybody has.
+ * `completed`, retired on 2026-09-16, stays retired.
  */
 export const WORKFLOW_LABEL = {
   data_verification: 'Data Verification',
@@ -33,29 +30,12 @@ export const WORKFLOW_LABEL = {
   client_rejected: 'Client Rejected',
   signing: 'Signing',
   submission: 'Submission',
-  cr_not_checked: 'Awaiting CR status',
-  cr_pending: 'Pending at CR',
-  cr_approved: 'Approved by CR',
-  cr_registered: 'Registered by CR',
-  cr_rejected: 'Rejected by CR',
-  cr_unknown: 'Other CR status',
+  filed: 'Filed',
   closed: 'Closed',
 }
 
 // Carrot = act on me · Indigo = waiting on someone else · Green = done
 // · Red = refused · Grey = over. Same semantics as the dashboard stat tiles.
-//
-// The CR codes reuse those semantics rather than inventing a sixth language:
-// `cr_pending` is indigo because the wait belongs to CR exactly as
-// `awaiting_client`'s belongs to the client; `cr_registered` takes the green
-// `completed` used to wear, and now earns it. `cr_approved` is the one new
-// colour — CR has decided yes and the return is not on the register yet, which
-// is neither waiting nor finished, and peridot is the palette's held-breath.
-//
-// TWO GREYS, ON PURPOSE. `closed` is a case that ended; `cr_not_checked` and
-// `cr_unknown` are answers nobody has, which is a different kind of nothing.
-// They are told apart by their wording and, for `cr_unknown`, by a hollow
-// marker — see `.badge.bc-unknown::before` in index.css.
 export const WORKFLOW_CLASS = {
   data_verification: 'bw-data',
   client_verification: 'bw-verify',
@@ -63,12 +43,7 @@ export const WORKFLOW_CLASS = {
   client_rejected: 'bw-rejected',
   signing: 'bw-sign',
   submission: 'bw-submit',
-  cr_not_checked: 'bc-not_checked',
-  cr_pending: 'bc-pending',
-  cr_approved: 'bc-approved',
-  cr_registered: 'bc-registered',
-  cr_rejected: 'bc-rejected',
-  cr_unknown: 'bc-unknown',
+  filed: 'bw-filed',
   closed: 'bw-closed',
 }
 
@@ -80,12 +55,11 @@ export const FORM_LABEL = {
   signing_failed: 'Rejected at signing',
   submitted: 'Filed with CR',
   submission_failed: 'Rejected at submission',
-  registered: 'Registered by CR',
   superseded: 'Superseded by a later attempt',
   edrive: 'Sent to CR e-Drive',
 }
 
-// Ten stages, seven treatments: the three failure stages share one red, because
+// Nine stages, six treatments: the three failure stages share one red, because
 // what the reader needs at a glance is "CR refused it" — the label says at which
 // step. `edrive` has no class of its own in v11 (R-2 removed the e-Drive option
 // from the UI), but the backend can still carry the stage on an older filing,
@@ -98,7 +72,6 @@ export const FORM_CLASS = {
   signing_failed: 'bf-failed',
   submitted: 'bf-submitted',
   submission_failed: 'bf-failed',
-  registered: 'bf-registered',
   superseded: 'bf-superseded',
   edrive: 'bf-submitted',
 }
@@ -133,24 +106,12 @@ export function WorkflowBadge({ status }) {
   const label = (typeof status === 'string' ? null : status.label)
     || WORKFLOW_LABEL[code] || code
   const offPortal = typeof status === 'string' ? false : Boolean(status.off_portal)
-  // CR's own words for the status, when the backend sent them. On `cr_unknown`
-  // the label is "Other CR status", which is true and useless on its own —
-  // what CR actually said is the only informative thing there is.
-  const crText = typeof status === 'string' ? null : status.cr_text
 
   if (!code) return <span className="td-muted">—</span>
 
   return (
     <>
-      <span
-        className={`badge ${WORKFLOW_CLASS[code] || 'bw-data'}`}
-        // A TITLE, not a second line of text. The dashboard's Workflow column
-        // is scanned, and CR's wording matters when you stop on one row — not
-        // on every row at once.
-        title={crText ? `The Companies Registry reports: ${crText}` : undefined}
-      >
-        {code === 'cr_unknown' && crText ? crText : label}
-      </span>
+      <span className={`badge ${WORKFLOW_CLASS[code] || 'bw-data'}`}>{label}</span>
       {offPortal && (
         <span className="badge bf-superseded" title="Filed through CR's e-Drive, outside G-FlowDesk">
           Off-portal

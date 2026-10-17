@@ -12,7 +12,6 @@ import StageClientVerification from '../components/case/StageClientVerification.
 import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
-import StageCrStatus from '../components/case/StageCrStatus.jsx'
 import {
   STAGE_LABELS, reachedStage, isValidated, isSubmitted, isClosed, describeError,
   persistedFailure, canRestart,
@@ -60,7 +59,6 @@ export default function CaseWorkflowPage() {
   const canClose = caps.closeCase
   const canValidate = caps.validate
   const canSubmit = caps.submit
-  const canReadTpsi = can('tpsi', 'read')
 
   const [caseRow, setCaseRow] = useState(undefined)
   const [loadError, setLoadError] = useState(null)
@@ -481,10 +479,7 @@ export default function CaseWorkflowPage() {
           <StageSubmission {...stageProps} canSubmit={canSubmit} />
         )}
         {current === 5 && (
-          <StageConfirmation caseRow={c} onGo={goTo} />
-        )}
-        {current === 6 && (
-          <StageCrStatus {...stageProps} canRead={canReadTpsi} />
+          <StageConfirmation caseRow={c} />
         )}
         </>
       )}
