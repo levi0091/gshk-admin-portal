@@ -695,7 +695,14 @@ uv run pytest --cov=. --cov-report=term-missing
 
 # Run a specific file
 uv run pytest tests/test_audit_service.py
+
+# Parallel, as CI runs it (~5x faster; not for the RUN_DB_TESTS suite, which shares one DB)
+uv run pytest -q -n logical --dist worksteal
 ```
+
+> **A test id must not depend on a random value.** pytest-xdist collects the suite separately in every worker and refuses to run if the ids differ — `test_declared_signatory_id_is_none_when_no_person_is_named` was parametrized with XML embedding a certificate generated at import, so every worker named it differently. Give such a parametrize explicit `ids=`.
+>
+> **`tests/tpsi/conftest.py::tpsi_env` shares ONE RSA key per session.** Generating it per test cost ~50ms across ~800 tests — a third of the suite. A test that needs a distinct key uses `make_pem`, which still mints a fresh one per call.
 
 **Rules:**
 - Every new route handler gets at least: a happy-path test, a 401/403 test, and an edge-case test
