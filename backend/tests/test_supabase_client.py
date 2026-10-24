@@ -19,7 +19,9 @@ their sockets open. That is the shape of the errors the controller saw:
 In the API path the auth middleware always warms the client on the request
 thread before a handler runs, which is why this never showed up there.
 
-These tests do not construct a real client — `create_client` is patched.
+Most of these tests do not construct a real client — `create_client` is
+patched. The last two do, on purpose (construction performs no I/O): they pin
+facts about the INSTALLED supabase-py that a fake cannot.
 """
 import threading
 from unittest.mock import MagicMock, patch
@@ -88,3 +90,30 @@ def test_missing_credentials_still_raise_and_do_not_cache_a_broken_client(
     with pytest.raises(RuntimeError):
         dbs.get_supabase()
     assert dbs._client is None
+
+
+@pytest.mark.parametrize("key", [
+    # Supabase's current secret key. supabase-py 2.10 refused it before sending
+    # a single request ("Invalid API key", a JWT-shape regex), and Supabase can
+    # no longer rotate the legacy keys, so on 2.10 an exposed service_role key
+    # could not be retired at all (Railway incident, 2026-10-24).
+    "sb_secret_" + "x" * 32,
+    # The legacy JWT-shaped key must keep working too: the dependency bump ships
+    # before each environment's variable is switched.
+    "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2lnbmF0dXJl",
+])
+def test_both_api_key_formats_build_a_real_client(monkeypatch, key):
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", key)
+    assert dbs.get_supabase() is not None
+
+
+def test_the_read_retry_transport_lands_on_the_real_library_sub_clients(monkeypatch):
+    """`_install_read_retries` reaches into supabase-py's private `session._transport`
+    and silently skips anything it does not recognise. A library upgrade that moved
+    those internals would therefore drop the retries without a single error; the
+    fake-client test in test_supabase_read_retries cannot see that, this one can."""
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "sb_secret_" + "x" * 32)
+    client = dbs.get_supabase()
+    for sub in ("postgrest", "storage"):
+        transport = getattr(client, sub).session._transport
+        assert isinstance(transport, dbs._RetryReadsTransport), sub
