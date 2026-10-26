@@ -91,6 +91,9 @@ Agents are expensive here: every dispatched agent loads this file and re-reads t
 > - One message per recipient, not one message with several recipients.
 > - The confirmation names the account by EMAIL.
 > - `GET /auth/super-admins` is unauthenticated, and that is the point.
+> - Confirm & File mails the client a RECEIPT (ND2, Levi 2026-10-17)
+> - Three ND2 follow-ups (migration 055): a death asks for its date; secretary drawer lists GSHK first; e-Sign saves the signed form
+> - ND2A / ND2B after Jacqueline's feedback (migrations 052, 053): the chain is `049 → 051 → 056 → 050 → 052 → 053 → 054 → 055 → 057`; blank effective dates; CR's consent signature IS the consent; the resolution is GSHK's own sample; manual checks gate Data Verification; identification and addresses are per COMPANY; an ND2B filed for one company stops the same change being reported for others
 
 | AI | Claude API | Called from Railway backend only — never from frontend |
 
