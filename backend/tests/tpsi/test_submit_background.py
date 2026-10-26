@@ -410,7 +410,7 @@ def test_not_lodged_says_whether_the_submit_was_today():
     from services.tpsi import fees
 
     started = ago(400)    # past the in-flight window, so declaring is allowed
-    today_in_hk = filings._hk_date_of(started)
+    today_in_hk = filings.hk_date_of(started)
     with patch.object(fees, "_hk_today", return_value=today_in_hk), \
             Harness(_unknown(submit_started_at=started)) as h:
         today = _resolve(h, outcome="not_lodged", checked_cr=True).json()

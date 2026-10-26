@@ -120,17 +120,31 @@ def test_a_receipt_that_cannot_be_stored_is_kept_whole_in_the_trail(capsys):
 #  B1.1 — the cut-off outlasts the worst real call, and 401 is not re-posted
 # --------------------------------------------------------------------------- #
 
+def _all_phases(timeout: httpx.Timeout) -> float:
+    return float(timeout.connect + timeout.read + timeout.write + timeout.pool)
+
+
 def test_the_stale_cut_off_outlasts_the_worst_case_submit_call():
     """If anyone raises a client timeout above the cut-off, this fails before
     a live call can outlast the claim that protects it. The submit call can
-    authenticate first (token() on an empty cache) and then post -- once."""
+    authenticate first (token() on an empty cache) and then post -- once.
+    EVERY httpx phase is counted (connect, read, write, pool), not just the two
+    that usually matter (code review 02, N-7)."""
     worst = (filings.MAX_START_DELAY_SECONDS
-             + tpsi_client.worst_case_seconds(tpsi_client._TIMEOUT)          # auth
-             + tpsi_client.worst_case_seconds(tpsi_client._SUBMIT_TIMEOUT))  # submitForm
+             + _all_phases(tpsi_client._TIMEOUT)          # authenticate
+             + _all_phases(tpsi_client._SUBMIT_TIMEOUT))  # submitForm
     assert filings.STALE_CLAIM_SECONDS > worst
-    assert filings.STALE_CLAIM_SECONDS == 330
+    assert tpsi_client.worst_case_seconds(tpsi_client._SUBMIT_TIMEOUT) == \
+        _all_phases(tpsi_client._SUBMIT_TIMEOUT)
     assert tpsi_client._SUBMIT_TIMEOUT.read == 180
     assert tpsi_client._TIMEOUT.read == 60
+
+
+def test_no_phase_is_left_to_httpx_to_default_to_the_read_timeout():
+    """`httpx.Timeout(180.0, connect=15.0)` also set write=180 and pool=180,
+    so a stalled upload could take as long as the answer. Each phase is named."""
+    for timeout in (tpsi_client._TIMEOUT, tpsi_client._SUBMIT_TIMEOUT):
+        assert timeout.write <= 15 and timeout.pool <= 15 and timeout.connect <= 15
 
 
 def test_a_401_on_submitform_is_not_posted_a_second_time():
@@ -158,6 +172,39 @@ def test_other_calls_keep_their_single_re_login_on_a_stale_token():
 
         assert str(reads.check_balance(h.tpsi, "ACC")) == "5"
         assert h.cr.count("enquireDepositAccount") == 2
+
+
+def test_a_receipt_arriving_after_an_operator_recorded_one_says_so(capsys):
+    """Code review 02, N-10: correct to keep it, alarming to log as a failure to
+    store. The reason names what happened -- the row already holds a receipt."""
+    with Harness() as h:
+        def operator_recorded_it():
+            row = h.store.get("tpsi_filings", "f1")
+            row["stage"] = "submitted"
+            row["receipt"] = {"caseNo": "180256934", "source": "operator_after_timeout"}
+
+        h.cr.on_call["/tpsi/submitFormNar1"] = operator_recorded_it
+        h.submit()
+
+        err = capsys.readouterr().err
+        assert "already recorded" in err
+        assert "could not be stored" not in err
+        success = [e for e in h.events
+                   if e["action_type"] == "TPSI_SUBMISSION_SUCCESS"]
+        assert success[0]["metadata"]["stored"] is False
+        assert success[0]["metadata"]["reason"] == "already recorded by an operator"
+
+
+def test_a_receipt_never_overwrites_an_edrive_row():
+    """Code review 02, N-8: an e-Drive row already holds the return."""
+    assert filings.STAGE_EDRIVE not in filings._RECEIPT_OVERWRITES
+    assert filings.STAGE_SUBMITTED not in filings._RECEIPT_OVERWRITES
+    assert filings.STAGE_REGISTERED not in filings._RECEIPT_OVERWRITES
+
+
+def test_hk_date_of_is_public_for_the_route():
+    """Code review 02, N-9: the route calls it, so it is not a private name."""
+    assert filings.hk_date_of("2026-10-23T00:30:00+00:00").isoformat() == "2026-10-23"
 
 
 # --------------------------------------------------------------------------- #

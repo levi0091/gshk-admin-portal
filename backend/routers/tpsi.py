@@ -926,6 +926,8 @@ async def get_filing(filing_id: str, user=Depends(require_permission("tpsi", "re
         "stage": row["stage"],
         "submit_started_at": row.get("submit_started_at"),
         # When "CR does not have it" may first be declared (None: any time).
+        # Returned for EVERY stage -- it is a function of the claim time alone,
+        # and only the unknown-outcome panel reads it (code review 02, N-11).
         "not_lodged_after": filings.not_lodged_after(row),
         "filing_id": filing_id,
         "form_code": row["form_code"],
@@ -1391,6 +1393,7 @@ async def _finish_submit(client, claim, user: dict) -> None:
             metadata={"caseNo": outcome.receipt.get("caseNo"),
                       "totalAmount": outcome.receipt.get("totalAmount"),
                       "stored": outcome.stored,
+                      "reason": outcome.reason,
                       "waited_seconds": outcome.waited_seconds},
         )
     elif outcome.stage == filings.STAGE_SUBMISSION_FAILED:
@@ -1608,7 +1611,7 @@ async def resolve_filing(
                      "minutes.", reason="cr_unreachable") from exc
         await run_in_threadpool(
             filings.verify_lodged, client, case_no, receipt.get("brNo"),
-            filings._hk_date_of(filing.get("submit_started_at")))
+            filings.hk_date_of(filing.get("submit_started_at")))
         row = filings.resolve_lodged(filing_id, receipt)
     except filings.ResolveRefused as exc:
         raise HTTPException(exc.status, {"message": str(exc), **exc.extra})

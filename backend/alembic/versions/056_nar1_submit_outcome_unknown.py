@@ -18,7 +18,7 @@ This migration gives the fix its schema:
    without CR saying what happened; nothing can retry it, and an operator
    resolves it from what CR e-Services shows (`POST /tpsi/filings/{id}/resolve`).
 
-2. `submit_started_at`, when the claim was taken. A claim older than 330 s
+2. `submit_started_at`, when the claim was taken. A claim older than 370 s
    belongs to a worker that died mid-call and is read as an unknown outcome.
 
 3. THE REAL DOUBLE-CHARGE GUARD, documented here because migration 016's was
@@ -100,10 +100,11 @@ CASE_LOCK_INDEX = "uq_tpsi_filings_case_locked"
 CASE_LOCK_STAGES = ("submitting", "submission_unknown", "submitted", "registered")
 
 #: services/tpsi/filings.STALE_CLAIM_SECONDS, which is DERIVED there: 30 s start
-#: delay + auth (15 connect + 60 read) + submitForm (15 connect + 180 read) +
-#: 30 s margin = 330. A test keeps the two equal (code review 01, B1.1); it was
-#: 240 until a late receipt was found to outlive it.
-STALE_CLAIM_SECONDS = 330
+#: delay + authenticate (15 connect + 15 write + 60 read + 5 pool) + submitForm
+#: (15 + 15 + 180 + 5) + 30 s margin = 370, every httpx phase counted. A test
+#: keeps the two equal (code review 01 B1.1, 02 N-7); it was 240, then 330,
+#: before the unnamed phases were counted.
+STALE_CLAIM_SECONDS = 370
 
 #: What `TpsiClient` writes for a call that never completed — the one message
 #: that proves CR's answer was never read.

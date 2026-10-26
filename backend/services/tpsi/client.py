@@ -21,7 +21,13 @@ from services.tpsi.errors import (
 )
 from services.tpsi.secrets import sha256_hex
 
-_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+#: EVERY phase is named (code review 02, N-7). `httpx.Timeout(60.0, connect=15.0)`
+#: also set write and pool to 60 -- and, for the submit, to 180 -- so a stalled
+#: upload could take as long as the answer, and the bound the stale-claim
+#: cut-off is built on only held if the unnamed phases were ignored. Each call
+#: opens its own client, so pool never really waits; the budget is small and
+#: counted anyway.
+_TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=15.0, pool=5.0)
 
 #: submitForm, and ONLY submitForm, waits three minutes (Levi 2026-10-26).
 #: CR's chargeable call answers in 25-56 s normally (n=144 on PROD, median
@@ -31,22 +37,24 @@ _TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 #: because the submit now runs after the HTTP response (routers/tpsi.py): the
 #: edge in front of the API gives up at 100 s. Every other call keeps 60 s,
 #: since none of them spends money and a slow validate should fail fast.
-_SUBMIT_TIMEOUT = httpx.Timeout(180.0, connect=15.0)
+_SUBMIT_TIMEOUT = httpx.Timeout(connect=15.0, read=180.0, write=15.0, pool=5.0)
 
 #: The operations that get `_SUBMIT_TIMEOUT`.
 _LONG_WAIT_OPERATIONS = frozenset({"submitForm"})
 
 
 def worst_case_seconds(timeout: httpx.Timeout) -> float:
-    """The longest one HTTP exchange can take under `timeout`.
+    """The longest one HTTP exchange can take under `timeout`: ALL FOUR phases,
+    connect + write + read + pool, back to back. `filings.STALE_CLAIM_SECONDS`
+    is built from this, and a test fails if a timeout is raised without it.
 
-    Connecting and then waiting for the answer. The request body is a few
-    kilobytes and the write phase is bounded by the socket buffer, so it is
-    not counted; the pool phase never waits because every call opens its own
-    client. `filings.STALE_CLAIM_SECONDS` is built from this, and a test fails
-    if a timeout above is raised without it.
+    A ceiling, not an expectation -- the sum is what makes it a bound. httpx
+    limits each phase separately, and read is the gap BETWEEN CHUNKS rather than
+    the whole response, so a reply that drips could in principle run longer
+    still. That is harmless for the money -- a late receipt is always kept
+    (`filings.finish_submit`) -- and not a realistic way for CR to behave.
     """
-    return float(timeout.connect + timeout.read)
+    return float(timeout.connect + timeout.write + timeout.read + timeout.pool)
 
 
 #: What `submitForm` can take in the worst case: authenticating first (a client

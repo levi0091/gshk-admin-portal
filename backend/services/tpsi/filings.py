@@ -1262,6 +1262,8 @@ class SubmitOutcome:
     waited_seconds: float = 0.0
     sent: bool = True
     stored: bool = True
+    #: Why a receipt was not stored, when it was not.
+    reason: str | None = None
 
 
 class NotSent(Exception):
@@ -1405,7 +1407,8 @@ _OUTCOME_FROM = (STAGE_SUBMITTING, STAGE_SUBMISSION_UNKNOWN)
 #: (code review 01, B1.4).
 _RECEIPT_OVERWRITES = tuple(
     s for s in dict.fromkeys(FORM_STATUSES + (STAGE_EDRIVE,))
-    if s not in (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_SUPERSEDED))
+    if s not in (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE,
+                 STAGE_SUPERSEDED))
 
 #: How much of an unreadable CR reply is kept on the row, for the operator and
 #: for whoever has to work out what CR sent.
@@ -1425,6 +1428,22 @@ def _update_where(filing_id: str, payload: dict, stages,
     if started_at is not None:
         query = query.eq("submit_started_at", started_at)
     return bool(query.execute().data)
+
+
+ALREADY_RECORDED = "already recorded by an operator"
+
+
+def _why_not_stored(filing_id: str) -> str:
+    """The receipt's write moved no row. Say which of two things that means: the
+    row already holds a receipt (an operator recorded one, or the 056-era
+    resolve did) or the claim is no longer this submit's."""
+    try:
+        stage = get_filing(filing_id).get("stage")
+    except Exception:  # noqa: BLE001
+        stage = None
+    if stage in (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE):
+        return ALREADY_RECORDED
+    return "the row no longer holds this claim"
 
 
 def _claim_is_ours(claim: SubmitClaim) -> bool:
@@ -1589,20 +1608,28 @@ def finish_submit(client, claim: SubmitClaim) -> SubmitOutcome:
             },
             _RECEIPT_OVERWRITES, claim.started_at,
         )
-        reason = None if stored else "the row no longer holds this claim"
+        reason = None if stored else _why_not_stored(filing_id)
     except Exception as exc:  # noqa: BLE001 — the money has moved; keep the receipt
         stored, reason = False, str(exc)
     if not stored:
         # The receipt is the only proof the return landed. It survives in the
         # platform log AND, because the caller audits it in full, in the
         # insert-only trail.
-        print(f"[tpsi.filings] ERROR: CR filed {filing_id} but the receipt "
-              f"could not be stored ({reason}); receipt={receipt}",
-              file=sys.stderr)
+        if reason == ALREADY_RECORDED:
+            # Not a failure: an operator recorded this receipt while CR's own
+            # answer was still on its way. Keep it, but say what it is (review
+            # 02, N-10) rather than log an ERROR that reads as lost data.
+            print(f"[tpsi.filings] NOTE: CR's receipt for filing {filing_id} "
+                  f"arrived after it was {reason}; receipt={receipt}",
+                  file=sys.stderr)
+        else:
+            print(f"[tpsi.filings] ERROR: CR filed {filing_id} but the receipt "
+                  f"could not be stored ({reason}); receipt={receipt}",
+                  file=sys.stderr)
     else:
         _write_back_receipt(claim.filing, receipt)
     return SubmitOutcome(stage=STAGE_SUBMITTED, receipt=receipt,
-                         waited_seconds=waited, stored=stored)
+                         waited_seconds=waited, stored=stored, reason=reason)
 
 
 def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
@@ -1828,7 +1855,7 @@ def _same_br(a, b) -> bool:
 CASE_NO_SHAPE = r"^\d{6,12}$"
 
 
-def _hk_date_of(row_or_value) -> date | None:
+def hk_date_of(row_or_value) -> date | None:
     """The Hong Kong calendar day of a stored instant, or None."""
     from zoneinfo import ZoneInfo
 
@@ -1852,7 +1879,7 @@ def check_receipt_not_before_claim(filing: dict, receipt: dict) -> None:
     this year's case is the mistake this catches. Skipped for a legacy row with
     no claim time. Raises ResolveRefused(422, reason="before_claim").
     """
-    claimed = _hk_date_of(filing.get("submit_started_at"))
+    claimed = hk_date_of(filing.get("submit_started_at"))
     dated = _cr_date(receipt.get("transactionDate"))
     if claimed and dated and dated < claimed:
         raise ResolveRefused(

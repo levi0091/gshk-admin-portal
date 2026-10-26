@@ -888,7 +888,9 @@ def composite(case_id: str) -> dict:
         "submit_started_at": (filing or {}).get("submit_started_at"),
         # When "CR does not have it" may first be declared -- the screen
         # withholds the control until then rather than arm one whose only
-        # outcome is a 409 (code review 01, B1.3).
+        # outcome is a 409 (code review 01, B1.3). Present for every stage --
+        # it depends on the claim time alone and only the unknown-outcome panel
+        # reads it (code review 02, N-11).
         "not_lodged_after": tpsi_filings.not_lodged_after(filing),
     }
 
