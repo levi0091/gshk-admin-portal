@@ -214,6 +214,17 @@ def test_the_case_screen_reads_a_stale_claim_as_unknown_too():
         assert "TPSI_SUBMISSION_UNKNOWN" in h.actions()
 
 
+def test_the_case_screen_carries_when_the_submit_was_claimed():
+    """The unknown-outcome panel warns about a same-day submit before anyone
+    declares it not lodged, so it needs the claim time off the case itself."""
+    started = ago(60)
+    with Harness(_unknown(submit_started_at=started)) as h:
+        response = h.http.get("/cases/c1", headers=H)
+
+    assert response.json()["submit_started_at"] == started
+    assert response.json()["form_status"]["locked"] is True
+
+
 def test_the_stale_sweep_cannot_overwrite_an_answer_that_landed_first():
     """Conditional on `stage = 'submitting'` inside the UPDATE: a receipt
     written between the read and the sweep stands."""

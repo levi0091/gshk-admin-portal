@@ -15,7 +15,7 @@ import StageConfirmation from '../components/case/StageConfirmation.jsx'
 import StageCrStatus from '../components/case/StageCrStatus.jsx'
 import {
   STAGE_LABELS, reachedStage, isValidated, isSubmitted, isClosed, describeError,
-  persistedFailure, canRestart,
+  persistedFailure, canRestart, isLocked,
 } from '../components/case/workflow.js'
 import CloseCaseModal from '../components/case/CloseCaseModal.jsx'
 import { scrollToTop } from '../lib/scroll.js'
@@ -313,8 +313,10 @@ export default function CaseWorkflowPage() {
               outcome is a refusal is a broken control, exactly as Restart's
               own `isSubmitted` guard reasons. Withheld on an already-closed
               case too, though that branch renders the closed panel and never
-              reaches this bar. */}
-          {canClose && !isClosed(c) && !isSubmitted(c) && (
+              reaches this bar. And withheld while CR MAY hold it — a submit in
+              flight or with no answer (2026-10-26): closing over that would
+              record a return CR may have filed as one the client abandoned. */}
+          {canClose && !isClosed(c) && !isSubmitted(c) && !isLocked(c) && (
             <button className="btn btn-outline btn-danger-outline"
                     onClick={() => setConfirmClose(true)}>
               Close case

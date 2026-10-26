@@ -879,6 +879,11 @@ def composite(case_id: str) -> dict:
         # the case, which never carried it, so the banner said "frozen" with no
         # time.
         "validated_at": (filing or {}).get("validated_at"),
+        # When the live filing's submit was claimed (migration 056). The
+        # Submission screen reads it on an unknown outcome to warn that CR can
+        # take hours to list a return submitted today, before anyone declares
+        # it not lodged.
+        "submit_started_at": (filing or {}).get("submit_started_at"),
     }
 
 

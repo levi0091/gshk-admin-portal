@@ -1355,6 +1355,11 @@ tbody tr.clickable { cursor: pointer; }
 .badge.bf-registered { background: var(--bang-10);   color: var(--bang); }
 .badge.bf-failed     { background: #FEE2E2;          color: #C53030; }
 .badge.bf-superseded { background: var(--indigo-10); color: var(--t-muted); }
+/* Migration 056. A submit in flight waits in indigo; one whose answer never
+   arrived is peridot, with --peridot-ink for type as on bc-approved, because it
+   is neither refused (red) nor waiting (indigo) — somebody has to check CR. */
+.badge.bf-submitting { background: var(--indigo-10); color: var(--indigo); }
+.badge.bf-unknown    { background: var(--peridot-10); color: var(--peridot-ink); }
 
 /* Client Rejected is the one status that is neither "act on me" (carrot) nor
    "waiting on someone else" (indigo) — it is a refusal, so it gets its own red. */

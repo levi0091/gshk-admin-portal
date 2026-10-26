@@ -90,7 +90,116 @@ export default function StageSubmission({ caseRow, canSubmit, onChanged, onError
     : <ESignSubmission caseRow={caseRow} canSubmit={canSubmit} onChanged={onChanged} onError={onError} onGo={onGo} />
 }
 
-function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
+/** How often a filing in flight is asked about. Same cadence as the
+ *  verification splash (VerificationDeliveryModal). */
+export const POLL_MS = 3000
+
+const IN_FLIGHT = 'submitting'
+const UNKNOWN = 'submission_unknown'
+
+/**
+ * A request that never got an answer: the browser lost the connection, or the
+ * edge in front of the API gave up (Cloudflare answers 524 at 100 s, 504 for a
+ * gateway timeout). The submit may well have been claimed and sent to CR, so
+ * this is NOT a refusal — the stored stage says what happened.
+ */
+function noAnswer(e) {
+  return Boolean(e?.offline) || e?.status === 524 || e?.status === 504
+}
+
+/**
+ * The e-Sign half of stage 4, in one of three states (2026-10-26).
+ *
+ * THE SUBMIT RUNS IN THE BACKGROUND. `POST …/submit` claims the filing and
+ * answers 202; CR is called after the response, with a three-minute wait, and
+ * this screen polls until the stage moves. It used to wait inside the request,
+ * where CR's 25-56 s answer met a 60 s timeout and a 100 s edge — and every
+ * timeout was drawn as "The Companies Registry refused the submission" over a
+ * return CR had usually filed. Operators did what a refusal invites, and CR
+ * received the same return two and three times.
+ *
+ *   submitting          a submit is with CR — wait, and never offer another
+ *   submission_unknown  CR's answer never arrived — CR may have it; record
+ *                       what CR e-Services shows before anything else
+ *   anything else       the ordinary pre-flight and two-step gate
+ */
+function ESignSubmission(props) {
+  const { caseRow, onChanged } = props
+  const stage = caseRow.form_status?.code
+  // Set by a 202, before the case has been re-read. Cleared as soon as the
+  // stored stage moves on, so a later re-sign does not inherit it.
+  const [claimed, setClaimed] = useState(false)
+  useEffect(() => { if (stage !== 'signed') setClaimed(false) }, [stage])
+
+  if (stage === IN_FLIGHT || (claimed && stage === 'signed')) {
+    return <FilingInProgress filingId={caseRow.filing_id} onSettled={onChanged} />
+  }
+  if (stage === UNKNOWN) return <OutcomeUnknown {...props} />
+  return <ReadyToFile {...props} onClaimed={() => setClaimed(true)} />
+}
+
+/**
+ * A submit is with CR. Polls `GET /tpsi/filings/{id}` and hands back to the
+ * page the moment the stage leaves `submitting`.
+ *
+ * NO TIME LIMIT, and a failed poll is not a failed filing — the same rule as
+ * VerificationDeliveryModal. The backend bounds the wait itself: a claim older
+ * than four minutes is turned into an unknown outcome by the very read this
+ * makes, so the poll always ends on an answer the server chose.
+ */
+function FilingInProgress({ filingId, onSettled }) {
+  const [checkFailed, setCheckFailed] = useState(false)
+  const settled = useRef(onSettled)
+  settled.current = onSettled
+
+  useEffect(() => {
+    if (!filingId) return undefined
+    let live = true
+    let timer
+    async function check() {
+      try {
+        const filing = await api.get(`/tpsi/filings/${filingId}`)
+        if (!live) return
+        setCheckFailed(false)
+        const code = filing?.form_status?.code
+        if (code && code !== IN_FLIGHT) { settled.current?.(); return }
+      } catch {
+        if (live) setCheckFailed(true)
+      }
+      if (live) timer = setTimeout(check, POLL_MS)
+    }
+    timer = setTimeout(check, POLL_MS)
+    return () => { live = false; clearTimeout(timer) }
+  }, [filingId])
+
+  return (
+    <div className="card mb-16" data-testid="filing-in-progress">
+      <div className="card-hdr">
+        <div>
+          <div className="card-title">Filing with the Companies Registry…</div>
+          <div className="card-sub">
+            This can take up to three minutes. Do not submit again.
+          </div>
+        </div>
+      </div>
+      <div className="card-note" role="status" aria-live="polite">
+        CR has the return and is processing it. This page checks every few
+        seconds and moves on by itself when CR answers — the filing carries on
+        even if you leave it.
+      </div>
+      {checkFailed && (
+        <div className="card-note card-note-warn" role="status" style={{ marginTop: 8 }}>
+          <b>The latest status check did not get through — still checking.</b>
+          <div style={{ marginTop: 4 }}>
+            A failed check is not a failed filing: the return is still with CR.
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReadyToFile({ caseRow, canSubmit, onError, onGo, onClaimed, onChanged }) {
   const [preflight, setPreflight] = useState(undefined)
   const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -136,9 +245,18 @@ function ESignSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   async function submit() {
     onError(null); setBusy(true)
     try {
+      // 202: the filing is claimed and CR is being called in the background.
       await api.post(`/tpsi/filings/${filingId}/submit`, { confirm: true })
-      onChanged()
+      onClaimed()
     } catch (e) {
+      if (noAnswer(e)) {
+        // NOT A REFUSAL. The request may have reached the API, claimed the
+        // filing and gone to CR; only the stored stage can say. Re-read the
+        // case and let it decide what this card shows.
+        setAcknowledged(false)
+        onChanged()
+        return
+      }
       // ONE SURFACE. The drift refusal used to be drawn here, at the button,
       // because the page banner could show a sentence but not a table and the
       // banner was off-screen anyway. Both halves of that are fixed: the
@@ -417,38 +535,56 @@ function MoneyInput({ id, value, onChange, disabled }) {
   )
 }
 
-function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
+/**
+ * A CR receipt being typed in: the fields, the payment lines, and the body
+ * the backend wants. Shared by the off-portal form and the unknown-outcome
+ * panel (2026-10-26), which record the SAME receipt shape through the same
+ * backend machinery (`nar1_cases.with_derived_fields` + `validate_receipt`) —
+ * two copies of the form would be free to drift, and the way anyone found out
+ * would be a receipt one route accepts and the other refuses.
+ */
+function useReceiptDraft() {
   const [fields, setFields] = useState({
     caseNo: '', pymtNo: '', pymtRefNo: '', transactionDate: '',
     transactionTime: '', pymtMtd: '', totalAmount: '',
   })
   const [lines, setLines] = useState(() => [emptyLine()])
-  const [problems, setProblems] = useState([])
-  const [busy, setBusy] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  // undefined while loading, null when it could not be read, else the payload
-  // of GET /cases/{id}/manual-receipt-prefill.
-  const [prefill, setPrefill] = useState(undefined)
-  const fileInput = useRef(null)
+  return {
+    fields,
+    lines,
+    typed: RECEIPT_REQUIRED.every(k => String(fields[k] || '').trim()),
+    setField: (key, value) => setFields(f => ({ ...f, [key]: value })),
+    setLine: (i, key, value) =>
+      setLines(ls => ls.map((l, j) => (j === i ? { ...l, [key]: value } : l))),
+    // Never the first: a receipt has at least one payment line, and the
+    // backend refuses one without.
+    removeLine: i => { if (i > 0) setLines(ls => ls.filter((_, j) => j !== i)) },
+    addLine: () => setLines(ls => [...ls, emptyLine()]),
+    // In CR's own shapes — DD/MM/YYYY, HH:MM:SS, "2610.00" — so a recorded
+    // receipt renders beside one CR returned without looking like a different
+    // kind of record. The company's identifiers are NOT sent: the backend
+    // fills them (RECEIPT_DERIVED) and would discard them anyway.
+    payload: () => ({
+      caseNo: fields.caseNo.trim(),
+      pymtNo: fields.pymtNo.trim(),
+      pymtRefNo: fields.pymtRefNo.trim(),
+      transactionDate: toCrDate(fields.transactionDate),
+      transactionTime: toCrTime(fields.transactionTime),
+      pymtMtd: fields.pymtMtd.trim(),
+      totalAmount: toAmount(fields.totalAmount),
+      paymentRcptList: lines.map(l => ({
+        rcptNo: l.rcptNo.trim(),
+        revCode: l.revCode.trim(),
+        docShtFrm: l.docShtFrm.trim(),
+        amtChrg: toAmount(l.amtChrg),
+      })),
+    }),
+  }
+}
 
-  const recorded = Boolean(caseRow.manual_submitted_at)
-  const attached = Boolean(caseRow.manual_receipt_document_id)
-  // The two halves of the receipt (spec §4). They are independent: nothing
-  // parses figures out of the scan, and the scan is not derived from the
-  // figures, so neither substitutes for the other.
-  const typed = RECEIPT_REQUIRED.every(k => String(fields[k] || '').trim())
-
-  useEffect(() => {
-    if (recorded || !canSubmit) return undefined
-    let live = true
-    api.get(`/cases/${caseRow.id}/manual-receipt-prefill`)
-      .then(p => { if (live) setPrefill(p) })
-      // Not fatal: the backend fills these fields on submit whatever this
-      // screen managed to show. Only the display and the dropdowns degrade.
-      .catch(() => { if (live) setPrefill(null) })
-    return () => { live = false }
-  }, [caseRow.id, recorded, canSubmit])
-
+/** The receipt's inputs: what the portal fills, then what is typed off CR. */
+function ReceiptInputs({ draft, prefill, caseRow, busy, spaced }) {
+  const { fields, lines, setField, setLine, removeLine } = draft
   const vocab = prefill?.vocabulary || {}
   const depositMethod = prefill?.deposit_payment_method || 'Deduct from Account'
 
@@ -469,18 +605,305 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
     return derived[key] || fallback[key] || <span className="td-muted">Not on record</span>
   }
 
-  function setField(key, value) {
-    setFields(f => ({ ...f, [key]: value }))
+  return (
+    <>
+      {/* WHAT THE PORTAL ALREADY KNOWS, shown rather than asked for (Levi
+          2026-09-14). These were text boxes, so an operator retyped the BR
+          number and the company name off a receipt about a company the case
+          already names — and could get one of them wrong. */}
+      <div className="tile-sec-lbl" style={{ marginTop: spaced ? 16 : 0 }}>
+        From the case record
+      </div>
+      <div className="kv-list" data-testid="receipt-derived">
+        {DERIVED_ROWS.map(([key, label]) => (
+          <div className="kv-row" key={key}>
+            <span className="kv-key">{label}</span>
+            <span className="kv-val">{derivedValue(key)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="tile-sec-lbl">From CR's receipt</div>
+      <div className="receipt-grid">
+        {/* CR's number, typed off CR's receipt — the portal cannot know it.
+            Labelled "CR" so nobody types the portal's NAR-2026-… here. */}
+        <Field id="rc-caseNo" label="CR Case number">
+          <input id="rc-caseNo" className="f-input" autoComplete="off" spellCheck={false} value={fields.caseNo}
+                 disabled={busy} onChange={e => setField('caseNo', e.target.value)} />
+        </Field>
+        <Field id="rc-pymtNo" label="Payment number">
+          <input id="rc-pymtNo" className="f-input" autoComplete="off" spellCheck={false} value={fields.pymtNo}
+                 disabled={busy} onChange={e => setField('pymtNo', e.target.value)} />
+        </Field>
+        <Field id="rc-pymtRefNo" label="Payment reference">
+          <input id="rc-pymtRefNo" className="f-input" autoComplete="off" spellCheck={false} value={fields.pymtRefNo}
+                 disabled={busy} onChange={e => setField('pymtRefNo', e.target.value)} />
+        </Field>
+        {/* Pickers, not text (Levi 2026-09-14). A receipt is never dated in
+            the future, so the calendar stops at today in Hong Kong. */}
+        <Field id="rc-transactionDate" label="Transaction date">
+          <input id="rc-transactionDate" className="f-input" type="date"
+                 max={hongKongTodayISO()} value={fields.transactionDate}
+                 disabled={busy}
+                 onChange={e => setField('transactionDate', e.target.value)} />
+        </Field>
+        <Field id="rc-transactionTime" label="Transaction time">
+          <input id="rc-transactionTime" className="f-input" type="time" step="1"
+                 value={fields.transactionTime} disabled={busy}
+                 onChange={e => setField('transactionTime', e.target.value)} />
+        </Field>
+        <Field id="rc-pymtMtd" label="Payment method">
+          <VocabSelect id="rc-pymtMtd" label="Payment method" options={vocab.pymtMtd}
+                       value={fields.pymtMtd} disabled={busy}
+                       onChange={v => setField('pymtMtd', v)} />
+        </Field>
+        <Field id="rc-totalAmount" label="Total amount">
+          <MoneyInput id="rc-totalAmount" value={fields.totalAmount} disabled={busy}
+                      onChange={v => setField('totalAmount', v)} />
+        </Field>
+      </div>
+
+      <div className="tile-sec-lbl">Payment lines</div>
+      {lines.map((line, i) => (
+        <div key={line._key} className="pay-line" data-testid="payment-line">
+          <Field id={`rl-${i}-rcptNo`} label="Receipt no.">
+            <input id={`rl-${i}-rcptNo`} className="f-input" autoComplete="off" spellCheck={false} value={line.rcptNo}
+                   disabled={busy} onChange={e => setLine(i, 'rcptNo', e.target.value)} />
+          </Field>
+          <Field id={`rl-${i}-revCode`} label="Revenue code">
+            <VocabSelect id={`rl-${i}-revCode`} label="Revenue code"
+                         options={vocab.revCode} value={line.revCode} disabled={busy}
+                         onChange={v => setLine(i, 'revCode', v)} />
+          </Field>
+          <Field id={`rl-${i}-docShtFrm`} label="Document code">
+            <VocabSelect id={`rl-${i}-docShtFrm`} label="Document code"
+                         options={vocab.docShtFrm} value={line.docShtFrm} disabled={busy}
+                         onChange={v => setLine(i, 'docShtFrm', v)} />
+          </Field>
+          <Field id={`rl-${i}-amtChrg`} label="Amount charged">
+            <MoneyInput id={`rl-${i}-amtChrg`} value={line.amtChrg} disabled={busy}
+                        onChange={v => setLine(i, 'amtChrg', v)} />
+          </Field>
+          {/* Every line but the first can be taken back out (Levi
+              2026-09-14). The first stays: a receipt has at least one. The
+              cell is kept on the first line too, so the columns line up. */}
+          <div className="pay-line-x">
+            {i > 0 && (
+              <button type="button" className="pay-line-remove"
+                      aria-label={`Remove payment line ${i + 1}`}
+                      title="Remove this payment line"
+                      disabled={busy} onClick={() => removeLine(i)}>
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+    </>
+  )
+}
+
+/** GET /cases/{id}/manual-receipt-prefill: undefined while loading, null when
+ *  it could not be read. Not fatal — the backend fills the derived fields on
+ *  submit whatever the screen managed to show. */
+function useReceiptPrefill(caseId, enabled) {
+  const [prefill, setPrefill] = useState(undefined)
+  useEffect(() => {
+    if (!enabled) return undefined
+    let live = true
+    api.get(`/cases/${caseId}/manual-receipt-prefill`)
+      .then(p => { if (live) setPrefill(p) })
+      .catch(() => { if (live) setPrefill(null) })
+    return () => { live = false }
+  }, [caseId, enabled])
+  return prefill
+}
+
+/**
+ * CR's answer never arrived (2026-10-26). The return MAY be filed and charged,
+ * so this is never drawn as a refusal and never offers Submit. The operator
+ * looks in CR e-Services and records what is there: the receipt, or that the
+ * return is not listed — which re-opens the ordinary retry.
+ *
+ * Both answers decide whether a chargeable filing happened, so both are
+ * `tpsi:submit`, and without it neither control is rendered at all.
+ */
+function OutcomeUnknown({ caseRow, canSubmit, onChanged, onError }) {
+  const [answer, setAnswer] = useState(null)   // 'lodged' | 'not_lodged'
+  const submittedToday = Boolean(caseRow.submit_started_at)
+    && hongKongTodayISO(new Date(caseRow.submit_started_at)) === hongKongTodayISO()
+
+  return (
+    <div className="card mb-16" data-testid="outcome-unknown">
+      <div className="card-hdr">
+        <div>
+          <div className="card-title">The outcome of this filing is unknown</div>
+          <div className="card-sub">
+            The submit was sent to the Companies Registry and no answer came back.
+          </div>
+        </div>
+      </div>
+
+      <div className="card-note card-note-warn" role="status">
+        <b>We did not hear back from the Companies Registry.</b>
+        <div style={{ marginTop: 4 }}>
+          CR may have filed this return and charged the deposit account. Check
+          CR e-Services → Document Submission → Enquire Submitted Documents
+          before doing anything else.
+        </div>
+      </div>
+
+      {canSubmit ? (
+        <div className="action-bar">
+          <div className="ab-note">What does CR e-Services show for this return?</div>
+          <div className="ab-actions">
+            <button type="button" aria-pressed={answer === 'lodged'}
+                    className={`btn ${answer === 'lodged' ? 'btn-action' : 'btn-outline'}`}
+                    onClick={() => setAnswer('lodged')}>
+              CR has it — record the receipt
+            </button>
+            <button type="button" aria-pressed={answer === 'not_lodged'}
+                    className={`btn ${answer === 'not_lodged' ? 'btn-action' : 'btn-outline'}`}
+                    onClick={() => setAnswer('not_lodged')}>
+              CR does not have it
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="f-hint" style={{ marginTop: 12 }}>
+          Recording what CR shows requires the <b>tpsi:submit</b> permission —
+          either answer decides whether a chargeable filing happened. Someone
+          who holds it must complete this step.
+        </div>
+      )}
+
+      {canSubmit && answer === 'lodged' && (
+        <RecordLodged caseRow={caseRow} onChanged={onChanged} onError={onError} />
+      )}
+      {canSubmit && answer === 'not_lodged' && (
+        <DeclareNotLodged caseRow={caseRow} submittedToday={submittedToday}
+                          onChanged={onChanged} onError={onError} />
+      )}
+    </div>
+  )
+}
+
+function RecordLodged({ caseRow, onChanged, onError }) {
+  const draft = useReceiptDraft()
+  const prefill = useReceiptPrefill(caseRow.id, true)
+  const [problems, setProblems] = useState([])
+  const [busy, setBusy] = useState(false)
+
+  async function record() {
+    onError(null); setProblems([]); setBusy(true)
+    try {
+      await api.post(`/tpsi/filings/${caseRow.filing_id}/resolve`,
+                     { outcome: 'lodged', receipt: draft.payload() })
+      onChanged()
+    } catch (e) {
+      // Our own field checks belong beside the fields; CR's verdict on the
+      // case number (422) and anything else go to the page banner.
+      if (e?.status === 400 && Array.isArray(e.problems)) setProblems(e.problems)
+      else onError(describeError(e))
+    } finally {
+      setBusy(false)
+    }
   }
-  function setLine(i, key, value) {
-    setLines(ls => ls.map((l, j) => (j === i ? { ...l, [key]: value } : l)))
+
+  return (
+    <div style={{ marginTop: 16 }} data-testid="record-lodged">
+      <div className="f-hint">
+        Copy the receipt CR e-Services shows for this return. The portal checks
+        the case number with CR before recording it; nothing is charged.
+      </div>
+      {problems.length > 0 && (
+        <FaultPanel faults={problems} title="The receipt is incomplete" />
+      )}
+      <ReceiptInputs draft={draft} prefill={prefill} caseRow={caseRow} busy={busy}
+                     spaced />
+      <div className="action-bar">
+        <div className="ab-note">
+          <button type="button" className="btn btn-outline btn-sm"
+                  onClick={draft.addLine} disabled={busy}>
+            + Add payment line
+          </button>
+        </div>
+        <div className="ab-actions">
+          {!draft.typed && (
+            <span className="ab-note">Complete the receipt fields first.</span>
+          )}
+          <button type="button" className="btn btn-action"
+                  disabled={busy || !draft.typed} onClick={record}>
+            {busy ? 'Checking with CR…' : "Record CR's receipt"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DeclareNotLodged({ caseRow, submittedToday, onChanged, onError }) {
+  const [checked, setChecked] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  async function declare() {
+    onError(null); setBusy(true)
+    try {
+      await api.post(`/tpsi/filings/${caseRow.filing_id}/resolve`,
+                     { outcome: 'not_lodged', checked_cr: true })
+      onChanged()
+    } catch (e) {
+      onError(describeError(e))
+    } finally {
+      setBusy(false)
+    }
   }
-  function removeLine(i) {
-    // Never the first: a receipt has at least one payment line, and the backend
-    // refuses one without.
-    if (i === 0) return
-    setLines(ls => ls.filter((_, j) => j !== i))
-  }
+
+  return (
+    <div style={{ marginTop: 16 }} data-testid="declare-not-lodged">
+      {submittedToday && (
+        <div className="card-note card-note-warn" role="status">
+          <b>This return was submitted today.</b>
+          <div style={{ marginTop: 4 }}>
+            CR can take hours to list a return filed today, so not finding it
+            yet does not mean it was not filed. The safe choice is to wait and
+            check CR e-Services again later.
+          </div>
+        </div>
+      )}
+      <CheckRow
+        checked={checked}
+        disabled={busy}
+        onToggle={setChecked}
+        title="I checked CR e-Services and this return is not listed"
+        sub="Declaring it not lodged re-opens validate, sign and submit — a new, chargeable filing."
+      />
+      <div className="action-bar">
+        <div className="ab-actions">
+          <button type="button" className="btn btn-action"
+                  disabled={busy || !checked} onClick={declare}>
+            {busy ? 'Recording…' : 'Declare it not lodged'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
+  const draft = useReceiptDraft()
+  const { typed } = draft
+  const [problems, setProblems] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const fileInput = useRef(null)
+
+  const recorded = Boolean(caseRow.manual_submitted_at)
+  const attached = Boolean(caseRow.manual_receipt_document_id)
+  // The two halves of the receipt (spec §4). They are independent: nothing
+  // parses figures out of the scan, and the scan is not derived from the
+  // figures, so neither substitutes for the other. `typed` is the first.
+  const prefill = useReceiptPrefill(caseRow.id, !recorded && canSubmit)
 
   async function uploadReceipt(file) {
     if (!file) return
@@ -501,27 +924,8 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
   async function record() {
     onError(null); setProblems([]); setBusy(true)
     try {
-      // In CR's own shapes — DD/MM/YYYY, HH:MM:SS, "2610.00" — so a manual
-      // receipt renders beside an e-Signed one without looking like a
-      // different kind of record. The company's identifiers are NOT sent: the
-      // backend fills them (RECEIPT_DERIVED) and would discard them anyway.
-      await api.post(`/cases/${caseRow.id}/manual-submit`, {
-        receipt: {
-          caseNo: fields.caseNo.trim(),
-          pymtNo: fields.pymtNo.trim(),
-          pymtRefNo: fields.pymtRefNo.trim(),
-          transactionDate: toCrDate(fields.transactionDate),
-          transactionTime: toCrTime(fields.transactionTime),
-          pymtMtd: fields.pymtMtd.trim(),
-          totalAmount: toAmount(fields.totalAmount),
-          paymentRcptList: lines.map(l => ({
-            rcptNo: l.rcptNo.trim(),
-            revCode: l.revCode.trim(),
-            docShtFrm: l.docShtFrm.trim(),
-            amtChrg: toAmount(l.amtChrg),
-          })),
-        },
-      })
+      await api.post(`/cases/${caseRow.id}/manual-submit`,
+                     { receipt: draft.payload() })
       onChanged()
     } catch (e) {
       // The backend answers 400 with every problem at once, as a list. Showing
@@ -594,98 +998,8 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
         <FaultPanel faults={problems} title="The receipt is incomplete" />
       )}
 
-      {/* WHAT THE PORTAL ALREADY KNOWS, shown rather than asked for (Levi
-          2026-09-14). These were text boxes, so an operator retyped the BR
-          number and the company name off a receipt about a company the case
-          already names — and could get one of them wrong. */}
-      <div className="tile-sec-lbl" style={{ marginTop: problems.length ? 16 : 0 }}>
-        From the case record
-      </div>
-      <div className="kv-list" data-testid="receipt-derived">
-        {DERIVED_ROWS.map(([key, label]) => (
-          <div className="kv-row" key={key}>
-            <span className="kv-key">{label}</span>
-            <span className="kv-val">{derivedValue(key)}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="tile-sec-lbl">From CR's receipt</div>
-      <div className="receipt-grid">
-        {/* CR's number, typed off CR's receipt — the portal cannot know it.
-            Labelled "CR" so nobody types the portal's NAR-2026-… here. */}
-        <Field id="rc-caseNo" label="CR Case number">
-          <input id="rc-caseNo" className="f-input" value={fields.caseNo}
-                 disabled={busy} onChange={e => setField('caseNo', e.target.value)} />
-        </Field>
-        <Field id="rc-pymtNo" label="Payment number">
-          <input id="rc-pymtNo" className="f-input" value={fields.pymtNo}
-                 disabled={busy} onChange={e => setField('pymtNo', e.target.value)} />
-        </Field>
-        <Field id="rc-pymtRefNo" label="Payment reference">
-          <input id="rc-pymtRefNo" className="f-input" value={fields.pymtRefNo}
-                 disabled={busy} onChange={e => setField('pymtRefNo', e.target.value)} />
-        </Field>
-        {/* Pickers, not text (Levi 2026-09-14). A receipt is never dated in
-            the future, so the calendar stops at today in Hong Kong. */}
-        <Field id="rc-transactionDate" label="Transaction date">
-          <input id="rc-transactionDate" className="f-input" type="date"
-                 max={hongKongTodayISO()} value={fields.transactionDate}
-                 disabled={busy}
-                 onChange={e => setField('transactionDate', e.target.value)} />
-        </Field>
-        <Field id="rc-transactionTime" label="Transaction time">
-          <input id="rc-transactionTime" className="f-input" type="time" step="1"
-                 value={fields.transactionTime} disabled={busy}
-                 onChange={e => setField('transactionTime', e.target.value)} />
-        </Field>
-        <Field id="rc-pymtMtd" label="Payment method">
-          <VocabSelect id="rc-pymtMtd" label="Payment method" options={vocab.pymtMtd}
-                       value={fields.pymtMtd} disabled={busy}
-                       onChange={v => setField('pymtMtd', v)} />
-        </Field>
-        <Field id="rc-totalAmount" label="Total amount">
-          <MoneyInput id="rc-totalAmount" value={fields.totalAmount} disabled={busy}
-                      onChange={v => setField('totalAmount', v)} />
-        </Field>
-      </div>
-
-      <div className="tile-sec-lbl">Payment lines</div>
-      {lines.map((line, i) => (
-        <div key={line._key} className="pay-line" data-testid="payment-line">
-          <Field id={`rl-${i}-rcptNo`} label="Receipt no.">
-            <input id={`rl-${i}-rcptNo`} className="f-input" value={line.rcptNo}
-                   disabled={busy} onChange={e => setLine(i, 'rcptNo', e.target.value)} />
-          </Field>
-          <Field id={`rl-${i}-revCode`} label="Revenue code">
-            <VocabSelect id={`rl-${i}-revCode`} label="Revenue code"
-                         options={vocab.revCode} value={line.revCode} disabled={busy}
-                         onChange={v => setLine(i, 'revCode', v)} />
-          </Field>
-          <Field id={`rl-${i}-docShtFrm`} label="Document code">
-            <VocabSelect id={`rl-${i}-docShtFrm`} label="Document code"
-                         options={vocab.docShtFrm} value={line.docShtFrm} disabled={busy}
-                         onChange={v => setLine(i, 'docShtFrm', v)} />
-          </Field>
-          <Field id={`rl-${i}-amtChrg`} label="Amount charged">
-            <MoneyInput id={`rl-${i}-amtChrg`} value={line.amtChrg} disabled={busy}
-                        onChange={v => setLine(i, 'amtChrg', v)} />
-          </Field>
-          {/* Every line but the first can be taken back out (Levi
-              2026-09-14). The first stays: a receipt has at least one. The
-              cell is kept on the first line too, so the columns line up. */}
-          <div className="pay-line-x">
-            {i > 0 && (
-              <button type="button" className="pay-line-remove"
-                      aria-label={`Remove payment line ${i + 1}`}
-                      title="Remove this payment line"
-                      disabled={busy} onClick={() => removeLine(i)}>
-                ×
-              </button>
-            )}
-          </div>
-        </div>
-      ))}
+      <ReceiptInputs draft={draft} prefill={prefill} caseRow={caseRow} busy={busy}
+                     spaced={problems.length > 0} />
 
       <div className="tile-sec-lbl">CR receipt document</div>
       <input ref={fileInput} type="file" className="visually-hidden"
@@ -744,7 +1058,7 @@ function ManualSubmission({ caseRow, canSubmit, onChanged, onError, onGo }) {
               </button>
             )}
             <button type="button" className="btn btn-outline btn-sm"
-                    onClick={() => setLines(ls => [...ls, emptyLine()])} disabled={busy}>
+                    onClick={draft.addLine} disabled={busy}>
               + Add payment line
             </button>
           </div>
