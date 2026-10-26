@@ -229,7 +229,8 @@ def test_the_check_still_refuses_a_stage_nobody_writes(conn):
     ("submitting", "submitted"),
     ("submission_unknown", "submitting"),
     ("submitted", "submission_unknown"),
-    ("registered", "submitted"),
+    # ("registered", ...) is no longer writable: 054 removed that stage, and this
+    # runs at head. The index still names it for the chain between 056 and 054.
 ])
 def test_the_index_refuses_a_second_filing_cr_may_hold_on_one_case(conn, first,
                                                                     second):
