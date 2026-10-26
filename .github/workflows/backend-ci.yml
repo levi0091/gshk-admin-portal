@@ -26,12 +26,6 @@ env:
   # `uv sync` into a source build that fails for want of pg_config.
   UV_PYTHON: '3.12'
 
-env:
-  # uv picks whatever interpreter the runner has. It is 3.12 today by luck;
-  # psycopg2-binary 2.9.10 has no 3.14 wheel, so an image upgrade would turn
-  # `uv sync` into a source build that fails for want of pg_config.
-  UV_PYTHON: '3.12'
-
 jobs:
   # Unit tests — supabase client is mocked; no DB or network needed.
   unit:
