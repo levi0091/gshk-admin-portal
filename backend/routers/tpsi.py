@@ -1600,22 +1600,24 @@ async def resolve_filing(
     try:
         # Everything that can say "no" without asking CR comes first.
         filings.check_receipt_not_before_claim(filing, receipt)
-        # INSIDE the guard (S-10): a shared presenter credential that will not
-        # load is "could not verify with CR, try again", not a 500.
+        # INSIDE the guard (S-10). A shared presenter credential that will not
+        # load means CR cannot be asked; that SKIPS the check rather than
+        # refusing (Levi 2026-10-27: docStatusEnquiry is unreliable, so only a
+        # definite "no" from CR blocks) and the audit row says it was skipped.
         try:
             client = client_for(user)
         except Exception as exc:  # noqa: BLE001
-            raise filings.ResolveRefused(
-                503, "Could not verify the case number with the Companies "
-                     "Registry, so nothing was recorded. Try again in a few "
-                     "minutes.", reason="cr_unreachable") from exc
-        await run_in_threadpool(
-            filings.verify_lodged, client, case_no, receipt.get("brNo"),
-            filings.hk_date_of(filing.get("submit_started_at")))
+            client = None
+            cr_check = {"cr_check": filings.CR_CHECK_SKIPPED,
+                        "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        else:
+            cr_check = await run_in_threadpool(
+                filings.verify_lodged, client, case_no, receipt.get("brNo"))
         row = filings.resolve_lodged(filing_id, receipt)
     except filings.ResolveRefused as exc:
         raise HTTPException(exc.status, {"message": str(exc), **exc.extra})
-    await audit_auth(user, client)
+    if client is not None:
+        await audit_auth(user, client)
 
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
@@ -1627,7 +1629,9 @@ async def resolve_filing(
         new_value=filings.STAGE_SUBMITTED,
         after_state={"outcome": "lodged", "receipt": row.get("receipt")},
         metadata={"caseNo": (row.get("receipt") or {}).get("caseNo"),
-                  "totalAmount": (row.get("receipt") or {}).get("totalAmount")},
+                  "totalAmount": (row.get("receipt") or {}).get("totalAmount"),
+                  **cr_check},
     )
     return {"filing_id": filing_id, "stage": row["stage"],
-            "form_status": form_status(row), "receipt": row.get("receipt")}
+            "form_status": form_status(row), "receipt": row.get("receipt"),
+            "cr_check": cr_check["cr_check"]}

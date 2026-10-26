@@ -389,22 +389,27 @@ def test_a_stage_that_is_not_a_failure_carries_no_message():
 
 
 # --------------------------------------------------------------------------- #
-#  S-8 — a listed document must be THIS return
+#  S-8 (reversed 2026-10-27) -- what CR calls the listed document is not checked
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("name,ref,date", [
     ("ND2A", "ND2A(55)", "23/10/2026"),                  # a different form
     ("Annual Return", "NAR1(731)", "28/06/2025"),        # last year's return
 ])
-def test_a_listed_document_that_is_not_this_return_is_refused(name, ref, date):
+def test_a_listed_document_with_other_wording_no_longer_blocks_the_receipt(
+        name, ref, date):
+    """The name and date checks depended on wording CR does not specify and
+    refused a genuine return once (B3). CR said on 2026-10-27 that the enquiry
+    is unreliable: only "case does not exist" and "another company's BR number"
+    refuse now."""
     with Harness(_unknown()) as h:
         h.cr.answers["/tpsi/docStatusEnquiry"] = doc_status_reply(
             document_name=name, document_ref_no=ref, submission_date=date)
         response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
 
-        assert response.status_code == 422
-        assert response.json()["detail"]["reason"] == "not_this_return"
-        assert h.stage() == "submission_unknown"
+        assert response.status_code == 200, response.text
+        assert response.json()["cr_check"] == "listed"
+        assert h.stage() == "submitted"
 
 
 # --------------------------------------------------------------------------- #
@@ -417,17 +422,14 @@ def test_crs_own_documented_example_is_recognised_as_the_return():
     documentRefNo "NAR1(731)". The first S-8 fix looked for the string "NAR1" in
     documentName only, so it refused this -- and an operator pushed to "CR does
     not have it" files a held return again, which is the PROD incident."""
-    from datetime import date
-
     from tests.tpsi.test_reads import STATUS
 
     class Client:
         def post_soap(self, path, body):
             return STATUS
 
-    rows = filings.verify_lodged(Client(), "180256934", "11651", date(2022, 6, 28))
-    assert rows[0]["documentName"] == "Annual Return"
-    assert rows[0]["documentRefNo"] == "NAR1(731)"
+    result = filings.verify_lodged(Client(), "180256934", "11651")
+    assert result == {"cr_check": "listed"}
 
 
 def test_the_route_accepts_the_harness_default_which_is_crs_real_wording():
@@ -453,13 +455,8 @@ def test_nar1_is_recognised_by_name_or_by_reference_and_silence_is_not_refused(
     assert response.status_code == 200, response.text
 
 
-def test_the_hints_are_the_ones_the_status_poll_already_uses():
-    """One decision about what CR calls this return, not two (review 02, B3)."""
-    from services import nar1_cr_status
-    from services.tpsi import doc_status
-
-    assert nar1_cr_status._NAR1_DOCUMENT_HINTS is doc_status.NAR1_DOCUMENT_HINTS
-    assert filings.NAR1_DOCUMENT_HINTS is doc_status.NAR1_DOCUMENT_HINTS
+def test_filings_no_longer_decides_what_crs_wording_for_a_return_is():
+    assert not hasattr(filings, "NAR1_DOCUMENT_HINTS")
 
 
 def test_an_empty_document_list_is_still_accepted():
@@ -474,6 +471,7 @@ def test_an_empty_document_list_is_still_accepted():
         response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
 
     assert response.status_code == 200
+    assert response.json()["cr_check"] == "known_unlisted"
     assert h.stage() == "submitted"
 
 
@@ -516,10 +514,11 @@ def test_the_status_enquiry_escapes_what_it_is_given():
 
 
 # --------------------------------------------------------------------------- #
-#  S-10 — a credential that will not load is "try again", not a 500
+#  S-10 — a credential that will not load is never a 500 (and, since 2026-10-27,
+#  it skips the CR check rather than blocking the receipt)
 # --------------------------------------------------------------------------- #
 
-def test_resolve_answers_503_when_the_cr_credential_cannot_be_loaded():
+def test_resolve_skips_the_check_when_the_cr_credential_cannot_be_loaded():
     from unittest.mock import patch
 
     with Harness(_unknown()) as h, \
@@ -527,8 +526,10 @@ def test_resolve_answers_503_when_the_cr_credential_cannot_be_loaded():
                   side_effect=RuntimeError("shared credential unavailable")):
         response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
 
-        assert response.status_code == 503
-        assert h.stage() == "submission_unknown"
+        assert response.status_code == 200, response.text
+        assert response.json()["cr_check"] == "skipped"
+        assert h.cr.count("docStatusEnquiry") == 0
+        assert h.stage() == "submitted"
 
 
 # --------------------------------------------------------------------------- #
@@ -542,3 +543,38 @@ def test_the_mirrored_filed_date_is_crs_transaction_date():
         assert _resolve(h, outcome="lodged", receipt=RECEIPT_IN).status_code == 200
 
         assert h.store.get("form_filings", "ff1")["filed_date"] == "2026-10-23"
+
+
+# --------------------------------------------------------------------------- #
+#  2026-10-27 -- only CR's definite "no" blocks
+# --------------------------------------------------------------------------- #
+
+class _Fault(Exception):
+    def __init__(self, *messages):
+        super().__init__("; ".join(messages))
+        self.faults = [("", m) for m in messages]
+
+
+@pytest.mark.parametrize("words", [
+    "Case no does not exist.", "case no does not exist", "CASE NO DOES NOT EXIST",
+])
+def test_the_not_found_fault_is_recognised_whatever_its_case_or_full_stop(words):
+    assert filings._says_case_not_found(_Fault(words))
+
+
+@pytest.mark.parametrize("exc", [
+    _Fault("Invalid BR number"), _Fault(), RuntimeError("boom"),
+    ConnectionError("cannot reach TPSI"),
+])
+def test_any_other_error_is_not_a_negative_answer(exc):
+    assert not filings._says_case_not_found(exc)
+
+
+def test_an_unrecognised_fault_skips_the_check_rather_than_refusing():
+    with Harness(_unknown()) as h:
+        h.cr.answers["/tpsi/docStatusEnquiry"] = httpx.Response(
+            502, content=b"<html>bad gateway</html>")
+        response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["cr_check"] == "skipped"

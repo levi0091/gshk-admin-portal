@@ -313,16 +313,32 @@ def test_resolve_lodged_under_another_companys_br_number_is_422():
         assert h.stage() == "submission_unknown"
 
 
-def test_resolve_lodged_when_cr_cannot_be_reached_is_503_and_writes_nothing():
+def test_resolve_lodged_when_cr_cannot_be_reached_still_records_and_says_it_was_skipped():
+    """docStatusEnquiry is unreliable (CR, 2026-10-27), so only a definite "no"
+    from it blocks. An operator who has CR's receipt in front of them is not
+    held up by the enquiry being down -- the audit row records that it did not
+    run."""
     with Harness(_unknown()) as h:
         h.cr.answers["/tpsi/docStatusEnquiry"] = httpx.ConnectTimeout("no route")
         response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
 
-        assert response.status_code == 503
-        assert "try again" in response.json()["detail"]["message"].lower()
-        assert h.stage() == "submission_unknown"
-        assert not [e for e in h.events
+        assert response.status_code == 200, response.text
+        assert response.json()["cr_check"] == "skipped"
+        assert h.stage() == "submitted"
+        resolved = [e for e in h.events
                     if e["action_type"] == "TPSI_SUBMISSION_RESOLVED"]
+        assert resolved[0]["metadata"]["cr_check"] == "skipped"
+        assert resolved[0]["metadata"]["reason"]
+
+
+def test_resolve_lodged_records_what_the_check_found():
+    with Harness(_unknown()) as h:
+        response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
+
+        assert response.json()["cr_check"] == "listed"
+        resolved = [e for e in h.events
+                    if e["action_type"] == "TPSI_SUBMISSION_RESOLVED"]
+        assert resolved[0]["metadata"]["cr_check"] == "listed"
 
 
 def test_resolve_lodged_with_an_incomplete_receipt_is_400_listing_every_gap():

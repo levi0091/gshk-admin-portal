@@ -13,7 +13,6 @@ from decimal import Decimal, InvalidOperation
 from db.supabase import get_supabase
 from services.tpsi import client as tpsi_client
 from services.tpsi.config import FORM_FEES
-from services.tpsi.doc_status import NAR1_DOCUMENT_HINTS
 from services.tpsi.errors import TpsiError
 from services.tpsi.soap import extract_submission, parse_response, text_of
 
@@ -1890,42 +1889,67 @@ def check_receipt_not_before_claim(filing: dict, receipt: dict) -> None:
             reason="before_claim")
 
 
-def verify_lodged(client, case_no: str, br_no: str | None,
-                  claimed_on: date | None = None) -> list[dict]:
-    """Ask CR (free, `docStatusEnquiry`) whether this case number is this return.
+#: What CR answers when a case number is not one it holds. Measured on CR's TEST
+#: and PRODUCTION environments on 2026-09-17 (`999999999`, `wddw`) and again on
+#: TEST on 2026-10-27: a fault with a bean, `Case no does not exist.` -- never an
+#: empty list. A case CR does know, but has not listed yet, comes back as an
+#: EMPTY list. Matched case-insensitively and by substring, because the wording
+#: is all CR specifies and a trailing full stop is not worth refusing over.
+CASE_NOT_FOUND_FAULT = "case no does not exist"
 
-    Raises ResolveRefused:
-      422 — CR says the case number does not exist (a fault with beans); or it
-            lists documents under it for a DIFFERENT BR number; or, of the
-            documents it lists, none is an NAR1 submitted on or after the day
-            this submit was made (`claimed_on`) -- last year's NAR1, or an
-            ND2A, would otherwise let an operator record THIS year's return as
-            filed, which is a missed statutory filing rather than a duplicate;
-      503 — CR could not be asked. Nothing unverified is ever recorded.
+#: What `verify_lodged` found, recorded on the TPSI_SUBMISSION_RESOLVED row.
+CR_CHECK_LISTED = "listed"          # CR listed documents under this BR number
+CR_CHECK_EMPTY = "known_unlisted"   # CR knows the case and has listed nothing
+CR_CHECK_SKIPPED = "skipped"        # CR could not be asked, or said nothing usable
 
-    AN EMPTY LIST IS ACCEPTED. Measured on both CR environments (2026-09-17):
-    a case number CR does not hold comes back as a FAULT, never as an empty
-    list, so an empty list is positive evidence the number is real — and a
-    return filed today is routinely still unlisted hours later, which is
-    exactly when an operator resolving a timeout will ask. The document checks
-    therefore apply only when CR lists rows (Levi / conductor 2026-10-26).
+
+def _says_case_not_found(exc: Exception) -> bool:
+    words = " ".join(m for _c, m in (getattr(exc, "faults", None) or [])) or str(exc)
+    return CASE_NOT_FOUND_FAULT in words.lower()
+
+
+def verify_lodged(client, case_no: str, br_no: str | None) -> dict:
+    """Ask CR (free, `docStatusEnquiry`) whether this case number is a real one.
+
+    A CHECK FOR A TYPO, NOT A PROOF OF FILING (Levi 2026-10-27). CR has said
+    `docStatusEnquiry` is unreliable, and it is not what decides whether a return
+    was lodged -- the operator, reading CR e-Services, does that. So it can
+    REFUSE in exactly two cases, both of which are CR positively saying "no":
+
+      422 case_no_unknown -- the fault `Case no does not exist.`
+      422 br_mismatch     -- CR lists documents under the number, all of them for
+                             a DIFFERENT BR number: a real case, another company's.
+
+    Everything else passes and says so in the returned `cr_check`:
+
+      listed         CR listed documents under this company's BR number
+      known_unlisted an EMPTY list -- CR knows the case and has listed nothing,
+                     which is routine for hours after a return is filed
+      skipped        CR could not be asked (timeout, 5xx, auth, any other fault,
+                     a reply that did not parse): nothing is proved, nothing is
+                     refused, and the audit row records that the check did not run
+
+    It no longer reads `documentName` or `submissionDate`. Those checks (last
+    year's NAR1, an ND2A under the same number) depended on wording CR does not
+    specify and refused a genuine return once already (code review 02, B3); the
+    receipt's own date is still held against the claim by
+    `check_receipt_not_before_claim`, which needs no call to CR.
+
+    The order is `{"cr_check": ..., "reason": ...}`; `reason` is set when skipped.
     """
     from services.tpsi import reads
-    from services.tpsi.errors import TpsiSignatureError, TpsiValidationError
 
     try:
         rows = reads.case_status(client, case_no=case_no)
-    except (TpsiValidationError, TpsiSignatureError) as exc:
-        words = "; ".join(m for _c, m in (exc.faults or [])) or str(exc)
-        raise ResolveRefused(
-            422, f"CR does not recognise case number {case_no}: {words}. "
-                 "Check the number on CR's receipt; nothing was recorded.",
-            reason="case_no_unknown") from exc
-    except Exception as exc:  # noqa: BLE001 — anything else: CR was not asked
-        raise ResolveRefused(
-            503, "Could not verify the case number with the Companies Registry, "
-                 "so nothing was recorded. Try again in a few minutes.",
-            reason="cr_unreachable") from exc
+    except Exception as exc:  # noqa: BLE001 -- see "skipped" above
+        if _says_case_not_found(exc):
+            raise ResolveRefused(
+                422, f"CR does not recognise case number {case_no}: "
+                     f"{'; '.join(m for _c, m in (getattr(exc, 'faults', None) or [])) or exc}. "
+                     "Check the number on CR's receipt; nothing was recorded.",
+                reason="case_no_unknown") from exc
+        return {"cr_check": CR_CHECK_SKIPPED,
+                "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
 
     listed = [r for r in rows if r.get("brNo")]
     if listed and not any(_same_br(r.get("brNo"), br_no) for r in listed):
@@ -1934,34 +1958,7 @@ def verify_lodged(client, case_no: str, br_no: str | None,
                  f"{listed[0].get('brNo')}, not this company's ({br_no}). "
                  "Check the number on CR's receipt; nothing was recorded.",
             reason="br_mismatch")
-
-    ours = [r for r in listed if _same_br(r.get("brNo"), br_no)]
-    if ours:
-        def is_this_return(row: dict) -> bool:
-            # CR's own example calls it documentName "Annual Return" with
-            # documentRefNo "NAR1(731)", so BOTH fields are read and the
-            # hints are the status poll's (code review 02, B3). A row that
-            # says nothing in either is not held against the receipt.
-            name = str(row.get("documentName") or "").strip().upper()
-            ref = str(row.get("documentRefNo") or "").strip().upper()
-            if (name or ref) and not any(
-                    h in name or h in ref for h in NAR1_DOCUMENT_HINTS):
-                return False
-            filed = _cr_date(row.get("submissionDate"))
-            # A date nobody can read does not PROVE the document predates the
-            # claim, so it is not held against it; the name still has to match.
-            return not (claimed_on and filed and filed < claimed_on)
-
-        if not any(is_this_return(r) for r in ours):
-            seen = "; ".join(
-                f"{r.get('documentName') or 'a document'} "
-                f"({r.get('submissionDate') or 'no date'})" for r in ours)
-            raise ResolveRefused(
-                422, f"CR lists case number {case_no}, but not as an NAR1 "
-                     f"submitted on or after this submit ({seen}). That is "
-                     "not this return; nothing was recorded.",
-                reason="not_this_return")
-    return rows
+    return {"cr_check": CR_CHECK_LISTED if listed else CR_CHECK_EMPTY}
 
 
 def resolve_lodged(filing_id: str, receipt: dict) -> dict:
