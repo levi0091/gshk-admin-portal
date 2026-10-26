@@ -113,6 +113,18 @@ const UNKNOWN = 'submission_unknown'
  * Everything else is a 4xx our API answered with a body -- a gate refusing
  * before CR was contacted -- and is drawn as the refusal it is.
  */
+/** What the banner says when the submit's answer could not be read, in
+ *  `describeError`'s shape. Deliberately neither "refused" nor "nothing was
+ *  filed": the screen cannot know either, which is the point. */
+function unreadAnswer() {
+  return {
+    message: 'The page did not get a clear answer to Submit. It has reloaded '
+      + 'from the saved status; if the filing is not shown as in progress, '
+      + 'nothing was sent.',
+    problems: null, hint: null, retry: false,
+  }
+}
+
 function noAnswer(e) {
   if (e?.offline) return true
   if (e?.status >= 500) return true
@@ -268,6 +280,13 @@ function ReadyToFile({ caseRow, canSubmit, onError, onGo, onClaimed, onChanged }
         // case and let it decide what this card shows.
         setAcknowledged(false)
         onChanged()
+        // ...BUT SAY SO (code review 02, S-11). A 5xx is also what a failure
+        // BEFORE the claim looks like -- the balance read, a credential that
+        // would not load, a database error -- and reloading in silence put the
+        // operator back on the same ready card with no explanation. Called
+        // AFTER onChanged, which clears the banner as it starts. A 409 that
+        // says somebody else holds the filing already carries its own words.
+        onError(e?.status === 409 ? describeError(e) : unreadAnswer())
         return
       }
       // ONE SURFACE. The drift refusal used to be drawn here, at the button,

@@ -85,6 +85,23 @@ async function pressSubmit(user) {
   await user.click(submitButton())
 }
 
+/** The last thing the stage handed UP to the page banner (ignoring the
+ *  `onError(null)` that clears it when Submit is pressed). */
+const lastShown = () => onError.mock.calls.map(c => c[0]).filter(Boolean).at(-1)
+
+/** CODE REVIEW 02, S-11. A submit answer we cannot read still reloads the case,
+ *  but it must SAY so: a 5xx can also be a failure BEFORE the claim (the
+ *  balance read, a missing credential), and a silent reload to the same ready
+ *  card left the operator pressing Submit again with no explanation. */
+function expectReloadedWithNotice() {
+  const shown = lastShown()
+  expect(shown, 'the screen reloaded in silence').toBeTruthy()
+  expect(shown.message).toMatch(/did not get a clear answer/)
+  expect(shown.message).toMatch(/nothing was sent/)
+  // Never the lie the old 502 wording told, and never "refused".
+  expect(shown.message).not.toMatch(/refus|nothing was filed|nothing was charged/i)
+}
+
 const pollsOf = () => get.mock.calls.filter(([u]) => u === '/tpsi/filings/f1').length
 
 // --------------------------------------------------------------------------- #
@@ -158,7 +175,7 @@ describe('a submit that has been claimed', () => {
     await pressSubmit(user)
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled())
-    expect(onError).not.toHaveBeenCalledWith(expect.anything())
+    expectReloadedWithNotice()
     expect(screen.queryByText(/refused/i)).not.toBeInTheDocument()
   })
 
@@ -174,7 +191,7 @@ describe('a submit that has been claimed', () => {
       await pressSubmit(user)
 
       await waitFor(() => expect(onChanged).toHaveBeenCalled())
-      expect(onError).not.toHaveBeenCalledWith(expect.anything())
+      expectReloadedWithNotice()
     })
 
   it.each(['already_filing', 'filing_locked'])(
@@ -187,7 +204,7 @@ describe('a submit that has been claimed', () => {
       await pressSubmit(user)
 
       await waitFor(() => expect(onChanged).toHaveBeenCalled())
-      expect(onError).not.toHaveBeenCalledWith(expect.anything())
+      expect(lastShown().message).toBe("already being filed")
     })
 
   it('the edge giving up (524) is treated the same way', async () => {
@@ -197,7 +214,7 @@ describe('a submit that has been claimed', () => {
     await pressSubmit(user)
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled())
-    expect(onError).not.toHaveBeenCalledWith(expect.anything())
+    expectReloadedWithNotice()
   })
 
   it('a gate refusal before the claim is still drawn as one', async () => {
