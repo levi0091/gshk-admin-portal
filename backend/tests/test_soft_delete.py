@@ -271,15 +271,10 @@ def test_a_register_name_does_not_block_when_a_live_twin_would_still_resolve_it(
 
 @pytest.mark.parametrize("status, blocks", [
     ("client_verification", True), ("awaiting_client", True),
-    ("data_verification", True), ("signing", True), ("submission", True),
-    ("filed", False), ("closed", False),
-    # The deploy window: the old view still says a CR code until 054 runs.
-    ("cr_not_checked", False), ("cr_registered", False),
+    ("data_verification", True), ("cr_pending", True), ("cr_rejected", True),
+    ("cr_registered", False), ("closed", False),
 ])
-def test_a_case_blocks_until_it_is_closed_or_filed(status, blocks):
-    """FILED IS FINISHED (Levi 2026-10-17). It used to wait for CR to register
-    the return, which CR will never tell us about; the receipt is the last
-    thing anybody will know."""
+def test_a_case_blocks_until_it_is_closed_or_cr_registered_it(status, blocks):
     sb = _company_sb(entity_officers=[], company_secretaries=[],
                      nar1_case_registry=[{"id": "k1", "entity_id": "gshk",
                                           "case_no": "NAR-2026-0001",

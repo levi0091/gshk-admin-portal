@@ -37,7 +37,6 @@ dev = [
     # Test-only: the field-map tests read CR's specimens with it. Nothing the
     # server does at runtime touches pymupdf.
     "pymupdf>=1.28.2",
-    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]

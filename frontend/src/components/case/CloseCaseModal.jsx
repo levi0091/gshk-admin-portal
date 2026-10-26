@@ -28,15 +28,8 @@ import { describeError } from './workflow.js'
  * The screen never claims the close succeeded until the server says so: the
  * page re-reads the case rather than assuming, exactly as every stage does.
  */
-export default function CloseCaseModal({
-  caseRow: c, onClose, onClosed,
-  // An officer-change case closes through its own route (same rules, same body).
-  closePath = `/cases/${c.id}/close`,
-  // A reason the screen already knows (Jacqueline A7: "closed pending further
-  // instructions"). Still editable, still required.
-  initialReason = '',
-}) {
-  const [reason, setReason] = useState(initialReason)
+export default function CloseCaseModal({ caseRow: c, onClose, onClosed }) {
+  const [reason, setReason] = useState('')
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -54,7 +47,7 @@ export default function CloseCaseModal({
     setBusy(true)
     setError(null)
     try {
-      await api.post(closePath, { reason: reason.trim() })
+      await api.post(`/cases/${c.id}/close`, { reason: reason.trim() })
       await onClosed()
     } catch (e) {
       // Rendered HERE, not bubbled to the page banner. The page is about to

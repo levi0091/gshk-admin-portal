@@ -241,7 +241,7 @@ describe('CompanyProfilePage', () => {
           { id: 'c1', case_no: 'NAR-2026-0041', return_year: 2026,
             workflow_status: { code: 'signing', label: 'Signing' } },
           { id: 'c2', case_no: 'NAR-2025-0007', return_year: 2025,
-            workflow_status: { code: 'filed', label: 'Filed' } },
+            workflow_status: { code: 'cr_registered', label: 'Registered by CR' } },
         ],
         nnc1: [],
       },

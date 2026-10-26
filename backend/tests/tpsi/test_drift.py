@@ -247,6 +247,19 @@ def test_an_unmapped_element_falls_back_to_its_own_name():
 #  The gate inside filings.submit
 # --------------------------------------------------------------------------- #
 
+@pytest.fixture(autouse=True)
+def _no_ledger_writes():
+    """`submit` now reads the case-level lock and claims the row (2026-10-26),
+    both through Supabase. These tests are about the drift gate, so the lock
+    reads as clear and the claim and outcome writes land nowhere — patched
+    rather than left to reach a real database."""
+    with patch("services.tpsi.filings.locked_filing_on_case", return_value=None), \
+         patch("services.tpsi.filings._claim"), \
+         patch("services.tpsi.filings._claim_is_ours", return_value=True), \
+         patch("services.tpsi.filings._update_where", return_value=True):
+        yield
+
+
 def _filing(**over):
     # `signed_xml` already carries a depositAccountNo, so `submit` sends it
     # verbatim instead of routing through `append_deposit_account` — which
@@ -416,7 +429,7 @@ def test_a_non_nar1_filing_is_not_drift_checked():
         # is why the gate cannot fire here. See `filings.assess`.
         assess.return_value = (
             MagicMock(amount=0, band="on time", certain=True), None)
-        with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={}):
+        with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={"caseNo": "1"}):
             filings.submit(client, "f1", True, "N00061980009")
     rebuild.assert_not_called()
 
@@ -530,28 +543,3 @@ def test_an_operational_failure_carries_no_problem_list():
             drift.current_xml_for(_filing())
 
     assert exc.value.problems == []
-
-
-def test_nar1_submit_refused_after_an_nd2a_changed_the_directors():
-    """Jacqueline's ND2A question 3 / Levi 2026-10-05: the NAR1 was validated
-    with director p1; an ND2A then filed p1's resignation and p2's appointment,
-    which moved the company record. Submit must stop and say what moved —
-    before any CR call — rather than file the board the client approved."""
-    after_nd2a = graph(
-        officers=[{**DIRECTOR, "person_id": "p2"}],
-        persons={"p2": person("p2", full_name="WONG SIU MING", surname="WONG",
-                              given_names="SIU MING", full_name_zh="黃小明")},
-        addresses=BASE["addresses"],
-    )
-    client = MagicMock()
-    with patch("services.tpsi.filings.get_filing", return_value=_filing()), \
-         patch("services.tpsi.filings.case_of", return_value={}), \
-         patch("services.tpsi.drift.current_xml_for", return_value=xml_for(after_nd2a)):
-        with pytest.raises(filings.DriftDetected) as exc:
-            filings.submit(client, "f1", True, "N00061980009")
-    fields = [d["field"] for d in exc.value.differences]
-    assert any("Director" in f for f in fields), fields
-    assert any(d["validated"] and "CHAN" in str(d["validated"]).upper()
-               or d["current"] and "WONG" in str(d["current"]).upper()
-               for d in exc.value.differences)
-    client.post_form.assert_not_called()

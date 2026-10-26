@@ -10,7 +10,7 @@ import CasesPane, { caseSummary, orderedCases, stageOf } from './CasesPane.jsx'
 // before it was aligned with the dashboard — both must render.
 const signing = {
   id: 'c-sign', case_no: 'NAR-2026-0064', ar_period_year: null, return_year: 2026,
-  workflow_status: { code: 'signing', label: 'Signing', off_portal: false },
+  workflow_status: { code: 'signing', label: 'Signing', off_portal: false, cr_text: null },
   created_by_name: 'Levi Z.', created_at: '2026-08-31T08:19:50.065998+00:00',
   updated_at: '2026-09-07T03:41:55.59277+00:00',
 }
@@ -26,9 +26,9 @@ const noYear = {
   created_by_name: 'roy', created_at: '2026-09-18T08:56:41+00:00',
   updated_at: '2026-09-18T08:56:41+00:00',
 }
-const filed = {
+const registered = {
   id: 'c-reg', case_no: 'NAR-2025-0031', ar_period_year: 2024, return_year: 2024,
-  workflow_status: { code: 'filed', label: 'Filed' },
+  workflow_status: { code: 'cr_registered', label: 'Registered by CR', cr_text: 'Registered' },
   created_by_name: 'Levi Z.', created_at: '2025-03-01T02:00:00+00:00',
   updated_at: '2025-03-19T02:00:00+00:00',
 }
@@ -84,14 +84,14 @@ describe('CasesPane', () => {
     expect(within(card).getByText(/07 Sept? 2026.*11:41/)).toBeInTheDocument()
   })
 
-  it('collapses finished cases — filed, or closed', () => {
-    render(<CasesPane cases={{ nar1: [filed, closed, signing] }} />)
+  it('collapses finished cases — registered by CR, or closed', () => {
+    render(<CasesPane cases={{ nar1: [registered, closed, signing] }} />)
 
     expect(headerOf('NAR-2025-0031')).toHaveAttribute('aria-expanded', 'false')
     expect(headerOf('NAR-2026-0080')).toHaveAttribute('aria-expanded', 'false')
     expect(within(cardFor('NAR-2025-0031')).queryByText('Created')).not.toBeInTheDocument()
     // The status still reads while collapsed.
-    expect(within(cardFor('NAR-2025-0031')).getByText('Filed')).toBeInTheDocument()
+    expect(within(cardFor('NAR-2025-0031')).getByText('Registered by CR')).toBeInTheDocument()
   })
 
   it('keeps a client rejection open — somebody has to act on it', () => {
@@ -128,33 +128,12 @@ describe('CasesPane', () => {
 
     await user.click(screen.getByRole('button', { name: /Open case/ }))
 
-    // The second argument carries the form, so the caller routes an ND2 to its
-    // own screen (migration 050).
-    expect(onOpen).toHaveBeenCalledWith('c-sign', { id: 'c-sign', form_code: 'Nar1' })
+    expect(onOpen).toHaveBeenCalledWith('c-sign')
   })
 
-  it('draws an ND2A as its own form, with its File by date, on the same five stages', async () => {
-    const user = userEvent.setup()
-    const onOpen = vi.fn()
-    const nd2a = {
-      id: 'k1', case_no: 'ND2A-2026-0001', form_code: 'Nd2a', case_type: 'ND2A',
-      workflow_status: { code: 'data_verification', label: 'Data Verification' },
-      filing_deadline: '2026-10-13', created_by_name: 'Levi Z.',
-      created_at: '2026-09-30T02:00:00+00:00', updated_at: '2026-09-30T02:00:00+00:00',
-    }
-    render(<CasesPane cases={{ nar1: [nd2a] }} onOpen={onOpen} />)
-    expect(screen.getByText('ND2A')).toBeInTheDocument()
-    expect(screen.getByText('Officer appointment / cessation')).toBeInTheDocument()
-    expect(screen.queryByText(/not set/)).not.toBeInTheDocument()
-    expect(screen.getByText('File by')).toBeInTheDocument()
-    expect(screen.getByRole('img', { name: 'Stage 2 of 5: Data Verification' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /Open case/ }))
-    expect(onOpen).toHaveBeenCalledWith('k1', { id: 'k1', form_code: 'Nd2a' })
-  })
-
-  it('draws where the case is on the five stages', () => {
+  it('draws where the case is on the six stages', () => {
     render(<CasesPane cases={{ nar1: [signing] }} />)
-    expect(screen.getByRole('img', { name: 'Stage 3 of 5: Signing' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Stage 3 of 6: Signing' })).toBeInTheDocument()
   })
 
   it('separates in-progress from finished only when there are both', () => {
@@ -170,7 +149,7 @@ describe('CasesPane', () => {
 
 describe('orderedCases', () => {
   it('puts in-progress first, then the newest return year, undecided years on top', () => {
-    const ids = orderedCases({ nar1: [filed, awaiting, closed, signing, noYear] })
+    const ids = orderedCases({ nar1: [registered, awaiting, closed, signing, noYear] })
       .map(r => r.id)
     expect(ids).toEqual(['c-new', 'c-sign', 'c-wait', 'c-reg', 'c-closed'])
   })
@@ -184,25 +163,19 @@ describe('stageOf', () => {
     ['data_verification', 2, 'act'],
     ['signing', 3, 'act'],
     ['submission', 4, 'act'],
-    // Filed is the last stage, finished (Levi 2026-10-17: no CR status).
-    ['filed', 5, 'ok'],
+    // Stage 6 takes CR's tone from the stepper's own table.
+    ['cr_not_checked', 6, 'wait'],
+    ['cr_pending', 6, 'info'],
+    ['cr_approved', 6, 'warn'],
+    ['cr_registered', 6, 'ok'],
+    ['cr_rejected', 6, 'bad'],
+    ['cr_unknown', 6, 'wait'],
   ])('%s is stage %i, tone %s', (code, stage, tone) => {
     expect(stageOf(code)).toEqual({ stage, tone })
   })
 
   it('gives a closed case no position — it stopped wherever it stopped', () => {
     expect(stageOf('closed')).toBeNull()
-  })
-
-  it('gives an old CR code no position', () => {
-    expect(stageOf('cr_registered')).toBeNull()
-  })
-
-  it('draws a filed case with all five stages done', async () => {
-    render(<CasesPane cases={{ nar1: [filed] }} />)
-    await userEvent.click(headerOf('NAR-2025-0031'))
-    const bar = screen.getByRole('img', { name: 'Stage 5 of 5: Confirmation' })
-    expect(bar.querySelectorAll('.case-stage.done')).toHaveLength(5)
   })
 })
 

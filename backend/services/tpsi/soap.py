@@ -46,8 +46,9 @@ def _local(tag: str) -> str:
 def wrap_envelope(body_xml: str) -> bytes:
     """Envelope + Body around an already-built body element.
 
-    Used directly by the read API, whose body is its own operation element
-    (cr:enquireDepositAccount) rather than a submission.
+    Used directly by the read APIs, whose bodies are their own operation
+    elements (cr:enquireDepositAccount, cr:docStatusEnquiry) rather than a
+    submission.
     """
     return (
         f'<soap:Envelope xmlns:soap="{SOAP_NS}">'

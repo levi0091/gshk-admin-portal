@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 import { WorkflowBadge } from './CaseStatusBadge.jsx'
 import StatusBadge from './StatusBadge.jsx'
-import { STAGE_LABELS } from './case/workflow.js'
+import { CR_TONE, STAGE_LABELS } from './case/workflow.js'
 import { formatDate, formatDateTime } from '../lib/format.js'
 
 /**
@@ -21,10 +21,11 @@ import { formatDate, formatDateTime } from '../lib/format.js'
  * sits under the title, never in the year's place.
  */
 
-//: Where the five-stage workflow puts each code, and the colour of that stage:
-//: `act` is ours to do, `info` is waiting on somebody else, `bad` is a refusal,
-//: `ok` is finished. Same semantics as the dashboard badges. `filed` is the last
-//: stage, done — CR reports nothing after the receipt (Levi 2026-10-17).
+//: Where OUR five-stage part of the workflow puts each code, and the colour of
+//: that stage: `act` is ours to do, `info` is waiting on somebody else, `bad` is
+//: a refusal. Same semantics as the dashboard badges. Anything with CR (stage 6)
+//: takes its tone from `workflow.CR_TONE`, the one table that decides what CR's
+//: answer looks like on the stepper — this bar must not have a second opinion.
 const OUR_STAGE = {
   client_verification: [1, 'act'],
   awaiting_client: [1, 'info'],
@@ -32,18 +33,20 @@ const OUR_STAGE = {
   data_verification: [2, 'act'],
   signing: [3, 'act'],
   submission: [4, 'act'],
-  filed: [5, 'ok'],
 }
 
 //: Codes after which nothing more will happen on the case. These collapse.
 //: `client_rejected` is NOT one: the client said no, and somebody now has to
 //: fix the data and restart verification — hiding it would hide the work.
-const NAR1_ENDED = new Set(['filed', 'closed'])
+//: `cr_pending` / `cr_approved` / `cr_not_checked` are not either: the return is
+//: still on its way to the register.
+const NAR1_ENDED = new Set(['cr_registered', 'cr_rejected', 'closed'])
 const NNC1_ENDED = new Set(['approved', 'rejected'])
 
-/** `{stage, tone}` on the five-stage bar, or null for a code with no position. */
+/** `{stage, tone}` on the six-stage bar, or null for a code with no position. */
 export function stageOf(code) {
   if (OUR_STAGE[code]) return { stage: OUR_STAGE[code][0], tone: OUR_STAGE[code][1] }
+  if (code in CR_TONE) return { stage: STAGE_LABELS.length, tone: CR_TONE[code] }
   return null
 }
 
@@ -52,30 +55,12 @@ function codeOf(status) {
   return typeof status === 'string' ? status : status.code || null
 }
 
-//: ND2A / ND2B (migration 050) live in the NAR1 table, so they arrive in
-//: `cases.nar1`; `form_code` tells them apart. Same five stages, same codes.
-const OFFICER_FORMS = {
-  Nd2a: { code: 'ND2A', title: 'Officer appointment / cessation' },
-  Nd2b: { code: 'ND2B', title: "Change of officer's particulars" },
-}
-
 /** One shape for both case tables, so the card does not branch on its source. */
 function normalise(c, kind) {
-  if (kind === 'nar1' && OFFICER_FORMS[c.form_code]) {
-    const code = codeOf(c.workflow_status)
-    return {
-      id: c.id, kind: 'nd2', formCode: c.form_code, code, status: c.workflow_status,
-      year: null, caseNo: c.case_no,
-      createdAt: c.created_at, createdBy: c.created_by_name, updatedAt: c.updated_at,
-      closedAt: c.closed_at, closedBy: c.closed_by_name, closedReason: c.closed_reason,
-      fileBy: c.filing_deadline || null,
-      ended: NAR1_ENDED.has(code),
-    }
-  }
   if (kind === 'nar1') {
     const code = codeOf(c.workflow_status)
     return {
-      id: c.id, kind, formCode: 'Nar1', code, status: c.workflow_status,
+      id: c.id, kind, code, status: c.workflow_status,
       // Resolved by the API (a legacy case stores no year but was filed for
       // one); the stored column is the fallback for an older payload.
       year: c.return_year ?? c.ar_period_year ?? null,
@@ -151,18 +136,14 @@ export default function CasesPane({ cases, onOpen }) {
 function CaseCard({ row, open, onToggle, onOpen }) {
   const bodyId = `case-body-${row.id}`
   const nar1 = row.kind === 'nar1'
-  const officer = row.kind === 'nd2' ? OFFICER_FORMS[row.formCode] : null
-  // Both run the five-stage workflow, so both draw the bar and the badge.
-  const staged = nar1 || Boolean(officer)
-  const position = staged ? stageOf(row.code) : null
+  const position = nar1 ? stageOf(row.code) : null
 
   return (
     <article className={`case-card${row.ended ? ' ended' : ''}${open ? ' open' : ''}`}>
       <button type="button" className="case-card-hdr" aria-expanded={open}
               aria-controls={bodyId} onClick={onToggle}>
         <span className="case-year">
-          {officer ? <span className="case-year-code">{officer.code}</span>
-            : !nar1 ? <span className="case-year-code">NNC1</span>
+          {!nar1 ? <span className="case-year-code">NNC1</span>
             : row.year ? (
               <><span className="visually-hidden">Return year </span>{row.year}</>
             ) : (
@@ -173,15 +154,13 @@ function CaseCard({ row, open, onToggle, onOpen }) {
             )}
         </span>
         <span className="case-card-titles">
-          <span className="case-card-title">
-            {officer ? officer.title : nar1 ? 'Annual Return' : 'Incorporation'}
-          </span>
+          <span className="case-card-title">{nar1 ? 'Annual Return' : 'Incorporation'}</span>
           <span className="case-card-no">
             {row.caseNo || `Case ${String(row.id).slice(0, 8)}`}
           </span>
         </span>
         <span className="case-card-status">
-          {staged ? <WorkflowBadge status={row.status} /> : <StatusBadge status={row.status} />}
+          {nar1 ? <WorkflowBadge status={row.status} /> : <StatusBadge status={row.status} />}
         </span>
         <svg className="case-card-chev" width="12" height="12" viewBox="0 0 12 12"
              aria-hidden="true">
@@ -198,8 +177,7 @@ function CaseCard({ row, open, onToggle, onOpen }) {
           <div className="case-card-lead">
             {position ? <StageBar {...position} /> : <span />}
             {onOpen && (
-              <button type="button" className="case-open"
-                      onClick={() => onOpen(row.id, { id: row.id, form_code: row.formCode })}>
+              <button type="button" className="case-open" onClick={() => onOpen(row.id)}>
                 Open case <span aria-hidden="true">→</span>
               </button>
             )}
@@ -212,12 +190,6 @@ function CaseCard({ row, open, onToggle, onOpen }) {
               </dd>
               <dt>Updated</dt>
               <dd>{formatDateTime(row.updatedAt)}</dd>
-              {row.fileBy && (
-                <>
-                  <dt>File by</dt>
-                  <dd>{formatDate(row.fileBy)}</dd>
-                </>
-              )}
               {row.closedAt && (
                 <>
                   <dt>Closed</dt>
@@ -236,10 +208,10 @@ function CaseCard({ row, open, onToggle, onOpen }) {
 }
 
 /**
- * The five stages as one thin bar — the case screen's stepper, at a size that
+ * The six stages as one thin bar — the case screen's stepper, at a size that
  * fits a dozen cases down a side pane. Done stages are green; the current one
- * wears its tone; the rest are empty. `filed` is the one state where the last
- * stage is done rather than current.
+ * wears its tone; the rest are empty. `cr_registered` is the one state where
+ * the last stage is done rather than current.
  *
  * No printed "Stage 3 of 6": the badge beside the year already says where the
  * case is, in words. The count is the bar's label and its tooltip.

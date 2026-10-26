@@ -20,7 +20,6 @@ statutory return and that CR would accept.
 import asyncio
 
 from db.supabase import get_supabase
-from services import appointment_links
 
 
 def _normalise_name(value) -> str:
@@ -164,8 +163,6 @@ async def load_entity_graph(entity_id: str) -> dict:
         [entity.get("registered_address_id")]
         + [p.get("residential_address_id") for p in persons.values()]
         + [c.get("registered_address_id") for c in corporate_entities.values()]
-        # The residential address an appointment links to (migration 053).
-        + sorted(appointment_links.extra_address_ids(officers or []))
         if aid
     }
     address_rows = await q(
@@ -229,18 +226,6 @@ async def load_entity_graph(entity_id: str) -> dict:
     identity_documents: dict[str, list] = {}
     for doc in identity_rows or []:
         identity_documents.setdefault(doc["person_id"], []).append(doc)
-    # Primary first, then oldest: the mapper files the FIRST document of a type,
-    # and Postgres returns rows in no promised order, so without this a person
-    # holding two passports could be filed with the one the profile does NOT
-    # call primary. `person_registry` and `audit_subject` already order this way
-    # (review finding 3, 2026-10-05).
-    for docs in identity_documents.values():
-        docs.sort(key=lambda d: (not d.get("is_primary"), str(d.get("created_at") or "")))
-    # Each person as THIS company files them (Levi 2026-10-05, migration 053):
-    # the identity document and residential address linked to their
-    # appointment here, else their defaults — so the NAR1, its drift check and
-    # an ND2A cessation all read the same per-company particulars.
-    appointment_links.apply_to_graph(persons, identity_documents, officers or [])
 
     return {
         "entity": entity,

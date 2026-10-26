@@ -270,8 +270,10 @@ def compare(validated_xml: str, current_xml: str) -> list:
 def _run_async(coro_factory):
     """Await a coroutine from synchronous code that is itself inside a loop.
 
-    `filings.submit` is sync and is called directly from an async route handler,
-    so a loop is already running on this thread and `asyncio.run` would raise.
+    `filings.begin_submit` is sync. The submit route runs it in the thread pool
+    (`run_in_threadpool`), which keeps it off the event loop, but a sync caller
+    can still sit on a thread that has a loop running (a test, or any future
+    async caller), and there `asyncio.run` would raise.
     Running it on a short-lived thread of its own is what lets this gate reuse
     `load_entity_graph` VERBATIM — and reusing it is the point. A second,
     sequential loader written for this path would be a second definition of

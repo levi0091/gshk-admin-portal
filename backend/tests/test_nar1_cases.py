@@ -392,15 +392,20 @@ async def test_list_dashboard_returns_the_badge_in_derives_shape():
     """The dashboard and the case detail must not disagree on the key names of
     the badge, let alone on its value."""
     sb = _FakeSupabase(
-        rows=[_registry_row(workflow_status="filed",
-                            workflow_off_portal=True)],
+        rows=[_registry_row(workflow_status="cr_registered",
+                            workflow_off_portal=True,
+                            cr_doc_status="Registered")],
         count=1,
     )
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         result = await nar1_cases.list_dashboard()
     assert result["rows"][0]["workflow_status"] == {
-        "code": "filed", "label": "Filed",
+        "code": "cr_registered", "label": "Registered by CR",
         "off_portal": True, "overdue": False,
+        # CR's own words travel with the badge: on `cr_unknown` they are the
+        # only informative thing there is, and the listing must not have to open
+        # each case to find them.
+        "cr_text": "Registered",
     }
 
 
@@ -667,7 +672,7 @@ def test_composite_workflow_status_stays_the_derived_OBJECT():
     """
     sb = _sb_with_registry(
         {"id": "c1", "manual_receipt": None}, [],
-        {"company_name": "Harbour Tech Ltd.", "workflow_status": "filed"},
+        {"company_name": "Harbour Tech Ltd.", "workflow_status": "cr_registered"},
     )
     with patch("services.nar1_cases.get_supabase", return_value=sb):
         result = nar1_cases.composite("c1")
@@ -770,15 +775,3 @@ def test_filed_on_is_empty_before_anything_is_filed():
     one is the misstatement this function exists to prevent."""
     assert nar1_cases.filed_on({"stage": "validated"}, {"id": "c1"}) == ""
     assert nar1_cases.filed_on(None, None) == ""
-
-
-def test_nar1_composite_carries_other_open_cases():
-    """Jacqueline AQ3: the NAR1's Submission stage names an open ND2A/ND2B."""
-    case_row = {"id": "c1", "entity_id": "e1", "manual_receipt": None}
-    sb = _sb_with(case_row, [])
-    others = [{"id": "k2", "case_no": "ND2B-2026-0003", "case_type": "ND2B"}]
-    with patch("services.nar1_cases.get_supabase", return_value=sb), \
-         patch("services.nar1_cases.other_open_cases", return_value=others) as other:
-        result = nar1_cases.composite("c1")
-    assert result["other_open_cases"] == others
-    other.assert_called_once_with("e1", exclude="c1")

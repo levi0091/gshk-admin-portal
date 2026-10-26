@@ -40,13 +40,21 @@ const MONEY_FIELDS = new Set(['totalAmount'])
  * have already been there and upon completion there should be no further
  * updates").
  *
- * THE END OF THE WORKFLOW (Levi 2026-10-17). From 2026-09-16 a sixth stage,
- * CR Status, followed this one to show what CR's register said; CR will not
- * report that after filing, so the receipt — delivery, payment, CR's case
- * number — is the last fact the portal can know, and this stage is where the
- * case ends.
+ * There used to be a "What CR holds now" card here with a Check CR status
+ * button. It was removed because it could not do the job its own copy claimed —
+ * nothing persisted, nothing ever reached `registered`, and the case already
+ * read Completed. Since 2026-09-16 all three are false again, and the answer is
+ * NOT to put the card back here: what CR did with the return is stage 6's
+ * subject, and this stage is the receipt. Two stages, two questions.
+ *
+ * WHAT CHANGED HERE. This screen used to read `form_status.code ===
+ * 'registered'` to decide its own headline, and that stage was written by
+ * nothing — so the "filed & confirmed by CR" wording was unreachable and the
+ * Confirmation step sat permanently at IN PROGRESS beneath a receipt. The
+ * headline is now about DELIVERY, which is the thing the receipt actually
+ * proves, and the register's verdict is one click away.
  */
-export default function StageConfirmation({ caseRow }) {
+export default function StageConfirmation({ caseRow, onGo }) {
   const navigate = useNavigate()
 
   const receipt = caseRow.receipt || null
@@ -73,7 +81,8 @@ export default function StageConfirmation({ caseRow }) {
               The return
               {caseRow.company_name ? <> for <b>{caseRow.company_name}</b></> : null}
               {' '}has been delivered and the Companies Registry issued the
-              receipt below.
+              receipt below. What CR has done with it since is on{' '}
+              <b>CR Status</b>.
             </div>
           </div>
         </div>
@@ -147,9 +156,14 @@ export default function StageConfirmation({ caseRow }) {
         )}
       </div>
 
-      {/* The last stage, so the way on is out of the case. */}
+      {/* Every v11 panel offers the next stage. This one no longer dead-ends
+          in "Back to Post-incorporation": CR's own answer is the next thing to
+          read, and it is now a stage rather than a card bolted onto this one. */}
       <div className="action-bar">
-        <div className="ab-note">Case {caseRow.case_no || '—'}</div>
+        <div className="ab-note">
+          Case {caseRow.case_no || '—'}
+          {' · '}The Companies Registry still has to register it.
+        </div>
         <div className="ab-actions">
           {caseRow.entity_id && (
             <button className="btn btn-outline"
@@ -157,9 +171,15 @@ export default function StageConfirmation({ caseRow }) {
               View company profile
             </button>
           )}
-          <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>
-            Back to Post-incorporation
-          </button>
+          {onGo ? (
+            <button className="btn btn-primary" onClick={() => onGo(6)}>
+              Continue to CR Status →
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={() => navigate('/dashboard')}>
+              Back to Post-incorporation
+            </button>
+          )}
         </div>
       </div>
     </>

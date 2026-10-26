@@ -244,9 +244,9 @@ def test_each_case_on_the_profile_names_its_return_year_and_carries_the_dashboar
     entity = {"id": "e1", "company_name": "Acme", "is_client": True}
     registry_row = {
         "id": "c1", "case_no": "NAR-2026-0012", "entity_id": "e1",
-        "ar_period_year": None, "workflow_status": "filed",
+        "ar_period_year": None, "workflow_status": "cr_pending",
         "workflow_off_portal": False, "workflow_overdue": False,
-        "created_by_name": "UAT Shot",
+        "cr_doc_status": "Lodged", "created_by_name": "UAT Shot",
         "created_at": "2026-08-27T05:47:42.137871+00:00",
         "updated_at": "2026-09-16T16:49:56.689339+00:00",
     }
@@ -272,8 +272,8 @@ def test_each_case_on_the_profile_names_its_return_year_and_carries_the_dashboar
     (case,) = resp.json()["cases"]["nar1"]
     assert case["return_year"] == 2026 and case["return_year_source"] == "filing"
     assert case["workflow_status"] == {
-        "code": "filed", "label": "Filed", "off_portal": False,
-        "overdue": False}
+        "code": "cr_pending", "label": "Pending at CR", "off_portal": False,
+        "overdue": False, "cr_text": "Lodged"}
     assert resolve_many.call_args.args[0][0]["id"] == "c1"
 
 

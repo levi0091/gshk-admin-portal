@@ -12,9 +12,10 @@ import StageClientVerification from '../components/case/StageClientVerification.
 import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
+import StageCrStatus from '../components/case/StageCrStatus.jsx'
 import {
   STAGE_LABELS, reachedStage, isValidated, isSubmitted, isClosed, describeError,
-  persistedFailure, canRestart,
+  persistedFailure, canRestart, isLocked,
 } from '../components/case/workflow.js'
 import CloseCaseModal from '../components/case/CloseCaseModal.jsx'
 import { scrollToTop } from '../lib/scroll.js'
@@ -59,6 +60,7 @@ export default function CaseWorkflowPage() {
   const canClose = caps.closeCase
   const canValidate = caps.validate
   const canSubmit = caps.submit
+  const canReadTpsi = can('tpsi', 'read')
 
   const [caseRow, setCaseRow] = useState(undefined)
   const [loadError, setLoadError] = useState(null)
@@ -97,12 +99,6 @@ export default function CaseWorkflowPage() {
   const load = useCallback(async () => {
     try {
       const data = await api.get(`/cases/${caseId}`)
-      // An ND2A / ND2B shares this table and this id space (migration 050);
-      // its workflow is its own page. A bookmark or an old link lands here.
-      if (data?.form_code && data.form_code !== 'Nar1') {
-        navigate(`/officer-changes/${caseId}`, { replace: true })
-        return null
-      }
       setCaseRow(data)
       // Open on the furthest stage that is actually reachable, the first time
       // only — re-reading after an action must not yank the operator forward
@@ -114,7 +110,7 @@ export default function CaseWorkflowPage() {
       setCaseRow(null)
       return null
     }
-  }, [caseId, navigate])
+  }, [caseId])
 
   useEffect(() => { load() }, [load])
 
@@ -317,8 +313,10 @@ export default function CaseWorkflowPage() {
               outcome is a refusal is a broken control, exactly as Restart's
               own `isSubmitted` guard reasons. Withheld on an already-closed
               case too, though that branch renders the closed panel and never
-              reaches this bar. */}
-          {canClose && !isClosed(c) && !isSubmitted(c) && (
+              reaches this bar. And withheld while CR MAY hold it — a submit in
+              flight or with no answer (2026-10-26): closing over that would
+              record a return CR may have filed as one the client abandoned. */}
+          {canClose && !isClosed(c) && !isSubmitted(c) && !isLocked(c) && (
             <button className="btn btn-outline btn-danger-outline"
                     onClick={() => setConfirmClose(true)}>
               Close case
@@ -479,7 +477,10 @@ export default function CaseWorkflowPage() {
           <StageSubmission {...stageProps} canSubmit={canSubmit} />
         )}
         {current === 5 && (
-          <StageConfirmation caseRow={c} />
+          <StageConfirmation caseRow={c} onGo={goTo} />
+        )}
+        {current === 6 && (
+          <StageCrStatus {...stageProps} canRead={canReadTpsi} />
         )}
         </>
       )}

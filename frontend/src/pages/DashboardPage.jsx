@@ -9,8 +9,6 @@ import FilterChips from '../components/FilterChips.jsx'
 import EmptyRow from '../components/EmptyRow.jsx'
 import { WorkflowBadge, WORKFLOW_LABEL } from '../components/CaseStatusBadge.jsx'
 import NewCaseModal from '../components/NewCaseModal.jsx'
-import { casePath, deadlineText } from '../components/officerChange/workflow.js'
-import '../components/officerChange/entryPoints.css'
 import {
   DATE, ENUM, ID, OWNER, RANGE, TEXT,
   appendTo, filtersFor, setColumn,
@@ -46,19 +44,27 @@ const PAGE_SIZE = 50
 // "Action Required" vs "Pending" on the two stat cards: the split is who the
 // next move belongs to. Each tile IS the filter for its own set, so the number
 // and the rows can never disagree.
-const ACTION_STATUSES = ['client_verification', 'data_verification', 'client_rejected',
-                         'signing', 'submission']
-
-// Waiting on somebody who is not GSHK: the client. (CR's queue was here too
-// until Levi 2026-10-17 — CR reports nothing after filing, so there is none.)
-const PENDING_STATUSES = ['awaiting_client']
-
-// The order a case moves through them: the stage codes, then filed, then
-// closed. `completed` is gone (Levi 2026-09-16) and so are the six CR codes
-// that replaced it (Levi 2026-10-17).
 //
-// `filed` and `closed` are in NEITHER stat tile. A filed return and an
-// abandoned case are both finished, and "Action Required" is work
+// `cr_rejected` IS ACTION REQUIRED, and it is the most urgent row on the
+// screen: CR refused a return the fee was already taken for, and a corrected
+// one has to be filed as a new case before the statutory window shuts.
+const ACTION_STATUSES = ['client_verification', 'data_verification', 'client_rejected',
+                         'signing', 'submission', 'cr_rejected']
+
+// Waiting on somebody who is not GSHK. The client, or the Companies Registry —
+// the three CR codes below are a queue at CR, which nobody here can shorten.
+// `cr_unknown` is NOT here: an answer nobody can read is something to look at,
+// not something to wait on, and putting it in a tile labelled Pending would
+// bury it. It stays filterable from the column like every other badge.
+const PENDING_STATUSES = ['awaiting_client', 'cr_not_checked', 'cr_pending',
+                          'cr_approved']
+
+// The order a case moves through them: our six stages, then CR's answer, then
+// closed. `completed` is gone (Levi 2026-09-16) — it was a word of ours
+// standing in for a decision only CR makes.
+//
+// `cr_registered` and `closed` are in NEITHER stat tile. A registered return
+// and an abandoned case are both finished, and "Action Required" is work
 // waiting on GSHK while "Pending" is work waiting on someone else. They stay in
 // the listing and stay filterable — finishing ends the work, not the record —
 // so the badge column is how you include or exclude them.
@@ -69,10 +75,9 @@ const PENDING_STATUSES = ['awaiting_client']
 const WORKFLOW_ORDER = [
   'client_verification', 'awaiting_client', 'client_rejected',
   'data_verification', 'signing', 'submission',
-  'filed', 'closed',
+  'cr_not_checked', 'cr_pending', 'cr_approved', 'cr_registered',
+  'cr_rejected', 'cr_unknown', 'closed',
 ]
-
-const CASE_TYPES = ['NAR1', 'ND2A', 'ND2B']
 
 const ANNIV_HINT =
   'Negative once the anniversary has passed, positive counting down to the ' +
@@ -92,10 +97,8 @@ function buildColumns(meId, counts) {
   return [
     { col: 'case_no', label: 'Case ID', sort: 'case_no',
       filter: { kind: TEXT, placeholder: 'NAR-2026-…' } },
-    // ND2A / ND2B join NAR1 here (migration 050): the view derives the type
-    // from `form_code`, and `nar1_cases._FILTERABLE` accepts all three.
     { col: 'case_type', label: 'Case Type', sort: null,
-      filter: { kind: ENUM, options: CASE_TYPES.map(value => ({ value, label: value })) } },
+      filter: { kind: ENUM, options: [{ value: 'NAR1', label: 'NAR1' }] } },
     { col: 'entity_id', label: 'Entity ID', sort: null,
       filter: { kind: ID, placeholder: 'Company UUID' } },
     { col: 'company_name', label: 'Company Name', sort: 'company_name',
@@ -124,12 +127,6 @@ function buildColumns(meId, counts) {
           value, label: WORKFLOW_LABEL[value], count: counts?.[value],
         })),
       } },
-    // AN OFFICER CHANGE IS DUE 15 DAYS AFTER IT HAPPENED, not on an anniversary
-    // (migration 050). Its own column rather than a second meaning for the one
-    // beside it: the two sort on different fields, and folding them together
-    // would sort every ND2 row to the bottom of "Days to anniversary".
-    { col: 'filing_deadline', label: 'File by', sort: 'filing_deadline',
-      filter: { kind: DATE } },
     { col: 'days_to_anniversary', label: 'Days to anniversary', sort: 'days_to_anniversary',
       filter: { kind: RANGE, unit: 'days', hint: ANNIV_HINT } },
     // Levi 2026-09-04: Last Updated belongs beside Create Date, not between the
@@ -146,28 +143,11 @@ function buildColumns(meId, counts) {
   ]
 }
 
-//: Codes after which an ND2's deadline no longer has anything to chase: the
-//: form is with CR, or the case is shut. The date still shows; the count stops.
-const DEADLINE_SPENT = /^(filed|closed)$/
-
-/** `{text, overdue}` for an ND2 row's File by cell, or null for a NAR1 row. */
-export function officerDeadline(row) {
-  if (!row?.filing_deadline) return null
-  const code = typeof row.workflow_status === 'string'
-    ? row.workflow_status : row.workflow_status?.code
-  if (DEADLINE_SPENT.test(code || '')) return { text: null, overdue: false }
-  return deadlineText({ date: row.filing_deadline, days: row.days_to_deadline })
-    || { text: null, overdue: false }
-}
-
 export default function DashboardPage() {
   const navigate = useNavigate()
   const { hasPermission, isSuperAdmin, profile, profileLoading } = useAuth()
-  // nar1:read shows the cases; nar1:write is what opens and drives one. An
-  // ND2A / ND2B is opened on `officer_changes:write`, and the modal offers each
-  // form only to the role that may open it.
+  // nar1:read shows the cases; nar1:write is what opens and drives one.
   const canOpenCase = isSuperAdmin || hasPermission('nar1', 'write')
-    || hasPermission('officer_changes', 'write')
   const meId = profile?.id
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
@@ -302,7 +282,7 @@ export default function DashboardPage() {
       {showAdd && (
         <NewCaseModal
           onClose={() => setShowAdd(false)}
-          onCreated={c => navigate(casePath(c))}
+          onCreated={c => navigate(`/cases/${c.id}`)}
         />
       )}
 
@@ -420,10 +400,9 @@ export default function DashboardPage() {
                   </td></tr>
                 ) : rows.map(c => {
                   const { text, overdue } = labelForDays(c.days_to_anniversary)
-                  const due = officerDeadline(c)
                   return (
                     <tr key={c.id} className="clickable"
-                        onClick={() => navigate(casePath(c))}>
+                        onClick={() => navigate(`/cases/${c.id}`)}>
                       <td data-label="Case ID"><span className="td-id">{c.case_no || '—'}</span></td>
                       <td data-label="Case Type">
                         {/* The YEAR rides with the type (migration 047): a
@@ -445,18 +424,6 @@ export default function DashboardPage() {
                             act on it. A list scanned for "what needs me next"
                             reads better with one word per row than two. */}
                         <WorkflowBadge status={c.workflow_status} />
-                      </td>
-                      <td data-label="File by">
-                        {due ? (
-                          <span className="td-deadline">
-                            <span className="td-muted">{formatDate(c.filing_deadline)}</span>
-                            {due.text && (
-                              <span className={due.overdue ? 'td-anniv-overdue' : 'td-muted'}>
-                                {due.text}
-                              </span>
-                            )}
-                          </span>
-                        ) : <span className="td-muted">—</span>}
                       </td>
                       <td data-label="Days to anniversary" aria-label="Days to anniversary">
                         <span className={overdue ? 'td-anniv-overdue' : 'td-muted'}>{text}</span>

@@ -23,11 +23,7 @@ import re
 
 import pytest
 
-#: services/tpsi/doc_status.CR_STATUS_CODES as 043 shipped them. The module was
-#: removed with the CR status stage (migration 054, Levi 2026-10-17), so the
-#: list is history now and is held here.
-CR_STATUS_CODES = ("cr_not_checked", "cr_pending", "cr_approved",
-                   "cr_registered", "cr_rejected", "cr_unknown")
+from services.tpsi import doc_status as ds
 
 VIEW = "nar1_case_registry"
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,13 +60,14 @@ def test_the_downgrade_restores_039s_view_exactly():
         _normalise(m39._case_view_sql(closable=True))
 
 
-def test_the_migrations_code_list_is_the_one_it_shipped():
+def test_the_migrations_code_list_matches_doc_statuss():
     """The CHECK constraint, the COALESCE fallback and the overdue predicate are
-    all written from this tuple, and 054's downgrade rebuilds the CHECK from
-    it."""
+    all written from this tuple. A code added to `doc_status` without being
+    added here would be refused by the constraint at write time — on a nightly
+    job, at 01:13, with nobody watching."""
     m43 = _migration("043_nar1_cr_document_status.py")
-    assert tuple(m43.CR_STATUS_CODES) == CR_STATUS_CODES
-    assert m43.CR_NOT_CHECKED == "cr_not_checked"
+    assert tuple(m43.CR_STATUS_CODES) == ds.CR_STATUS_CODES
+    assert m43.CR_NOT_CHECKED == ds.NOT_CHECKED
 
 
 def test_every_cr_code_is_excluded_from_the_overdue_predicate():
@@ -80,7 +77,7 @@ def test_every_cr_code_is_excluded_from_the_overdue_predicate():
     m43 = _migration("043_nar1_cr_document_status.py")
     sql = m43._case_view_sql(cr_status=True)
     overdue = sql.split("AS workflow_overdue")[0]
-    for code in CR_STATUS_CODES:
+    for code in ds.CR_STATUS_CODES:
         assert f"'{code}'" in overdue, code
     assert "'closed'" in overdue
 
@@ -132,10 +129,49 @@ def _conn():
     return psycopg2.connect(os.environ["DATABASE_URL"])
 
 
-# The CHECK, the nullable column and the poller's index were asserted here
-# against the head. Migration 054 dropped all three (Levi 2026-10-17); what is
-# left at the head is the two audit codes, which stay seeded so existing rows
-# keep their labels.
+@db
+@pytest.mark.parametrize("code", ds.CR_STATUS_CODES)
+def test_the_constraint_accepts_every_code_the_normaliser_can_produce(code):
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT %s::text = ANY (ARRAY["
+                    "'cr_not_checked','cr_pending','cr_approved',"
+                    "'cr_registered','cr_rejected','cr_unknown'])", (code,))
+        assert cur.fetchone()[0] is True
+        cur.execute(
+            "INSERT INTO public.entities (id, company_name) "
+            "VALUES (gen_random_uuid(), 'CR STATUS FIXTURE') RETURNING id")
+        entity_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO public.nar1_cases (entity_id, nar1_type, cr_doc_status_code) "
+            "VALUES (%s, 'annual_return', %s)", (entity_id, code))
+        conn.rollback()
+
+
+@db
+def test_the_constraint_refuses_a_code_that_is_not_one_of_ours():
+    """Loud, not silent. A stray value would render as an unlabelled badge —
+    the failure mode migration 022 exists because of."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO public.entities (id, company_name) "
+            "VALUES (gen_random_uuid(), 'CR STATUS FIXTURE') RETURNING id")
+        entity_id = cur.fetchone()[0]
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO public.nar1_cases (entity_id, nar1_type, "
+                "cr_doc_status_code) VALUES (%s, 'annual_return', 'whatever')",
+                (entity_id,))
+        conn.rollback()
+
+
+@db
+def test_null_is_allowed_because_it_is_the_state_every_case_starts_in():
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name = 'nar1_cases' AND column_name = 'cr_doc_status_code' "
+            "AND is_nullable = 'YES'")
+        assert cur.fetchone()[0] == 1
 
 
 @db
@@ -150,3 +186,15 @@ def test_the_two_audit_codes_are_in_the_registry_with_the_right_origin():
     for _code, origin, category in rows:
         assert origin == "g_flowdesk"
         assert category in ("tpsi", "nar1")
+
+
+@db
+def test_the_pollers_index_exists_so_the_nightly_query_is_not_a_seq_scan():
+    """5,900 companies, a query every night, and the terminal rows are the ones
+    that accumulate — hence the partial index."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT indexdef FROM pg_indexes "
+                    "WHERE indexname = 'ix_nar1_cases_cr_status_open'")
+        row = cur.fetchone()
+    assert row is not None
+    assert "cr_registered" in row[0] and "cr_rejected" in row[0]

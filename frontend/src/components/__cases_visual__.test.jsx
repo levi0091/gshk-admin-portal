@@ -25,7 +25,7 @@ const SHOOT = process.env.SHOOT === '1'
 const at = (days, hour = 3) => new Date(Date.UTC(2026, 8, 19 - days, hour, 41)).toISOString()
 const row = (n, year, code, label, extra = {}) => ({
   id: `c${n}`, case_no: `NAR-2026-00${n}`, return_year: year,
-  workflow_status: { code, label, off_portal: false },
+  workflow_status: { code, label, off_portal: false, cr_text: extra.cr_text || null },
   created_by_name: 'Levi Z.', created_at: at(20 + n), updated_at: at(n, 9),
   ...extra,
 })
@@ -38,10 +38,13 @@ const EVERY_STATE = {
     row(64, 2024, 'data_verification', 'Data Verification'),
     row(53, 2023, 'signing', 'Signing'),
     row(52, 2022, 'submission', 'Submission'),
-    row(12, 2025, 'filed', 'Filed'),
+    row(49, 2026, 'cr_pending', 'Pending at CR', { cr_text: 'Lodged' }),
+    row(31, 2021, 'cr_approved', 'Approved by CR'),
+    row(12, 2025, 'cr_registered', 'Registered by CR', { cr_text: 'Registered' }),
     row(80, 2024, 'closed', 'Closed', {
       closed_at: at(1, 16), closed_by_name: 'Levi Z.', closed_reason: 'gonna restart',
     }),
+    row(11, 2020, 'cr_rejected', 'Rejected by CR', { cr_text: 'Rejected' }),
   ],
   nnc1: [],
 }

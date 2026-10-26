@@ -370,6 +370,7 @@ def test_with_nothing_filed_the_gate_falls_back_to_the_live_attempt():
 
 @pytest.mark.parametrize("stage", [
     tpsi_filings.STAGE_SUBMITTED,
+    tpsi_filings.STAGE_REGISTERED,
     tpsi_filings.STAGE_EDRIVE,
 ])
 @pytest.mark.parametrize("step", ["sign", "submit"])
@@ -663,6 +664,7 @@ def test_manual_submit_is_idempotent_on_a_completed_case(client):
 @pytest.mark.parametrize("stage", [
     tpsi_filings.STAGE_SIGNED,
     tpsi_filings.STAGE_SUBMITTED,
+    tpsi_filings.STAGE_REGISTERED,
 ])
 def test_manual_submit_refuses_while_the_e_sign_path_is_live_or_done(client, stage):
     with _super(), \
@@ -754,9 +756,10 @@ def test_a_manual_submit_really_drives_the_case_to_cr(client):
     Supabase double, so it would catch a manual receipt written to the wrong
     column or a badge that never leaves the signing stages.
 
-    THE BADGE IS `filed` (Levi 2026-10-17). The return is with CR and the
-    receipt proves it, and the receipt is the last thing CR will tell us —
-    there is no CR status to wait for any more.
+    THE BADGE IS `cr_not_checked`, NOT `completed` (migration 043). The return
+    is with CR and the receipt proves it; what CR has DONE with it is a separate
+    question nobody has asked yet, and `completed` used to answer it green
+    without asking.
     """
     stored: dict = {"id": "c1", "manual_signed_document_id": "d1", "manual_receipt_document_id": "r1",
                     "manual_receipt": None, "client_approved": None}
@@ -791,11 +794,12 @@ def test_a_manual_submit_really_drives_the_case_to_cr(client):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["workflow_status"]["code"] == "filed"
-    assert body["workflow_status"]["label"] == "Filed"
+    assert body["workflow_status"]["code"] == "cr_not_checked"
+    assert body["workflow_status"]["label"] == "Awaiting CR status"
     assert body["workflow_status"]["overdue"] is False
-    # No CR status rides along any more: stage 6 is gone.
-    assert "cr_status" not in body and "cr_status_checked_at" not in body
+    # The third vocabulary rides along, so stage 6 has something to render the
+    # moment the receipt lands.
+    assert body["cr_status"]["code"] == "cr_not_checked"
     # The unified receipt (D-6): one key, whichever path produced it.
     assert body["receipt"]["caseNo"] == "180256934"
     assert body["form_status"] is None
@@ -1318,9 +1322,3 @@ def test_the_submission_never_uses_the_unconditional_update(client):
 
     assert response.status_code == 200
     unconditional.assert_not_called()
-
-
-def test_a_legacy_registered_filing_still_blocks_the_manual_path():
-    """Deploy window (054 not yet run): a return the poll once promoted to
-    `registered` is still one CR holds."""
-    assert nar1_cases.manual_conflict({"stage": "registered"}, step="submit") is not None

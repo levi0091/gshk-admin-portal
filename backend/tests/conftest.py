@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -94,18 +94,3 @@ def _no_live_return_year_store():
     with patch("services.nar1_return_year.get_supabase",
                return_value=_EmptyQuery()):
         yield
-
-
-@pytest.fixture(autouse=True)
-def _no_receipt_mail_in_tests():
-    """No test mails a confirmation receipt by accident (Levi 2026-10-17).
-
-    A client's Confirm & File queues `services.approval_receipt.send` as a
-    background task, which TestClient runs after the response — and which reads
-    the case, renders the PDFs and calls Resend with collaborators the approval
-    tests have not patched. Stubbed here on the ROUTER's binding, so the tests
-    of the service itself still call the real thing; a test that wants to see
-    the receipt queued takes this fixture by name.
-    """
-    with patch("routers.public_approval.send_receipt", new_callable=AsyncMock) as sent:
-        yield sent

@@ -93,17 +93,60 @@ def test_a_failed_submission_stays_in_submission():
 
 # ---- Filed at CR: the badge becomes CR's own answer (Levi 2026-09-16) ------
 #
-# FILED (Levi 2026-10-17). CR will not report what it does with a return after
-# the receipt -- docStatusEnquiry is "not something they will do" -- so the
-# receipt is the last fact the portal can know, and a filed return reads
-# Filed. This replaces the six CR codes of migration 043; `completed` (retired
-# 2026-09-16) stays retired.
+# `completed` is GONE. It said nothing CR had agreed to: a case went green the
+# instant submitFormNar1 returned a receipt, while CR had only RECEIVED the
+# return and could still refuse it.
 
-@pytest.mark.parametrize("stage", ["submitted", "edrive"])
-def test_a_filed_return_is_filed(stage):
-    badge = st.derive(case(**APPROVED), filing(stage))
-    assert badge["code"] == st.FILED
-    assert badge["label"] == "Filed"
+@pytest.mark.parametrize("stage", ["submitted", "registered"])
+def test_a_filed_return_with_no_cr_answer_reads_not_checked(stage):
+    """The state every filed case starts in, and the state every case in the
+    book is in until the poller first runs. NOT `cr_pending`: CR has not said
+    that, and nothing may report an answer it never received."""
+    c = case(verification_sent_at="2026-08-16T00:00:00Z", client_approved=True)
+    assert st.derive(c, filing(stage))["code"] == st.CR_NOT_CHECKED
+
+
+@pytest.mark.parametrize("code", st.CR_STATUS_CODES)
+def test_a_filed_return_wears_whatever_cr_last_said(code):
+    c = case(verification_sent_at="2026-08-16T00:00:00Z", client_approved=True,
+             cr_doc_status_code=code)
+    assert st.derive(c, filing("submitted"))["code"] == code
+
+
+def test_the_stored_code_is_used_never_re_derived_from_crs_words():
+    """The dashboard filtered, sorted and counted on the STORED code (the SQL
+    view reads that column). Re-deriving from `cr_doc_status` here would let a
+    case's own screen disagree with the listing that opened it."""
+    c = case(verification_sent_at="x", client_approved=True,
+             cr_doc_status="Registered", cr_doc_status_code=st.CR_NOT_CHECKED)
+    assert st.derive(c, filing("submitted"))["code"] == st.CR_NOT_CHECKED
+
+
+def test_a_code_outside_the_vocabulary_falls_back_rather_than_rendering_blank():
+    c = case(verification_sent_at="x", client_approved=True,
+             cr_doc_status_code="whatever")
+    assert st.derive(c, filing("submitted"))["code"] == st.CR_NOT_CHECKED
+
+
+def test_an_unfiled_case_never_wears_a_cr_badge():
+    """THE ORDER THAT MATTERS. A repair (or a future poller bug) could write a
+    CR code onto a case CR has never seen; the filed test has to come first, or
+    "Registered by CR" appears on a case still in Data Verification."""
+    c = case(cr_doc_status_code=st.CR_STATUS_CODES[3], **APPROVED)  # cr_registered
+    assert st.derive(c, filing("draft"))["code"] == st.DATA_VERIFICATION
+    assert st.derive(c, None)["code"] == st.DATA_VERIFICATION
+    # And on a case nobody has mailed yet, which is now the first stage.
+    unsent = case(cr_doc_status_code=st.CR_STATUS_CODES[3])
+    assert st.derive(unsent, filing("draft"))["code"] == st.CLIENT_VERIFICATION
+
+
+def test_crs_own_words_ride_along_with_the_badge():
+    """On `cr_unknown` they are the only informative thing there is; on a
+    recognised code they are the evidence an operator quotes back to CR."""
+    c = case(verification_sent_at="x", client_approved=True,
+             cr_doc_status="Registered", cr_doc_status_code="cr_registered")
+    assert st.derive(c, filing("submitted"))["cr_text"] == "Registered"
+    assert st.derive(case(), None)["cr_text"] is None
 
 
 def test_a_manual_receipt_files_the_case_without_any_cr_stage():
@@ -111,32 +154,31 @@ def test_a_manual_receipt_files_the_case_without_any_cr_stage():
     return is nevertheless with CR, and the badge has to say so."""
     c = case(client_approved=True, verification_sent_at="2026-08-16T00:00:00Z",
              manual_receipt={"caseNo": "180256934"})
-    assert st.derive(c, filing("validated"))["code"] == st.FILED
+    assert st.derive(c, filing("validated"))["code"] == st.CR_NOT_CHECKED
+
+
+def test_a_manual_case_carries_crs_answer_too():
+    """A paper filing has a CR case number on its receipt, so it is pollable —
+    which is exactly why the columns live on `nar1_cases` and not on the filing
+    row that never got sent."""
+    c = case(client_approved=True, verification_sent_at="x",
+             manual_receipt={"caseNo": "180256934"},
+             cr_doc_status_code="cr_registered")
+    assert st.derive(c, filing("validated"))["code"] == "cr_registered"
 
 
 def test_edrive_files_the_case_and_flags_it_off_portal():
     """CR: a form sent to e-Drive is inconvertible to TPSI format -- it is
     finished somewhere else, and the caller has to be able to say so."""
-    result = st.derive(case(**APPROVED), filing("edrive"))
-    assert result["code"] == st.FILED
+    c = case(verification_sent_at="2026-08-16T00:00:00Z", client_approved=True)
+    result = st.derive(c, filing("edrive"))
+    assert result["code"] == st.CR_NOT_CHECKED
     assert result["off_portal"] is True
 
 
 def test_off_portal_is_false_on_an_ordinary_filing():
-    assert st.derive(case(**APPROVED), filing("submitted"))["off_portal"] is False
-
-
-def test_a_legacy_registered_filing_reads_filed():
-    """The deploy window: 054 has not yet turned it into `submitted`."""
-    assert st.derive(case(**APPROVED), filing("registered"))["code"] == st.FILED
-
-
-def test_a_leftover_cr_answer_on_the_row_changes_nothing():
-    """A row read before migration 054 dropped the columns may still carry
-    what the poll stored. It is not a fact the badge reads any more."""
-    c = case(cr_doc_status_code="cr_rejected", cr_doc_status="Rejected", **APPROVED)
-    assert st.derive(c, filing("submitted"))["code"] == st.FILED
-    assert st.derive(c, filing("draft"))["code"] == st.DATA_VERIFICATION
+    c = case(verification_sent_at="2026-08-16T00:00:00Z", client_approved=True)
+    assert st.derive(c, filing("submitted"))["off_portal"] is False
 
 
 def test_overdue_is_an_overlay_not_a_stage():
@@ -160,12 +202,15 @@ def test_the_last_day_of_the_filing_window_is_not_yet_overdue():
     assert st.derive(case(days_to_anniversary=-43), None)["overdue"] is True
 
 
-def test_a_filed_case_is_never_flagged_overdue():
+@pytest.mark.parametrize("code", [None] + list(st.CR_STATUS_CODES))
+def test_a_filed_case_is_never_flagged_overdue_whatever_cr_said(code):
     """It was filed. Whether it was filed late is a different question and not
-    this badge's to answer."""
-    c = case(days_to_anniversary=-99, **APPROVED)
+    this badge's to answer — and on a REJECTED one the red badge is the alarm,
+    so an overdue marker on top of it says the same thing twice while implying
+    the filing never happened."""
+    c = case(verification_sent_at="x", client_approved=True,
+             days_to_anniversary=-99, cr_doc_status_code=code)
     assert st.derive(c, filing("submitted"))["overdue"] is False
-    assert st.derive(c, None)["overdue"] is True
 
 
 def test_every_code_has_a_label():
@@ -180,31 +225,28 @@ def test_completed_is_gone_from_the_vocabulary_not_aliased():
     assert "completed" not in st.WORKFLOW_LABELS
 
 
-def test_no_cr_code_is_left_in_the_vocabulary():
-    """Levi 2026-10-17: the CR status step is gone, so is every code it wore."""
-    assert not [code for code in st.WORKFLOW_STATUSES if code.startswith("cr_")]
-    assert not [code for code in st.WORKFLOW_LABELS if code.startswith("cr_")]
+def test_there_are_exactly_thirteen_badges():
+    """Six stages, six CR answers, and CLOSED.
 
-
-def test_there_are_exactly_eight_badges():
-    """Six stages, FILED and CLOSED.
-
-    The count is asserted rather than the membership because a NINTH added
+    The count is asserted rather than the membership because a FOURTEENTH added
     without a home would have nowhere to render: every code needs a label here,
-    a class in `CaseStatusBadge.jsx`, a branch in the SQL view (migration 054)
-    and a place in the dashboard's `WORKFLOW_ORDER`.
+    a class in `CaseStatusBadge.jsx`, a branch in the SQL view (migration 043)
+    and a place in the dashboard's `WORKFLOW_ORDER`. Four files, and the count
+    is the cheap tripwire that says to visit them.
     """
-    assert len(st.WORKFLOW_STATUSES) == 8
+    assert len(st.WORKFLOW_STATUSES) == 13
     assert len(st.GSHK_STATUSES) == 6
-    assert st.FILED in st.WORKFLOW_STATUSES
+    assert len(st.CR_STATUS_CODES) == 6
     assert st.CLOSED in st.WORKFLOW_STATUSES
+    assert set(st.WORKFLOW_LABELS) == set(st.WORKFLOW_STATUSES)
 
 
-def test_filed_and_closed_are_the_terminal_statuses():
+def test_every_cr_code_is_terminal_work_and_so_is_closed():
     """TERMINAL_STATUSES drives the overdue overlay and the dashboard's "in
     neither queue" rule. A stage code leaking in would stop flagging real
     overdue work."""
-    assert set(st.TERMINAL_STATUSES) == {st.FILED, st.CLOSED}
+    assert set(st.TERMINAL_STATUSES) == set(st.CR_STATUS_CODES) | {st.CLOSED}
+    assert not set(st.TERMINAL_STATUSES) & set(st.GSHK_STATUSES)
 
 
 # ---- badge_from_row — the dashboard's read-back of the SQL answer ---------
@@ -216,7 +258,7 @@ def test_badge_from_row_produces_derives_shape_for_every_code(code):
     badge = st.badge_from_row({"workflow_status": code,
                                "workflow_off_portal": False,
                                "workflow_overdue": False})
-    assert set(badge) == {"code", "label", "off_portal", "overdue"}
+    assert set(badge) == {"code", "label", "off_portal", "overdue", "cr_text"}
     assert badge["code"] == code
     assert badge["label"] == st.WORKFLOW_LABELS[code]
 
@@ -249,28 +291,21 @@ def test_badge_from_row_does_not_re_derive():
     """It reports what the SQL decided. Re-deriving in Python would paper over a
     divergence between the two implementations of one rule, and the whole point
     of the parity test is to make that divergence loud."""
-    row = {"workflow_status": "filed", "workflow_off_portal": False,
+    row = {"workflow_status": "cr_registered", "workflow_off_portal": False,
            "workflow_overdue": False,
            # Facts that derive() would read as data_verification.
            "filing_stage": None, "verification_sent_at": None,
            "client_approved": None, "manual_receipt_present": False}
-    assert st.badge_from_row(row)["code"] == "filed"
+    assert st.badge_from_row(row)["code"] == "cr_registered"
 
 
-@pytest.mark.parametrize("legacy", sorted(st.LEGACY_CR_CODES))
-def test_badge_from_row_reads_a_legacy_cr_code_as_filed(legacy):
-    """THE DEPLOY WINDOW. The code deploys first and migration 054 runs after
-    it (jobs/README.md), so for those minutes the view still answers with the
-    old CR codes. Raising KeyError on them would 500 every dashboard page that
-    holds a filed case, which is what 043's own rollout warned about."""
-    badge = st.badge_from_row({"workflow_status": legacy})
-    assert badge["code"] == st.FILED
-    assert badge["label"] == "Filed"
-
-
-def test_the_legacy_set_is_exactly_the_six_old_codes():
-    assert st.LEGACY_CR_CODES == {"cr_not_checked", "cr_pending", "cr_approved",
-                                  "cr_registered", "cr_rejected", "cr_unknown"}
+def test_badge_from_row_carries_crs_own_words_through():
+    """`cr_unknown` renders what CR said, because that is the only informative
+    thing there is about a status this portal does not recognise. The listing
+    reads it out of the view rather than opening each case."""
+    row = {"workflow_status": "cr_unknown", "cr_doc_status": "Zorb"}
+    assert st.badge_from_row(row)["cr_text"] == "Zorb"
+    assert st.badge_from_row({"workflow_status": "signing"})["cr_text"] is None
 
 
 def test_the_module_does_no_io():
@@ -329,119 +364,4 @@ def test_badge_from_row_carries_the_closed_code_through():
     drifted from Python is meant to fail."""
     badge = st.badge_from_row({"workflow_status": st.CLOSED})
     assert badge == {"code": st.CLOSED, "label": "Closed",
-                     "off_portal": False, "overdue": False}
-
-
-# --------------------------------------------------------------------------- #
-#  Officer-change cases (migration 050) — ND2A and ND2B share this badge
-# --------------------------------------------------------------------------- #
-
-def nd2(**over):
-    """An officer-change case the client has approved, on the MANUAL route.
-
-    The route is what matters here: on it nothing is ever sent to CR, so there
-    is no filing stage for the badge to follow.
-    """
-    return case(form_code="Nd2a", signing_method="manual", **APPROVED, **over)
-
-
-def test_an_officer_change_on_the_esign_route_follows_the_filing_like_a_nar1():
-    """e-Sign goes through validate -> sign -> submit exactly as an annual
-    return does, so the badge must read the same off the same stages."""
-    c = case(form_code="Nd2b", signing_method="esign", **APPROVED)
-    assert st.derive(c, None)["code"] == "data_verification"
-    assert st.derive(c, filing("validated"))["code"] == "signing"
-    assert st.derive(c, filing("signed"))["code"] == "submission"
-    assert st.derive(c, filing("submitted"))["code"] == "filed"
-
-
-def test_the_manual_route_leaves_data_verification_when_it_is_marked_checked():
-    """CR will not validate an ND2A appointing a director without that
-    director's e-Registry ID, so a case with none cannot be validated at all.
-    `data_checked_at` is what stands in for it."""
-    assert st.derive(nd2(), None)["code"] == "data_verification"
-    assert st.derive(nd2(data_checked_at="2026-09-20T02:00:00Z"),
-                     None)["code"] == "signing"
-
-
-def test_the_manual_route_reaches_submission_once_the_signed_form_is_uploaded():
-    c = nd2(data_checked_at="2026-09-20T02:00:00Z",
-            manual_signed_document_id="doc-1")
-    assert st.derive(c, None)["code"] == "submission"
-
-
-def test_the_manual_route_ignores_a_stale_filing_stage():
-    """An operator who validated with CR and then switched to the manual route
-    must not be shown `signing` off a filing they have abandoned."""
-    assert st.derive(nd2(), filing("validated"))["code"] == "data_verification"
-
-
-def test_a_recorded_cr_portal_filing_finishes_a_manual_officer_change():
-    c = nd2(data_checked_at="2026-09-20T02:00:00Z",
-            manual_signed_document_id="doc-1",
-            manual_receipt={"caseNo": "180256934"})
-    assert st.derive(c, None)["code"] == "filed"
-
-
-def test_the_client_still_comes_first_on_an_officer_change():
-    c = case(form_code="Nd2a", signing_method="manual",
-             data_checked_at="2026-09-20T02:00:00Z")
-    assert st.derive(c, None)["code"] == "client_verification"
-
-
-def test_a_nar1_on_the_manual_path_is_untouched_by_the_officer_change_branch():
-    """NAR1's manual path still goes through CR's validation, so its badge
-    follows the filing stage. The new branch is gated on the form."""
-    c = case(signing_method="manual", data_checked_at="2026-09-20T02:00:00Z",
-             manual_signed_document_id="doc-1", **APPROVED)
-    assert st.derive(c, None)["code"] == "data_verification"
-    assert st.derive(c, filing("validated"))["code"] == "signing"
-
-
-def test_an_officer_change_is_overdue_the_day_after_its_deadline():
-    """15 days, not NAR1's 42 — and measured from the change, not from an
-    anniversary. `days_to_deadline` is signed like `days_to_anniversary`."""
-    assert st.derive(nd2(days_to_deadline=0), None)["overdue"] is False
-    assert st.derive(nd2(days_to_deadline=-1), None)["overdue"] is True
-    assert st.derive(nd2(days_to_deadline=None), None)["overdue"] is False
-
-
-def test_the_anniversary_never_makes_an_officer_change_overdue():
-    """The company's anniversary belongs to its annual return. A company 90
-    days past it has a late NAR1, not a late resignation notice. The view nulls
-    the column on these rows; this holds even for a caller that did not."""
-    assert st.derive(nd2(days_to_anniversary=-90, days_to_deadline=5),
-                     None)["overdue"] is False
-
-
-def test_a_nar1_is_never_overdue_by_a_filing_deadline_it_does_not_have():
-    c = case(days_to_deadline=-30, days_to_anniversary=10, **APPROVED)
-    assert st.derive(c, None)["overdue"] is False
-
-
-def test_a_filed_or_closed_officer_change_is_never_overdue():
-    filed = nd2(days_to_deadline=-9, manual_receipt={"caseNo": "1"})
-    assert st.derive(filed, None)["overdue"] is False
-    closed = nd2(days_to_deadline=-9, closed_at="2026-09-21T00:00:00Z")
-    assert st.derive(closed, None)["overdue"] is False
-
-
-@pytest.mark.parametrize("form_code,expected", [
-    (None, False), ("Nar1", False), ("Nd2a", True), ("Nd2b", True),
-])
-def test_is_officer_change_reads_the_form_code(form_code, expected):
-    assert st.is_officer_change({"form_code": form_code}) is expected
-
-
-def test_an_esign_case_marked_checked_with_a_date_left_blank_is_at_signing():
-    """Jacqueline A1: with an effective date deferred to Signing, e-Sign leaves
-    Data Verification by mark-checked and CR validates at Signing. The badge,
-    the dashboard and the stepper must all say Signing (review finding 6)."""
-    c = case(form_code="Nd2a", signing_method="esign",
-             data_checked_at="2026-10-02T02:00:00Z", **APPROVED)
-    assert st.derive(c, None)["code"] == "signing"
-    assert st.derive(c, filing("validation_failed"))["code"] == "signing"
-    assert st.derive(c, filing("validated"))["code"] == "signing"
-    assert st.derive(c, filing("signed"))["code"] == "submission"
-    nar1 = case(signing_method="esign", data_checked_at="2026-10-02T02:00:00Z", **APPROVED)
-    assert st.derive(nar1, None)["code"] == "data_verification"
+                     "off_portal": False, "overdue": False, "cr_text": None}

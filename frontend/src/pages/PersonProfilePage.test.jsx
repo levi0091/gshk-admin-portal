@@ -143,22 +143,9 @@ const SECTIONS = {
   },
 }
 
-// What the three by-company cards read (Levi 2026-10-05).
-const BOOK = {
-  companies: [{ entity_id: 'e1', company_name: 'Skyline Capital', roles: ['director'] }],
-  default_residential_address_id: 'a1',
-  residential: [{ address_id: 'a1', is_default: true, used_by: ['e1'],
-    address: { line1: 'Flat 3B', city: 'Mid-Levels', country: 'HK' } }],
-  correspondence: [],
-  correspondence_same_as_residential: ['e1'],
-  identity: [{ document_id: 'i1', id_type: 'hkid', id_number: 'A123456(3)', is_primary: true,
-    used_by: ['e1'] }],
-}
-
 const mockGet = (data) =>
   api.get.mockImplementation(url => {
     if (url === '/lookups') return Promise.resolve(LOOKUPS)
-    if (url.endsWith('/particulars-by-company')) return Promise.resolve(BOOK)
     if (url === '/form-contract') return Promise.resolve(CONTRACT)
     if (url.startsWith('/documents/sections')) return Promise.resolve(SECTIONS)
     if (url.startsWith('/documents/types')) {
@@ -231,9 +218,11 @@ describe('PersonProfilePage', () => {
     renderPage()
     await screen.findByText('Personal Information')
     expect(screen.getByText('British (BNO)')).toBeInTheDocument()
-    // One line, CR's lines in CR's order (Levi 2026-10-17: not bloated). A
-    // line over CR's length is named beneath it — see ParticularsByCompany.
-    expect(screen.getByText('Flat 3B, Mid-Levels, HK')).toBeInTheDocument()
+    // The residential address renders as the separate lines CR receives — this
+    // is the address a NAR1 files for the director, and a joined string hides
+    // whether any single line is over CR's 60-character limit.
+    expect(screen.getByText('Flat 3B')).toBeInTheDocument()
+    expect(screen.getByText('Mid-Levels')).toBeInTheDocument()
   })
 
   it('shows role pills counted per relation in the header', async () => {
@@ -247,8 +236,7 @@ describe('PersonProfilePage', () => {
   it('lists identity documents with the primary flagged', async () => {
     renderPage()
     await screen.findByText('Personal Information')
-    // Once: there is no second identification card (Levi 2026-10-17).
-    expect(screen.getAllByText('A123456(3)')).toHaveLength(1)
+    expect(screen.getByText('A123456(3)')).toBeInTheDocument()
     expect(screen.getByText('987654321')).toBeInTheDocument()
     expect(screen.getByText('PRIMARY')).toBeInTheDocument()
   })
@@ -333,22 +321,6 @@ describe('PersonProfilePage — the CR form fields', () => {
   })
 
   // -- Labels (B12, B13, §10.5) --------------------------------------------
-
-  it('shows a date of death only for someone who has one, and edits it like any field', async () => {
-    // Levi 2026-10-18: a Deceased cessation writes it here once filed.
-    const user = userEvent.setup()
-    const { unmount } = renderPage()
-    await screen.findByText('Personal Information')
-    expect(screen.queryByText('Date of Death')).not.toBeInTheDocument()
-    const card = screen.getByText('Personal Information').closest('.card')
-    await user.click(within(card).getByRole('button', { name: 'Edit' }))
-    expect(screen.getByLabelText('Date of Death')).toBeInTheDocument()
-    unmount()
-    mockGet({ ...PERSON, date_of_death: '2026-09-20' })
-    renderPage()
-    await screen.findByText('Personal Information')
-    expect(screen.getByText('Date of Death')).toBeInTheDocument()
-  })
 
   it('names the fields as NAR1 names them', async () => {
     renderPage()
@@ -1018,26 +990,5 @@ describe('PersonProfilePage — soft delete (migration 049)', () => {
     expect(await screen.findByText('This person is not available')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Back to Natural Person Registry' }))
       .toHaveAttribute('href', '/persons')
-  })
-})
-
-describe('PersonProfilePage — identification and addresses by company (Levi 2026-10-05)', () => {
-  it('shows one Addresses card, and each identity document names its companies', async () => {
-    // Levi 2026-10-17: "keep the design as simple as possible ... make sure the
-    // profile page is not bloated". One card for both kinds of address; a
-    // document's companies on the Identity Documents card it already lives on.
-    renderPage()
-    const card = await screen.findByRole('region', { name: 'Addresses' })
-    const res = within(card).getByRole('region', { name: 'Residential addresses' })
-    expect(within(res).getByText('Flat 3B, Mid-Levels, HK')).toBeInTheDocument()
-    expect(within(res).getByText('Default')).toBeInTheDocument()
-    expect(within(res).getByText('Skyline Capital')).toBeInTheDocument()
-    expect(within(card).getByRole('region', { name: 'Correspondence addresses' })).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Identification by company' })).not.toBeInTheDocument()
-    const hkid = sectionCard('Identity Documents')
-    expect(within(hkid).getByText('Filed for')).toBeInTheDocument()
-    expect(within(hkid).getByText('Skyline Capital')).toBeInTheDocument()
-    // Personal Information no longer repeats the residential address.
-    expect(screen.queryByText('Residential Address')).not.toBeInTheDocument()
   })
 })

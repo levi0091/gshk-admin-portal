@@ -1,24 +1,14 @@
 name: Backend CI
 
-# push only, not push AND pull_request. Every PR here comes from a branch in
-# this repo, so its head commit already carries the push run's checks; the
-# pull_request trigger ran the whole suite a second time on every push to a
-# branch with an open PR. Railway's "Wait for CI" reads the push run, which is
-# why that is the one kept. Trade-off: the PR's merge result is no longer
-# tested before merging, only after, by the push run on the target branch.
 on:
   push:
     paths:
       - 'backend/**'
       - '.github/workflows/backend-ci.yml'
-
-# A newer push to a feature branch makes its older run moot, so cancel it.
-# dev and master get a group per run instead, so they are never cancelled or
-# queued: Railway deploys each commit there once its CI passes, and every
-# deployed commit should carry a finished result.
-concurrency:
-  group: ${{ github.workflow }}-${{ contains(fromJSON('["refs/heads/dev","refs/heads/master"]'), github.ref) && github.run_id || github.ref }}
-  cancel-in-progress: true
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
 
 env:
   # uv picks whatever interpreter the runner has. It is 3.12 today by luck;
@@ -38,11 +28,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - run: uv sync
       - name: pytest (mocked)
-        # One xdist worker per core. --dist worksteal, not the default "load":
-        # the slow NAR1 PDF tests sit together in collection order, and "load"
-        # deals them to one worker in a block while the rest go idle (36s vs
-        # 22s locally on four workers).
-        run: uv run pytest -q -n logical --dist worksteal
+        run: uv run pytest -q
         env:
           SUPABASE_URL: http://localhost
           SUPABASE_SERVICE_ROLE_KEY: dummy
@@ -103,7 +89,6 @@ jobs:
         # is picked up automatically as it lands. `shopt -s nullglob` makes an
         # empty match vanish from the argument list instead of being passed to
         # pytest as a literal, unmatched "tests/test_migration_*.py" string.
-        # Serial on purpose (no -n): these tests share the one database.
         run: |
           shopt -s nullglob
           uv run pytest -q \

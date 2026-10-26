@@ -92,17 +92,6 @@ def _refuse_if_closed(case: dict, action: str) -> None:
     way the submit gate's does, so the screen can recognise this refusal
     without matching on prose.
     """
-    # AN OFFICER CHANGE IS NOT AN ANNUAL RETURN (migration 050). ND2A/ND2B
-    # cases live in this table too, and every NAR1 write route calls this
-    # guard first — so this one check keeps a NAR1 action (a NAR1 PDF, a NAR1
-    # receipt, the NAR1 approval page) off a case filing a different form.
-    if (case.get("form_code") or "Nar1") != "Nar1":
-        raise HTTPException(409, {
-            "message": (f"case {case.get('case_no') or case.get('id')} files form "
-                        f"{case.get('form_code')}, not an annual return — "
-                        f"{action} belongs on its own officer-change page"),
-            "reason": "wrong_form",
-        })
     if not case.get("closed_at"):
         return
     raise HTTPException(409, {
@@ -390,6 +379,18 @@ async def get_case(case_id: str, user=Depends(require_permission("nar1", "read")
     # the same answer for somebody following an old link or an audit row.
     if case.get("company_deleted"):
         raise HTTPException(404, f"no NAR1 case {case_id}")
+    # A submit whose worker died mid-call (2026-10-26). Only asked when the
+    # case is showing a claim at all, so an ordinary read costs nothing extra;
+    # the repair and its audit row are the tpsi router's, so the case screen
+    # and the Submission screen's poll cannot settle it two different ways.
+    if (case.get("form_status") or {}).get("code") == tpsi_filings.STAGE_SUBMITTING:
+        try:
+            filing = tpsi_filings.get_filing(case["filing_id"])
+        except Exception:  # noqa: BLE001 — a decoration on a read, never fatal
+            filing = None
+        settled = await tpsi_filings.settle_stale_claim(filing, user)
+        if settled and settled.get("stage") != tpsi_filings.STAGE_SUBMITTING:
+            case = nar1_cases.composite(case_id)
     return case
 
 
@@ -538,6 +539,21 @@ async def patch_case(
                 "verification behind it cannot be restarted; a filed return is "
                 "corrected by filing again, not by re-asking the client",
             )
+        # ...OR MAY HOLD IT (2026-10-26). A restart supersedes the filing and
+        # opens the case to a fresh one, so restarting over a submit that timed
+        # out hides a return CR may have lodged and charged for, and walks the
+        # case towards filing it again.
+        #
+        # ASKED OF THE LOCKED FILING WHEREVER IT SORTS (code review 01, S-4),
+        # not of `current_filing()`: that is the NEWEST non-superseded row, and
+        # the locked one is not always the newest -- a draft opened beside it
+        # through the raw API, or a legacy case where migration 056's repair
+        # moved an older row. `blocking_filing` finds a locked row first and
+        # falls back to the current one, exactly as the close route does.
+        held = nar1_cases.blocking_filing(case_id)
+        if held and held.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+            raise HTTPException(409, tpsi_filings.FilingLocked(
+                held, "restarting verification", own=False).detail())
 
         # THE SNAPSHOT GOES TOO. The confirmation the operator clicks through
         # says "The case goes back to Data Verification. The CR-signed snapshot
@@ -736,6 +752,12 @@ async def close_case(
             ),
             "reason": "case_filed",
         })
+    # CR MAY hold it (2026-10-26). Closing supersedes every live filing, and a
+    # submit in flight or with no recorded answer may be a lodged, charged
+    # return: closing over it would record a filed return as abandoned.
+    if filed and filed.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+        raise HTTPException(409, tpsi_filings.FilingLocked(
+            filed, "closing the case", own=False).detail())
 
     # ---- the write, and it is the point of no return ------------------------
     closed = nar1_cases.close_case(case_id, user_id=user["id"], reason=reason)
@@ -1226,9 +1248,10 @@ def _verification_gate(case: dict, filing: dict | None) -> str | None:
         if (filing.get("form_code") or "").strip().lower() != "nar1":
             return (f"this filing is a {filing.get('form_code')} form; only NAR1 "
                     "can be sent for client verification")
-        if filing.get("stage") in nar1_cases.CR_FILED_STAGES:
-            return ("CR already holds this return; asking the client to approve "
-                    "it now is a request their answer cannot change")
+        if filing.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+            return ("CR already holds this return, or may — a submit of it has "
+                    "been sent; asking the client to approve it now is a "
+                    "request their answer cannot change")
     return None
 
 
@@ -2398,10 +2421,6 @@ async def verification_delivery(
         .eq("entity_id", case_id)
         .eq("entity_type", "nar1_case")
         .eq("action_type", ev.EMAIL_SENT)
-        # NOT the confirmation receipt (Levi 2026-10-17): it is an EMAIL_SENT
-        # row on the same case, tagged with a template, and read as "the
-        # newest send" it would replace the board's report with one line.
-        .is_("metadata->>template", "null")
         .order("created_at", desc=True)
         .limit(1)
         .execute()

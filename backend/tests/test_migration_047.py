@@ -75,12 +75,11 @@ def test_the_recreate_restates_the_grants():
             in m47._CASE_GRANTS)
 
 
-def test_the_stage_lists_are_the_ones_047_shipped():
-    """History; test_migration_054 holds the head to the services."""
-    from services import nar1_case_status as ncs
+def test_the_stage_lists_match_the_services():
+    from services import nar1_case_status as ncs, nar1_cases
 
     m47 = _migration(M047)
-    assert tuple(m47.CR_FILED_STAGES) == ("submitted", "registered", "edrive")
+    assert tuple(m47.CR_FILED_STAGES) == tuple(nar1_cases.CR_FILED_STAGES)
     assert m47.FILING_WINDOW_DAYS == ncs.FILING_WINDOW_DAYS
 
 

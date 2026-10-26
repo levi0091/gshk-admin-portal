@@ -1,22 +1,18 @@
 name: Frontend CI
 
-# push only — see backend-ci.yml for why pull_request was dropped.
 on:
   push:
     paths:
       - 'frontend/**'
       - '.github/workflows/frontend-ci.yml'
-
-# Cancel a feature branch's superseded run; never one on dev or master.
-concurrency:
-  group: ${{ github.workflow }}-${{ contains(fromJSON('["refs/heads/dev","refs/heads/master"]'), github.ref) && github.run_id || github.ref }}
-  cancel-in-progress: true
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-ci.yml'
 
 jobs:
   # Vitest + RTL — the API layer is mocked; no backend or network needed.
-  # The build runs in the same job: it takes seconds, and a job of its own
-  # repeated checkout, setup-node and npm ci for it.
-  test-and-build:
+  test:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -28,12 +24,9 @@ jobs:
           node-version: '20'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - id: install
-        run: npm ci
+      - run: npm ci
       - name: vitest
-        # Every core, not vitest's default of one fewer: on a four-core runner
-        # that is a 33% larger pool (~20% faster measured).
-        run: npm run test -- --maxWorkers=100% --minWorkers=100%
+        run: npm run test
         env:
           # Unlike the build, tests EXECUTE the modules: lib/api.js constructs the
           # Supabase client at import and throws without these. Locally they come
@@ -44,11 +37,21 @@ jobs:
           VITE_SUPABASE_URL: http://localhost:54321
           VITE_SUPABASE_ANON_KEY: test-anon-key
 
-      # A passing test suite still ships nothing if the bundle won't build.
-      # Runs even when vitest failed, so one red run reports both answers, as
-      # the two separate jobs used to.
+  # A passing test suite still ships nothing if the bundle won't build.
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
       - name: vite build
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build
         env:
           # Vite inlines env at build time; a placeholder is enough to compile.

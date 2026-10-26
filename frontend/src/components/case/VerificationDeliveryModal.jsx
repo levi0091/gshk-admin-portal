@@ -61,8 +61,6 @@ function statusLabel(entry) {
  */
 export default function VerificationDeliveryModal({
   caseId, deliveries, phase = 'confirming', onClose,
-  // An officer-change case asks its own route; the reader behind it is the same.
-  deliveryPath = `/cases/${caseId}/verification/delivery`,
 }) {
   // Seeded from the send response so the board is listed the instant the modal
   // opens, rather than appearing a poll later. Every one starts pending: the
@@ -108,7 +106,7 @@ export default function VerificationDeliveryModal({
     async function check() {
       if (cancelled) return
       try {
-        const result = await api.get(deliveryPath)
+        const result = await api.get(`/cases/${caseId}/verification/delivery`)
         if (cancelled) return
         setUnreachable(false)
         if (result?.recipients?.length) setRecipients(result.recipients)

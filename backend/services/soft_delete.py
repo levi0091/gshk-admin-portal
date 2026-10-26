@@ -27,17 +27,8 @@ from typing import Optional
 #: Long enough to explain, short enough to be a reason and not a document.
 REASON_MAX = 500
 
-#: A case in any state but these still needs somebody to see it. FILED counts
-#: as finished since Levi 2026-10-17: it used to wait for CR to register the
-#: return, which CR will never report. The old CR codes are here for the
-#: minutes between the deploy and migration 054, when the view still says them
-#: (`nar1_case_status.LEGACY_CR_CODES`, restated so this module imports no
-#: workflow code).
-FINISHED_CASE_STATES = frozenset({
-    "closed", "filed",
-    "cr_not_checked", "cr_pending", "cr_approved", "cr_registered", "cr_rejected",
-    "cr_unknown",
-})
+#: A case in any state but these still needs somebody to see it.
+FINISHED_CASE_STATES = frozenset({"closed", "cr_registered"})
 
 _RELATION_LABELS = {
     "director": "Director",

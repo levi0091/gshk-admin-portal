@@ -87,18 +87,15 @@ def test_balance_returns_the_amount(client):
     assert response.json()["balance"] == "1831538.0"
 
 
-@pytest.mark.parametrize("method, path", [
-    ("post", "/tpsi/cases/c1/refresh-status"),
-    ("get", "/tpsi/doc-status?case_no=180256934"),
-])
-def test_cr_status_routes_are_gone(client, method, path):
-    """Levi 2026-10-17: CR will not report a document's status after filing
-    through docStatusEnquiry, so Check now and the ad-hoc lookup went with the
-    poll. Nothing may reach CR from either path."""
-    with _super(), patch("routers.tpsi.client_for") as reached:
-        response = getattr(client, method)(path, headers=H)
-    assert response.status_code in (404, 405)
-    reached.assert_not_called()
+def test_doc_status_passes_criteria_through(client):
+    rows = [{"caseNo": "180256934", "documentStatus": "Registered"}]
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
+         patch("routers.tpsi.reads.case_status", return_value=rows) as spy, \
+         patch("routers.tpsi.log_event", new=AsyncMock()):
+        response = client.get("/tpsi/doc-status?case_no=180256934", headers=H)
+    assert response.status_code == 200
+    assert spy.call_args.kwargs["case_no"] == "180256934"
 
 
 def test_endpoints_require_authentication(client):
@@ -208,6 +205,17 @@ def test_password_expiry_persistence_failure_does_not_fail_the_request(client):
     assert response.json()["balance"] == "1"
     # audit_auth still fires TPSI_AUTH after swallowing the persistence error.
     assert "TPSI_AUTH" in events
+
+
+def test_bad_case_status_criteria_is_a_clean_400_not_a_500(client):
+    """reads.case_status raises ValueError on invalid/missing criteria; _handle
+    maps ValueError -> 400 centrally so any future ValueError-raising check
+    in the balance/doc-status call graph gets the same treatment, not a 500."""
+    with _super(), \
+         patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
+         patch("routers.tpsi.reads.case_status", side_effect=ValueError("bad criteria")):
+        response = client.get("/tpsi/doc-status", headers=H)
+    assert response.status_code == 400
 
 
 # ---- filings: POST /tpsi/filings --------------------------------------------
@@ -820,6 +828,7 @@ def test_validate_filing_advances_the_stage_and_audits(client):
         "label": "Validated by CR",
         "failed": False,
         "terminal": False,
+        "locked": False,
         "faults": [],
     }
     assert logged["action_type"] == "TPSI_VALIDATE"
@@ -1124,6 +1133,23 @@ _PREVIEW = {
 _RESULT = {"filing_id": "f1", "receipt": {"caseNo": "180256934", "totalAmount": "105.0"}}
 
 
+def _claim():
+    """What `filings.begin_submit` hands the background task. The filing names
+    no entity or case, so the audit subject lookup has nothing to read."""
+    from services.tpsi import filings as _filings
+
+    return _filings.SubmitClaim(
+        filing={"id": "f1", "form_code": "Nar1"}, body="<cr:submission/>",
+        quote=MagicMock(amount=Decimal("105")), balance=Decimal("999999"),
+        started_at="2026-10-26T01:00:00+00:00")
+
+
+def _filed():
+    from services.tpsi import filings as _filings
+
+    return _filings.SubmitOutcome(stage="submitted", receipt=_RESULT["receipt"])
+
+
 def test_preview_returns_fee_and_balance_and_audits(client):
     logged = {}
 
@@ -1152,12 +1178,15 @@ def test_submit_happy_path_returns_receipt_and_audits_success(client):
 
     with _super(), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
-         patch("routers.tpsi.filings.submit", return_value=_RESULT), \
+         patch("routers.tpsi.filings.begin_submit", return_value=_claim()), \
+         patch("routers.tpsi.filings.finish_submit", return_value=_filed()), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
         response = client.post("/tpsi/filings/f1/submit", headers=H,
                                json={"deposit_account": "ACC", "confirm": True})
-    assert response.status_code == 200
-    assert response.json()["receipt"]["caseNo"] == "180256934"
+    # 202 since 2026-10-26: the claim is the answer, and CR's outcome lands in
+    # the background (TestClient runs the background task before returning).
+    assert response.status_code == 202
+    assert response.json()["stage"] == "submitting"
     assert events == ["TPSI_SUBMISSION_ATTEMPTED", "TPSI_SUBMISSION_SUCCESS"]
 
 
@@ -1171,11 +1200,12 @@ def test_submit_audits_the_attempt_before_calling_cr(client):
 
     def fake_submit(*a, **k):
         order.append(("submit", None))
-        return _RESULT
+        return _claim()
 
     with _super(), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
-         patch("routers.tpsi.filings.submit", side_effect=fake_submit), \
+         patch("routers.tpsi.filings.begin_submit", side_effect=fake_submit), \
+         patch("routers.tpsi.filings.finish_submit", return_value=_filed()), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
         client.post("/tpsi/filings/f1/submit", headers=H,
                     json={"deposit_account": "ACC", "confirm": True})
@@ -1193,7 +1223,7 @@ def test_submit_gate_refusal_is_409_not_500(client):
 
     with _super(), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
-         patch("routers.tpsi.filings.submit",
+         patch("routers.tpsi.filings.begin_submit",
                side_effect=SubmitGateError("explicit confirmation is required")), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
         response = client.post("/tpsi/filings/f1/submit", headers=H,
@@ -1218,7 +1248,7 @@ def test_an_unfilable_record_409s_with_its_faults_as_a_json_list(client):
 
     with _super(), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
-         patch("routers.tpsi.filings.submit",
+         patch("routers.tpsi.filings.begin_submit",
                side_effect=RecordCheckFailed("the company record has changed",
                                              problems=faults,
                                              reason="record_unusable")), \
@@ -1243,7 +1273,7 @@ def test_a_check_that_could_not_run_409s_without_offering_a_restart(client):
 
     with _super(), \
          patch("routers.tpsi.client_for", return_value=MagicMock()), \
-         patch("routers.tpsi.filings.submit",
+         patch("routers.tpsi.filings.begin_submit",
                side_effect=RecordCheckFailed("the return could not be checked")), \
          patch("routers.tpsi.log_event", side_effect=fake_log):
         response = client.post("/tpsi/filings/f1/submit", headers=H,
@@ -1413,12 +1443,12 @@ def test_submit_falls_back_to_the_shared_deposit_account(client):
     with _super(), \
          patch("routers.tpsi.shared_credentials.load_for_use", return_value=shared), \
          patch("routers.tpsi.client_for", return_value=MagicMock(last_auth=None)), \
-         patch("routers.tpsi.filings.submit",
-               return_value={"filing_id": "f1", "receipt": {"caseNo": "1"}}) as spy, \
+         patch("routers.tpsi.filings.begin_submit", return_value=_claim()) as spy, \
+         patch("routers.tpsi.filings.finish_submit", return_value=_filed()), \
          patch("routers.tpsi.log_event", new=AsyncMock()):
         response = client.post("/tpsi/filings/f1/submit", headers=H,
                                json={"confirm": True})
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert spy.call_args.args[3] == "N00061980009"
 
 
