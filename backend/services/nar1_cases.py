@@ -398,6 +398,14 @@ CR_FILED_STAGES = (
     tpsi_filings.STAGE_EDRIVE,
 )
 
+#: CR_FILED_STAGES plus the two where CR MAY hold the return: a submit in
+#: flight, and one that ended without an answer (2026-10-26). Every guard that
+#: asks "would this put the return in front of CR a second time, or hide one CR
+#: has?" asks it of THIS tuple — restart, close, prepare, the manual path and
+#: the verification send. CR_FILED_STAGES stays the narrower fact "CR has it",
+#: which is what the workflow badge and the CR-status poll read.
+CR_MAY_HOLD_STAGES = tpsi_filings.LOCKED_STAGES
+
 
 def blocking_filing(case_id: str) -> dict | None:
     """The filing that decides whether the manual path is still open.
@@ -416,7 +424,7 @@ def blocking_filing(case_id: str) -> dict | None:
         get_supabase().table("tpsi_filings")
         .select("*")
         .eq("nar1_case_id", case_id)
-        .in_("stage", list(CR_FILED_STAGES))
+        .in_("stage", list(CR_MAY_HOLD_STAGES))
         .limit(1)
         .execute()
         .data
@@ -498,6 +506,15 @@ def manual_conflict(filing: dict | None, *, step: str) -> str | None:
             f"this case is already filed with CR (form status '{stage}') — "
             "recording an off-portal submission as well would put two filings "
             "in the register for one return"
+        )
+    # CR MAY hold it (2026-10-26). Recording a paper filing over a submit that
+    # timed out would be the same duplicate by a different road; the operator
+    # resolves the unknown outcome first, from what CR e-Services shows.
+    if stage in CR_MAY_HOLD_STAGES:
+        return (
+            f"a portal submit of this return is '{stage}' — CR may already "
+            "have it. Resolve that filing's outcome from CR e-Services before "
+            "recording an off-portal submission"
         )
 
     # 'signed' is the loaded gun. filings._check_gate PASSES on a signed row, so

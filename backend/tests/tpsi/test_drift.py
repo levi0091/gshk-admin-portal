@@ -247,6 +247,18 @@ def test_an_unmapped_element_falls_back_to_its_own_name():
 #  The gate inside filings.submit
 # --------------------------------------------------------------------------- #
 
+@pytest.fixture(autouse=True)
+def _no_ledger_writes():
+    """`submit` now reads the case-level lock and claims the row (2026-10-26),
+    both through Supabase. These tests are about the drift gate, so the lock
+    reads as clear and the claim and outcome writes land nowhere — patched
+    rather than left to reach a real database."""
+    with patch("services.tpsi.filings.locked_filing_on_case", return_value=None), \
+         patch("services.tpsi.filings._claim"), \
+         patch("services.tpsi.filings._update_where", return_value=True):
+        yield
+
+
 def _filing(**over):
     # `signed_xml` already carries a depositAccountNo, so `submit` sends it
     # verbatim instead of routing through `append_deposit_account` — which

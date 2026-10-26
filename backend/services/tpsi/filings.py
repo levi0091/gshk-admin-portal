@@ -6,6 +6,7 @@ is what makes the submit gate real — a client cannot assert "already validated
 and skip straight to the chargeable call.
 """
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -35,7 +36,21 @@ STAGE_REGISTERED = "registered"
 STAGE_SUPERSEDED = "superseded"
 STAGE_EDRIVE = "edrive"
 
-#: The nine the UI reports, in lifecycle order. `edrive` is a valid stored value
+# THE TWO STAGES THE 2026-10-26 INCIDENT WAS MISSING (migration 056).
+#
+# `submitting` is a CLAIM: exactly one request has won the right to call
+# submitForm for this row, and the call is in flight. `submission_unknown` is
+# what a submit becomes when it ended without CR telling us what happened — a
+# timeout, a dropped connection, a 5xx with no fault in it, a reply that is not
+# a receipt. CR may well have lodged that return and charged for it: on PROD,
+# 16 of 160 submits timed out at 60 s and CR filed most of them anyway. Before
+# these existed every one of those was stored as `submission_failed`, which the
+# validate -> sign -> submit chain accepts, and operators re-filed the same
+# annual return two and three times.
+STAGE_SUBMITTING = "submitting"
+STAGE_SUBMISSION_UNKNOWN = "submission_unknown"
+
+#: The eleven the UI reports, in lifecycle order. `edrive` is a valid stored value
 #: (upload_edrive() still works) but is not offered in the UI, so it is not here.
 FORM_STATUSES = (
     STAGE_DRAFT,
@@ -43,8 +58,10 @@ FORM_STATUSES = (
     STAGE_VALIDATION_FAILED,
     STAGE_SIGNED,
     STAGE_SIGNING_FAILED,
+    STAGE_SUBMITTING,
     STAGE_SUBMITTED,
     STAGE_SUBMISSION_FAILED,
+    STAGE_SUBMISSION_UNKNOWN,
     STAGE_REGISTERED,
     STAGE_SUPERSEDED,
 )
@@ -58,7 +75,9 @@ FORM_STATUS_LABELS = {
     STAGE_SIGNED: "Signed",
     STAGE_SIGNING_FAILED: "Rejected at signing",
     STAGE_SUBMITTED: "Filed with CR",
+    STAGE_SUBMITTING: "Filing with CR…",
     STAGE_SUBMISSION_FAILED: "Rejected at submission",
+    STAGE_SUBMISSION_UNKNOWN: "Outcome unknown — check CR",
     STAGE_REGISTERED: "Registered by CR",
     STAGE_SUPERSEDED: "Superseded by a later attempt",
     STAGE_EDRIVE: "Sent to CR e-Drive",
@@ -66,6 +85,33 @@ FORM_STATUS_LABELS = {
 
 #: Stages a filing can never move on from.
 TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE, STAGE_SUPERSEDED)
+
+#: Stages in which CR HAS, OR MAY HAVE, this return. Nothing may re-validate,
+#: re-sign, supersede or submit a filing in one of these, and while one exists
+#: on a case nothing may prepare, validate, sign or submit ANOTHER filing on
+#: that case either.
+#:
+#: Deliberately NOT folded into TERMINAL_STAGES. `submission_unknown` is not
+#: terminal — an operator resolves it, to `submitted` or back to
+#: `submission_failed`, once they have looked at CR — and `superseded` is
+#: terminal without CR holding anything. TERMINAL_STAGES also feeds the form
+#: badge's `terminal` flag and the return-year lock, which mean other things.
+LOCKED_STAGES = (
+    STAGE_SUBMITTING, STAGE_SUBMISSION_UNKNOWN,
+    STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE,
+)
+
+#: What `supersede` and `supersede_all_for_case` may never touch: the finished
+#: stages and the ones CR may hold. Retiring a `submission_unknown` row would
+#: hide a return CR may have lodged and charged for behind a fresh draft.
+UNRETIRABLE_STAGES = tuple(dict.fromkeys(TERMINAL_STAGES + LOCKED_STAGES))
+
+#: How long a `submitting` claim may stand before it is read as an unknown
+#: outcome. The submitForm read timeout is 180 s (services/tpsi/client.py); a
+#: claim older than this has outlived any request that could still answer it,
+#: which means the worker died mid-call — a deploy, a crash — and nothing will
+#: ever write the answer.
+STALE_CLAIM_SECONDS = 240
 
 #: A failure at any step. Kept as a tuple so callers test membership rather than
 #: string-matching a suffix.
@@ -88,6 +134,10 @@ def form_status(row: dict) -> dict:
         "label": FORM_STATUS_LABELS.get(stage, stage),
         "failed": stage in FAILURE_STAGES,
         "terminal": stage in TERMINAL_STAGES,
+        # CR has, or may have, this return, so nothing may touch it again. The
+        # screen withholds every chain control on this flag rather than keeping
+        # its own copy of the list.
+        "locked": stage in LOCKED_STAGES,
         # Present only on a failure, and it is the whole fault list: CR returns
         # every problem at once so one pass can fix them all.
         "faults": (row.get("cr_error") or {}).get("faults") or [],
@@ -135,7 +185,7 @@ def supersede(filing_id: str) -> bool:
         get_supabase().table(_TABLE)
         .update({"stage": STAGE_SUPERSEDED})
         .eq("id", filing_id)
-        .not_.in_("stage", list(TERMINAL_STAGES))
+        .not_.in_("stage", list(UNRETIRABLE_STAGES))
         .execute()
         .data
     )
@@ -193,7 +243,7 @@ def supersede_all_for_case(nar1_case_id: str) -> int:
         get_supabase().table(_TABLE)
         .update({"stage": STAGE_SUPERSEDED})
         .eq("nar1_case_id", nar1_case_id)
-        .not_.in_("stage", list(TERMINAL_STAGES))
+        .not_.in_("stage", list(UNRETIRABLE_STAGES))
         .execute()
         .data
     )
@@ -297,6 +347,10 @@ def validate(client, filing_id: str) -> dict:
     from services.tpsi.soap import build_submission
 
     filing = get_filing(filing_id)
+    # Before the stage check, so a filing CR may hold is refused by name. The
+    # stage check alone let `submission_failed` through, and on 2026-10-26 that
+    # was every submit that had merely timed out.
+    _refuse_if_locked(filing, "re-validating it")
     if filing["stage"] in (STAGE_SIGNED,) + TERMINAL_STAGES:
         raise ValueError(
             f"filing is already {filing['stage']} and cannot be re-validated"
@@ -591,6 +645,74 @@ def _refuse_if_case_finished(filing: dict, action: str) -> None:
         )
 
 
+class FilingLocked(SubmitGateError):
+    """CR has, or may have, this return — through this filing or another one
+    on the same case — so nothing may put it in front of CR again.
+
+    A SubmitGateError so `submit_filing` refuses, audits and 409s it like every
+    other guard on the chargeable call. `filing` is the row holding the lock,
+    which is not always the one the request named: the case-level lock exists
+    because a second filing on the same case would put a second copy of the
+    same annual return in front of CR just as surely as re-submitting the first.
+    """
+
+    def __init__(self, filing: dict, action: str, *, own: bool):
+        self.filing = filing
+        self.own = own
+        stage = filing.get("stage")
+        label = FORM_STATUS_LABELS.get(stage, stage)
+        which = "this filing" if own else "another filing on this case"
+        if stage == STAGE_SUBMITTING:
+            remedy = ("It is being filed with CR right now. Wait for that to "
+                      "finish; the case updates when CR answers.")
+        elif stage == STAGE_SUBMISSION_UNKNOWN:
+            remedy = ("CR may have filed it and charged the deposit account. "
+                      "Check CR e-Services (Document Submission > Enquire "
+                      "Submitted Documents) and record what CR shows before "
+                      "anything else.")
+        else:
+            remedy = "CR already holds this return."
+        super().__init__(
+            f"{which} is '{label}', so {action} is refused — it would put a "
+            f"second copy of this annual return in front of CR. {remedy}"
+        )
+
+
+def locked_filing_on_case(nar1_case_id: str | None,
+                          exclude_id: str | None = None) -> dict | None:
+    """A filing on this case that CR has, or may have — other than `exclude_id`.
+
+    The read half of the case-level lock. The write half is migration 056's
+    partial unique index on `tpsi_filings(nar1_case_id)`, which is what settles
+    a race this read cannot: two requests can both read "nothing locked" and
+    both go on to claim, and only Postgres can refuse the second.
+    """
+    if not nar1_case_id:
+        return None
+    rows = (
+        get_supabase().table(_TABLE)
+        .select("id,stage,nar1_case_id,submit_started_at")
+        .eq("nar1_case_id", nar1_case_id)
+        .in_("stage", list(LOCKED_STAGES))
+        .execute()
+        .data
+    ) or []
+    for row in rows:
+        if row.get("id") != exclude_id and row.get("stage") in LOCKED_STAGES:
+            return row
+    return None
+
+
+def _refuse_if_locked(filing: dict, action: str) -> None:
+    """Refuse anything that would put this return in front of CR again."""
+    if filing.get("stage") in LOCKED_STAGES:
+        raise FilingLocked(filing, action, own=True)
+    other = locked_filing_on_case(filing.get("nar1_case_id"),
+                                  exclude_id=filing.get("id"))
+    if other:
+        raise FilingLocked(other, action, own=False)
+
+
 class SignatoryMismatch(Exception):
     """The return names one signatory and a different account is signing it.
 
@@ -664,6 +786,7 @@ def sign(client, filing_id: str, signatory_user_id: str, eservice_password: str)
     # paper is the step that arms the chargeable one. Naming the real obstacle
     # here beats letting it surface a step later, at the charge.
     _refuse_if_case_finished(filing, "signing this filing")
+    _refuse_if_locked(filing, "signing it")
     if filing["stage"] != STAGE_VALIDATED:
         raise ValueError("filing must be validated before it can be signed")
 
@@ -723,6 +846,7 @@ def upload_edrive(client, filing_id: str) -> dict:
     # nar1_cases.CR_FILED_STAGES precisely because CR holds the return after it.
     # Blocking only sign/submit would leave this door open from 'validated'.
     _refuse_if_case_finished(filing, "sending it to CR e-Drive")
+    _refuse_if_locked(filing, "sending it to CR e-Drive")
     if filing["stage"] not in (STAGE_VALIDATED, STAGE_SIGNED):
         raise ValueError("filing must be validated before it can go to e-Drive")
 
@@ -1055,16 +1179,114 @@ def _charged_amount(receipt: dict, predicted) -> str:
         return str(predicted)
 
 
-def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
-    """submitForm{Code} — CHARGEABLE AND IRREVERSIBLE.
+class AlreadyFiling(SubmitGateError):
+    """Another request claimed this filing first, so this one sent nothing."""
 
-    The fee leaves the deposit account and there is no un-submit. The stage
-    guard also refuses a filing already at 'submitted' or parked in 'edrive'
-    (CR: a form sent to e-Drive is "inconvertible to TPSI format"), so neither
-    can be charged a second time or filed twice.
+
+@dataclass
+class SubmitClaim:
+    """What `begin_submit` hands to `finish_submit`: the row it claimed, the
+    exact bytes to send, and the figures the receipt is reconciled against."""
+    filing: dict
+    body: str
+    quote: object
+    balance: Decimal
+    started_at: str
+
+
+@dataclass
+class SubmitOutcome:
+    """How a claimed submit ended. `stage` is the one that was written."""
+    stage: str
+    receipt: dict | None = None
+    error: Exception | None = None
+    waited_seconds: float = 0.0
+
+
+def is_refusal(exc: Exception) -> bool:
+    """Did CR ANSWER, and say no, without processing the form?
+
+    THE WHOLE FIX TURNS ON THIS QUESTION, and the answer is narrow on purpose.
+    Only two things prove CR did not lodge the return:
+
+      * a SOAP fault carrying fault beans — CR's business rules refused it
+        (TpsiValidationError, TpsiSignatureError); and
+      * a refused token (TpsiAuthError) — CR never looked at the form.
+
+    Everything else happened AFTER the request may have left the building: a
+    timeout, a dropped connection, a 5xx with no fault in it, a body that is
+    not a receipt, a bug in our own parsing. CR may have filed and charged in
+    every one of those, and on PROD it usually had. So they are NOT refusals,
+    and the caller records an unknown outcome — never a failure, because a
+    failure is what the retry path accepts.
+    """
+    from services.tpsi.errors import (TpsiAuthError, TpsiSignatureError,
+                                      TpsiValidationError)
+
+    return isinstance(exc, (TpsiValidationError, TpsiSignatureError, TpsiAuthError))
+
+
+def _is_case_lock_violation(exc: Exception) -> bool:
+    """PostgREST's report of migration 056's index refusing a claim. Named by
+    index, so an unrelated unique violation is not mistaken for the lock."""
+    text = str(exc)
+    unique = getattr(exc, "code", None) == "23505" or "23505" in text
+    return unique and CASE_LOCK_INDEX in text
+
+
+#: Migration 056's partial unique index: at most one filing per case in a stage
+#: where CR has, or may have, the return.
+CASE_LOCK_INDEX = "uq_tpsi_filings_case_locked"
+
+
+def _claim(filing: dict, started_at: str) -> None:
+    """Take the right to call submitForm for this row. Exactly one request can.
+
+    THE REAL DOUBLE-CHARGE GUARD. Migration 016 commented its partial unique
+    index `uq_tpsi_filings_submitted` "A double-clicked submit hits this, not
+    CR" — but that index is only written AFTER CR has answered, which is after
+    the charge, so a double click reached CR twice before it could object.
+    What settles it is this conditional UPDATE: `signed -> submitting`, inside
+    Postgres, so of two requests that both passed every gate on a `signed`
+    row, the second matches no row and is refused before CR is contacted.
+    Migration 056 adds the case-level index that refuses a claim while another
+    filing on the same case holds the lock.
+    """
+    try:
+        rows = (
+            get_supabase().table(_TABLE)
+            .update({"stage": STAGE_SUBMITTING, "submit_started_at": started_at,
+                     "cr_error": None})
+            .eq("id", filing["id"])
+            .eq("stage", STAGE_SIGNED)
+            .execute()
+            .data
+        )
+    except Exception as exc:  # noqa: BLE001 — only the lock is translated
+        if _is_case_lock_violation(exc):
+            other = locked_filing_on_case(filing.get("nar1_case_id"),
+                                          exclude_id=filing.get("id"))
+            raise FilingLocked(other or {"stage": STAGE_SUBMITTING},
+                               "submitting it", own=False) from exc
+        raise
+    if not rows:
+        raise AlreadyFiling(
+            "this return is already being filed — another request claimed it "
+            "a moment ago. Nothing more was sent to CR; the case updates when "
+            "CR answers the first one."
+        )
+
+
+def begin_submit(client, filing_id: str, confirm: bool,
+                 deposit_account: str) -> SubmitClaim:
+    """Every gate, then the claim. Nothing chargeable happens here.
+
+    Split from `finish_submit` so the route can answer the operator the moment
+    the claim lands and make the CR call after the response (Levi 2026-10-26):
+    submitForm normally takes 25-56 s and the edge in front of the API gives up
+    at 100 s, so a wait long enough to be safe cannot happen inside a request.
     """
     from services.tpsi import reads
-    from services.tpsi.config import fee_for
     from services.tpsi.soap import append_deposit_account
 
     filing = get_filing(filing_id)
@@ -1072,6 +1294,8 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
     # chargeable, irreversible one, and a case already filed on paper must never
     # get as far as a request that could spend.
     _refuse_if_case_finished(filing, "submitting it to CR")
+    # A filing CR has, or may have — this one, or another on the same case.
+    _refuse_if_locked(filing, "submitting it")
     # ONE read of the company record for both the gate and the price — see
     # `assess`. No CR traffic yet: this is a Supabase read and some arithmetic.
     quote, return_date = assess(filing)
@@ -1094,40 +1318,328 @@ def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
         else append_deposit_account(signed, deposit_account)
     )
 
+    # LAST, after every gate: a claim is a promise that CR is about to be
+    # called, and a gate refusing after it would leave a row claiming a call
+    # that never happened.
+    started_at = _now()
+    _claim(filing, started_at)
+    return SubmitClaim(filing=filing, body=body, quote=quote, balance=balance,
+                       started_at=started_at)
+
+
+#: The stages an outcome may be written over. `submission_unknown` is included
+#: because a stale-claim sweep can get there first on a call that is in fact
+#: still running, and CR's eventual answer is the truth. Anything else — an
+#: operator has already resolved it — is left alone.
+_OUTCOME_FROM = (STAGE_SUBMITTING, STAGE_SUBMISSION_UNKNOWN)
+
+
+def _update_where(filing_id: str, payload: dict, stages) -> bool:
+    """`_update`, conditional on the stage inside the UPDATE. Returns whether
+    a row moved."""
+    rows = (
+        get_supabase().table(_TABLE).update(payload)
+        .eq("id", filing_id).in_("stage", list(stages))
+        .execute().data
+    )
+    return bool(rows)
+
+
+def finish_submit(client, claim: SubmitClaim) -> SubmitOutcome:
+    """submitForm{Code} — CHARGEABLE AND IRREVERSIBLE. Never raises.
+
+    Called only by the request that claimed the row. Its outcome is CLASSIFIED,
+    not caught: a receipt is `submitted`; CR's own refusal is
+    `submission_failed`, retryable exactly as before; and everything else is
+    `submission_unknown`, which nothing can retry (see `is_refusal`).
+
+    NEVER RAISES, because by the time it runs nobody is waiting for an
+    exception — it runs after the response. A write that fails here leaves the
+    row at `submitting`, and the stale-claim sweep reads that as an unknown
+    outcome: the safe direction.
+    """
+    import time
+
+    filing_id = claim.filing["id"]
+    began = time.monotonic()
     try:
-        raw = client.post_form("submitForm", filing["form_code"], body)
+        raw = client.post_form("submitForm", claim.filing["form_code"], claim.body)
         receipt = parse_receipt(raw)
-    except TpsiError as exc:
-        _update(
+    except Exception as exc:  # noqa: BLE001 — classified below, never swallowed
+        waited = round(time.monotonic() - began, 1)
+        stage = (STAGE_SUBMISSION_FAILED if is_refusal(exc)
+                 else STAGE_SUBMISSION_UNKNOWN)
+        error = {"faults": getattr(exc, "faults", []), "message": str(exc)}
+        if stage == STAGE_SUBMISSION_UNKNOWN:
+            error["kind"] = getattr(exc, "kind", None) or type(exc).__name__
+        try:
+            _update_where(filing_id, {"stage": stage, "cr_error": error},
+                          _OUTCOME_FROM)
+        except Exception as write_exc:  # noqa: BLE001 — see docstring
+            print(f"[tpsi.filings] ERROR: could not record the {stage} outcome "
+                  f"of filing {filing_id}: {write_exc}", file=sys.stderr)
+        return SubmitOutcome(stage=stage, error=exc, waited_seconds=waited)
+
+    waited = round(time.monotonic() - began, 1)
+    try:
+        _update_where(
             filing_id,
             {
-                "stage": STAGE_SUBMISSION_FAILED,
-                "cr_error": {"faults": getattr(exc, "faults", []), "message": str(exc)},
+                "stage": STAGE_SUBMITTED,
+                "receipt": receipt,
+                # WHAT CR ACTUALLY CHARGED, not what we predicted. A late
+                # annual return is charged HK$870-HK$3,480 and CR decides which
+                # tier applies (measured on CR TEST 2026-08-27: HK$2,610, revenue
+                # code 16, document NAR1L). The receipt is the authority.
+                "fee_amount": _charged_amount(receipt, claim.quote.amount),
+                "balance_at_submit": str(claim.balance),
+                "submitted_at": _now(),
+                "cr_error": None,
             },
+            _OUTCOME_FROM,
         )
-        raise
+    except Exception as exc:  # noqa: BLE001 — the money has moved; keep the receipt
+        # The receipt is the only proof the return landed. If it cannot be
+        # stored it is printed, so it survives in the platform log and the
+        # operator can record it through the resolution route once the stale
+        # claim has turned into an unknown outcome.
+        print(f"[tpsi.filings] ERROR: CR filed {filing_id} but the receipt "
+              f"could not be stored ({exc}); receipt={receipt}", file=sys.stderr)
+    _write_back_receipt(claim.filing, receipt)
+    return SubmitOutcome(stage=STAGE_SUBMITTED, receipt=receipt,
+                         waited_seconds=waited)
 
-    _update(
+
+def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
+    """Gates, claim and submitForm in one call, for callers that can wait.
+
+    The route does not use this — it answers after the claim and finishes in
+    the background — but it is the same two halves in the same order, so a
+    script or a test exercises exactly what the route does. Raises the
+    exception CR's outcome carried when the return was not filed.
+    """
+    claim = begin_submit(client, filing_id, confirm, deposit_account)
+    outcome = finish_submit(client, claim)
+    if outcome.stage != STAGE_SUBMITTED:
+        raise outcome.error
+    return {"filing_id": filing_id, "receipt": outcome.receipt}
+
+
+# ---------------------------------------------------------------------------
+# An outcome nobody recorded, and an operator recording it
+# ---------------------------------------------------------------------------
+
+
+def _parse_instant(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def is_stale_claim(row: dict | None, now: datetime | None = None) -> bool:
+    """A `submitting` claim no live request can still answer."""
+    if (row or {}).get("stage") != STAGE_SUBMITTING:
+        return False
+    started = _parse_instant(row.get("submit_started_at"))
+    if started is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return (now - started).total_seconds() > STALE_CLAIM_SECONDS
+
+
+def expire_stale_claim(row: dict | None) -> dict | None:
+    """Turn a stale `submitting` claim into `submission_unknown`. Returns the
+    updated row, or None when nothing moved.
+
+    A worker restarted mid-call (a deploy, a crash) leaves the row claimed
+    forever and nothing will write CR's answer. Every read of a filing calls
+    this, and the conditional UPDATE — still `submitting`, still older than the
+    cut-off — means a reader racing the real answer can never overwrite it.
+    """
+    if not is_stale_claim(row):
+        return None
+    from datetime import timedelta
+
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(seconds=STALE_CLAIM_SECONDS)).isoformat()
+    query = (
+        get_supabase().table(_TABLE)
+        .update({"stage": STAGE_SUBMISSION_UNKNOWN,
+                 "cr_error": {"faults": [], "message": (
+                     "no answer recorded: the submit was sent to CR but its "
+                     "outcome was never stored (the worker may have restarted "
+                     "mid-call)"), "kind": "no_answer_recorded"}})
+        .eq("id", row["id"])
+        .eq("stage", STAGE_SUBMITTING)
+    )
+    if row.get("submit_started_at"):
+        query = query.lt("submit_started_at", cutoff)
+    rows = query.execute().data
+    return rows[0] if rows else None
+
+
+def claim_age_seconds(row: dict | None) -> float | None:
+    started = _parse_instant((row or {}).get("submit_started_at"))
+    if started is None:
+        return None
+    return round((datetime.now(timezone.utc) - started).total_seconds(), 1)
+
+
+class ResolveRefused(Exception):
+    """A resolution that cannot be recorded. `status` is the HTTP answer."""
+
+    def __init__(self, status: int, message: str, **extra):
+        self.status = status
+        self.extra = extra
+        super().__init__(message)
+
+
+#: CR prints the transaction in Hong Kong time, and `submitted_at` is UTC.
+_HK = "Asia/Hong_Kong"
+
+
+def receipt_instant(receipt: dict) -> str:
+    """CR's transactionDate + transactionTime, read as Hong Kong time, in UTC.
+
+    It feeds `nar1_cases.filed_on` and therefore the Date printed beside the
+    signature, so it must be the day CR received the return — not the day an
+    operator got round to recording it. Raises ValueError on a shape CR does
+    not print; `nar1_cases.validate_receipt` has already refused those.
+    """
+    from zoneinfo import ZoneInfo
+
+    day = str(receipt.get("transactionDate") or "").strip()
+    clock = str(receipt.get("transactionTime") or "").strip()
+    if len(clock) == 5:
+        clock += ":00"
+    local = datetime.strptime(f"{day} {clock}", "%d/%m/%Y %H:%M:%S")
+    return (local.replace(tzinfo=ZoneInfo(_HK))
+            .astimezone(timezone.utc).isoformat())
+
+
+def _full_receipt(receipt: dict, source: str) -> dict:
+    """The stored receipt, with every key a real submitFormNar1 receipt has.
+
+    `parse_receipt` yields every RECEIPT_FIELDS key (None when CR omitted it),
+    and Confirmation renders one template for both, so a recorded receipt that
+    lacked a key would render a blank box that looks like missing data.
+    """
+    out = {f: receipt.get(f) for f in RECEIPT_FIELDS}
+    out["paymentRcptList"] = [
+        {f: (line or {}).get(f) for f in RECEIPT_LINE_FIELDS}
+        for line in (receipt.get("paymentRcptList") or [])
+    ]
+    out["source"] = source
+    return out
+
+
+def _same_br(a, b) -> bool:
+    left = str(a or "").strip().lstrip("0")
+    right = str(b or "").strip().lstrip("0")
+    return bool(left) and left == right
+
+
+def verify_lodged(client, case_no: str, br_no: str | None) -> list[dict]:
+    """Ask CR (free, `docStatusEnquiry`) whether this case number is this company's.
+
+    Raises ResolveRefused:
+      422 — CR says the case number does not exist (a fault with beans), or it
+            lists documents under it for a DIFFERENT BR number;
+      503 — CR could not be asked. Nothing unverified is ever recorded.
+
+    AN EMPTY LIST IS ACCEPTED. Measured on both CR environments (2026-09-17):
+    a case number CR does not hold comes back as a FAULT, never as an empty
+    list, so an empty list is positive evidence the number is real — and a
+    return filed today is routinely still unlisted hours later, which is
+    exactly when an operator resolving a timeout will ask.
+    """
+    from services.tpsi import reads
+    from services.tpsi.errors import TpsiSignatureError, TpsiValidationError
+
+    try:
+        rows = reads.case_status(client, case_no=case_no)
+    except (TpsiValidationError, TpsiSignatureError) as exc:
+        words = "; ".join(m for _c, m in (exc.faults or [])) or str(exc)
+        raise ResolveRefused(
+            422, f"CR does not recognise case number {case_no}: {words}. "
+                 "Check the number on CR's receipt; nothing was recorded.",
+            reason="case_no_unknown") from exc
+    except Exception as exc:  # noqa: BLE001 — anything else: CR was not asked
+        raise ResolveRefused(
+            503, "Could not verify the case number with the Companies Registry, "
+                 "so nothing was recorded. Try again in a few minutes.",
+            reason="cr_unreachable") from exc
+
+    listed = [r for r in rows if r.get("brNo")]
+    if listed and not any(_same_br(r.get("brNo"), br_no) for r in listed):
+        raise ResolveRefused(
+            422, f"CR lists case number {case_no} under BR number "
+                 f"{listed[0].get('brNo')}, not this company's ({br_no}). "
+                 "Check the number on CR's receipt; nothing was recorded.",
+            reason="br_mismatch")
+    return rows
+
+
+def resolve_lodged(filing_id: str, receipt: dict) -> dict:
+    """CR has the return: record its receipt. Conditional on the stage.
+
+    `receipt` has already been shaped (`nar1_cases.with_derived_fields`),
+    checked (`validate_receipt`) and verified against CR (`verify_lodged`).
+    """
+    stored = _full_receipt(receipt, "operator_after_timeout")
+    moved = _update_where(
         filing_id,
         {
             "stage": STAGE_SUBMITTED,
-            "receipt": receipt,
-            # WHAT CR ACTUALLY CHARGED, not what we predicted. `fee_for` returns
-            # the on-time NAR1 fee (HK$105); a late annual return is charged
-            # HK$870-HK$3,480 and CR decides which tier applies. Measured on the
-            # CR TEST environment 2026-08-27: a return 7 months past its
-            # anniversary was billed HK$2,610 under revenue code 16, document
-            # NAR1L -- the trailing "L" is CR's own marker for a late form.
-            # Storing our prediction here made the filing row disagree with the
-            # receipt beside it, which is the one place the numbers must match.
-            "fee_amount": _charged_amount(receipt, quote.amount),
-            "balance_at_submit": str(balance),
-            "submitted_at": _now(),
-            "cr_error": None,
+            "receipt": stored,
+            "fee_amount": _charged_amount(stored, stored.get("totalAmount") or "0"),
+            "submitted_at": receipt_instant(stored),
         },
+        (STAGE_SUBMISSION_UNKNOWN,),
     )
-    _write_back_receipt(filing, receipt)
-    return {"filing_id": filing_id, "receipt": receipt}
+    if not moved:
+        raise ResolveRefused(409, "this filing's outcome is no longer unknown — "
+                                  "reload the case to see what it is now")
+    filing = get_filing(filing_id)
+    _write_back_receipt(filing, stored)
+    return filing
+
+
+def resolve_not_lodged(filing_id: str, *, actor: str) -> dict:
+    """CR does not have it: reopen the ordinary retry. Conditional on the stage."""
+    when = _now()
+    moved = _update_where(
+        filing_id,
+        {"stage": STAGE_SUBMISSION_FAILED,
+         "cr_error": {"faults": [], "kind": "declared_not_lodged",
+                      "message": (f"{actor} checked CR e-Services on {when} "
+                                  "and declared this return not lodged after "
+                                  "a submit that had no answer from CR.")}},
+        (STAGE_SUBMISSION_UNKNOWN,),
+    )
+    if not moved:
+        raise ResolveRefused(409, "this filing's outcome is no longer unknown — "
+                                  "reload the case to see what it is now")
+    return get_filing(filing_id)
+
+
+def claimed_today_in_hk(row: dict) -> bool:
+    """Was this filing's submit claimed today, Hong Kong time? CR can take
+    hours to list a return filed today, so 'not listed' means less then."""
+    from zoneinfo import ZoneInfo
+
+    from services.tpsi import fees
+
+    started = _parse_instant(row.get("submit_started_at"))
+    if started is None:
+        return False
+    return started.astimezone(ZoneInfo(_HK)).date() == fees._hk_today()
 
 
 def _write_back_receipt(filing: dict, receipt: dict) -> None:

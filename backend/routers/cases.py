@@ -379,6 +379,20 @@ async def get_case(case_id: str, user=Depends(require_permission("nar1", "read")
     # the same answer for somebody following an old link or an audit row.
     if case.get("company_deleted"):
         raise HTTPException(404, f"no NAR1 case {case_id}")
+    # A submit whose worker died mid-call (2026-10-26). Only asked when the
+    # case is showing a claim at all, so an ordinary read costs nothing extra;
+    # the repair and its audit row are the tpsi router's, so the case screen
+    # and the Submission screen's poll cannot settle it two different ways.
+    if (case.get("form_status") or {}).get("code") == tpsi_filings.STAGE_SUBMITTING:
+        from routers.tpsi import settle_stale_claim  # local: router-to-router
+
+        try:
+            filing = tpsi_filings.get_filing(case["filing_id"])
+        except Exception:  # noqa: BLE001 — a decoration on a read, never fatal
+            filing = None
+        settled = await settle_stale_claim(filing, user)
+        if settled and settled.get("stage") != tpsi_filings.STAGE_SUBMITTING:
+            case = nar1_cases.composite(case_id)
     return case
 
 
@@ -527,6 +541,19 @@ async def patch_case(
                 "verification behind it cannot be restarted; a filed return is "
                 "corrected by filing again, not by re-asking the client",
             )
+        # ...OR MAY HOLD IT (2026-10-26). A restart supersedes the filing and
+        # opens the case to a fresh one, so restarting over a submit that timed
+        # out hides a return CR may have lodged and charged for, and walks the
+        # case towards filing it again. The newest attempt is the right one to
+        # ask: no new filing can be prepared beside a locked one (the prepare
+        # route refuses it, and migration 056's index backs that up), so a
+        # locked filing is always the case's current one.
+        if filed and filed.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+            raise HTTPException(409, {
+                "message": str(tpsi_filings.FilingLocked(
+                    filed, "restarting verification", own=False)),
+                "reason": "filing_locked", "stage": filed.get("stage"),
+            })
 
         # THE SNAPSHOT GOES TOO. The confirmation the operator clicks through
         # says "The case goes back to Data Verification. The CR-signed snapshot
@@ -724,6 +751,15 @@ async def close_case(
                 "abandoned."
             ),
             "reason": "case_filed",
+        })
+    # CR MAY hold it (2026-10-26). Closing supersedes every live filing, and a
+    # submit in flight or with no recorded answer may be a lodged, charged
+    # return: closing over it would record a filed return as abandoned.
+    if filed and filed.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+        raise HTTPException(409, {
+            "message": str(tpsi_filings.FilingLocked(
+                filed, "closing the case", own=False)),
+            "reason": "filing_locked", "stage": filed.get("stage"),
         })
 
     # ---- the write, and it is the point of no return ------------------------
@@ -1215,9 +1251,10 @@ def _verification_gate(case: dict, filing: dict | None) -> str | None:
         if (filing.get("form_code") or "").strip().lower() != "nar1":
             return (f"this filing is a {filing.get('form_code')} form; only NAR1 "
                     "can be sent for client verification")
-        if filing.get("stage") in nar1_cases.CR_FILED_STAGES:
-            return ("CR already holds this return; asking the client to approve "
-                    "it now is a request their answer cannot change")
+        if filing.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+            return ("CR already holds this return, or may — a submit of it has "
+                    "been sent; asking the client to approve it now is a "
+                    "request their answer cannot change")
     return None
 
 

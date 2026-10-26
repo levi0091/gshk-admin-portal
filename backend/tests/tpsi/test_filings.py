@@ -100,7 +100,8 @@ def test_validate_refuses_a_submitted_filing():
     client = MagicMock()
     with patch.object(filings, "get_filing", return_value=_row(stage=filings.STAGE_SUBMITTED)), \
          patch.object(filings, "_update") as updated:
-        with pytest.raises(ValueError, match="submitted"):
+        # A 409 naming the stage since 2026-10-26, not a 400: CR holds it.
+        with pytest.raises(filings.FilingLocked, match="Filed with CR"):
             filings.validate(client, "f1")
     updated.assert_not_called()
     client.post_form.assert_not_called()
@@ -120,7 +121,7 @@ def test_validate_refuses_an_edrive_filing():
     client = MagicMock()
     with patch.object(filings, "get_filing", return_value=_row(stage=filings.STAGE_EDRIVE)), \
          patch.object(filings, "_update") as updated:
-        with pytest.raises(ValueError, match="edrive"):
+        with pytest.raises(filings.FilingLocked, match="e-Drive"):
             filings.validate(client, "f1")
     updated.assert_not_called()
     client.post_form.assert_not_called()
@@ -438,10 +439,13 @@ def test_sign_failure_records_signing_failed_not_a_generic_failure(monkeypatch):
     assert saved["stage"] != filings.STAGE_VALIDATION_FAILED
 
 
-def test_form_statuses_are_the_nine_the_ui_reports():
+def test_form_statuses_are_the_eleven_the_ui_reports():
     # edrive is a valid stored value but is not offered in the UI, so it must
-    # not appear in the reported vocabulary.
-    assert len(filings.FORM_STATUSES) == 9
+    # not appear in the reported vocabulary. Eleven since migration 056 added
+    # `submitting` and `submission_unknown`.
+    assert len(filings.FORM_STATUSES) == 11
+    assert filings.STAGE_SUBMITTING in filings.FORM_STATUSES
+    assert filings.STAGE_SUBMISSION_UNKNOWN in filings.FORM_STATUSES
     assert filings.STAGE_EDRIVE not in filings.FORM_STATUSES
     # Every reported status needs a label, or the UI renders a raw enum.
     for status in filings.FORM_STATUSES:
@@ -455,7 +459,8 @@ def test_a_submitted_filing_cannot_be_walked_back_by_revalidating(monkeypatch):
         monkeypatch.setattr(
             filings, "get_filing", lambda _id, s=terminal: {"id": "f1", "stage": s}
         )
-        with pytest.raises(ValueError):
+        # `superseded` is a ValueError; the stages CR holds are FilingLocked.
+        with pytest.raises((ValueError, filings.FilingLocked)):
             filings.validate(MagicMock(), "f1")
 
 
@@ -491,8 +496,11 @@ def test_supersede_refuses_a_filing_cr_already_holds_IN_THE_UPDATE():
         assert filings.supersede("f1") is False
     column, stages = chain.call_args.args
     assert column == "stage"
-    # Every terminal stage, so the guard cannot be widened in one place only.
-    assert set(stages) == set(filings.TERMINAL_STAGES)
+    # Every terminal stage AND every stage CR may hold — a timed-out submit
+    # must not be retired either — so the guard cannot be widened in one place
+    # only.
+    assert set(stages) == set(filings.UNRETIRABLE_STAGES)
+    assert filings.STAGE_SUBMISSION_UNKNOWN in stages
 
 
 def test_supersede_all_for_case_retires_every_live_attempt_not_just_the_newest():
@@ -523,7 +531,7 @@ def test_supersede_all_for_case_cannot_un_file_a_filing_cr_holds():
         assert filings.supersede_all_for_case("c1") == 0
     column, stages = chain.call_args.args
     assert column == "stage"
-    assert set(stages) == set(filings.TERMINAL_STAGES)
+    assert set(stages) == set(filings.UNRETIRABLE_STAGES)
 
 
 # ---------------------------------------------------------------------------
