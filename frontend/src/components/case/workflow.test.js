@@ -638,6 +638,26 @@ describe('persistedFailure', () => {
       .toMatch(/submission/i)
   })
 
+  // CODE REVIEW 01, S-7. A refused CR login stores a message and NO fault
+  // list, so the banner used to have nothing to say beside a red badge.
+  it('shows a refused login as a message-only banner with the lock warning', () => {
+    const f = persistedFailure({ form_status: {
+      code: 'submission_failed', failed: true, faults: [], kind: 'auth',
+      message: 'TPSI rejected the token for this submission' } })
+    expect(f).not.toBeNull()
+    expect(f.message).toMatch(/refused the login|login/i)
+    expect(f.problems).toEqual([])
+    expect(f.hint).toMatch(/lock/i)
+    expect(f.hint).toMatch(/nothing was charged/i)
+  })
+
+  it('does not dress a declared "not lodged" as a CR refusal', () => {
+    expect(persistedFailure({ form_status: {
+      code: 'submission_failed', failed: true, faults: [],
+      kind: 'declared_not_lodged', message: 'Levi declared this not lodged' } }))
+      .toBeNull()
+  })
+
   it('tells the operator re-validating is free, and only for validation', () => {
     expect(persistedFailure(failed('validation_failed', faults)).hint)
       .toMatch(/nothing was charged/i)

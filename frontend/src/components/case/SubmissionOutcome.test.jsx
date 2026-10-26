@@ -162,6 +162,34 @@ describe('a submit that has been claimed', () => {
     expect(screen.queryByText(/refused/i)).not.toBeInTheDocument()
   })
 
+  // CODE REVIEW 01, S-6. After the claim commits, a 500 or a Cloudflare 502
+  // during a Railway restart is just as unknowable as a 524 -- and
+  // `describeError`'s 502 branch says "nothing was filed", which the screen
+  // cannot know. Only a 4xx our API answered with a body is a refusal.
+  it.each([500, 502, 503, 520, 522])(
+    'a %i after the claim is not a refusal either', async status => {
+      const user = userEvent.setup()
+      post.mockRejectedValue(Object.assign(new Error('Bad Gateway'), { status }))
+      renderAt('signed')
+      await pressSubmit(user)
+
+      await waitFor(() => expect(onChanged).toHaveBeenCalled())
+      expect(onError).not.toHaveBeenCalledWith(expect.anything())
+    })
+
+  it.each(['already_filing', 'filing_locked'])(
+    'a 409 %s means somebody else has the filing: reload, do not keep the old card',
+    async reason => {
+      const user = userEvent.setup()
+      post.mockRejectedValue(Object.assign(new Error('already being filed'),
+                                           { status: 409, reason }))
+      renderAt('signed')
+      await pressSubmit(user)
+
+      await waitFor(() => expect(onChanged).toHaveBeenCalled())
+      expect(onError).not.toHaveBeenCalledWith(expect.anything())
+    })
+
   it('the edge giving up (524) is treated the same way', async () => {
     const user = userEvent.setup()
     post.mockRejectedValue(Object.assign(new Error(''), { status: 524 }))
@@ -213,6 +241,32 @@ describe('an unknown outcome', () => {
     expect(screen.queryByRole('button', { name: /CR has it/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /CR does not have it/ })).not.toBeInTheDocument()
     expect(screen.getByText(/tpsi:submit/)).toBeInTheDocument()
+  })
+
+  // CODE REVIEW 01, B1.3. While a call could still be with CR the backend
+  // refuses "not lodged" with a 409, so the screen withholds the control.
+  it('withholds "CR does not have it" while a call may still be with CR', () => {
+    const until = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    renderAt('submission_unknown', { not_lodged_after: until })
+
+    expect(screen.queryByRole('button', { name: /CR does not have it/ }))
+      .not.toBeInTheDocument()
+    expect(screen.getByText(/may still be with CR until \d\d:\d\d HKT/))
+      .toBeInTheDocument()
+    // The other answer is safe early: recording a receipt cannot cause a charge.
+    expect(screen.getByRole('button', { name: /CR has it — record the receipt/ }))
+      .toBeInTheDocument()
+  })
+
+  it('offers "CR does not have it" once that time has passed', () => {
+    const past = new Date(Date.now() - 60 * 1000).toISOString()
+    renderAt('submission_unknown', { not_lodged_after: past })
+    expect(screen.getByRole('button', { name: /CR does not have it/ })).toBeInTheDocument()
+  })
+
+  it('offers it when there is no claim time at all (a repaired legacy row)', () => {
+    renderAt('submission_unknown', { not_lodged_after: null })
+    expect(screen.getByRole('button', { name: /CR does not have it/ })).toBeInTheDocument()
   })
 
   it('"CR does not have it" needs the tick before it can be declared', async () => {

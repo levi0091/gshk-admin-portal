@@ -98,13 +98,26 @@ const IN_FLIGHT = 'submitting'
 const UNKNOWN = 'submission_unknown'
 
 /**
- * A request that never got an answer: the browser lost the connection, or the
- * edge in front of the API gave up (Cloudflare answers 524 at 100 s, 504 for a
- * gateway timeout). The submit may well have been claimed and sent to CR, so
- * this is NOT a refusal — the stored stage says what happened.
+ * A submit whose outcome only the STORED STAGE can tell, so the screen reloads
+ * the case instead of drawing a refusal. Three families (code review 01, S-6):
+ *
+ *   - no answer at all: the browser lost the connection (`offline`);
+ *   - an answer from the platform and not from our API: ANY 5xx. A 500 after
+ *     the claim committed, or Cloudflare's 502/520-524 during a Railway
+ *     restart, say nothing about whether the claim landed -- and
+ *     `describeError`'s 502 wording ("nothing was filed") is a claim this
+ *     screen cannot make;
+ *   - a 409 that says somebody else holds the filing (`already_filing`,
+ *     `filing_locked`): the card on screen is stale, Submit button and all.
+ *
+ * Everything else is a 4xx our API answered with a body -- a gate refusing
+ * before CR was contacted -- and is drawn as the refusal it is.
  */
 function noAnswer(e) {
-  return Boolean(e?.offline) || e?.status === 524 || e?.status === 504
+  if (e?.offline) return true
+  if (e?.status >= 500) return true
+  return e?.status === 409
+    && (e?.reason === 'already_filing' || e?.reason === 'filing_locked')
 }
 
 /**
@@ -733,6 +746,24 @@ function OutcomeUnknown({ caseRow, canSubmit, onChanged, onError }) {
   const submittedToday = Boolean(caseRow.submit_started_at)
     && hongKongTodayISO(new Date(caseRow.submit_started_at)) === hongKongTodayISO()
 
+  // "CR does not have it" is withheld while a call could still be with CR
+  // (code review 01, B1.3): the backend refuses it with a 409 until then, and a
+  // receipt arriving after the declaration would meet a second submit already
+  // on its way. Recording a receipt is safe early -- it cannot cause a charge.
+  const until = caseRow.not_lodged_after ? new Date(caseRow.not_lodged_after) : null
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!until || until.getTime() <= Date.now()) return undefined
+    // Re-render at the moment it becomes allowed; no polling needed.
+    const timer = setTimeout(() => setNow(Date.now()),
+                             until.getTime() - Date.now() + 250)
+    return () => clearTimeout(timer)
+  }, [until?.getTime()])   // eslint-disable-line react-hooks/exhaustive-deps
+  const inFlight = Boolean(until) && until.getTime() > now
+  const untilClock = until && new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Hong_Kong', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(until)
+
   return (
     <div className="card mb-16" data-testid="outcome-unknown">
       <div className="card-hdr">
@@ -762,12 +793,20 @@ function OutcomeUnknown({ caseRow, canSubmit, onChanged, onError }) {
                     onClick={() => setAnswer('lodged')}>
               CR has it — record the receipt
             </button>
-            <button type="button" aria-pressed={answer === 'not_lodged'}
-                    className={`btn ${answer === 'not_lodged' ? 'btn-action' : 'btn-outline'}`}
-                    onClick={() => setAnswer('not_lodged')}>
-              CR does not have it
-            </button>
+            {!inFlight && (
+              <button type="button" aria-pressed={answer === 'not_lodged'}
+                      className={`btn ${answer === 'not_lodged' ? 'btn-action' : 'btn-outline'}`}
+                      onClick={() => setAnswer('not_lodged')}>
+                CR does not have it
+              </button>
+            )}
           </div>
+          {inFlight && (
+            <div className="ab-note" data-testid="not-lodged-withheld">
+              A submit may still be with CR until {untilClock} HKT, so "CR does
+              not have it" cannot be declared yet. Check again after {untilClock} HKT.
+            </div>
+          )}
         </div>
       ) : (
         <div className="f-hint" style={{ marginTop: 12 }}>

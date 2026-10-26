@@ -388,13 +388,34 @@ const PERSISTED_FAILURES = {
   },
 }
 
+/**
+ * A refused CR login, recorded with a message and no fault list (code review
+ * 01, S-7). Before the submit moved to the background, the POST's own 502
+ * showed the lock warning; now the refusal is stored on the case and this is
+ * the only place it can be said.
+ */
+const AUTH_REFUSAL = {
+  message: 'The Companies Registry refused the login for this submission.',
+  hint: 'CR processed nothing and nothing was charged. Do not keep retrying — '
+    + 'repeated failed logins lock a CR account. Check CR Credentials, then '
+    + 'submit once more.',
+}
+
 export function persistedFailure(c) {
   const status = c?.form_status
   if (!status?.failed) return null
   // A banner with an empty list under it is worse than the badge alone.
   const problems = Array.isArray(status.faults) && status.faults.length
     ? status.faults : null
-  if (!problems) return null
+  if (!problems) {
+    // The one failure with no fault list that IS a refusal worth a banner.
+    // `declared_not_lodged` is an operator's decision, not CR's refusal.
+    if (status.kind === 'auth') {
+      return { message: AUTH_REFUSAL.message, problems: [], kind: null,
+               hint: AUTH_REFUSAL.hint, retry: false }
+    }
+    return null
+  }
   const known = PERSISTED_FAILURES[status.code]
   return {
     message: known?.message || 'The Companies Registry refused this filing.',
