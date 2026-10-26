@@ -31,14 +31,15 @@ def _statements(direction: str) -> list[str]:
     return seen
 
 
-def test_055_revises_054_and_is_the_head():
+def test_055_revises_054_and_057_follows_it():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     m = _migration()
     assert (m.revision, m.down_revision) == ("055", "054")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["055"]
+    assert script.get_heads() == ["057"]
+    assert script.get_revision("057").down_revision == "055"
 
 
 def test_055_only_adds_nullable_columns():

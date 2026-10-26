@@ -65,6 +65,12 @@ TPSI_PREVIEWED = "TPSI_PREVIEWED"
 TPSI_SUBMISSION_ATTEMPTED = "TPSI_SUBMISSION_ATTEMPTED"
 TPSI_SUBMISSION_SUCCESS = "TPSI_SUBMISSION_SUCCESS"
 TPSI_SUBMISSION_FAILED = "TPSI_SUBMISSION_FAILED"
+# Seeded by migration 056 (2026-10-26). UNKNOWN is a submit that ended without
+# CR telling us what happened — CR may have filed and charged — and is never
+# written as FAILED, which is what let PROD file the same return two and three
+# times. RESOLVED is an operator recording what CR e-Services showed.
+TPSI_SUBMISSION_UNKNOWN = "TPSI_SUBMISSION_UNKNOWN"
+TPSI_SUBMISSION_RESOLVED = "TPSI_SUBMISSION_RESOLVED"
 TPSI_BALANCE_CHECK = "TPSI_BALANCE_CHECK"
 TPSI_STATUS = "TPSI_STATUS"
 TPSI_CRED_SET = "TPSI_CRED_SET"

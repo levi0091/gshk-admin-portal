@@ -52,6 +52,11 @@ STAGES = [
     tpsi_filings.STAGE_SUBMITTED,
     tpsi_filings.STAGE_SUBMISSION_FAILED,
     tpsi_filings.STAGE_EDRIVE,
+    # Migration 056. Inserted with no `submit_started_at`, so the view reads
+    # the claim as stale (`submission_unknown`) — which lands in the same
+    # Submission branch, as `filings.is_stale_claim` would have it.
+    tpsi_filings.STAGE_SUBMITTING,
+    tpsi_filings.STAGE_SUBMISSION_UNKNOWN,
 ]
 SENT = [None, "2026-08-16T00:00:00Z"]
 APPROVED = [None, True, False]

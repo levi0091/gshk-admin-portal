@@ -247,6 +247,19 @@ def test_an_unmapped_element_falls_back_to_its_own_name():
 #  The gate inside filings.submit
 # --------------------------------------------------------------------------- #
 
+@pytest.fixture(autouse=True)
+def _no_ledger_writes():
+    """`submit` now reads the case-level lock and claims the row (2026-10-26),
+    both through Supabase. These tests are about the drift gate, so the lock
+    reads as clear and the claim and outcome writes land nowhere — patched
+    rather than left to reach a real database."""
+    with patch("services.tpsi.filings.locked_filing_on_case", return_value=None), \
+         patch("services.tpsi.filings._claim"), \
+         patch("services.tpsi.filings._claim_is_ours", return_value=True), \
+         patch("services.tpsi.filings._update_where", return_value=True):
+        yield
+
+
 def _filing(**over):
     # `signed_xml` already carries a depositAccountNo, so `submit` sends it
     # verbatim instead of routing through `append_deposit_account` — which
@@ -416,7 +429,7 @@ def test_a_non_nar1_filing_is_not_drift_checked():
         # is why the gate cannot fire here. See `filings.assess`.
         assess.return_value = (
             MagicMock(amount=0, band="on time", certain=True), None)
-        with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={}):
+        with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={"caseNo": "1"}):
             filings.submit(client, "f1", True, "N00061980009")
     rebuild.assert_not_called()
 

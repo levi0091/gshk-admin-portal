@@ -86,13 +86,21 @@ So the chain runs 049 -> 051 -> 050: out of numeric order, in the order the
 two actually reach a database. Nothing here depends on 051's columns, and 051
 touches neither the view nor anything this restates.
 
+REVISES 056 NOW (2026-10-27). 056 -- the PROD duplicate-NAR1-submission hotfix,
+applied to PROD and DEV before this migration ever ran anywhere -- also revised
+051, and two heads cannot stand. This was re-parented on top of 056 when the
+ND2A/ND2B work was re-landed on `dev`: 049 -> 051 -> 056 -> 050 -> 052 -> 053 ->
+054 -> 055 -> 057. Nothing in this file depends on 056, but its view restatement
+(like 052's and 054's) is built from 047's text and so drops 056's four view
+differences; 057 restates the final view with them put back.
+
 Revision ID: 050
-Revises: 051
+Revises: 056
 """
 from alembic import op
 
 revision = "050"
-down_revision = "051"
+down_revision = "056"
 branch_labels = None
 depends_on = None
 

@@ -24,6 +24,8 @@ const WORKFLOW_CODES = [
 const FORM_CODES = [
   'draft', 'validated', 'validation_failed', 'signed', 'signing_failed',
   'submitted', 'submission_failed', 'superseded', 'edrive',
+  // Migration 056 (2026-10-26).
+  'submitting', 'submission_unknown',
 ]
 
 describe('WorkflowBadge', () => {
@@ -149,6 +151,16 @@ describe('FormBadge', () => {
     expect(FORM_LABEL.validation_failed).toContain('validation')
     expect(FORM_LABEL.signing_failed).toContain('signing')
     expect(FORM_LABEL.submission_failed).toContain('submission')
+  })
+
+  it('never dresses an unknown outcome as a refusal', () => {
+    // 2026-10-26: 16 PROD submits that timed out were drawn red as "Rejected at
+    // submission" while CR had filed most of them, and operators filed again.
+    expect(FORM_CLASS.submission_unknown).not.toBe('bf-failed')
+    expect(FORM_LABEL.submission_unknown).not.toMatch(/reject|refus|fail/i)
+    expect(FORM_LABEL.submission_unknown).toMatch(/unknown/i)
+    expect(FORM_CLASS.submitting).not.toBe('bf-failed')
+    expect(FORM_LABEL.submitting).toMatch(/Filing with CR/)
   })
 
   it('reads as an em dash when no filing exists yet', () => {

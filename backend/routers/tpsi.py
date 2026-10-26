@@ -6,12 +6,14 @@ not on our own ledger.
     write  -> changes something at CR or stores a credential (sign, e-Drive)
     submit -> chargeable and irreversible
 """
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict
 
 from middleware.auth import require_permission, require_super_admin
@@ -22,7 +24,7 @@ from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services import audit_subject
-from services.tpsi import credentials, filings, reads, shared_credentials
+from services.tpsi import audit_context, credentials, filings, reads, shared_credentials
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
 from services.tpsi.forms.cr_vocabularies import default_capacity
 # Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
@@ -188,68 +190,9 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
     )
 
 
-def _filing_subject(
-    row: Optional[dict] = None,
-    *,
-    filing_id: Optional[str] = None,
-    entity_id: Optional[str] = None,
-    nar1_case_id: Optional[str] = None,
-) -> dict:
-    """Which case and which company a CR filing event is about.
-
-    Every `tpsi_filing` audit row used to carry a filing uuid and nothing else,
-    so the whole CR half of the trail rendered with an empty subject — you could
-    see that a return was validated, signed and submitted without being able to
-    tell for whom. `tpsi_filings` already knows: it holds the entity and, for a
-    NAR1, the case.
-
-    ALSO FIXES WHAT WENT INTO `case_id`. Two routes wrote `nar1_case_id` there,
-    but that column holds an ENTITY id by repo convention (routers/cases.py
-    ::_audit_target) — a case id in it is invisible to every company-scoped
-    query, which is exactly the trail these rows belong in. The case id now goes
-    where it belongs, in `subject_id`.
-
-    TWO STAGES, and the split is the point. The IDS come from what the caller
-    already has and cost nothing; the NAMES need a lookup and are best-effort.
-    So a Supabase failure downgrades the row to ids without a company name,
-    rather than dropping the subject altogether.
-
-    TOTALLY DEFENSIVE, and that is not belt-and-braces. This is spread into a
-    `log_event(**...)` call, so it is evaluated by the CALLER — outside the
-    try/except that makes an audit write unable to fail its operation. A raise
-    here would turn a successful, chargeable CR submission into a 500.
-    """
-    try:
-        if row is None and filing_id:
-            row = filings.get_filing(filing_id)
-    except Exception:  # noqa: BLE001
-        row = None
-    row = row or {}
-
-    entity_id = entity_id or row.get("entity_id")
-    case_id = nar1_case_id or row.get("nar1_case_id")
-    if not entity_id and not case_id:
-        return {}
-
-    company: dict = {"id": entity_id} if entity_id else {}
-    case: dict = {"id": case_id} if case_id else {}
-    try:
-        sb = get_supabase()
-        if entity_id:
-            company = (sb.table("entities").select("id, company_name, br_number")
-                       .eq("id", entity_id).single().execute()).data or company
-        if case_id:
-            case = (sb.table("nar1_cases").select("id, case_no")
-                    .eq("id", case_id).single().execute()).data or case
-    except Exception as exc:  # noqa: BLE001
-        print(f"[routers.tpsi] WARN: could not name the audit subject for filing "
-              f"{filing_id or row.get('id')}: {exc}", file=sys.stderr)
-
-    out = {"case_id": entity_id, "company_name": company.get("company_name")}
-    if case_id:
-        return {**out, **audit_subject.for_case(case, module=audit_subject.CR_FILING)}
-    return {**out, **audit_subject.for_company(
-        company, module=audit_subject.CR_FILING)}
+# Lives in services/tpsi/audit_context.py now; the alias keeps every call site
+# in this router unchanged.
+_filing_subject = audit_context.filing_subject
 
 
 def _handle(exc: Exception) -> HTTPException:
@@ -274,6 +217,14 @@ def _handle(exc: Exception) -> HTTPException:
             "message": ("The return cannot be built from the company record: "
                         "the Companies Registry would refuse these values."),
             "problems": exc.problems()})
+    # 409, and named: CR has, or may have, this return. Never a 400 — nothing
+    # about the request is malformed — and never folded into "not in a state
+    # that allows this", because the operator's next move depends on WHICH
+    # state: wait, check CR, or nothing at all.
+    if isinstance(exc, filings.FilingLocked):
+        return HTTPException(409, exc.detail())
+    if isinstance(exc, filings.SubmitGateError):
+        return HTTPException(409, str(exc))
     if isinstance(exc, (LookupError, ValueError)):
         return HTTPException(400, str(exc))
     if isinstance(exc, TpsiPasswordExpiredError):
@@ -672,13 +623,13 @@ async def prepare_filing(
             "this case was completed off-portal; opening a CR filing against "
             "it would put two filings in the register for one return",
         )
-    if blocking and blocking.get("stage") in nar1_cases.CR_FILED_STAGES:
-        raise HTTPException(
-            409,
-            f"CR already holds this return (form status "
-            f"'{blocking.get('stage')}'); preparing another filing would "
-            "hide it behind a draft that cannot be advanced",
-        )
+    # CR HAS, OR MAY HAVE, this return (2026-10-26). `submitting` and
+    # `submission_unknown` count as well as the filed stages: a fresh draft
+    # beside a submit that timed out is a second copy of the same annual return
+    # one validate, sign and submit away from CR.
+    if blocking and blocking.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+        raise _handle(filings.FilingLocked(
+            blocking, "preparing another filing", own=False))
 
     # ONE OWNER FOR THE BUILD (services/nar1_prepare, 2026-09-17). Everything
     # that used to be inline here -- the Hong Kong year, the stored signing
@@ -857,12 +808,24 @@ async def create_filing(
 
 @router.get("/filings/{filing_id}")
 async def get_filing(filing_id: str, user=Depends(require_permission("tpsi", "read"))):
-    """Form status for one filing. Read-only, no CR call, no charge."""
+    """Form status for one filing. No CR call, no charge.
+
+    The Submission screen polls this every 3 s while a submit is in flight, so
+    it is also where a claim orphaned by a worker restart is noticed and turned
+    into an unknown outcome (`settle_stale_claim`) — the one write a read makes.
+    """
     try:
         row = filings.get_filing(filing_id)
     except Exception as exc:
         raise _handle(exc)
+    row = await filings.settle_stale_claim(row, user)
     return {
+        "stage": row["stage"],
+        "submit_started_at": row.get("submit_started_at"),
+        # When "CR does not have it" may first be declared (None: any time).
+        # Returned for EVERY stage -- it is a function of the claim time alone,
+        # and only the unknown-outcome panel reads it (code review 02, N-11).
+        "not_lodged_after": filings.not_lodged_after(row),
         "filing_id": filing_id,
         "form_code": row["form_code"],
         "entity_id": row["entity_id"],
@@ -1302,15 +1265,104 @@ async def preview_filing(
     return result
 
 
-@router.post("/filings/{filing_id}/submit")
+async def _audit_submit_refusal(user: dict, filing_id: str, exc: Exception) -> None:
+    """TPSI_SUBMISSION_FAILED for a gate that refused BEFORE CR was contacted.
+
+    `gate: True` is what separates these from a refusal CR itself gave: none of
+    them spent anything or reached CR."""
+    metadata = {"reason": str(exc), "gate": True}
+    if isinstance(exc, filings.DriftDetected):
+        # Field names, not values — an audit row is not the place to repeat a
+        # director's residential address, and the values are one click away.
+        metadata.update(drift=True,
+                        fields=[d["field"] for d in exc.differences])
+    elif isinstance(exc, filings.RecordCheckFailed):
+        metadata.update(check=exc.reason, problems=exc.problems)
+    await log_event(
+        user_id=user["id"], user_display_name=user["display_name"],
+        action_type=ev.TPSI_SUBMISSION_FAILED,
+        event_code=ev.TPSI_SUBMISSION_FAILED,
+        entity_type="tpsi_filing", entity_id=filing_id,
+        **_filing_subject(filing_id=filing_id),
+        metadata=metadata,
+    )
+
+
+async def _finish_submit(client, claim, user: dict) -> None:
+    """The chargeable call, after the response has gone (BackgroundTasks).
+
+    `finish_submit` blocks for as long as CR takes — up to the 180 s read
+    timeout — so it runs in the thread pool. Inline in this `async def` it
+    would hold the worker's event loop for the whole call, which is what the
+    old synchronous submit did to every other request on the worker.
+
+    It never raises (see `filings.finish_submit`). The audit row says what
+    HAPPENED, not what was wished: a receipt that could not be written to the
+    row is still a SUCCESS -- CR filed and charged -- but carries
+    `metadata.stored = false`, and EVERY success carries the whole receipt in
+    `after_state`, because the trail is insert-only and the receipt is the one
+    piece of proof that cannot be recovered from CR's side without a search
+    (code review 01, B1.4).
+    """
+    outcome = await run_in_threadpool(filings.finish_submit, client, claim)
+    filing_id = claim.filing["id"]
+    subject = _filing_subject(claim.filing)
+    common = dict(user_id=user["id"], user_display_name=user["display_name"],
+                  entity_type="tpsi_filing", entity_id=filing_id, **subject)
+
+    if outcome.stage == filings.STAGE_SUBMITTED:
+        await log_event(
+            action_type=ev.TPSI_SUBMISSION_SUCCESS,
+            event_code=ev.TPSI_SUBMISSION_SUCCESS, **common,
+            after_state={"receipt": outcome.receipt},
+            metadata={"caseNo": outcome.receipt.get("caseNo"),
+                      "totalAmount": outcome.receipt.get("totalAmount"),
+                      "stored": outcome.stored,
+                      "reason": outcome.reason,
+                      "waited_seconds": outcome.waited_seconds},
+        )
+    elif outcome.stage == filings.STAGE_SUBMISSION_FAILED:
+        await log_event(
+            action_type=ev.TPSI_SUBMISSION_FAILED,
+            event_code=ev.TPSI_SUBMISSION_FAILED, **common,
+            metadata={"reason": str(outcome.error),
+                      "faults": [list(f) for f in
+                                 getattr(outcome.error, "faults", None) or []],
+                      "sent": outcome.sent,
+                      "waited_seconds": outcome.waited_seconds},
+        )
+    else:
+        await log_event(
+            action_type=ev.TPSI_SUBMISSION_UNKNOWN,
+            event_code=ev.TPSI_SUBMISSION_UNKNOWN, **common,
+            metadata={"reason": str(outcome.error),
+                      "kind": getattr(outcome.error, "kind", None)
+                      or type(outcome.error).__name__,
+                      "sent": outcome.sent,
+                      "waited_seconds": outcome.waited_seconds},
+        )
+
+
+@router.post("/filings/{filing_id}/submit", status_code=202)
 async def submit_filing(
-    filing_id: str, body: SubmitIn, user=Depends(require_permission("tpsi", "submit"))
+    filing_id: str, body: SubmitIn, background: BackgroundTasks,
+    user=Depends(require_permission("tpsi", "submit")),
 ):
-    """CHARGEABLE AND IRREVERSIBLE.
+    """CHARGEABLE AND IRREVERSIBLE. Answers 202 once the filing is CLAIMED.
 
     Gated on `tpsi:submit`, deliberately distinct from `tpsi:write`: a role may
     be allowed to prepare, validate and sign a NAR1 without being allowed to
     spend from the deposit account.
+
+    THE CR CALL RUNS AFTER THE RESPONSE (Levi 2026-10-26). Every gate, the live
+    balance read and the atomic claim (`signed -> submitting`) happen here,
+    synchronously, and a refusal of any of them is a 409 exactly as before. The
+    submitForm call itself and its outcome audit run in the background with a
+    180 s read timeout, and the screen polls `GET /tpsi/filings/{id}` until the
+    stage leaves `submitting`. It used to run inline: CR's 25-56 s answer sat
+    inside a request that the edge in front of the API abandons at 100 s, under
+    a 60 s timeout that CR missed 16 times in 160 on PROD — and each miss was
+    recorded as a refusal the operator could retry.
     """
     # Resolved BEFORE the attempt is logged and before any CR call: a submit
     # with an unresolvable deposit account is a clean 400, not something
@@ -1336,56 +1388,30 @@ async def submit_filing(
         **_filing_subject(filing_id=filing_id),
         metadata={"deposit_account": account, "confirm": body.confirm},
     )
+    client = client_for(user, shared)
     try:
-        result = filings.submit(
-            client_for(user, shared), filing_id, body.confirm, account
-        )
-    except filings.DriftDetected as exc:
-        # Spec §6. Its own branch above the general gate: the operator needs the
-        # FIELDS, and `str(exc)` is only the headline. Audited with the field
-        # names but not the values — an audit row is not the place to repeat a
-        # director's residential address, and the values are one click away on
-        # the two records being compared.
-        await log_event(
-            user_id=user["id"], user_display_name=user["display_name"],
-            action_type=ev.TPSI_SUBMISSION_FAILED,
-            event_code=ev.TPSI_SUBMISSION_FAILED,
-            entity_type="tpsi_filing", entity_id=filing_id,
-            **_filing_subject(filing_id=filing_id),
-            metadata={"reason": str(exc), "gate": True, "drift": True,
-                      "fields": [d["field"] for d in exc.differences]},
-        )
-        raise HTTPException(409, {"message": str(exc), "reason": "drift",
-                                  "differences": exc.differences})
-    except filings.RecordCheckFailed as exc:
-        # Its own branch, above the general gate, for the same reason
-        # DriftDetected has one: it carries a LIST. Flattened into
-        # `str(exc)` by the general branch below, the mapper's faults arrived
-        # as one run-on sentence and were drawn as one — which is the thing
-        # being fixed (Levi 2026-09-03). The fault TEXT is audited; it names
-        # parties and countries but no personal particulars.
-        await log_event(
-            user_id=user["id"], user_display_name=user["display_name"],
-            action_type=ev.TPSI_SUBMISSION_FAILED,
-            event_code=ev.TPSI_SUBMISSION_FAILED,
-            entity_type="tpsi_filing", entity_id=filing_id,
-            **_filing_subject(filing_id=filing_id),
-            metadata={"reason": str(exc), "gate": True,
-                      "check": exc.reason, "problems": exc.problems},
-        )
-        raise HTTPException(409, {"message": str(exc), "reason": exc.reason,
-                                  "problems": exc.problems})
+        # A Supabase read, some arithmetic, the free balance read and one
+        # conditional UPDATE — blocking calls, so off the event loop.
+        claim = await run_in_threadpool(
+            filings.begin_submit, client, filing_id, body.confirm, account)
     except filings.SubmitGateError as exc:
-        await log_event(
-            user_id=user["id"], user_display_name=user["display_name"],
-            action_type=ev.TPSI_SUBMISSION_FAILED,
-            event_code=ev.TPSI_SUBMISSION_FAILED,
-            entity_type="tpsi_filing", entity_id=filing_id,
-            **_filing_subject(filing_id=filing_id),
-            metadata={"reason": str(exc), "gate": True},
-        )
-        raise HTTPException(409, str(exc))
+        await _audit_submit_refusal(user, filing_id, exc)
+        if isinstance(exc, filings.DriftDetected):
+            # Spec §6: the operator needs the FIELDS, not only the headline.
+            raise HTTPException(409, {"message": str(exc), "reason": "drift",
+                                      "differences": exc.differences})
+        if isinstance(exc, filings.RecordCheckFailed):
+            # A LIST, drawn one card per fault (Levi 2026-09-03).
+            raise HTTPException(409, {"message": str(exc), "reason": exc.reason,
+                                      "problems": exc.problems})
+        if isinstance(exc, filings.AlreadyFiling):
+            raise HTTPException(409, {"message": str(exc),
+                                      "reason": "already_filing"})
+        raise _handle(exc)
     except Exception as exc:
+        # Nothing was claimed, so nothing was sent to CR's chargeable call:
+        # this is the balance read failing, or a Supabase error. Still audited
+        # as a failed attempt, with no `gate` flag, exactly as before.
         await log_event(
             user_id=user["id"], user_display_name=user["display_name"],
             action_type=ev.TPSI_SUBMISSION_FAILED,
@@ -1396,15 +1422,138 @@ async def submit_filing(
         )
         raise _handle(exc)
 
+    background.add_task(_finish_submit, client, claim, user)
+    return {"filing_id": filing_id, "stage": filings.STAGE_SUBMITTING,
+            "submit_started_at": claim.started_at}
+
+
+class ResolveIn(BaseModel):
+    """What the operator saw in CR e-Services after a submit with no answer.
+
+    `checked_cr` is typed `object`, not `bool`, on purpose: Pydantic's lax
+    bool accepts "yes", 1 and "true", and the rule (Levi 2026-10-26) is that
+    declaring a return NOT lodged needs a literal `true` — the tick on the
+    screen, not something that happens to be truthy.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: str
+    receipt: dict | None = None
+    checked_cr: object = None
+
+
+@router.post("/filings/{filing_id}/resolve")
+async def resolve_filing(
+    filing_id: str, body: ResolveIn,
+    user=Depends(require_permission("tpsi", "submit")),
+):
+    """Record what CR shows for a submit whose outcome is unknown.
+
+    `tpsi:submit` (Levi 2026-10-26): either answer decides whether a
+    chargeable, irreversible filing happened. "Lodged" closes the case as filed
+    exactly as a receipt from CR does; "not lodged" re-opens the path to the
+    charge. Neither may be in the hands of a role that could not have
+    submitted.
+
+    `lodged` is verified against CR's free `docStatusEnquiry` before anything
+    is written: a receipt typed off the screen with one digit wrong in its case
+    number would otherwise become the statutory record of this return.
+    """
+    try:
+        filing = filings.get_filing(filing_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    filing = await filings.settle_stale_claim(filing, user)
+    if filing.get("stage") != filings.STAGE_SUBMISSION_UNKNOWN:
+        raise HTTPException(409, {
+            "message": (f"this filing is '{filing.get('stage')}', not an "
+                        "unknown outcome; there is nothing to resolve"),
+            "reason": "not_unknown", "stage": filing.get("stage")})
+
+    if body.outcome == "not_lodged":
+        if body.checked_cr is not True:
+            raise HTTPException(400, (
+                "confirm that you checked CR e-Services and this return is not "
+                "listed (checked_cr: true); declaring it not lodged re-opens "
+                "the path to a chargeable submit"))
+        try:
+            row = filings.resolve_not_lodged(filing_id,
+                                             actor=user.get("display_name") or user["id"])
+        except filings.ResolveRefused as exc:
+            raise HTTPException(exc.status, {"message": str(exc), **exc.extra})
+        await log_event(
+            user_id=user["id"], user_display_name=user["display_name"],
+            action_type=ev.TPSI_SUBMISSION_RESOLVED,
+            event_code=ev.TPSI_SUBMISSION_RESOLVED,
+            entity_type="tpsi_filing", entity_id=filing_id,
+            **_filing_subject(row),
+            old_value=filings.STAGE_SUBMISSION_UNKNOWN,
+            new_value=filings.STAGE_SUBMISSION_FAILED,
+            after_state={"outcome": "not_lodged"},
+            metadata={"checked_cr": True},
+        )
+        return {"filing_id": filing_id, "stage": row["stage"],
+                "form_status": form_status(row),
+                # CR can take hours to list a return filed today, so "not
+                # listed" is weak evidence until tomorrow; the screen says so.
+                "submitted_today": filings.claimed_today_in_hk(filing)}
+
+    if body.outcome != "lodged":
+        raise HTTPException(400, "outcome must be 'lodged' or 'not_lodged'")
+    if not isinstance(body.receipt, dict):
+        raise HTTPException(400, "a 'lodged' outcome needs CR's receipt")
+
+    try:
+        case = nar1_cases.get_case(filing["nar1_case_id"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(409, f"the case behind this filing cannot be read: {exc}")
+    # THE OFF-PORTAL RECEIPT'S OWN MACHINERY, so a receipt recorded here has
+    # the same keys, the same derived fields and the same checks as one typed
+    # on the manual path — and both render through the one Confirmation
+    # template beside a receipt CR returned itself.
+    receipt = nar1_cases.with_derived_fields(
+        body.receipt, nar1_cases.receipt_prefill(case))
+    problems = nar1_cases.validate_receipt(receipt)
+    # CR's case numbers are digits (180256934). Refused before it is put in a
+    # SOAP body and before CR is asked anything (code review 01, S-9).
+    case_no = str(receipt.get("caseNo") or "").strip()
+    if case_no and not re.fullmatch(filings.CASE_NO_SHAPE, case_no):
+        problems.append("caseNo: must be CR's case number, 6 to 12 digits")
+    if problems:
+        raise HTTPException(400, {"message": "the receipt is incomplete",
+                                  "problems": problems})
+
+    try:
+        # Everything that can say "no" without asking CR comes first.
+        filings.check_receipt_not_before_claim(filing, receipt)
+        # INSIDE the guard (S-10): a shared presenter credential that will not
+        # load is "could not verify with CR, try again", not a 500.
+        try:
+            client = client_for(user)
+        except Exception as exc:  # noqa: BLE001
+            raise filings.ResolveRefused(
+                503, "Could not verify the case number with the Companies "
+                     "Registry, so nothing was recorded. Try again in a few "
+                     "minutes.", reason="cr_unreachable") from exc
+        await run_in_threadpool(
+            filings.verify_lodged, client, case_no, receipt.get("brNo"),
+            filings.hk_date_of(filing.get("submit_started_at")))
+        row = filings.resolve_lodged(filing_id, receipt)
+    except filings.ResolveRefused as exc:
+        raise HTTPException(exc.status, {"message": str(exc), **exc.extra})
+    await audit_auth(user, client)
+
     await log_event(
         user_id=user["id"], user_display_name=user["display_name"],
-        action_type=ev.TPSI_SUBMISSION_SUCCESS,
-        event_code=ev.TPSI_SUBMISSION_SUCCESS,
+        action_type=ev.TPSI_SUBMISSION_RESOLVED,
+        event_code=ev.TPSI_SUBMISSION_RESOLVED,
         entity_type="tpsi_filing", entity_id=filing_id,
-        **_filing_subject(filing_id=filing_id),
-        metadata={
-            "caseNo": result["receipt"].get("caseNo"),
-            "totalAmount": result["receipt"].get("totalAmount"),
-        },
+        **_filing_subject(row),
+        old_value=filings.STAGE_SUBMISSION_UNKNOWN,
+        new_value=filings.STAGE_SUBMITTED,
+        after_state={"outcome": "lodged", "receipt": row.get("receipt")},
+        metadata={"caseNo": (row.get("receipt") or {}).get("caseNo"),
+                  "totalAmount": (row.get("receipt") or {}).get("totalAmount")},
     )
-    return result
+    return {"filing_id": filing_id, "stage": row["stage"],
+            "form_status": form_status(row), "receipt": row.get("receipt")}

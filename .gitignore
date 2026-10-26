@@ -30,6 +30,11 @@ docs/
 !/docs/NAR1(private)_Specimen-e.pdf
 !/docs/NAR1(public)_Specimen-e.pdf
 !/docs/QUEUED.md
+# The crew operating card and tracker config (docs/agents/). Working instructions
+# for the agents, not input data: committed so every worktree and every dispatched
+# agent has the same commands and rules instead of re-deriving them (2026-10-27).
+# Feature folders under .scratch/ stay local.
+!/docs/agents/
 # The design spec for the NAR1 facsimile, because the code refers to it for
 # WHY the field map looks the way it does. Deliberately this one file and not
 # `!/docs/superpowers/` — that would sweep in every historical plan and spec
@@ -85,3 +90,6 @@ backend/etl/reports/
 
 # Visual harness output (scripts/shoot-stages.mjs) — regenerated, never reviewed.
 /frontend/.visual/
+
+# Crew feature folders (specs, tickets, reviews, logs) — per-run working files
+.scratch/

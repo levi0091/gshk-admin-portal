@@ -57,9 +57,13 @@ export const FORM_LABEL = {
   submission_failed: 'Rejected at submission',
   superseded: 'Superseded by a later attempt',
   edrive: 'Sent to CR e-Drive',
+  // Migration 056 (2026-10-26). Never "rejected": a submit whose answer never
+  // arrived is one CR may have filed and charged for.
+  submitting: 'Filing with CR…',
+  submission_unknown: 'Outcome unknown — check CR',
 }
 
-// Nine stages, six treatments: the three failure stages share one red, because
+// Eleven stages, eight treatments: the three failure stages share one red, because
 // what the reader needs at a glance is "CR refused it" — the label says at which
 // step. `edrive` has no class of its own in v11 (R-2 removed the e-Drive option
 // from the UI), but the backend can still carry the stage on an older filing,
@@ -74,6 +78,11 @@ export const FORM_CLASS = {
   submission_failed: 'bf-failed',
   superseded: 'bf-superseded',
   edrive: 'bf-submitted',
+  // Indigo waits, as everywhere else. The unknown outcome is peridot — the
+  // palette's "look at this", which is neither CR's refusal (red) nor waiting
+  // (indigo): it needs a human to check CR before anything else happens.
+  submitting: 'bf-submitting',
+  submission_unknown: 'bf-unknown',
 }
 
 /**

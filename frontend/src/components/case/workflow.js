@@ -33,10 +33,28 @@ export const STAGE_LABELS = [
 //: 054 turns it into `submitted` (see services/tpsi/filings.LEGACY_REGISTERED).
 const VALIDATED_STAGES = new Set([
   'validated', 'signed', 'submitted', 'edrive', 'registered',
+  // Both come from `signed`, so the snapshot exists and was signed: a submit in
+  // flight, or one with no answer, is at stage 4 — not back at stage 2.
+  'submitting', 'submission_unknown',
 ])
 
 /** A filing CR has already accepted. Re-validating one of these is refused. */
 const CR_HOLDS = new Set(['submitted', 'edrive', 'registered'])
+
+/**
+ * A filing CR HAS, OR MAY HAVE (2026-10-26): CR_HOLDS, plus a submit in flight
+ * and one whose answer never arrived. The backend refuses every restart, close
+ * and new filing on these (`filings.LOCKED_STAGES`); the screen withholds the
+ * controls rather than arm one whose only outcome is a 409. `form_status.locked`
+ * is the server's own answer and wins when present.
+ */
+const CR_MAY_HOLD = new Set([...CR_HOLDS, 'submitting', 'submission_unknown'])
+
+export function isLocked(c) {
+  const status = c?.form_status
+  if (typeof status?.locked === 'boolean') return status.locked
+  return CR_MAY_HOLD.has(status?.code)
+}
 
 /**
  * Has the return been signed off, by whichever route was chosen?
@@ -48,7 +66,7 @@ export function signedOff(c) {
   return c.signing_method === 'manual'
     ? Boolean(c.manual_signed_document_id || c.manual_signed_document_version)
     : c.form_status?.code === 'signed'
-      || CR_HOLDS.has(c.form_status?.code)
+      || CR_MAY_HOLD.has(c.form_status?.code)
 }
 
 /**
@@ -91,7 +109,7 @@ export function isSubmitted(c) {
  * is filed (the backend refuses with a 409) or the case is closed.
  */
 export function canRestart(c) {
-  if (!c || isClosed(c) || isSubmitted(c)) return false
+  if (!c || isClosed(c) || isSubmitted(c) || isLocked(c)) return false
   const asked = Boolean(c.verification_sent_at || c.client_response_at)
     || (c.client_approved !== null && c.client_approved !== undefined)
   return asked || isValidated(c)
@@ -276,13 +294,34 @@ const PERSISTED_FAILURES = {
   },
 }
 
+/**
+ * A refused CR login, recorded with a message and no fault list (code review
+ * 01, S-7). Before the submit moved to the background, the POST's own 502
+ * showed the lock warning; now the refusal is stored on the case and this is
+ * the only place it can be said.
+ */
+const AUTH_REFUSAL = {
+  message: 'The Companies Registry refused the login for this submission.',
+  hint: 'CR processed nothing and nothing was charged. Do not keep retrying — '
+    + 'repeated failed logins lock a CR account. Check CR Credentials, then '
+    + 'submit once more.',
+}
+
 export function persistedFailure(c) {
   const status = c?.form_status
   if (!status?.failed) return null
   // A banner with an empty list under it is worse than the badge alone.
   const problems = Array.isArray(status.faults) && status.faults.length
     ? status.faults : null
-  if (!problems) return null
+  if (!problems) {
+    // The one failure with no fault list that IS a refusal worth a banner.
+    // `declared_not_lodged` is an operator's decision, not CR's refusal.
+    if (status.kind === 'auth') {
+      return { message: AUTH_REFUSAL.message, problems: [], kind: null,
+               hint: AUTH_REFUSAL.hint, retry: false }
+    }
+    return null
+  }
   const known = PERSISTED_FAILURES[status.code]
   return {
     message: known?.message || 'The Companies Registry refused this filing.',

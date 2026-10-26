@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   STAGE_LABELS, reachedStage, stageDone, signedOff, isValidated, isSubmitted,
   describeError, verificationBlock, persistedFailure, isClosed,
-  canRestart,
+  canRestart, isLocked,
 } from './workflow.js'
 import * as workflow from './workflow.js'
 
@@ -191,6 +191,34 @@ describe('canRestart — is there anything for Restart verification to undo?', (
   it('never on a closed case', () => {
     expect(canRestart(fresh({ verification_sent_at: SENT,
                               closed_at: SENT }))).toBe(false)
+  })
+
+  it('never while CR may hold the return — in flight, or with no answer', () => {
+    // A restart supersedes the filing; over a submit that timed out it would
+    // hide a return CR may have lodged and charged for (2026-10-26).
+    for (const s of ['submitting', 'submission_unknown']) {
+      expect(canRestart(withStage(s, { verification_sent_at: SENT })), s).toBe(false)
+    }
+  })
+})
+
+describe('isLocked — CR has, or may have, this return', () => {
+  it('covers the filed stages and the two where the outcome is not known', () => {
+    for (const s of ['submitting', 'submission_unknown', 'submitted', 'registered', 'edrive']) {
+      expect(isLocked(withStage(s)), s).toBe(true)
+    }
+    for (const s of ['draft', 'validated', 'signed', 'submission_failed']) {
+      expect(isLocked(withStage(s)), s).toBe(false)
+    }
+  })
+
+  it('keeps an unknown outcome at the Submission stage, not past it', () => {
+    for (const s of ['submitting', 'submission_unknown']) {
+      const c = withStage(s, { verification_sent_at: '2026-10-01', client_approved: true })
+      expect(reachedStage(c), s).toBe(4)
+      expect(stageDone(c, 4), s).toBe(false)
+      expect(isSubmitted(c), s).toBe(false)
+    }
   })
 })
 
@@ -544,6 +572,26 @@ describe('persistedFailure', () => {
       .toMatch(/signature/i)
     expect(persistedFailure(failed('submission_failed', faults)).message)
       .toMatch(/submission/i)
+  })
+
+  // CODE REVIEW 01, S-7. A refused CR login stores a message and NO fault
+  // list, so the banner used to have nothing to say beside a red badge.
+  it('shows a refused login as a message-only banner with the lock warning', () => {
+    const f = persistedFailure({ form_status: {
+      code: 'submission_failed', failed: true, faults: [], kind: 'auth',
+      message: 'TPSI rejected the token for this submission' } })
+    expect(f).not.toBeNull()
+    expect(f.message).toMatch(/refused the login|login/i)
+    expect(f.problems).toEqual([])
+    expect(f.hint).toMatch(/lock/i)
+    expect(f.hint).toMatch(/nothing was charged/i)
+  })
+
+  it('does not dress a declared "not lodged" as a CR refusal', () => {
+    expect(persistedFailure({ form_status: {
+      code: 'submission_failed', failed: true, faults: [],
+      kind: 'declared_not_lodged', message: 'Levi declared this not lodged' } }))
+      .toBeNull()
   })
 
   it('tells the operator re-validating is free, and only for validation', () => {

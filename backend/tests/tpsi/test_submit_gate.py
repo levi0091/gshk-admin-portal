@@ -93,6 +93,16 @@ def _client():
 
 
 @pytest.fixture(autouse=True)
+def _claim_holds():
+    """`finish_submit` re-reads the claim immediately before posting (code
+    review 01, B1.2). These tests are about the gate and what is recorded, not
+    about a lost claim -- that is `test_submit_review_round1.py` -- so the
+    claim reads as still ours rather than reaching a database."""
+    with patch.object(filings, "_claim_is_ours", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_drift():
     """Spec §6's drift gate now runs inside `submit`, and it reloads the company
     from Supabase to rebuild the return.
@@ -200,7 +210,7 @@ def test_balance_is_read_live_on_every_submit():
 def test_successful_submit_records_the_receipt_and_stage():
     saved = {}
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
-         patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)), \
+         patch.object(filings, "_update_where", side_effect=lambda i, p, s, started=None: saved.update(p)), \
          patch.object(filings, "_write_back_receipt"), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
         result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
@@ -274,7 +284,7 @@ def test_failed_submit_records_the_error_and_does_not_mark_submitted():
     client.post_form.side_effect = TpsiValidationError([("ERR_X", "boom")])
     saved = {}
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
-         patch.object(filings, "_update", side_effect=lambda i, p: saved.update(p)), \
+         patch.object(filings, "_update_where", side_effect=lambda i, p, s, started=None: saved.update(p)), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
         with pytest.raises(TpsiValidationError):
             filings.submit(client, "f1", confirm=True, deposit_account="ACC")
@@ -285,9 +295,14 @@ def test_failed_submit_records_the_error_and_does_not_mark_submitted():
 
 def test_receipt_writeback_failure_does_not_fail_the_submission():
     """By this point CR has been paid and the filing cannot be undone — a
-    bookkeeping failure must not surface as a failed submission."""
+    bookkeeping failure must not surface as a failed submission.
+
+    The claim is the one write that happens BEFORE the charge, and a database
+    that is down there must refuse the submit — so it is stubbed here, and
+    every write after CR answered (the outcome and the write-back) sees the
+    outage."""
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
-         patch.object(filings, "_update"), \
+         patch.object(filings, "_claim"), \
          patch.object(filings, "get_supabase", side_effect=RuntimeError("db down")), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
         result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
@@ -494,7 +509,7 @@ def test_a_balance_above_the_ceiling_still_submits():
     client.post_form.return_value = RECEIPT
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("3480")), \
-         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_update_where") as upd, \
          patch.object(filings, "_write_back_receipt"):
         filings.submit(client, "f1", confirm=True, deposit_account="ACC")
     assert upd.call_args[0][1]["stage"] == filings.STAGE_SUBMITTED
@@ -506,7 +521,7 @@ def test_records_what_CR_ACTUALLY_charged_not_what_we_predicted():
     client.post_form.return_value = LATE_RECEIPT
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")), \
-         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_update_where") as upd, \
          patch.object(filings, "_write_back_receipt"):
         filings.submit(client, "f1", confirm=True, deposit_account="ACC")
 
@@ -523,7 +538,7 @@ def test_falls_back_to_the_predicted_fee_when_the_receipt_is_silent():
         b"<cr:totalAmount>105.0</cr:totalAmount>", b"")
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")), \
-         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_update_where") as upd, \
          patch.object(filings, "_write_back_receipt"):
         filings.submit(client, "f1", confirm=True, deposit_account="ACC")
 
@@ -537,7 +552,7 @@ def test_a_junk_total_does_not_crash_a_completed_submission():
         b"<cr:totalAmount>N/A</cr:totalAmount>")
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")), \
-         patch.object(filings, "_update") as upd, \
+         patch.object(filings, "_update_where") as upd, \
          patch.object(filings, "_write_back_receipt"):
         filings.submit(client, "f1", confirm=True, deposit_account="ACC")
 

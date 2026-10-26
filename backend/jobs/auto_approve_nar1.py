@@ -128,8 +128,8 @@ def skip_reason(case: dict) -> str | None:
         filing = nar1_cases.blocking_filing(case["id"])
     except Exception as exc:  # noqa: BLE001 — an unreadable ledger is a reason
         return f"the filing ledger could not be read ({exc})"  # to skip, not to approve
-    if filing and filing.get("stage") in nar1_cases.CR_FILED_STAGES:
-        return "the Companies Registry already holds this return"
+    if filing and filing.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+        return "the Companies Registry already holds this return, or may"
     return None
 
 

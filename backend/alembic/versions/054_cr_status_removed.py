@@ -31,7 +31,7 @@ DEPLOY ORDER: code first, then this migration (jobs/README.md). The new backend
 reads the old view's CR codes as 'filed'; the old one has no label for 'filed'.
 
 REVERSIBLE. The downgrade re-adds the columns (empty), 043's CHECK, index and
-comments, 044's trigger, 018's stage list and 052's view. It does not turn any
+comments, 044's trigger, 056's stage list (018's ten and the two it added) and 052's view. It does not turn any
 filing back into 'registered': that answer came from the poll, which the
 downgraded code would run again.
 
@@ -54,10 +54,14 @@ FILED = "filed"
 #: services/nar1_cases.CR_FILED_STAGES — `registered` out.
 CR_FILED_STAGES = ("submitted", "edrive")
 
-#: Every stage tpsi_filings may hold: 018's list without `registered`.
+#: Every stage tpsi_filings may hold: 018's list without `registered`, plus the
+#: two 056 added. 054 restates the CHECK from a literal list, so leaving them
+#: out would make the constraint refuse the very stages the duplicate-submission
+#: fix writes (2026-10-27, when the ND2 chain was re-landed on top of 056).
 FILING_STAGES = (
     "draft", "validated", "validation_failed", "signed", "signing_failed",
     "submitted", "submission_failed", "superseded", "edrive",
+    "submitting", "submission_unknown",
 )
 
 _TABLE = "public.nar1_cases"
@@ -86,8 +90,9 @@ def _m044():
     return _load("044_updated_at_ignores_the_cr_heartbeat.py")
 
 
-def _m018():
-    return _load("018_tpsi_form_status.py")
+def _m056():
+    """056's full list: 018's ten (with `registered`) and its two."""
+    return _load("056_nar1_submit_outcome_unknown.py")
 
 
 def _swap(sql: str, old: str, new: str, count: int) -> str:
@@ -183,5 +188,5 @@ def downgrade() -> None:
     )
     op.execute(m43._COMMENTS)
     _trigger(_m044()._WHEN)
-    _stage_check(_m018().NEW_STAGES)
+    _stage_check(_m056().STAGES)
     _rebuild_view(previous_view_sql())

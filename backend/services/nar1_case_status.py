@@ -44,7 +44,9 @@ from services.tpsi.filings import (
     STAGE_SIGNED,
     STAGE_SIGNING_FAILED,
     STAGE_SUBMISSION_FAILED,
+    STAGE_SUBMISSION_UNKNOWN,
     STAGE_SUBMITTED,
+    STAGE_SUBMITTING,
     STAGE_VALIDATED,
 )
 
@@ -208,7 +210,8 @@ def _code(case: dict, filing: dict | None) -> str:
     if (is_officer_change(case) and case.get("signing_method") == "esign"
             and case.get("data_checked_at") and stage not in (
                 STAGE_VALIDATED, STAGE_SIGNED, STAGE_SUBMISSION_FAILED,
-                STAGE_SIGNING_FAILED)):
+                STAGE_SIGNING_FAILED, STAGE_SUBMITTING,
+                STAGE_SUBMISSION_UNKNOWN)):
         return SIGNING
 
     # Approved. Nothing validated -> the data is still being worked on.
@@ -217,14 +220,22 @@ def _code(case: dict, filing: dict | None) -> str:
     # client — the approval stands and an operator mails them by hand if the
     # correction warrants it (Levi 2026-09-17).
     if stage != STAGE_VALIDATED and stage not in (
-        STAGE_SIGNED, STAGE_SUBMISSION_FAILED, STAGE_SIGNING_FAILED
+        STAGE_SIGNED, STAGE_SUBMISSION_FAILED, STAGE_SIGNING_FAILED,
+        STAGE_SUBMITTING, STAGE_SUBMISSION_UNKNOWN,
     ):
         return DATA_VERIFICATION
 
-    # Which side of the signature are we on?
-    if stage == STAGE_SIGNED or stage == STAGE_SUBMISSION_FAILED:
+    # Which side of the signature are we on? A submit in flight, and one whose
+    # outcome is unknown, are both still AT the Submission stage (2026-10-26):
+    # nothing CR has said lets the case move on, and the Submission screen is
+    # where the operator waits, or records what CR e-Services shows.
+    if stage in _AT_SUBMISSION:
         return SUBMISSION
     return SIGNING
+
+
+_AT_SUBMISSION = (STAGE_SIGNED, STAGE_SUBMISSION_FAILED, STAGE_SUBMITTING,
+                  STAGE_SUBMISSION_UNKNOWN)
 
 
 def badge_from_row(row: dict) -> dict:
