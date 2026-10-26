@@ -1,6 +1,6 @@
 # Crew operating card
 
-_Read by every crew persona before acting. Repo rules outrank crew defaults. Last verified: 2026-10-27._
+_Read by every crew persona before acting. Repo rules outrank crew defaults. Last verified: 2026-10-27 (re-run of /crew:setup)._
 
 > Committed (`!/docs/agents/` in `.gitignore`), so every worktree has it. Feature folders under `.scratch/` stay local and ignored.
 
@@ -21,13 +21,13 @@ All commands need `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/v20.20
 
 | Purpose | Command | Verified |
 |---|---|---|
-| Install dependencies | `cd backend && uv sync --python 3.12` · `cd frontend && npm ci` | see crew-log baseline |
+| Install dependencies | `cd backend && uv sync --python 3.12` · `cd frontend && npm ci` | yes |
 | Test, all (backend) | `cd backend && uv run pytest -q` (~2 min; `master` has no xdist — `-n` is unrecognised there; `testpaths = ["tests"]`, so worktrees are not swept) | yes, 2817 passed / 317 skipped on 275637e |
 | Test, one file (backend) | `cd backend && uv run pytest -q tests/<file>.py` | yes |
-| Test, all (frontend) | `cd frontend && npm run test -- --run` | see crew-log baseline |
+| Test, all (frontend) | `cd frontend && npm run test -- --run` (~15 s) | yes, 1345 passed / 66 skipped. 3 files (`AddressBlock.test.jsx`, `__address_visual__.test.jsx`, `case/PdfPreview.test.jsx`) fail at import with `supabaseUrl is required` in a worktree with no `.env` — pre-existing, not a regression; ignore them there |
 | Typecheck | none configured (JS frontend, untyped Python) | n/a |
 | Lint | none configured | n/a |
-| Build (frontend) | `cd frontend && npm run build` | unverified — run before release |
+| Build (frontend) | `cd frontend && npm run build` | yes (only the >500 kB chunk warning) |
 | Run the app | `cd backend && uv run uvicorn main:app --reload` (needs `.env`) · `cd frontend && npm run dev` | unverified — needs secrets |
 
 `uv sync` with no `--python 3.12` picks 3.14 and fails on psycopg2-binary (memory note `worktree-uv-python-pin`). Backend unit tests must pass with no `.env`; a test that needs it is reaching a live service and is the bug (CLAUDE.md).

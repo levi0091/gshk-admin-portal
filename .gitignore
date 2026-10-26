@@ -86,5 +86,8 @@ backend/etl/reports/
 # Visual harness output (scripts/shoot-stages.mjs) — regenerated, never reviewed.
 /frontend/.visual/
 
+# Crew developer worktrees (EnterWorktree / dispatched developers)
+.claude/worktrees/
+
 # Crew feature folders (specs, tickets, reviews, logs) — per-run working files
 .scratch/
