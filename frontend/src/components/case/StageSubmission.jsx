@@ -3,7 +3,7 @@ import { api } from '../../lib/api.js'
 import CheckRow from './CheckRow.jsx'
 import FaultPanel from './FaultPanel.jsx'
 import FilingSummaryCard from './FilingSummaryCard.jsx'
-import { formatMoney as money } from '../../lib/format.js'
+import { formatMoney as money, HK_TZ } from '../../lib/format.js'
 import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { describeError } from './workflow.js'
 
@@ -760,8 +760,9 @@ function OutcomeUnknown({ caseRow, canSubmit, onChanged, onError }) {
     return () => clearTimeout(timer)
   }, [until?.getTime()])   // eslint-disable-line react-hooks/exhaustive-deps
   const inFlight = Boolean(until) && until.getTime() > now
+  // The zone is named in lib/format.js and nowhere else (timezone-policy test).
   const untilClock = until && new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Hong_Kong', hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZone: HK_TZ, hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(until)
 
   return (
