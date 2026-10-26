@@ -91,12 +91,14 @@ FAULT_BEANS = envelope(
 )
 
 
-def doc_status_reply(br_no="12345678", case_no="180256934") -> bytes:
+def doc_status_reply(br_no="12345678", case_no="180256934",
+                     document_name="NAR1", submission_date="23/10/2026") -> bytes:
     return envelope(
         f'<cr:enquireDocStatusResponse xmlns:cr="{CR_NS}"><cr:result>'
         "<cr:documentList><cr:document>"
         f"<cr:caseNo>{case_no}</cr:caseNo><cr:brno>{br_no}</cr:brno>"
-        "<cr:documentName>NAR1</cr:documentName>"
+        f"<cr:documentName>{document_name}</cr:documentName>"
+        f"<cr:submissionDate>{submission_date}</cr:submissionDate>"
         "<cr:documentStatus>Lodged</cr:documentStatus>"
         "</cr:document></cr:documentList></cr:result>"
         "</cr:enquireDocStatusResponse>"
@@ -154,6 +156,9 @@ class FakeCR:
         if path in self.on_call:
             self.on_call[path]()
         answer = self.answers[path]
+        if isinstance(answer, list):
+            # A sequence: one answer per call, the last one repeating.
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, BaseException):
             raise answer
         if isinstance(answer, httpx.Response):
@@ -235,6 +240,7 @@ class Harness:
             ("services.nar1_cases.get_supabase", sb),
             ("routers.tpsi.get_supabase", sb),
             ("routers.cases.get_supabase", sb),
+            ("services.tpsi.audit_context.get_supabase", sb),
             ("routers.tpsi.client_for", lambda *a, **k: self.tpsi),
             ("routers.tpsi.shared_credentials.load_for_use", lambda: shared),
             ("services.tpsi.shared_credentials.deposit_account_no", lambda: "ACC"),
@@ -250,7 +256,10 @@ class Harness:
             ("middleware.auth._resolve_user", lambda *a, **k: self.user),
         ]:
             self._stack.enter_context(patch(target, value))
-        for target in ("routers.tpsi.log_event", "routers.cases.log_event"):
+        # `services.audit_service.log_event` too: `filings.settle_stale_claim`
+        # imports it at call time, so the module attribute is the seam.
+        for target in ("routers.tpsi.log_event", "routers.cases.log_event",
+                       "services.audit_service.log_event"):
             self._stack.enter_context(patch(target, side_effect=record))
         self.http = TestClient(app, raise_server_exceptions=False)
         return self

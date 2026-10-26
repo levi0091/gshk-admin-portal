@@ -18,7 +18,7 @@ This migration gives the fix its schema:
    without CR saying what happened; nothing can retry it, and an operator
    resolves it from what CR e-Services shows (`POST /tpsi/filings/{id}/resolve`).
 
-2. `submit_started_at`, when the claim was taken. A claim older than 240 s
+2. `submit_started_at`, when the claim was taken. A claim older than 330 s
    belongs to a worker that died mid-call and is read as an unknown outcome.
 
 3. THE REAL DOUBLE-CHARGE GUARD, documented here because migration 016's was
@@ -50,7 +50,13 @@ This migration gives the fix its schema:
    else would fail the index above. A row left behind is still refused by the
    application's case-level lock, because its sibling holds it.
 
-5. THE CASE REGISTRY VIEW (047's, otherwise unchanged) learns both stages: a
+5. THE CASE REGISTRY VIEW READS A STALE CLAIM BUT NEVER WRITES IT. The view
+   shows a `submitting` row older than the cut-off as `submission_unknown`; the
+   row itself is only moved by the reads that carry an audit row --
+   `GET /tpsi/filings/{id}` and `GET /cases/{id}` -- so a dashboard listing
+   cannot rewrite 400 rows or audit on behalf of a list.
+
+   The view (047's, otherwise unchanged) learns both stages: a
    case whose filing is `submitting` or `submission_unknown` is at the
    Submission stage, branch for branch with `nar1_case_status._code`, and a
    stale claim reads as `submission_unknown` in `filing_stage`.
@@ -93,8 +99,11 @@ STAGES = STAGES_018 + NEW_STAGES
 CASE_LOCK_INDEX = "uq_tpsi_filings_case_locked"
 CASE_LOCK_STAGES = ("submitting", "submission_unknown", "submitted", "registered")
 
-#: services/tpsi/filings.STALE_CLAIM_SECONDS.
-STALE_CLAIM_SECONDS = 240
+#: services/tpsi/filings.STALE_CLAIM_SECONDS, which is DERIVED there: 30 s start
+#: delay + auth (15 connect + 60 read) + submitForm (15 connect + 180 read) +
+#: 30 s margin = 330. A test keeps the two equal (code review 01, B1.1); it was
+#: 240 until a late receipt was found to outlive it.
+STALE_CLAIM_SECONDS = 330
 
 #: What `TpsiClient` writes for a call that never completed — the one message
 #: that proves CR's answer was never read.

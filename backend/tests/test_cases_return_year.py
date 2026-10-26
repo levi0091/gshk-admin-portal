@@ -61,6 +61,7 @@ def _case(case=None, filing=None, entity=ENTITY):
     return [
         patch("routers.cases.nar1_cases.get_case", return_value=case or CASE),
         patch("routers.cases.nar1_cases.current_filing", return_value=filing),
+        patch("routers.cases.nar1_cases.blocking_filing", return_value=filing),
         patch("routers.cases.nar1_cases.entity_for", return_value=entity),
         patch("routers.cases.nar1_cases.composite",
               side_effect=lambda cid: {"id": cid}),

@@ -37,6 +37,25 @@ _SUBMIT_TIMEOUT = httpx.Timeout(180.0, connect=15.0)
 _LONG_WAIT_OPERATIONS = frozenset({"submitForm"})
 
 
+def worst_case_seconds(timeout: httpx.Timeout) -> float:
+    """The longest one HTTP exchange can take under `timeout`.
+
+    Connecting and then waiting for the answer. The request body is a few
+    kilobytes and the write phase is bounded by the socket buffer, so it is
+    not counted; the pool phase never waits because every call opens its own
+    client. `filings.STALE_CLAIM_SECONDS` is built from this, and a test fails
+    if a timeout above is raised without it.
+    """
+    return float(timeout.connect + timeout.read)
+
+
+#: What `submitForm` can take in the worst case: authenticating first (a client
+#: with no cached token) and then the 180 s post — and no second post, since a
+#: 401 is not retried. See `filings.STALE_CLAIM_SECONDS`.
+SUBMIT_WORST_CASE_SECONDS = (worst_case_seconds(_TIMEOUT)
+                             + worst_case_seconds(_SUBMIT_TIMEOUT))
+
+
 class TpsiClient:
     def __init__(self, account_id: str, tpsi_password: str):
         self.account_id = account_id
@@ -120,11 +139,20 @@ class TpsiClient:
         """
         from services.tpsi.soap import build_envelope
 
+        long_wait = operation in _LONG_WAIT_OPERATIONS
         return self.post_soap(
             f"/tpsi/{operation}{form_code}",
             _prebuilt=build_envelope(operation, submission_xml),
-            _timeout=(_SUBMIT_TIMEOUT if operation in _LONG_WAIT_OPERATIONS
-                      else _TIMEOUT),
+            _timeout=_SUBMIT_TIMEOUT if long_wait else _TIMEOUT,
+            # A CHARGEABLE CALL IS POSTED ONCE. The re-login-and-retry below is
+            # right for a free call whose cached token went stale, and wrong
+            # here for two reasons: the retry would re-post under a fresh 180 s
+            # wait, outside every bound `filings.STALE_CLAIM_SECONDS` relies on
+            # (code review 01, B1); and a 401 means CR never looked at the
+            # form, so there is nothing to retry on — it is a plain refusal
+            # (`submission_failed`, kind "auth") and the operator submits again
+            # with a freshly acquired token.
+            _single_shot=long_wait,
         )
 
     def post_soap(
@@ -134,6 +162,7 @@ class TpsiClient:
         _retrying: bool = False,
         _prebuilt: bytes | None = None,
         _timeout: httpx.Timeout = _TIMEOUT,
+        _single_shot: bool = False,
     ) -> bytes:
         from services.tpsi.soap import wrap_envelope
 
@@ -153,6 +182,12 @@ class TpsiClient:
                                        kind="unreachable") from exc
 
         if response.status_code == 401:
+            if _single_shot:
+                tokens.invalidate(self.account_id)
+                self._token_cache = None
+                raise TpsiAuthError(
+                    "TPSI rejected the token for this submission, so CR "
+                    "processed nothing and nothing was charged. Submit again.")
             if _retrying:
                 # Second 401 in a row. Stop — do not loop against a locking API.
                 # Clear the cache too: leaving the rejected token in

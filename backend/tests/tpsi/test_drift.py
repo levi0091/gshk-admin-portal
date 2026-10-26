@@ -255,6 +255,7 @@ def _no_ledger_writes():
     rather than left to reach a real database."""
     with patch("services.tpsi.filings.locked_filing_on_case", return_value=None), \
          patch("services.tpsi.filings._claim"), \
+         patch("services.tpsi.filings._claim_is_ours", return_value=True), \
          patch("services.tpsi.filings._update_where", return_value=True):
         yield
 
@@ -428,7 +429,7 @@ def test_a_non_nar1_filing_is_not_drift_checked():
         # is why the gate cannot fire here. See `filings.assess`.
         assess.return_value = (
             MagicMock(amount=0, band="on time", certain=True), None)
-        with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={}):
+        with patch("services.tpsi.filings._update"),              patch("services.tpsi.filings._write_back_receipt"),              patch("services.tpsi.filings.parse_receipt", return_value={"caseNo": "1"}):
             filings.submit(client, "f1", True, "N00061980009")
     rebuild.assert_not_called()
 

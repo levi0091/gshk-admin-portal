@@ -178,9 +178,9 @@ def test_the_attempt_is_audited_before_anything_reaches_cr():
 #  AC7 — a claim nobody can answer becomes an unknown outcome
 # --------------------------------------------------------------------------- #
 
-def test_a_claim_older_than_240_seconds_reads_and_becomes_unknown():
+def test_a_claim_older_than_the_cut_off_reads_and_becomes_unknown():
     with Harness(seed(filing={"stage": "submitting",
-                              "submit_started_at": ago(300)})) as h:
+                              "submit_started_at": ago(400)})) as h:
         response = h.http.get("/tpsi/filings/f1", headers=H)
 
         assert response.json()["form_status"]["code"] == "submission_unknown"
@@ -189,7 +189,7 @@ def test_a_claim_older_than_240_seconds_reads_and_becomes_unknown():
                    if e["action_type"] == "TPSI_SUBMISSION_UNKNOWN"]
         assert len(unknown) == 1
         assert unknown[0]["metadata"]["reason"] == "no answer recorded"
-        assert unknown[0]["metadata"]["waited_seconds"] >= 300
+        assert unknown[0]["metadata"]["waited_seconds"] >= 330
 
 
 def test_a_live_claim_is_left_alone():
@@ -228,7 +228,7 @@ def test_the_case_screen_carries_when_the_submit_was_claimed():
 def test_the_stale_sweep_cannot_overwrite_an_answer_that_landed_first():
     """Conditional on `stage = 'submitting'` inside the UPDATE: a receipt
     written between the read and the sweep stands."""
-    store = seed(filing={"stage": "submitting", "submit_started_at": ago(300)})
+    store = seed(filing={"stage": "submitting", "submit_started_at": ago(400)})
     row = store.get("tpsi_filings", "f1")
     with Harness(store) as h:
         h.store.get("tpsi_filings", "f1")["stage"] = "submitted"
@@ -249,9 +249,15 @@ RECEIPT_IN = {
 }
 
 
+#: The submit these receipts answer was made on 23 October 2026 (08:30 HKT) --
+#: long past the in-flight window, and not "today", so the receipts below,
+#: dated that day, are not before the claim (code review 01, S-8).
+CLAIMED = "2026-10-23T00:30:00+00:00"
+
+
 def _unknown(**filing):
     return seed(filing={"stage": "submission_unknown",
-                        "submit_started_at": ago(400), **filing})
+                        "submit_started_at": CLAIMED, **filing})
 
 
 def _resolve(h, **body):
@@ -399,10 +405,18 @@ def test_not_lodged_reopens_the_ordinary_retry():
 
 
 def test_not_lodged_says_whether_the_submit_was_today():
-    with Harness(_unknown(submit_started_at=ago(5))) as h:
+    from unittest.mock import patch
+
+    from services.tpsi import fees
+
+    started = ago(400)    # past the in-flight window, so declaring is allowed
+    today_in_hk = filings._hk_date_of(started)
+    with patch.object(fees, "_hk_today", return_value=today_in_hk), \
+            Harness(_unknown(submit_started_at=started)) as h:
         today = _resolve(h, outcome="not_lodged", checked_cr=True).json()
     days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
-    with Harness(_unknown(submit_started_at=days_ago)) as h:
+    with patch.object(fees, "_hk_today", return_value=today_in_hk), \
+            Harness(_unknown(submit_started_at=days_ago)) as h:
         earlier = _resolve(h, outcome="not_lodged", checked_cr=True).json()
 
     assert today["submitted_today"] is True

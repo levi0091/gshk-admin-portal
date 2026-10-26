@@ -30,6 +30,13 @@ NO_ANSWER = {
                      b'soap/envelope/"><soap:Body><nothing/></soap:Body>'
                      b"</soap:Envelope>"),
     "a 200 that is not XML": httpx.Response(200, content=b"\x00garbage"),
+    # Code review 01, B2: a reply with no case number is not a receipt. Stored
+    # as `submitted` it was a filing nobody could prove or correct.
+    "a receipt with no case number": httpx.Response(
+        200, content=b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/'
+                     b'soap/envelope/"><soap:Body><cr:submitFormResponse xmlns:'
+                     b'cr="http://interfaces.service.webservice.icris3e.cr.gov.'
+                     b'hk/"/></soap:Body></soap:Envelope>"'),
 }
 
 

@@ -339,6 +339,8 @@ async def submit_company(user=Depends(require_permission("companies", "write")))
 
 > `audit_trail` is intentionally read-only at the permission level. Do not add a `write` permission for this module under any circumstances.
 
+> **A READ MAY REPAIR A STALE SUBMIT CLAIM, and that is not a breach of "read means read"** (2026-10-26). `GET /tpsi/filings/{id}` (`tpsi:read`) and `GET /cases/{id}` (`nar1:read`) turn a `submitting` filing older than `filings.STALE_CLAIM_SECONDS` into `submission_unknown` through `filings.settle_stale_claim` — a conditional UPDATE plus a `TPSI_SUBMISSION_UNKNOWN` audit row — because a worker that died mid-call leaves nothing else to write the answer. The ticket asked for exactly this ("any read ... makes it so"). The audit row is attributed to **`G-FlowDesk (automatic)`** with the reader in `metadata.observed_by`: the reader looked, they did not do it. The `nar1_case_registry` view reads a stale claim as unknown but never writes it.
+
 ### 2. Audit Trail — PBI-11
 
 Every write operation must call `audit_service.log_event()` **before** returning a success response. No silent data changes.

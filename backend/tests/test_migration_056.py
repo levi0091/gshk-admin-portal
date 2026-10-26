@@ -105,7 +105,7 @@ def test_the_view_teaches_047s_registry_the_two_stages_and_nothing_else():
             "THEN 'data_verification'") in sql
     assert ("WHEN base.filing_stage IN ('signed', 'submission_failed', "
             "'submitting', 'submission_unknown') THEN 'submission'") in sql
-    assert "interval '240 seconds'" in sql
+    assert f"interval '{filings.STALE_CLAIM_SECONDS} seconds'" in sql
     assert "THEN 'submission_unknown' ELSE tf.stage END AS stage" in sql
     # Same columns, in the same order, as 047: a view is DROP + CREATE here, and
     # the dashboard and the parity test read these names.

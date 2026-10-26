@@ -384,13 +384,11 @@ async def get_case(case_id: str, user=Depends(require_permission("nar1", "read")
     # the repair and its audit row are the tpsi router's, so the case screen
     # and the Submission screen's poll cannot settle it two different ways.
     if (case.get("form_status") or {}).get("code") == tpsi_filings.STAGE_SUBMITTING:
-        from routers.tpsi import settle_stale_claim  # local: router-to-router
-
         try:
             filing = tpsi_filings.get_filing(case["filing_id"])
         except Exception:  # noqa: BLE001 — a decoration on a read, never fatal
             filing = None
-        settled = await settle_stale_claim(filing, user)
+        settled = await tpsi_filings.settle_stale_claim(filing, user)
         if settled and settled.get("stage") != tpsi_filings.STAGE_SUBMITTING:
             case = nar1_cases.composite(case_id)
     return case
@@ -544,16 +542,18 @@ async def patch_case(
         # ...OR MAY HOLD IT (2026-10-26). A restart supersedes the filing and
         # opens the case to a fresh one, so restarting over a submit that timed
         # out hides a return CR may have lodged and charged for, and walks the
-        # case towards filing it again. The newest attempt is the right one to
-        # ask: no new filing can be prepared beside a locked one (the prepare
-        # route refuses it, and migration 056's index backs that up), so a
-        # locked filing is always the case's current one.
-        if filed and filed.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
-            raise HTTPException(409, {
-                "message": str(tpsi_filings.FilingLocked(
-                    filed, "restarting verification", own=False)),
-                "reason": "filing_locked", "stage": filed.get("stage"),
-            })
+        # case towards filing it again.
+        #
+        # ASKED OF THE LOCKED FILING WHEREVER IT SORTS (code review 01, S-4),
+        # not of `current_filing()`: that is the NEWEST non-superseded row, and
+        # the locked one is not always the newest -- a draft opened beside it
+        # through the raw API, or a legacy case where migration 056's repair
+        # moved an older row. `blocking_filing` finds a locked row first and
+        # falls back to the current one, exactly as the close route does.
+        held = nar1_cases.blocking_filing(case_id)
+        if held and held.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
+            raise HTTPException(409, tpsi_filings.FilingLocked(
+                held, "restarting verification", own=False).detail())
 
         # THE SNAPSHOT GOES TOO. The confirmation the operator clicks through
         # says "The case goes back to Data Verification. The CR-signed snapshot
@@ -756,11 +756,8 @@ async def close_case(
     # submit in flight or with no recorded answer may be a lodged, charged
     # return: closing over it would record a filed return as abandoned.
     if filed and filed.get("stage") in nar1_cases.CR_MAY_HOLD_STAGES:
-        raise HTTPException(409, {
-            "message": str(tpsi_filings.FilingLocked(
-                filed, "closing the case", own=False)),
-            "reason": "filing_locked", "stage": filed.get("stage"),
-        })
+        raise HTTPException(409, tpsi_filings.FilingLocked(
+            filed, "closing the case", own=False).detail())
 
     # ---- the write, and it is the point of no return ------------------------
     closed = nar1_cases.close_case(case_id, user_id=user["id"], reason=reason)

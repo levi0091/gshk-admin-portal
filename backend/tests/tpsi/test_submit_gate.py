@@ -93,6 +93,16 @@ def _client():
 
 
 @pytest.fixture(autouse=True)
+def _claim_holds():
+    """`finish_submit` re-reads the claim immediately before posting (code
+    review 01, B1.2). These tests are about the gate and what is recorded, not
+    about a lost claim -- that is `test_submit_review_round1.py` -- so the
+    claim reads as still ours rather than reaching a database."""
+    with patch.object(filings, "_claim_is_ours", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_drift():
     """Spec §6's drift gate now runs inside `submit`, and it reloads the company
     from Supabase to rebuild the return.
@@ -200,7 +210,7 @@ def test_balance_is_read_live_on_every_submit():
 def test_successful_submit_records_the_receipt_and_stage():
     saved = {}
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
-         patch.object(filings, "_update_where", side_effect=lambda i, p, s: saved.update(p)), \
+         patch.object(filings, "_update_where", side_effect=lambda i, p, s, started=None: saved.update(p)), \
          patch.object(filings, "_write_back_receipt"), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
         result = filings.submit(_client(), "f1", confirm=True, deposit_account="ACC")
@@ -274,7 +284,7 @@ def test_failed_submit_records_the_error_and_does_not_mark_submitted():
     client.post_form.side_effect = TpsiValidationError([("ERR_X", "boom")])
     saved = {}
     with _entity(), patch.object(filings, "get_filing", return_value=_signed()), \
-         patch.object(filings, "_update_where", side_effect=lambda i, p, s: saved.update(p)), \
+         patch.object(filings, "_update_where", side_effect=lambda i, p, s, started=None: saved.update(p)), \
          patch("services.tpsi.reads.check_balance", return_value=Decimal("999999")):
         with pytest.raises(TpsiValidationError):
             filings.submit(client, "f1", confirm=True, deposit_account="ACC")

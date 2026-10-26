@@ -7,10 +7,11 @@ and skip straight to the chargeable call.
 """
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from db.supabase import get_supabase
+from services.tpsi import client as tpsi_client
 from services.tpsi.config import FORM_FEES
 from services.tpsi.errors import TpsiError
 from services.tpsi.soap import extract_submission, parse_response, text_of
@@ -106,12 +107,31 @@ LOCKED_STAGES = (
 #: hide a return CR may have lodged and charged for behind a fresh draft.
 UNRETIRABLE_STAGES = tuple(dict.fromkeys(TERMINAL_STAGES + LOCKED_STAGES))
 
+#: How long after the claim the background call may still START (thread-pool
+#: queueing on a busy worker). `finish_submit` sends nothing once a claim is
+#: older than this: a call that begins late could outlast `STALE_CLAIM_SECONDS`.
+MAX_START_DELAY_SECONDS = 30
+
+#: Slack on top of the arithmetic below.
+_STALE_MARGIN_SECONDS = 30
+
 #: How long a `submitting` claim may stand before it is read as an unknown
-#: outcome. The submitForm read timeout is 180 s (services/tpsi/client.py); a
-#: claim older than this has outlived any request that could still answer it,
-#: which means the worker died mid-call — a deploy, a crash — and nothing will
-#: ever write the answer.
-STALE_CLAIM_SECONDS = 240
+#: outcome -- DERIVED, not chosen. It is the longest the call can legitimately
+#: take: starting late, authenticating if the client has no token (connect +
+#: read), then the one submitForm post (connect + read), plus slack. There is
+#: no second post -- a 401 on submitForm is not retried (client.post_form) -- so
+#: the sum is a ceiling, and `tests/tpsi/test_submit_review_round1.py` fails if
+#: a client timeout is raised past it.
+#:
+#: It used to be a literal 240, with a comment that a claim older than it "has
+#: outlived any request that could still answer it". It had not: a 401 re-post
+#: alone could run the call past 500 s, and a receipt that landed after the
+#: sweep and a "not lodged" declaration was dropped while the retry path
+#: reached CR a second time (code review 01, B1). Migration 056's view repeats
+#: the number and a test keeps the two equal.
+STALE_CLAIM_SECONDS = int(
+    MAX_START_DELAY_SECONDS + tpsi_client.SUBMIT_WORST_CASE_SECONDS
+    + _STALE_MARGIN_SECONDS)
 
 #: A failure at any step. Kept as a tuple so callers test membership rather than
 #: string-matching a suffix.
@@ -129,7 +149,8 @@ def form_status(row: dict) -> dict:
     badge loses information in both directions.
     """
     stage = row["stage"]
-    return {
+    error = row.get("cr_error") or {}
+    status = {
         "code": stage,
         "label": FORM_STATUS_LABELS.get(stage, stage),
         "failed": stage in FAILURE_STAGES,
@@ -140,8 +161,17 @@ def form_status(row: dict) -> dict:
         "locked": stage in LOCKED_STAGES,
         # Present only on a failure, and it is the whole fault list: CR returns
         # every problem at once so one pass can fix them all.
-        "faults": (row.get("cr_error") or {}).get("faults") or [],
+        "faults": error.get("faults") or [],
     }
+    if stage in FAILURE_STAGES:
+        # A failure with NO fault list -- a refused token, a declared "not
+        # lodged" -- used to leave the screen with a red badge and nothing to
+        # say. `message` is what was recorded and `kind` says which sort it is
+        # ("auth", "declared_not_lodged"); both only on a failure (code review
+        # 01, S-7).
+        status["message"] = error.get("message")
+        status["kind"] = error.get("kind")
+    return status
 
 
 def _now() -> str:
@@ -313,8 +343,19 @@ def create_filing(
     nar1_case_id: str | None = None,
     form_filing_id: str | None = None,
 ) -> dict:
-    """Open a filing attempt. Rejects an unknown form code before any CR call."""
+    """Open a filing attempt. Rejects an unknown form code before any CR call.
+
+    A NAR1 MUST BELONG TO A CASE (code review 01, S-5). Both locks -- the
+    application's and migration 056's index -- are keyed on `nar1_case_id`, so a
+    case-less NAR1 sits outside them: a second return for the same company and
+    year could be validated, signed and submitted through the raw API.
+    """
     FORM_FEES[form_code]  # KeyError here beats a 400 from CR later
+    if form_code.lower() == "nar1" and not nar1_case_id:
+        raise ValueError(
+            "a NAR1 filing must belong to a case: opening one without a case "
+            "would put it outside the lock that stops one annual return being "
+            "filed twice. Open it from the case.")
     return _insert(
         {
             "entity_id": entity_id,
@@ -335,14 +376,18 @@ def validate(client, filing_id: str) -> dict:
     payload is carried forward VERBATIM — request and response share one
     namespace convention, so no rewriting is needed or wanted.
 
-    Stage guard: refuses signed/submitted/edrive. This is the money invariant
-    — the double-charge guard is the partial unique index
-    `uq_tpsi_filings_submitted ... WHERE stage = 'submitted'`. Walking a
-    submitted row's stage back to 'validated' would drop it from that index's
-    coverage and let it be submitted again, so it must be impossible to reach
-    from here, not just unlikely given call order. Re-validating a draft or an
-    already-validated filing is legitimate (a user fixing field errors and
-    retrying) and stays allowed.
+    Stage guard: refuses signed, and every stage CR has or may have
+    (`LOCKED_STAGES`). This is the money invariant. The double-charge guards are
+    the conditional claim in `_claim` (`signed -> submitting`, settled inside
+    Postgres BEFORE CR is called) and `uq_tpsi_filings_case_locked`
+    (migration 056), one locked filing per case. The older
+    `uq_tpsi_filings_submitted` (016) is only written after CR has answered, so
+    it never stopped a double click reaching CR -- its own comment said so and
+    was wrong. Walking a locked row's stage back to 'validated' would let it be
+    claimed again, so it must be impossible to reach from here, not just
+    unlikely given call order. Re-validating a draft or an already-validated
+    filing is legitimate (a user fixing field errors and retrying) and stays
+    allowed.
     """
     from services.tpsi.soap import build_submission
 
@@ -676,6 +721,12 @@ class FilingLocked(SubmitGateError):
             f"{which} is '{label}', so {action} is refused — it would put a "
             f"second copy of this annual return in front of CR. {remedy}"
         )
+
+    def detail(self) -> dict:
+        """The 409 body every route answers with, so the three routes that
+        refuse a locked filing cannot word it three ways (code review 01, N-1)."""
+        return {"message": str(self), "reason": "filing_locked",
+                "stage": (self.filing or {}).get("stage")}
 
 
 def locked_filing_on_case(nar1_case_id: str | None,
@@ -1196,11 +1247,24 @@ class SubmitClaim:
 
 @dataclass
 class SubmitOutcome:
-    """How a claimed submit ended. `stage` is the one that was written."""
+    """How a claimed submit ended. `stage` is the one that was decided.
+
+    `sent` is False when the call to CR never began (the claim was lost, or
+    the task started too late); then nothing was charged and nothing is in
+    flight. `stored` is False when CR DID answer with a receipt that could not
+    be written to the row -- the one outcome the audit row must then carry in
+    full, because it is the only proof the return landed.
+    """
     stage: str
     receipt: dict | None = None
     error: Exception | None = None
     waited_seconds: float = 0.0
+    sent: bool = True
+    stored: bool = True
+
+
+class NotSent(Exception):
+    """The call to CR was not made. Nothing was sent, so nothing was charged."""
 
 
 def is_refusal(exc: Exception) -> bool:
@@ -1327,22 +1391,126 @@ def begin_submit(client, filing_id: str, confirm: bool,
                        started_at=started_at)
 
 
-#: The stages an outcome may be written over. `submission_unknown` is included
-#: because a stale-claim sweep can get there first on a call that is in fact
-#: still running, and CR's eventual answer is the truth. Anything else — an
-#: operator has already resolved it — is left alone.
+#: The stages a FAILURE or UNKNOWN outcome may be written over. `submission_unknown`
+#: is included because the stale-claim sweep can get there first on a call that
+#: is in fact still running; anything else means somebody has already decided.
 _OUTCOME_FROM = (STAGE_SUBMITTING, STAGE_SUBMISSION_UNKNOWN)
 
+#: The stages a RECEIPT may be written over: everything except the stages that
+#: already hold one (`submitted`, `registered`) and a retired attempt. CR's
+#: receipt is the truth, so it overrides `submission_unknown`, a declared
+#: `submission_failed`, and anything the retry path has reached since the claim
+#: -- the opposite rule from a failure, which must never overwrite an answer
+#: (code review 01, B1.4).
+_RECEIPT_OVERWRITES = tuple(
+    s for s in dict.fromkeys(FORM_STATUSES + (STAGE_EDRIVE,))
+    if s not in (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_SUPERSEDED))
 
-def _update_where(filing_id: str, payload: dict, stages) -> bool:
-    """`_update`, conditional on the stage inside the UPDATE. Returns whether
-    a row moved."""
-    rows = (
+#: How much of an unreadable CR reply is kept on the row, for the operator and
+#: for whoever has to work out what CR sent.
+RAW_REPLY_BYTES = 2048
+
+
+def _update_where(filing_id: str, payload: dict, stages,
+                  started_at: str | None = None) -> bool:
+    """`_update`, conditional on the stage inside the UPDATE -- and, when
+    `started_at` is given, on the CLAIM too (`submit_started_at`), so a late
+    answer to one submit can never be written over a different submit's row.
+    Returns whether a row moved."""
+    query = (
         get_supabase().table(_TABLE).update(payload)
         .eq("id", filing_id).in_("stage", list(stages))
+    )
+    if started_at is not None:
+        query = query.eq("submit_started_at", started_at)
+    return bool(query.execute().data)
+
+
+def _claim_is_ours(claim: SubmitClaim) -> bool:
+    """Is the row still `submitting`, under THIS claim?
+
+    A read, immediately before the post. The sweep needs a claim older than
+    `STALE_CLAIM_SECONDS` and the start-delay check below has just ruled that
+    out, so nothing can change the answer between this read and the post.
+    """
+    rows = (
+        get_supabase().table(_TABLE).select("id")
+        .eq("id", claim.filing["id"]).eq("stage", STAGE_SUBMITTING)
+        .eq("submit_started_at", claim.started_at)
         .execute().data
     )
     return bool(rows)
+
+
+def _raw_text(raw) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    return str(raw)[:RAW_REPLY_BYTES]
+
+
+def _require_receipt(receipt: dict) -> None:
+    """A reply is a receipt only if it names a case.
+
+    `parse_receipt` reads whatever fields are there, so a body such as
+    `<cr:submitFormResponse/>` yields a dict of Nones. Stored as `submitted`,
+    that is a filing nobody can prove: no case number for the CR-status poll to
+    ask about, and `resolve` refuses it because the stage is not unknown. When
+    in doubt, unknown (code review 01, B2).
+    """
+    from services.tpsi.errors import TpsiUnavailableError
+
+    if not str((receipt or {}).get("caseNo") or "").strip():
+        raise TpsiUnavailableError(
+            "CR's reply to the submission carried no case number, so it cannot "
+            "be taken as a receipt", kind="no_receipt")
+
+
+def _decide_not_to_send(claim: SubmitClaim, now: datetime) -> SubmitOutcome | None:
+    """The two reasons to make no call at all, or None to go ahead.
+
+    1. THE CLAIM IS NOT OURS ANY MORE -- swept, resolved, or re-claimed while
+       this task waited for a worker thread. The stage is left exactly as it
+       is: whoever moved it decided.
+    2. THE CALL WOULD START TOO LATE. A call beginning after
+       `MAX_START_DELAY_SECONDS` could outlast `STALE_CLAIM_SECONDS`, which is
+       the only thing keeping a sweep from overlapping a live call. Nothing has
+       been sent, so this is an ordinary refusal and the retry stays open.
+    """
+    try:
+        ours = _claim_is_ours(claim)
+    except Exception as exc:  # noqa: BLE001 — cannot verify: send nothing
+        # The row stays `submitting` and the sweep will read it as unknown. CR
+        # was never called, so that is conservative -- the safe direction.
+        return SubmitOutcome(
+            stage=STAGE_SUBMISSION_UNKNOWN, sent=False,
+            error=NotSent(f"the claim could not be verified before sending "
+                          f"({exc}); nothing was sent"))
+    if not ours:
+        return SubmitOutcome(
+            stage=STAGE_SUBMISSION_UNKNOWN, sent=False,
+            error=NotSent("claim lost before sending; nothing was sent"))
+
+    started = _parse_instant(claim.started_at)
+    if started is not None and (now - started).total_seconds() > MAX_START_DELAY_SECONDS:
+        message = (f"the submission could not start within "
+                   f"{MAX_START_DELAY_SECONDS} s of being claimed (the server "
+                   "was busy), so nothing was sent to CR and nothing was "
+                   "charged. Submit again.")
+        try:
+            _update_where(
+                claim.filing["id"],
+                {"stage": STAGE_SUBMISSION_FAILED,
+                 "cr_error": {"faults": [], "kind": "not_sent",
+                              "message": message}},
+                (STAGE_SUBMITTING,), claim.started_at)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[tpsi.filings] ERROR: could not record that filing "
+                  f"{claim.filing['id']} was never sent: {exc}", file=sys.stderr)
+        return SubmitOutcome(stage=STAGE_SUBMISSION_FAILED, sent=False,
+                             error=NotSent(message))
+    return None
 
 
 def finish_submit(client, claim: SubmitClaim) -> SubmitOutcome:
@@ -1353,6 +1521,16 @@ def finish_submit(client, claim: SubmitClaim) -> SubmitOutcome:
     `submission_failed`, retryable exactly as before; and everything else is
     `submission_unknown`, which nothing can retry (see `is_refusal`).
 
+    BEFORE THE POST it checks that it still holds the claim and has not been
+    waiting for a thread longer than `MAX_START_DELAY_SECONDS`; if either fails
+    it sends nothing (`_decide_not_to_send`).
+
+    A RECEIPT IS ALWAYS KEPT. The success write is keyed to this claim and may
+    overwrite any stage that does not already hold a receipt, so an answer that
+    lands after the sweep and a "not lodged" declaration still ends the row at
+    `submitted`. If even that write moves no row, the receipt is printed whole
+    and `outcome.stored` is False, so the caller puts it in the audit trail.
+
     NEVER RAISES, because by the time it runs nobody is waiting for an
     exception — it runs after the response. A write that fails here leaves the
     row at `submitting`, and the stale-claim sweep reads that as an unknown
@@ -1360,21 +1538,33 @@ def finish_submit(client, claim: SubmitClaim) -> SubmitOutcome:
     """
     import time
 
+    from services.tpsi.errors import TpsiAuthError
+
     filing_id = claim.filing["id"]
+    skipped = _decide_not_to_send(claim, datetime.now(timezone.utc))
+    if skipped is not None:
+        return skipped
+
     began = time.monotonic()
+    raw = None
     try:
         raw = client.post_form("submitForm", claim.filing["form_code"], claim.body)
         receipt = parse_receipt(raw)
+        _require_receipt(receipt)
     except Exception as exc:  # noqa: BLE001 — classified below, never swallowed
         waited = round(time.monotonic() - began, 1)
-        stage = (STAGE_SUBMISSION_FAILED if is_refusal(exc)
-                 else STAGE_SUBMISSION_UNKNOWN)
-        error = {"faults": getattr(exc, "faults", []), "message": str(exc)}
-        if stage == STAGE_SUBMISSION_UNKNOWN:
-            error["kind"] = getattr(exc, "kind", None) or type(exc).__name__
+        refusal = is_refusal(exc)
+        stage = STAGE_SUBMISSION_FAILED if refusal else STAGE_SUBMISSION_UNKNOWN
+        error = {"faults": getattr(exc, "faults", []), "message": str(exc),
+                 "kind": ("auth" if isinstance(exc, TpsiAuthError)
+                          else "refused" if refusal
+                          else getattr(exc, "kind", None) or type(exc).__name__)}
+        text = _raw_text(raw)
+        if text is not None:
+            error["raw"] = text
         try:
             _update_where(filing_id, {"stage": stage, "cr_error": error},
-                          _OUTCOME_FROM)
+                          _OUTCOME_FROM, claim.started_at)
         except Exception as write_exc:  # noqa: BLE001 — see docstring
             print(f"[tpsi.filings] ERROR: could not record the {stage} outcome "
                   f"of filing {filing_id}: {write_exc}", file=sys.stderr)
@@ -1382,7 +1572,7 @@ def finish_submit(client, claim: SubmitClaim) -> SubmitOutcome:
 
     waited = round(time.monotonic() - began, 1)
     try:
-        _update_where(
+        stored = _update_where(
             filing_id,
             {
                 "stage": STAGE_SUBMITTED,
@@ -1396,18 +1586,22 @@ def finish_submit(client, claim: SubmitClaim) -> SubmitOutcome:
                 "submitted_at": _now(),
                 "cr_error": None,
             },
-            _OUTCOME_FROM,
+            _RECEIPT_OVERWRITES, claim.started_at,
         )
+        reason = None if stored else "the row no longer holds this claim"
     except Exception as exc:  # noqa: BLE001 — the money has moved; keep the receipt
-        # The receipt is the only proof the return landed. If it cannot be
-        # stored it is printed, so it survives in the platform log and the
-        # operator can record it through the resolution route once the stale
-        # claim has turned into an unknown outcome.
+        stored, reason = False, str(exc)
+    if not stored:
+        # The receipt is the only proof the return landed. It survives in the
+        # platform log AND, because the caller audits it in full, in the
+        # insert-only trail.
         print(f"[tpsi.filings] ERROR: CR filed {filing_id} but the receipt "
-              f"could not be stored ({exc}); receipt={receipt}", file=sys.stderr)
-    _write_back_receipt(claim.filing, receipt)
+              f"could not be stored ({reason}); receipt={receipt}",
+              file=sys.stderr)
+    else:
+        _write_back_receipt(claim.filing, receipt)
     return SubmitOutcome(stage=STAGE_SUBMITTED, receipt=receipt,
-                         waited_seconds=waited)
+                         waited_seconds=waited, stored=stored)
 
 
 def submit(client, filing_id: str, confirm: bool, deposit_account: str) -> dict:
@@ -1464,7 +1658,6 @@ def expire_stale_claim(row: dict | None) -> dict | None:
     """
     if not is_stale_claim(row):
         return None
-    from datetime import timedelta
 
     cutoff = (datetime.now(timezone.utc)
               - timedelta(seconds=STALE_CLAIM_SECONDS)).isoformat()
@@ -1484,11 +1677,97 @@ def expire_stale_claim(row: dict | None) -> dict | None:
     return rows[0] if rows else None
 
 
+#: Who a repair made by a READ is attributed to. The reader did not cause it.
+SYSTEM_ACTOR = "G-FlowDesk (automatic)"
+
+
+async def settle_stale_claim(row: dict | None, observed_by: dict | None) -> dict | None:
+    """Every read of a filing comes through here (2026-10-26).
+
+    A `submitting` claim older than `STALE_CLAIM_SECONDS` belongs to a request
+    that can no longer answer -- the worker restarted mid-call -- so it becomes
+    `submission_unknown` and is audited as one, with the reason that nothing
+    was ever recorded. Returns the row as it now stands. Never raises: it
+    decorates a read, and a read must not fail because a repair could not be
+    written.
+
+    A WRITE UNDER A READ PERMISSION, deliberately: the ticket asks for it ("any
+    read ... a conditional UPDATE makes it so"), and CLAUDE.md records it so the
+    next reviewer does not take it for a breach. The audit row is the SYSTEM's
+    (`SYSTEM_ACTOR`), with the reader in `metadata.observed_by` -- they looked,
+    they did not do it (code review 01, S-1). Lives here, not in a router, so
+    the case route and the filing route settle it one way (S-2).
+
+    The registry VIEW (migration 056) also reads a stale claim as unknown, but
+    never writes it: only these reads do (N-6).
+    """
+    if not is_stale_claim(row):
+        return row
+    waited = claim_age_seconds(row)
+    try:
+        moved = expire_stale_claim(row)
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        print(f"[tpsi.filings] WARN: could not expire the stale submit claim on "
+              f"filing {row.get('id')}: {exc}", file=sys.stderr)
+        return {**row, "stage": STAGE_SUBMISSION_UNKNOWN}
+    if moved is None:
+        # Somebody else moved it first -- the real answer, or another reader.
+        try:
+            return get_filing(row["id"])
+        except Exception:  # noqa: BLE001
+            return row
+
+    from services import audit_events as ev
+    from services.audit_service import log_event
+    from services.tpsi import audit_context
+
+    await log_event(
+        user_id=None, user_display_name=SYSTEM_ACTOR,
+        action_type=ev.TPSI_SUBMISSION_UNKNOWN,
+        event_code=ev.TPSI_SUBMISSION_UNKNOWN,
+        entity_type="tpsi_filing", entity_id=row["id"],
+        **audit_context.filing_subject(row),
+        metadata={"reason": "no answer recorded", "waited_seconds": waited,
+                  "observed_by": (observed_by or {}).get("display_name")},
+    )
+    return {**row, **moved}
+
+
 def claim_age_seconds(row: dict | None) -> float | None:
     started = _parse_instant((row or {}).get("submit_started_at"))
     if started is None:
         return None
     return round((datetime.now(timezone.utc) - started).total_seconds(), 1)
+
+
+def not_lodged_after(row: dict | None) -> str | None:
+    """When "CR does not have it" may first be declared for this filing, or None.
+
+    The instant after which no call made under the claim can still be with CR
+    (`claim started + STALE_CLAIM_SECONDS`). Declaring a return not lodged
+    re-opens validate, sign and submit, so while an answer could still arrive
+    the declaration is refused: a receipt landing after it would meet a retry
+    already on its way (code review 01, B1.3). None for a row with no claim
+    time -- the ones migration 056's repair moved, which are days old.
+    """
+    started = _parse_instant((row or {}).get("submit_started_at"))
+    if started is None:
+        return None
+    return (started + timedelta(seconds=STALE_CLAIM_SECONDS)).isoformat()
+
+
+def _in_flight_refusal(row: dict) -> "ResolveRefused | None":
+    from zoneinfo import ZoneInfo
+
+    after = _parse_instant(not_lodged_after(row))
+    if after is None or datetime.now(timezone.utc) > after:
+        return None
+    clock = after.astimezone(ZoneInfo(_HK)).strftime("%H:%M")
+    return ResolveRefused(
+        409, f"A submit may still be with CR until {clock} HKT, and a receipt "
+             "arriving after you declared this return not lodged would meet a "
+             f"second submit already on its way. Check again after {clock} HKT.",
+        reason="may_be_in_flight", not_lodged_after=after.isoformat())
 
 
 class ResolveRefused(Exception):
@@ -1545,19 +1824,63 @@ def _same_br(a, b) -> bool:
     return bool(left) and left == right
 
 
-def verify_lodged(client, case_no: str, br_no: str | None) -> list[dict]:
-    """Ask CR (free, `docStatusEnquiry`) whether this case number is this company's.
+CASE_NO_SHAPE = r"^\d{6,12}$"
+
+
+def _hk_date_of(row_or_value) -> date | None:
+    """The Hong Kong calendar day of a stored instant, or None."""
+    from zoneinfo import ZoneInfo
+
+    started = _parse_instant(row_or_value)
+    return started.astimezone(ZoneInfo(_HK)).date() if started else None
+
+
+def _cr_date(text) -> date | None:
+    """CR prints dates dd/mm/yyyy (a time may follow). None when it cannot be read."""
+    try:
+        return datetime.strptime(str(text or "").strip()[:10], "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def check_receipt_not_before_claim(filing: dict, receipt: dict) -> None:
+    """A receipt cannot be dated before the submit it claims to answer.
+
+    The transaction date feeds `submitted_at` and therefore the Date printed
+    beside the signature, and a receipt for last year's return typed against
+    this year's case is the mistake this catches. Skipped for a legacy row with
+    no claim time. Raises ResolveRefused(422, reason="before_claim").
+    """
+    claimed = _hk_date_of(filing.get("submit_started_at"))
+    dated = _cr_date(receipt.get("transactionDate"))
+    if claimed and dated and dated < claimed:
+        raise ResolveRefused(
+            422, f"the receipt is dated {dated.strftime('%d/%m/%Y')}, before "
+                 f"this submit was made ({claimed.strftime('%d/%m/%Y')}), so it "
+                 "cannot be this return's receipt. Check the case number and "
+                 "date on CR's receipt; nothing was recorded.",
+            reason="before_claim")
+
+
+def verify_lodged(client, case_no: str, br_no: str | None,
+                  claimed_on: date | None = None) -> list[dict]:
+    """Ask CR (free, `docStatusEnquiry`) whether this case number is this return.
 
     Raises ResolveRefused:
-      422 — CR says the case number does not exist (a fault with beans), or it
-            lists documents under it for a DIFFERENT BR number;
+      422 — CR says the case number does not exist (a fault with beans); or it
+            lists documents under it for a DIFFERENT BR number; or, of the
+            documents it lists, none is an NAR1 submitted on or after the day
+            this submit was made (`claimed_on`) -- last year's NAR1, or an
+            ND2A, would otherwise let an operator record THIS year's return as
+            filed, which is a missed statutory filing rather than a duplicate;
       503 — CR could not be asked. Nothing unverified is ever recorded.
 
     AN EMPTY LIST IS ACCEPTED. Measured on both CR environments (2026-09-17):
     a case number CR does not hold comes back as a FAULT, never as an empty
     list, so an empty list is positive evidence the number is real — and a
     return filed today is routinely still unlisted hours later, which is
-    exactly when an operator resolving a timeout will ask.
+    exactly when an operator resolving a timeout will ask. The document checks
+    therefore apply only when CR lists rows (Levi / conductor 2026-10-26).
     """
     from services.tpsi import reads
     from services.tpsi.errors import TpsiSignatureError, TpsiValidationError
@@ -1583,6 +1906,26 @@ def verify_lodged(client, case_no: str, br_no: str | None) -> list[dict]:
                  f"{listed[0].get('brNo')}, not this company's ({br_no}). "
                  "Check the number on CR's receipt; nothing was recorded.",
             reason="br_mismatch")
+
+    ours = [r for r in listed if _same_br(r.get("brNo"), br_no)]
+    if ours:
+        def is_this_return(row: dict) -> bool:
+            if "NAR1" not in str(row.get("documentName") or "").upper():
+                return False
+            filed = _cr_date(row.get("submissionDate"))
+            # A date nobody can read does not PROVE the document predates the
+            # claim, so it is not held against it; the name still has to match.
+            return not (claimed_on and filed and filed < claimed_on)
+
+        if not any(is_this_return(r) for r in ours):
+            seen = "; ".join(
+                f"{r.get('documentName') or 'a document'} "
+                f"({r.get('submissionDate') or 'no date'})" for r in ours)
+            raise ResolveRefused(
+                422, f"CR lists case number {case_no}, but not as an NAR1 "
+                     f"submitted on or after this submit ({seen}). That is "
+                     "not this return; nothing was recorded.",
+                reason="not_this_return")
     return rows
 
 
@@ -1607,12 +1950,23 @@ def resolve_lodged(filing_id: str, receipt: dict) -> dict:
         raise ResolveRefused(409, "this filing's outcome is no longer unknown — "
                                   "reload the case to see what it is now")
     filing = get_filing(filing_id)
-    _write_back_receipt(filing, stored)
+    # CR's day, not today's: the form_filings mirror says when the return was
+    # FILED, and an operator may record it days after (code review 01, N-4).
+    filed = _cr_date(stored.get("transactionDate"))
+    _write_back_receipt(filing, stored, filed_date=filed.isoformat() if filed else None)
     return filing
 
 
 def resolve_not_lodged(filing_id: str, *, actor: str) -> dict:
-    """CR does not have it: reopen the ordinary retry. Conditional on the stage."""
+    """CR does not have it: reopen the ordinary retry. Conditional on the stage.
+
+    REFUSED WHILE A CALL COULD STILL BE WITH CR (`not_lodged_after`), here and
+    not only in the route, so a script cannot skip it. Legacy rows with no
+    claim time are allowed.
+    """
+    refusal = _in_flight_refusal(get_filing(filing_id))
+    if refusal is not None:
+        raise refusal
     when = _now()
     moved = _update_where(
         filing_id,
@@ -1642,7 +1996,8 @@ def claimed_today_in_hk(row: dict) -> bool:
     return started.astimezone(ZoneInfo(_HK)).date() == fees._hk_today()
 
 
-def _write_back_receipt(filing: dict, receipt: dict) -> None:
+def _write_back_receipt(filing: dict, receipt: dict,
+                        filed_date: str | None = None) -> None:
     """Mirror the receipt onto the existing form_filings row.
 
     The case UI already reads form_filings, so the receipt lands where it is
@@ -1656,7 +2011,7 @@ def _write_back_receipt(filing: dict, receipt: dict) -> None:
         get_supabase().table("form_filings").update(
             {
                 "filed_with_cr": True,
-                "filed_date": _now()[:10],
+                "filed_date": filed_date or _now()[:10],
                 "field_details": {"receipt": receipt},
             }
         ).eq("id", filing["form_filing_id"]).execute()

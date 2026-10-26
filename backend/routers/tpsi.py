@@ -6,6 +6,7 @@ not on our own ledger.
     write  -> changes something at CR or stores a credential (sign, e-Drive)
     submit -> chargeable and irreversible
 """
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -23,7 +24,7 @@ from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services import audit_subject
-from services.tpsi import credentials, filings, reads, shared_credentials
+from services.tpsi import audit_context, credentials, filings, reads, shared_credentials
 # ALIASED, because this router already has a route handler called `doc_status`
 # (GET /tpsi/doc-status) and the bare name would be shadowed by it at
 # definition time — silently, and only at the one call site below.
@@ -193,68 +194,9 @@ async def audit_auth(user: dict, client: TpsiClient) -> None:
     )
 
 
-def _filing_subject(
-    row: Optional[dict] = None,
-    *,
-    filing_id: Optional[str] = None,
-    entity_id: Optional[str] = None,
-    nar1_case_id: Optional[str] = None,
-) -> dict:
-    """Which case and which company a CR filing event is about.
-
-    Every `tpsi_filing` audit row used to carry a filing uuid and nothing else,
-    so the whole CR half of the trail rendered with an empty subject — you could
-    see that a return was validated, signed and submitted without being able to
-    tell for whom. `tpsi_filings` already knows: it holds the entity and, for a
-    NAR1, the case.
-
-    ALSO FIXES WHAT WENT INTO `case_id`. Two routes wrote `nar1_case_id` there,
-    but that column holds an ENTITY id by repo convention (routers/cases.py
-    ::_audit_target) — a case id in it is invisible to every company-scoped
-    query, which is exactly the trail these rows belong in. The case id now goes
-    where it belongs, in `subject_id`.
-
-    TWO STAGES, and the split is the point. The IDS come from what the caller
-    already has and cost nothing; the NAMES need a lookup and are best-effort.
-    So a Supabase failure downgrades the row to ids without a company name,
-    rather than dropping the subject altogether.
-
-    TOTALLY DEFENSIVE, and that is not belt-and-braces. This is spread into a
-    `log_event(**...)` call, so it is evaluated by the CALLER — outside the
-    try/except that makes an audit write unable to fail its operation. A raise
-    here would turn a successful, chargeable CR submission into a 500.
-    """
-    try:
-        if row is None and filing_id:
-            row = filings.get_filing(filing_id)
-    except Exception:  # noqa: BLE001
-        row = None
-    row = row or {}
-
-    entity_id = entity_id or row.get("entity_id")
-    case_id = nar1_case_id or row.get("nar1_case_id")
-    if not entity_id and not case_id:
-        return {}
-
-    company: dict = {"id": entity_id} if entity_id else {}
-    case: dict = {"id": case_id} if case_id else {}
-    try:
-        sb = get_supabase()
-        if entity_id:
-            company = (sb.table("entities").select("id, company_name, br_number")
-                       .eq("id", entity_id).single().execute()).data or company
-        if case_id:
-            case = (sb.table("nar1_cases").select("id, case_no")
-                    .eq("id", case_id).single().execute()).data or case
-    except Exception as exc:  # noqa: BLE001
-        print(f"[routers.tpsi] WARN: could not name the audit subject for filing "
-              f"{filing_id or row.get('id')}: {exc}", file=sys.stderr)
-
-    out = {"case_id": entity_id, "company_name": company.get("company_name")}
-    if case_id:
-        return {**out, **audit_subject.for_case(case, module=audit_subject.CR_FILING)}
-    return {**out, **audit_subject.for_company(
-        company, module=audit_subject.CR_FILING)}
+# Lives in services/tpsi/audit_context.py now; the alias keeps every call site
+# in this router unchanged.
+_filing_subject = audit_context.filing_subject
 
 
 def _handle(exc: Exception) -> HTTPException:
@@ -284,10 +226,7 @@ def _handle(exc: Exception) -> HTTPException:
     # that allows this", because the operator's next move depends on WHICH
     # state: wait, check CR, or nothing at all.
     if isinstance(exc, filings.FilingLocked):
-        return HTTPException(409, {
-            "message": str(exc), "reason": "filing_locked",
-            "stage": (exc.filing or {}).get("stage"),
-        })
+        return HTTPException(409, exc.detail())
     if isinstance(exc, filings.SubmitGateError):
         return HTTPException(409, str(exc))
     if isinstance(exc, (LookupError, ValueError)):
@@ -982,10 +921,12 @@ async def get_filing(filing_id: str, user=Depends(require_permission("tpsi", "re
         row = filings.get_filing(filing_id)
     except Exception as exc:
         raise _handle(exc)
-    row = await settle_stale_claim(row, user)
+    row = await filings.settle_stale_claim(row, user)
     return {
         "stage": row["stage"],
         "submit_started_at": row.get("submit_started_at"),
+        # When "CR does not have it" may first be declared (None: any time).
+        "not_lodged_after": filings.not_lodged_after(row),
         "filing_id": filing_id,
         "form_code": row["form_code"],
         "entity_id": row["entity_id"],
@@ -1428,8 +1369,13 @@ async def _finish_submit(client, claim, user: dict) -> None:
     would hold the worker's event loop for the whole call, which is what the
     old synchronous submit did to every other request on the worker.
 
-    It never raises (see `filings.finish_submit`); the audit row it writes is
-    the outcome it actually recorded.
+    It never raises (see `filings.finish_submit`). The audit row says what
+    HAPPENED, not what was wished: a receipt that could not be written to the
+    row is still a SUCCESS -- CR filed and charged -- but carries
+    `metadata.stored = false`, and EVERY success carries the whole receipt in
+    `after_state`, because the trail is insert-only and the receipt is the one
+    piece of proof that cannot be recovered from CR's side without a search
+    (code review 01, B1.4).
     """
     outcome = await run_in_threadpool(filings.finish_submit, client, claim)
     filing_id = claim.filing["id"]
@@ -1441,8 +1387,10 @@ async def _finish_submit(client, claim, user: dict) -> None:
         await log_event(
             action_type=ev.TPSI_SUBMISSION_SUCCESS,
             event_code=ev.TPSI_SUBMISSION_SUCCESS, **common,
+            after_state={"receipt": outcome.receipt},
             metadata={"caseNo": outcome.receipt.get("caseNo"),
                       "totalAmount": outcome.receipt.get("totalAmount"),
+                      "stored": outcome.stored,
                       "waited_seconds": outcome.waited_seconds},
         )
     elif outcome.stage == filings.STAGE_SUBMISSION_FAILED:
@@ -1452,6 +1400,7 @@ async def _finish_submit(client, claim, user: dict) -> None:
             metadata={"reason": str(outcome.error),
                       "faults": [list(f) for f in
                                  getattr(outcome.error, "faults", None) or []],
+                      "sent": outcome.sent,
                       "waited_seconds": outcome.waited_seconds},
         )
     else:
@@ -1461,45 +1410,9 @@ async def _finish_submit(client, claim, user: dict) -> None:
             metadata={"reason": str(outcome.error),
                       "kind": getattr(outcome.error, "kind", None)
                       or type(outcome.error).__name__,
+                      "sent": outcome.sent,
                       "waited_seconds": outcome.waited_seconds},
         )
-
-
-async def settle_stale_claim(row: dict | None, user: dict | None) -> dict | None:
-    """Every read of a filing comes through here (2026-10-26).
-
-    A `submitting` claim older than `filings.STALE_CLAIM_SECONDS` belongs to a
-    request that can no longer answer — the worker restarted mid-call — so it
-    becomes `submission_unknown` and is audited as one, with the reason that
-    nothing was ever recorded. Returns the row as it now stands. Never raises:
-    it decorates a read, and a read must not fail because a repair could not
-    be written.
-    """
-    if not filings.is_stale_claim(row):
-        return row
-    waited = filings.claim_age_seconds(row)
-    try:
-        moved = filings.expire_stale_claim(row)
-    except Exception as exc:  # noqa: BLE001 — see docstring
-        print(f"[routers.tpsi] WARN: could not expire the stale submit claim on "
-              f"filing {row.get('id')}: {exc}", file=sys.stderr)
-        return {**row, "stage": filings.STAGE_SUBMISSION_UNKNOWN}
-    if moved is None:
-        # Somebody else moved it first — the real answer, or another reader.
-        try:
-            return filings.get_filing(row["id"])
-        except Exception:  # noqa: BLE001
-            return row
-    await log_event(
-        user_id=(user or {}).get("id"),
-        user_display_name=(user or {}).get("display_name") or "system",
-        action_type=ev.TPSI_SUBMISSION_UNKNOWN,
-        event_code=ev.TPSI_SUBMISSION_UNKNOWN,
-        entity_type="tpsi_filing", entity_id=row["id"],
-        **_filing_subject(row),
-        metadata={"reason": "no answer recorded", "waited_seconds": waited},
-    )
-    return {**row, **moved}
 
 
 @router.post("/filings/{filing_id}/submit", status_code=202)
@@ -1621,7 +1534,7 @@ async def resolve_filing(
         filing = filings.get_filing(filing_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
-    filing = await settle_stale_claim(filing, user)
+    filing = await filings.settle_stale_claim(filing, user)
     if filing.get("stage") != filings.STAGE_SUBMISSION_UNKNOWN:
         raise HTTPException(409, {
             "message": (f"this filing is '{filing.get('stage')}', not an "
@@ -1672,14 +1585,30 @@ async def resolve_filing(
     receipt = nar1_cases.with_derived_fields(
         body.receipt, nar1_cases.receipt_prefill(case))
     problems = nar1_cases.validate_receipt(receipt)
+    # CR's case numbers are digits (180256934). Refused before it is put in a
+    # SOAP body and before CR is asked anything (code review 01, S-9).
+    case_no = str(receipt.get("caseNo") or "").strip()
+    if case_no and not re.fullmatch(filings.CASE_NO_SHAPE, case_no):
+        problems.append("caseNo: must be CR's case number, 6 to 12 digits")
     if problems:
         raise HTTPException(400, {"message": "the receipt is incomplete",
                                   "problems": problems})
 
-    client = client_for(user)
     try:
-        await run_in_threadpool(filings.verify_lodged, client,
-                                str(receipt["caseNo"]).strip(), receipt.get("brNo"))
+        # Everything that can say "no" without asking CR comes first.
+        filings.check_receipt_not_before_claim(filing, receipt)
+        # INSIDE the guard (S-10): a shared presenter credential that will not
+        # load is "could not verify with CR, try again", not a 500.
+        try:
+            client = client_for(user)
+        except Exception as exc:  # noqa: BLE001
+            raise filings.ResolveRefused(
+                503, "Could not verify the case number with the Companies "
+                     "Registry, so nothing was recorded. Try again in a few "
+                     "minutes.", reason="cr_unreachable") from exc
+        await run_in_threadpool(
+            filings.verify_lodged, client, case_no, receipt.get("brNo"),
+            filings._hk_date_of(filing.get("submit_started_at")))
         row = filings.resolve_lodged(filing_id, receipt)
     except filings.ResolveRefused as exc:
         raise HTTPException(exc.status, {"message": str(exc), **exc.extra})

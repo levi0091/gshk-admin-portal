@@ -398,7 +398,9 @@ CR_FILED_STAGES = (
     tpsi_filings.STAGE_EDRIVE,
 )
 
-#: CR_FILED_STAGES plus the two where CR MAY hold the return: a submit in
+#: ALIAS of `filings.LOCKED_STAGES`, kept for the name -- at call sites "may
+#: hold" reads as the question being asked. CR_FILED_STAGES plus the two where
+#: CR MAY hold the return: a submit in
 #: flight, and one that ended without an answer (2026-10-26). Every guard that
 #: asks "would this put the return in front of CR a second time, or hide one CR
 #: has?" asks it of THIS tuple — restart, close, prepare, the manual path and
@@ -884,6 +886,10 @@ def composite(case_id: str) -> dict:
         # take hours to list a return submitted today, before anyone declares
         # it not lodged.
         "submit_started_at": (filing or {}).get("submit_started_at"),
+        # When "CR does not have it" may first be declared -- the screen
+        # withholds the control until then rather than arm one whose only
+        # outcome is a 409 (code review 01, B1.3).
+        "not_lodged_after": tpsi_filings.not_lodged_after(filing),
     }
 
 

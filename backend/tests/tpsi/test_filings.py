@@ -181,7 +181,7 @@ def test_create_filing_starts_at_draft():
     with patch.object(filings, "_insert", side_effect=lambda p: p):
         row = filings.create_filing(
             entity_id="e1", form_code="Nar1",
-            form_xml="<formCode>NAR1</formCode>", user_id="u1",
+            form_xml="<formCode>NAR1</formCode>", user_id="u1", nar1_case_id="c1",
         )
     assert row["stage"] == filings.STAGE_DRAFT
     assert row["form_code"] == "Nar1"
