@@ -1,5 +1,6 @@
 """The two free, side-effect-free TPSI reads: deposit balance and case status."""
 from decimal import Decimal
+from xml.sax.saxutils import escape
 
 from services.tpsi.soap import find_all, parse_response, text_of
 
@@ -80,7 +81,11 @@ def case_status(
         ("submissionDateEnd", date_end),
         ("documentRefNo", document_ref_no),
     )
-    inner = "".join(f"<cr:{name}>{value or ''}</cr:{name}>" for name, value in fields)
+    # ESCAPED (code review 01, S-9). These values come from callers, and
+    # `caseNo` is typed by an operator on the resolve route; an f-string with
+    # no escaping put whatever they typed into the SOAP body.
+    inner = "".join(f"<cr:{name}>{escape(str(value or ''))}</cr:{name}>"
+                    for name, value in fields)
     body = (
         "<cr:enquireDocStatus "
         'xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/">'

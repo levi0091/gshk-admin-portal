@@ -31,6 +31,20 @@ def _nobody():
     return patch("middleware.auth.get_supabase", return_value=sb)
 
 
+@pytest.fixture(autouse=True)
+def _blocking_filing_follows_the_current_one():
+    """Restart verification asks `blocking_filing` -- the locked filing wherever
+    it sorts (code review 01, S-4) -- which falls back to `current_filing`
+    when none is locked. These tests patch `current_filing` and nothing else, so
+    the fallback is modelled rather than left to reach a database. A test that
+    cares about a locked filing patches `blocking_filing` itself."""
+    from services import nar1_cases
+
+    with patch("routers.cases.nar1_cases.blocking_filing",
+               side_effect=lambda case_id: nar1_cases.current_filing(case_id)):
+        yield
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
