@@ -36,6 +36,16 @@ from __future__ import annotations
 
 import re
 
+#: What CR may call a NAR1 in a docStatusEnquiry row -- matched case-insensitively
+#: against `documentName` AND `documentRefNo`. ONE decision, used by the status
+#: poll (`nar1_cr_status`) to pick this return out of a multi-document case and
+#: by `filings.verify_lodged` to check that a receipt an operator typed is for
+#: this return. CR's own published example is `documentName "Annual Return"`
+#: with `documentRefNo "NAR1(731)"` (TPSI API Interface v1.0.14, 6.5.5), and
+#: nothing specifies the wording, so a stricter test would refuse a genuine
+#: return (code review 02, B3). Never used to reject a row that says nothing.
+NAR1_DOCUMENT_HINTS = ("NAR1", "ANNUAL RETURN")
+
 #: Filed, and CR has not been asked — or was asked and named no document.
 #: The state every filed case starts in, and the only one that is OUR fact
 #: rather than CR's.

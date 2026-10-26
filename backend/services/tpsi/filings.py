@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from db.supabase import get_supabase
 from services.tpsi import client as tpsi_client
 from services.tpsi.config import FORM_FEES
+from services.tpsi.doc_status import NAR1_DOCUMENT_HINTS
 from services.tpsi.errors import TpsiError
 from services.tpsi.soap import extract_submission, parse_response, text_of
 
@@ -1910,7 +1911,14 @@ def verify_lodged(client, case_no: str, br_no: str | None,
     ours = [r for r in listed if _same_br(r.get("brNo"), br_no)]
     if ours:
         def is_this_return(row: dict) -> bool:
-            if "NAR1" not in str(row.get("documentName") or "").upper():
+            # CR's own example calls it documentName "Annual Return" with
+            # documentRefNo "NAR1(731)", so BOTH fields are read and the
+            # hints are the status poll's (code review 02, B3). A row that
+            # says nothing in either is not held against the receipt.
+            name = str(row.get("documentName") or "").strip().upper()
+            ref = str(row.get("documentRefNo") or "").strip().upper()
+            if (name or ref) and not any(
+                    h in name or h in ref for h in NAR1_DOCUMENT_HINTS):
                 return False
             filed = _cr_date(row.get("submissionDate"))
             # A date nobody can read does not PROVE the document predates the

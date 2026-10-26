@@ -92,12 +92,24 @@ FAULT_BEANS = envelope(
 
 
 def doc_status_reply(br_no="12345678", case_no="180256934",
-                     document_name="NAR1", submission_date="23/10/2026") -> bytes:
+                     document_name="Annual Return",
+                     document_ref_no="NAR1(731)",
+                     submission_date="23/10/2026") -> bytes:
+    """A docStatusEnquiry reply for one document.
+
+    THE DEFAULT IS CR'S OWN PUBLISHED EXAMPLE (TPSI API Interface v1.0.14,
+    6.5.5): `documentName "Annual Return"`, `documentRefNo "NAR1(731)"`. It used
+    to be `documentName "NAR1"`, wording nobody at CR ever wrote -- so every
+    test fed the code the one string it looked for, and `verify_lodged` refused
+    a genuine receipt that CR describes as "Annual Return" (code review 02, B3).
+    A harness default is a claim about what CR says; make it a true one.
+    """
     return envelope(
         f'<cr:enquireDocStatusResponse xmlns:cr="{CR_NS}"><cr:result>'
         "<cr:documentList><cr:document>"
         f"<cr:caseNo>{case_no}</cr:caseNo><cr:brno>{br_no}</cr:brno>"
         f"<cr:documentName>{document_name}</cr:documentName>"
+        f"<cr:documentRefNo>{document_ref_no}</cr:documentRefNo>"
         f"<cr:submissionDate>{submission_date}</cr:submissionDate>"
         "<cr:documentStatus>Lodged</cr:documentStatus>"
         "</cr:document></cr:documentList></cr:result>"

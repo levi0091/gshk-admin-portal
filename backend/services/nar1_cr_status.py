@@ -53,7 +53,9 @@ COLUMNS = (
 #: disambiguate when one CR case number carries several documents — never to
 #: reject a single unambiguous row, because CR's wording here is not specified
 #: either and a stricter test would silently stop updating every case.
-_NAR1_DOCUMENT_HINTS = ("NAR1", "ANNUAL RETURN")
+#: The definition lives in `doc_status` so `filings.verify_lodged` can share it
+#: without importing this module (which imports `filings`).
+_NAR1_DOCUMENT_HINTS = ds.NAR1_DOCUMENT_HINTS
 
 
 def _now() -> str:

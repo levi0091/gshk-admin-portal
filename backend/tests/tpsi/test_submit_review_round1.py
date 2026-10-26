@@ -345,19 +345,74 @@ def test_a_stage_that_is_not_a_failure_carries_no_message():
 #  S-8 — a listed document must be THIS return
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("name,date,reason", [
-    ("ND2A", "23/10/2026", "not_this_return"),
-    ("NAR1", "28/06/2025", "not_this_return"),
+@pytest.mark.parametrize("name,ref,date", [
+    ("ND2A", "ND2A(55)", "23/10/2026"),                  # a different form
+    ("Annual Return", "NAR1(731)", "28/06/2025"),        # last year's return
 ])
-def test_a_listed_document_that_is_not_this_return_is_refused(name, date, reason):
+def test_a_listed_document_that_is_not_this_return_is_refused(name, ref, date):
     with Harness(_unknown()) as h:
         h.cr.answers["/tpsi/docStatusEnquiry"] = doc_status_reply(
-            document_name=name, submission_date=date)
+            document_name=name, document_ref_no=ref, submission_date=date)
         response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
 
         assert response.status_code == 422
-        assert response.json()["detail"]["reason"] == reason
+        assert response.json()["detail"]["reason"] == "not_this_return"
         assert h.stage() == "submission_unknown"
+
+
+# --------------------------------------------------------------------------- #
+#  B3 (review 02) -- CR calls an NAR1 "Annual Return"
+# --------------------------------------------------------------------------- #
+
+def test_crs_own_documented_example_is_recognised_as_the_return():
+    """The exact reply CR publishes (TPSI API Interface v1.0.14, 6.5.5),
+    through the real `reads.case_status` parser: documentName "Annual Return",
+    documentRefNo "NAR1(731)". The first S-8 fix looked for the string "NAR1" in
+    documentName only, so it refused this -- and an operator pushed to "CR does
+    not have it" files a held return again, which is the PROD incident."""
+    from datetime import date
+
+    from tests.tpsi.test_reads import STATUS
+
+    class Client:
+        def post_soap(self, path, body):
+            return STATUS
+
+    rows = filings.verify_lodged(Client(), "180256934", "11651", date(2022, 6, 28))
+    assert rows[0]["documentName"] == "Annual Return"
+    assert rows[0]["documentRefNo"] == "NAR1(731)"
+
+
+def test_the_route_accepts_the_harness_default_which_is_crs_real_wording():
+    with Harness(_unknown()) as h:
+        response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
+
+    assert response.status_code == 200, response.text
+    assert h.stage() == "submitted"
+
+
+@pytest.mark.parametrize("name,ref", [
+    ("Annual Return", ""),            # the name alone
+    ("Document", "NAR1(731)"),        # the reference alone
+    ("", ""),                         # CR said nothing: not held against it
+])
+def test_nar1_is_recognised_by_name_or_by_reference_and_silence_is_not_refused(
+        name, ref):
+    with Harness(_unknown()) as h:
+        h.cr.answers["/tpsi/docStatusEnquiry"] = doc_status_reply(
+            document_name=name, document_ref_no=ref)
+        response = _resolve(h, outcome="lodged", receipt=RECEIPT_IN)
+
+    assert response.status_code == 200, response.text
+
+
+def test_the_hints_are_the_ones_the_status_poll_already_uses():
+    """One decision about what CR calls this return, not two (review 02, B3)."""
+    from services import nar1_cr_status
+    from services.tpsi import doc_status
+
+    assert nar1_cr_status._NAR1_DOCUMENT_HINTS is doc_status.NAR1_DOCUMENT_HINTS
+    assert filings.NAR1_DOCUMENT_HINTS is doc_status.NAR1_DOCUMENT_HINTS
 
 
 def test_an_empty_document_list_is_still_accepted():
