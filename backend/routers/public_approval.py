@@ -1122,6 +1122,39 @@ def _signer_all_signed(case: dict) -> HTMLResponse:
              "as soon as you can.</p>")
 
 
+def _stale_signer(case: dict) -> HTMLResponse:
+    """A link from an earlier revision, in multi-signer mode.
+
+    NOT `_earlier_revision`, which falls back to the single-mode `_decided`: that
+    renders "already confirmed by <one director>. Only one confirmation is
+    required", which is false when every director must sign, names a person on a
+    page that authenticates nobody, and reads `approved_row_for`, which has no
+    revision filter and so can name a signer of a discarded revision.
+    """
+    return _decided_signer(case) or _unavailable(_miss_for(case))
+
+
+def _signer_recorded_not_filed(case: dict) -> HTMLResponse:
+    """Every director has signed, but the case does not say so (yet).
+
+    Reached when the convergence UPDATE faulted: the signatures are recorded and
+    the page must not promise a mail that is not coming. A replayed press retries
+    the convergence (S6), and the mailbox is the fallback for a director who
+    hears nothing.
+    """
+    code, _what = _FORM_TITLES.get(case.get("form_code"), _FORM_TITLES["Nd2a"])
+    company = _entity_or_empty(case).get("company_name") or ""
+    return _render(
+        title="Signature recorded",
+        heading="Thank you — your signature is recorded",
+        sub=(f"We are finishing Form {code} for {company}." if company
+             else f"We are finishing Form {code}."),
+        body='<p class="done">Signature recorded.</p>'
+             '<p class="note">We have not yet been able to complete the last step on '
+             "our side. If you do not hear from us shortly, please email "
+             f"{html.escape(RENEWAL_MAILBOX)}.</p>")
+
+
 def _in_round(case: dict, row: dict) -> bool:
     frozen, _ = signers.signer_set(case)
     return row.get("person_id") in {s["person_id"] for s in frozen}
@@ -1136,9 +1169,8 @@ async def _show_signer(resolved) -> HTMLResponse:
     """The GET. WRITES NOTHING -- a mail scanner fetching a director's link must
     neither sign for them nor retry a convergence."""
     row, case = resolved
-    stale = _earlier_revision(row, case, _OFFICER_CHANGE_FORMS)
-    if stale is not None:
-        return stale
+    if nar1_approvals.is_stale(row, case):
+        return _stale_signer(case)
     if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
         return _decided_signer(case) or _signer_waiting(case, _signer_counts(case))
     if row.get("outcome") or nar1_approvals.is_expired(row):
@@ -1187,6 +1219,17 @@ async def _converge(case: dict, outcome: dict, background: BackgroundTasks | Non
             background.add_task(send_receipt, case["id"], approval)
 
 
+def _is_converged_now(case: dict) -> bool:
+    """Re-read the case: does it say it is approved? A fault reads as no, which
+    errs towards the page that promises nothing."""
+    try:
+        return _converged(nar1_cases.get_case(case["id"]))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[public_approval] could not re-read case {case.get('id')}: {exc}",
+              file=sys.stderr)
+        return False
+
+
 async def _after_signing(case: dict, outcome: dict,
                          background: BackgroundTasks | None) -> HTMLResponse:
     """Act on a counted round and choose the page: the convergence side effects
@@ -1194,7 +1237,11 @@ async def _after_signing(case: dict, outcome: dict,
     if outcome["won"]:
         await _converge(case, outcome, background)
     if outcome["converged"]:
-        return _signer_all_signed(case)
+        if outcome["won"] or _is_converged_now(case):
+            return _signer_all_signed(case)
+        # Every signature is in but the UPDATE that settles the case did not
+        # land: do not say the signed form is on its way (S1).
+        return _signer_recorded_not_filed(case)
     counts = ({"signed": outcome["signed"], "required": outcome["required"]}
               if outcome["required"] else _signer_counts(case))
     return _signer_waiting(case, counts)
@@ -1206,9 +1253,8 @@ async def _record_signer(resolved, request: Request,
     row, case = resolved
 
     # 1. A link from an earlier revision records nothing.
-    stale = _earlier_revision(row, case, _OFFICER_CHANGE_FORMS)
-    if stale is not None:
-        return stale
+    if nar1_approvals.is_stale(row, case):
+        return _stale_signer(case)
 
     # 2. This director already signed: a replay, or a second tab. Idempotent --
     # and the place a convergence that FAILED is retried (S6). The last signer's

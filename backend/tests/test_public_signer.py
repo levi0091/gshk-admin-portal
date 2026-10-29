@@ -368,6 +368,33 @@ def test_S6_the_first_signers_replay_can_also_finish_the_job(client, world):
     assert len(world.logged(ev.CASE_STATUS_CHANGED)) == 1
 
 
+def test_S1_a_convergence_that_failed_does_not_promise_a_mail_that_is_not_coming(client, world):
+    _fail_the_first_case_update(world)
+    sign(client, T1)
+    text = sign(client, T2).text
+    assert world.case["client_approved"] is None
+    assert "on its way" not in text and "every director has now signed" not in text
+    assert "your signature is recorded" in text
+    assert "renewal@getstarted.hk" in text
+    assert _scripts(text) == []
+    assert "Jacqueline Koh" not in text
+
+
+def test_S1_the_same_page_is_not_shown_when_another_request_already_converged(client, world):
+    """Not won, but the case IS approved: that is a plain all-signed answer."""
+    sign(client, T1)
+    real = signers.record_signing
+
+    def lost(case, claimed):
+        return {**real(case, claimed), "won": False}
+
+    with patch("routers.public_approval.signers.record_signing", side_effect=lost):
+        text = sign(client, T2).text
+    # record_signing really converged the case; only the `won` flag was withheld.
+    assert world.case["client_approved"] is True
+    assert "every director has now signed" in text
+
+
 def test_a_GET_never_retries_the_convergence(client, world):
     state = _fail_the_first_case_update(world)
     sign(client, T1)
@@ -435,6 +462,31 @@ def test_a_closed_case_is_unavailable_and_says_nothing_about_why(client, world, 
     assert _unavailable(response.text)
     assert "closed" not in response.text.lower().replace("nothing has been changed", "")
     world.claim.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_B1_a_stale_link_on_a_converged_case_names_nobody_and_claims_no_rule(
+        client, world, method):
+    """Both sign, then the operator restarts into revision 2 and a director opens
+    the revision-1 email. The single-mode answer would name one director and say
+    that only one confirmation is required, which is false in this mode."""
+    sign(client, T1)
+    sign(client, T2)
+    world.case["verification_revision"] = 2
+    response = (client.get(PATH.format(T1)) if method == "get" else sign(client, T1))
+    text = response.text
+    assert "Jacqueline Koh" not in text and "Testing Brian" not in text
+    assert "Only one confirmation" not in text and "already been confirmed" not in text
+    assert "every director has now signed" in text
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_B1_a_stale_link_on_an_open_round_is_the_unavailable_page(client, world, method):
+    world.case["verification_revision"] = 2
+    world.link("A1")["outcome"] = "approved"
+    response = (client.get(PATH.format(T1)) if method == "get" else sign(client, T1))
+    assert _unavailable(response.text)
+    assert "Jacqueline Koh" not in response.text
 
 
 def test_a_signed_directors_replay_on_a_declined_case_is_unavailable_not_waiting(client, world):
