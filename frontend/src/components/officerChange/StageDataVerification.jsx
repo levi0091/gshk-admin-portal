@@ -12,8 +12,10 @@ import { errorOf } from './workflow.js'
  * (Levi 2026-10-29). Both asked the operator to attach papers CR never asks for;
  * the upload routes and anything already uploaded stay on the officer's
  * profile. The per-director e-Registry hint that card carried now sits on the
- * Signing stage, where the consent is actually applied. e-Sign validates with CR (free, no PIN); the manual route is
- * "Mark as checked" and calls nobody. With an effective date still blank
+ * Signing stage, where the consent is actually applied.
+ *
+ * e-Sign validates with CR (free, no PIN); the manual route is "Mark as
+ * checked" and calls nobody. With an effective date still blank
  * (A1), e-Sign leaves here by "Continue to Signing": CR checks the dates, so it
  * validates at Signing once they are entered. Nothing leaves while a check is
  * open. e-Sign is offered only when every new director's consent can be
