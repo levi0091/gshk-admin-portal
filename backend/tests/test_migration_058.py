@@ -38,7 +38,7 @@ def test_058_revises_057_and_is_the_head():
     m = _migration()
     assert (m.revision, m.down_revision) == ("058", "057")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["059"]
+    assert script.get_heads() == ["060"]
 
 
 def test_the_column_is_a_non_null_boolean_defaulting_to_false():

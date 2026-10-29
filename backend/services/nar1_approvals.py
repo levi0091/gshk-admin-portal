@@ -264,6 +264,68 @@ def supersede_outstanding(case_id: str, *, exclude_id: str | None = None) -> int
     return len(rows)
 
 
+def supersede_for_person(case_id: str, person_id: str) -> int:
+    """Invalidate ONE director's unanswered links on a case. Returns how many.
+
+    The multi-signer counterpart of `supersede_outstanding` (nd2-multi-signer,
+    Levi 2026-10-29). A re-send to one director retires that director's older
+    link and nobody else's: the other directors are still part-way through
+    signing the same revision. It matches on `person_id`, so a row issued with no
+    person (a NAR1 link, or a typed address) is never touched by it, and no
+    person at all supersedes nothing.
+    """
+    if not person_id:
+        return 0
+    rows = (
+        get_supabase().table(_TABLE)
+        .update({"outcome": OUTCOME_SUPERSEDED,
+                 "responded_at": _now().isoformat()})
+        .eq("nar1_case_id", case_id)
+        .eq("person_id", person_id)
+        .is_("outcome", None)
+        .execute()
+        .data
+        or []
+    )
+    return len(rows)
+
+
+def issue_for_signer(*, case_id: str, recipient: dict, revision: int,
+                     expires_at: datetime,
+                     sent_at: datetime | None = None) -> dict:
+    """One fresh token for ONE director, leaving every other link live.
+
+    `issue` supersedes every outstanding link on the case, because a re-send in
+    the single-recipient flow means the earlier document is no longer the one
+    being asked about. In multi-signer mode the opposite holds: the other
+    directors' links belong to the very revision this one does, and killing them
+    would make each send undo the last. This retires only this person's own
+    (`supersede_for_person`) and inserts one row. It does not call
+    `supersede_outstanding` or `_date_legacy_links`: the first send of a round
+    has already cleared the case, and a round only ever holds links that carry a
+    revision.
+
+    `revision` is required, not optional as in `issue`: a link in this mode is
+    refused when it belongs to an earlier revision, and that lock needs the
+    number. Returns the PLAINTEXT token once, exactly as `issue` does.
+    """
+    sent = sent_at or _now()
+    supersede_for_person(case_id, recipient.get("person_id"))
+    token = secrets.token_urlsafe(_TOKEN_BYTES)
+    get_supabase().table(_TABLE).insert({
+        "nar1_case_id": case_id,
+        "person_id": recipient.get("person_id"),
+        "recipient_email": recipient["email"],
+        "recipient_name": recipient.get("name"),
+        "token_hash": hash_token(token),
+        "sent_at": sent.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "revision": revision,
+    }).execute()
+    return {**recipient, "token": token, "expires_at": expires_at,
+            "revision": revision}
+
+
 def find_by_token(token: str) -> dict | None:
     """The row this token addresses, or None.
 
