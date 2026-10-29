@@ -91,10 +91,15 @@ export default function RecipientPicker({
             : `${to.length} address${to.length === 1 ? '' : 'es'}`}
         </span>
       </div>
-      <div className="f-hint" style={{ marginBottom: 10 }}>
-        No one is added automatically. Choose who should receive it from the
-        suggestions below, or type another address.
-      </div>
+      {/* Only for someone who can choose, and only pointing at suggestions
+          that are actually there. */}
+      {!readOnly && (
+        <div className="f-hint" style={{ marginBottom: 10 }}>
+          {suggestions.length > 0
+            ? 'No one is added automatically. Choose who should receive it from the suggestions below, or type another address.'
+            : 'No one is added automatically. Type the address it should go to.'}
+        </div>
+      )}
 
       {to.length === 0 && readOnly ? null : to.length === 0 ? (
         <div className="alert al-warn" role="alert">

@@ -91,6 +91,18 @@ describe('RecipientPicker', () => {
     expect(screen.getByText(/No one is added automatically/)).toBeInTheDocument()
   })
 
+  it('points at suggestions only when there are some', () => {
+    // Every address already chosen: nothing below to choose from.
+    renderPicker()
+    expect(screen.queryByText(/suggestions below/)).toBeNull()
+    expect(screen.getByText(/Type the address it should go to/)).toBeInTheDocument()
+  })
+
+  it('gives a read-only reader no instructions to choose', () => {
+    renderPicker({ to: [], readOnly: true })
+    expect(screen.queryByText(/No one is added automatically/)).toBeNull()
+  })
+
   it('disables the pills while a send is running', () => {
     renderPicker({ to: [], disabled: true })
     expect(screen.getByRole('button', { name: /Add AH CHAN/ })).toBeDisabled()
