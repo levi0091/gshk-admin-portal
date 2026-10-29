@@ -154,6 +154,68 @@ def must_sign(case: dict, person_id) -> bool:
         return False
 
 
+def required_signers(case: dict) -> list[dict]:
+    """Everyone `must_sign` would say yes to, as `[{"person_id", "name", "roles"}]`
+    (nd2-multi-signer, Levi 2026-10-29).
+
+    `must_sign` answers for one person; the multi-signer mode needs the whole
+    list at once -- one panel per director, and the set a round converges on.
+    The rules and their ORDER are the ones above: the form's signatory when a
+    director (`form`), then the incoming ND2A directors (`consent`), then the
+    resolution's signature lines that carry a person (`resolution`). Someone
+    under more than one rule is listed once with every role.
+
+    A body-corporate director has no person id, so never appears: nobody can
+    draw on this page for it, which is already true of `must_sign`.
+    `tests/officer_changes/test_required_signers.py` runs both over the same
+    fixtures and fails if they ever disagree about a person -- the two are
+    separate code, and that test is the only thing joining them.
+
+    NEVER RAISES. A fault gives `[]` and a stderr line, like `must_sign`, which
+    gives False: the screen then reports "no director has a box to sign" rather
+    than a 500. (An empty list is therefore ambiguous between "nobody" and "could
+    not read"; the stderr line is what tells the two apart.)
+    """
+    try:
+        sb = get_supabase()
+        entity_id = case["entity_id"]
+        roles_by_person: dict[str, list[str]] = {}
+
+        def add(person_id, role: str) -> None:
+            if person_id:
+                roles = roles_by_person.setdefault(person_id, [])
+                if role not in roles:
+                    roles.append(role)
+
+        sig_name, _corporate, sig_person = cases._signatory_row(entity_id)
+        names: dict[str, str] = {}
+        if sig_person and _is_current_director(sb, entity_id, sig_person):
+            add(sig_person, "form")
+            names[sig_person] = sig_name
+
+        if case.get("form_code") == "Nd2a":
+            entries = cases.list_entries(case["id"])
+            for entry in entries:
+                if entry.get("kind") == "appointment" and entry.get("capacity") == "director":
+                    add(entry.get("person_id"), "consent")
+            officers = cases._current_officers(entity_id, entries)
+            officer_names = {o.get("person_id"): o.get("name") for o in officers
+                             if o.get("person_id")}
+            for line_name, person_id in resolution.signatory_people(entries, officers):
+                add(person_id, "resolution")
+                if person_id:
+                    names.setdefault(person_id, officer_names.get(person_id) or line_name)
+
+        people = cases._by_id("persons", list(roles_by_person), "id,full_name")
+        return [{"person_id": pid,
+                 "name": (people.get(pid) or {}).get("full_name") or names.get(pid) or "",
+                 "roles": roles}
+                for pid, roles in roles_by_person.items()]
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        print(f"[signatures] required_signers failed: {exc}", file=sys.stderr)
+        return []
+
+
 # -- keeping and reading -----------------------------------------------------------
 
 def store(*, case_id: str, approval_id: str, person_id: str, revision: int,
