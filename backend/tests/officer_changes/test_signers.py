@@ -29,7 +29,9 @@ def db(monkeypatch):
     fake = FakeSupabase({
         "nar1_cases": [{"id": "C1", "entity_id": "E1", "form_code": "Nd2a",
                         "multi_signer": True, "client_approved": None,
-                        "closed_at": None}],
+                        "closed_at": None,
+                        "verification_sent_at": NOW.isoformat(),
+                        "verification_revision": 1}],
         "nar1_client_approvals": [],
         "officer_change_signatures": [],
         "persons": [{"id": "P1", "email": "jkoh@client.com"},
@@ -197,13 +199,36 @@ def test_role_label_follows_the_consent_role(db):
 
 
 def test_set_changed_when_the_live_board_differs_from_the_frozen_one(db, monkeypatch):
-    monkeypatch.setattr(signatures, "required_signers", lambda c: [KOH])
+    monkeypatch.setattr(signatures, "required_signers_strict", lambda c: [KOH])
     report = signers.state(_case())
     assert (report["frozen"], report["set_changed"], report["required"]) == (True, True, 2)
 
 
 def test_set_changed_is_false_when_the_boards_agree(db, monkeypatch):
-    monkeypatch.setattr(signatures, "required_signers", lambda c: list(reversed(FROZEN)))
+    monkeypatch.setattr(signatures, "required_signers_strict",
+                        lambda c: list(reversed(FROZEN)))
+    assert signers.state(_case())["set_changed"] is False
+
+
+def test_a_read_fault_is_not_reported_as_a_changed_board(db, monkeypatch, capsys):
+    """Review S4: `required_signers` answers [] to a fault, which compared with
+    the frozen set read as "the board has changed" and told the operator to
+    Restart verification -- discarding every collected signature."""
+    def boom(case):
+        raise RuntimeError("database is down")
+    monkeypatch.setattr(signatures, "required_signers_strict", boom)
+    report = signers.state(_case())
+    assert report["set_changed"] is False
+    assert report["required"] == 2
+    assert "could not compare the live board" in capsys.readouterr().err
+
+
+def test_a_fault_inside_the_real_live_read_is_not_a_changed_board(db, monkeypatch):
+    """Same thing end to end, through the real rule rather than a stub."""
+    def boom():
+        raise RuntimeError("down")
+    monkeypatch.setattr(signatures, "get_supabase", boom)
+    monkeypatch.setattr(cases, "get_supabase", boom)
     assert signers.state(_case())["set_changed"] is False
 
 
@@ -280,6 +305,13 @@ def test_latest_sends_skips_an_earlier_revision_and_a_row_without_deliveries(mon
     monkeypatch.setattr(signers, "get_supabase", lambda: _chain(rows))
     got = signers.latest_sends(_case(verification_revision=2))
     assert set(got) == {"P2"} and got["P2"]["message_id"] == "good"
+
+
+def test_latest_sends_skips_a_row_with_an_unreadable_revision(monkeypatch):
+    """Review N2: one bad row must not blank every signer's verdict."""
+    rows = [_audit("P1", "bad", revision="not-a-number"), _audit("P2", "good")]
+    monkeypatch.setattr(signers, "get_supabase", lambda: _chain(rows))
+    assert set(signers.latest_sends(_case())) == {"P2"}
 
 
 def test_latest_sends_never_raises(monkeypatch, capsys):
@@ -429,6 +461,64 @@ def test_a_fault_reading_the_round_reports_nothing_converged(db, capsys, monkeyp
     result = signers.record_signing(_case(), claimed)
     assert (result["converged"], result["won"]) == (False, False)
     assert "could not count the signatures" in capsys.readouterr().err
+
+
+def test_the_clock_is_the_last_signers_not_the_converging_requests(db):
+    """Review S3: P2 signed at 08:40, but P1's request (signed 08:31) is the one
+    that counted both and converged."""
+    first = _claimed(db, "P1", "2026-10-29T08:31:00+00:00")
+    _claimed(db, "P2", "2026-10-29T08:40:00+00:00")
+    result = signers.record_signing(_case(), first)
+    assert result["won"] is True
+    assert _case_row(db)["client_response_at"] == "2026-10-29T08:40:00+00:00"
+
+
+def test_an_open_round_with_no_frozen_set_never_converges(db, monkeypatch, capsys):
+    """Review S2: counting against the live rule would converge a case on fewer
+    signatures than were asked for if the board has shrunk since."""
+    monkeypatch.setattr(signatures, "required_signers", lambda c: [KOH])
+    claimed = _claimed(db, "P1", "2026-10-29T08:31:00+00:00")
+    result = signers.record_signing(_case(required_signers=None), claimed)
+    assert (result["converged"], result["won"], result["required"]) == (False, False, 0)
+    assert _case_row(db)["client_approved"] is None
+    assert "no frozen signer set" in capsys.readouterr().err
+
+
+def test_a_restart_between_the_count_and_the_write_cannot_be_overwritten(db):
+    """Review S1: Restart verification clears `verification_sent_at` and leaves
+    the revision alone. A handler that read the case before the restart still
+    counts both signatures and still matches `client_approved IS NULL`; unbound,
+    it would leave an approval on a change list reopened for editing."""
+    _claimed(db, "P1", "2026-10-29T08:31:00+00:00")
+    claimed = _claimed(db, "P2", "2026-10-29T08:40:00+00:00")
+    stale = _case()
+    _case_row(db).update({"verification_sent_at": None, "required_signers": None})
+    result = signers.record_signing(stale, claimed)
+    assert result["won"] is False
+    row = _case_row(db)
+    assert row["client_approved"] is None
+    assert row["verification_sent_at"] is None
+
+
+def test_a_restart_and_a_new_send_under_a_later_revision_is_not_converged_by_the_old_round(db):
+    _claimed(db, "P1", "2026-10-29T08:31:00+00:00")
+    claimed = _claimed(db, "P2", "2026-10-29T08:40:00+00:00")
+    stale = _case()
+    _case_row(db).update({"verification_sent_at": "2026-10-29T10:00:00+00:00",
+                          "verification_revision": 2})
+    assert signers.record_signing(stale, claimed)["won"] is False
+    assert _case_row(db)["client_approved"] is None
+
+
+def test_the_waiver_retry_is_bound_to_the_round_too(db):
+    _case_row(db).update({"client_approved": True,
+                          "client_approval_source": "staff_waiver"})
+    _claimed(db, "P1", "2026-10-29T08:31:00+00:00")
+    claimed = _claimed(db, "P2", "2026-10-29T08:40:00+00:00")
+    stale = _case(client_approved=True)
+    _case_row(db).update({"verification_sent_at": None})
+    assert signers.record_signing(stale, claimed)["won"] is False
+    assert _case_row(db)["client_approval_source"] == "staff_waiver"
 
 
 # -- nar1_approvals: per-person supersede and issue ---------------------------------

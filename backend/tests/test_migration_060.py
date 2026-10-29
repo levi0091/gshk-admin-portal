@@ -56,6 +56,16 @@ def test_the_check_keeps_the_mode_off_every_nar1_row():
             "CHECK (NOT multi_signer OR form_code IN ('Nd2a', 'Nd2b'))") in sql
 
 
+def test_the_constraint_can_be_added_twice():
+    """Review R1: columns use IF NOT EXISTS, so the constraint must too -- 050's
+    convention is DROP ... IF EXISTS and then ADD. A re-run after a partial or
+    manual apply must not fail."""
+    sql = _statements("upgrade")
+    drop = "DROP CONSTRAINT IF EXISTS nar1_cases_multi_signer_officer_change_only"
+    assert drop in sql
+    assert sql.index(drop) < sql.index("ADD CONSTRAINT nar1_cases_multi_signer_officer_change_only")
+
+
 def test_the_downgrade_drops_the_constraint_and_both_columns():
     sql = _statements("downgrade")
     assert ("DROP CONSTRAINT IF EXISTS nar1_cases_multi_signer_officer_change_only"

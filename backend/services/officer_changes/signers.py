@@ -184,8 +184,16 @@ def state(case: dict) -> dict:
     signed = sum(1 for s in out if s["status"] == "signed")
     set_changed = False
     if frozen:
-        live = {s["person_id"] for s in signatures.required_signers(case)}
-        set_changed = live != set(ids)
+        # The STRICT read: `required_signers` answers [] to a fault, and "the
+        # board has changed, restart" -- which discards every signature -- must
+        # never be inferred from a passing read error. A fault reads as unknown,
+        # which is reported as not changed.
+        try:
+            live = {s["person_id"] for s in signatures.required_signers_strict(case)}
+            set_changed = live != set(ids)
+        except Exception as exc:  # noqa: BLE001 — see the comment above
+            print(f"[signers] could not compare the live board with the frozen "
+                  f"one on case {(case or {}).get('id')}: {exc}", file=sys.stderr)
     return {
         "multi_signer": bool((case or {}).get("multi_signer")),
         "revision": revision,
@@ -231,8 +239,12 @@ def latest_sends(case: dict) -> dict[str, dict]:
             if not person or person in out or not deliveries:
                 continue
             sent = meta.get("revision")
-            if sent is not None and revision and int(sent) != revision:
-                continue
+            if sent is not None and revision:
+                try:
+                    if int(sent) != revision:
+                        continue
+                except (TypeError, ValueError):
+                    continue    # one unreadable row must not blank every verdict
             out[person] = deliveries[0]
         return out
     except Exception as exc:  # noqa: BLE001 — see the docstring
@@ -258,7 +270,15 @@ def record_signing(case: dict, claimed: dict) -> dict:
     result = {"signed": 0, "required": 0, "converged": False, "won": False,
               "approvals": []}
     try:
-        signers, _frozen = signer_set(case)
+        signers, frozen = signer_set(case)
+        if not frozen:
+            # Convergence counts against the set FROZEN at the first send and
+            # nothing else. Counting an open round against the live rule would
+            # let a board that shrank since converge the case on fewer
+            # signatures than were asked for.
+            print(f"[signers] no frozen signer set on case {(case or {}).get('id')}; "
+                  f"nothing to converge on", file=sys.stderr)
+            return result
         result["required"] = len(signers)
         rows = _approved(round_approvals(case))
         if (claimed and claimed.get("outcome") == nar1_approvals.OUTCOME_APPROVED
@@ -286,7 +306,10 @@ def record_signing(case: dict, claimed: dict) -> dict:
             if (r.get("recipient_name") or s.get("name")))
         payload = {
             "client_approved": True,
-            "client_response_at": (claimed or {}).get("responded_at") or _now(),
+            # The LAST signature's time, whichever request got here first: two
+            # directors pressing together can be counted by either handler.
+            "client_response_at": max(
+                (r.get("responded_at") or "" for r in approvals), default="") or _now(),
             "client_approval_source": nar1_approvals.SOURCE_SELF_SERVICE,
             "client_approval_name": names or None,
             # More than one person approved, so there is no single approver.
@@ -294,13 +317,22 @@ def record_signing(case: dict, claimed: dict) -> dict:
         }
         # `closed_at IS NULL` on both: a case closed while the last director was
         # drawing must not be marked approved by a press that raced the closure.
-        won = (get_supabase().table("nar1_cases").update(payload)
-               .eq("id", case["id"]).is_("closed_at", None)
+        #
+        # Both are BOUND TO THE ROUND THAT WAS COUNTED. Restart verification
+        # clears `verification_sent_at` and leaves the revision alone, so a
+        # handler that read the case before the restart would otherwise still
+        # match `client_approved IS NULL` and leave an approval sitting on a
+        # change list the operator has just reopened for editing.
+        def bound(query):
+            return (query.eq("id", case["id"]).is_("closed_at", None)
+                    .eq("verification_sent_at", case["verification_sent_at"])
+                    .eq("verification_revision", _revision(case)))
+
+        won = (bound(get_supabase().table("nar1_cases").update(payload))
                .is_("client_approved", None).execute().data)
         if not won:
             # An ND2B filed without confirmation is replaced by the real thing.
-            won = (get_supabase().table("nar1_cases").update(payload)
-                   .eq("id", case["id"]).is_("closed_at", None)
+            won = (bound(get_supabase().table("nar1_cases").update(payload))
                    .eq("client_approval_source", _WAIVER).execute().data)
         result["won"] = bool(won)
     except Exception as exc:  # noqa: BLE001 — see the docstring

@@ -29,7 +29,8 @@ WHY THE CHECK. NAR1 must behave exactly as it does today, and a NAR1 row that
 carried `multi_signer = true` would be the one way the new mode could leak onto
 that path. `CHECK (NOT multi_signer OR form_code IN ('Nd2a', 'Nd2b'))` makes it
 impossible rather than merely unexpected. Existing rows default to false and
-pass it. No view reads either column (the case view lists its columns
+pass it. The upgrade drops the constraint IF EXISTS before adding it, as 050
+does, so a re-run after a partial or manual apply succeeds. No view reads either column (the case view lists its columns
 explicitly), so none is restated, and no policy changes: the table's access
 rules are not this migration's business.
 
@@ -55,6 +56,8 @@ def upgrade() -> None:
         ALTER TABLE public.nar1_cases
           ADD COLUMN IF NOT EXISTS multi_signer boolean NOT NULL DEFAULT false,
           ADD COLUMN IF NOT EXISTS required_signers jsonb;
+        ALTER TABLE public.nar1_cases
+          DROP CONSTRAINT IF EXISTS nar1_cases_multi_signer_officer_change_only;
         ALTER TABLE public.nar1_cases
           ADD CONSTRAINT nar1_cases_multi_signer_officer_change_only
           CHECK (NOT multi_signer OR form_code IN ('Nd2a', 'Nd2b'));
