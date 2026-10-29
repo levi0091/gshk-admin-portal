@@ -606,14 +606,18 @@ def test_an_nd2a_page_names_the_form_and_the_resolution(client):
     assert "Written resolution of the directors" in listed
     assert "Written-Resolution-ND2A-2026-0001.pdf" in listed
     assert "<script" not in text.lower()
+    # Two documents, so the line above the list must not say "the form".
+    assert "against the documents attached to our email" in text
 
 
 def test_an_nd2b_page_names_the_form_only(client):
     nd2b = {**CASE, "case_no": "ND2B-2026-0001", "form_code": "Nd2b"}
     with _Stack(*_world(approval=row(), case=nd2b)):
-        listed = _confirming(client.get(ND2_PATH).text)
+        text = client.get(ND2_PATH).text
+    listed = _confirming(text)
     assert "Form ND2B" in listed and "ND2B-ND2B-2026-0001.pdf" in listed
     assert "resolution" not in listed.lower()
+    assert "against the form attached to our email" in text
 
 
 def test_the_list_is_above_the_warning_and_the_button(client):

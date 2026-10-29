@@ -549,7 +549,10 @@ def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no
     )
     return _render(title=f"Confirm Form {code}",
                    heading=f"Please confirm {what}",
-                   sub="Check the details below against the form attached to our email.",
+                   # An ND2A goes out with its written resolution: two documents.
+                   sub=("Check the details below against the documents attached to our email."
+                        if form_code == "Nd2a" else
+                        "Check the details below against the form attached to our email."),
                    body=body)
 
 
