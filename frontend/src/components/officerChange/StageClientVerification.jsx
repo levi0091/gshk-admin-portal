@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import PdfFrame, { usePdfBlob } from '../case/PdfPreview.jsx'
 import RecipientPicker from '../case/RecipientPicker.jsx'
 import VerificationDeliveryModal from '../case/VerificationDeliveryModal.jsx'
@@ -7,6 +7,7 @@ import ChangesCard from './ChangesCard.jsx'
 import ParticularsChangeCard from './ParticularsChangeCard.jsx'
 import RulesPanel from './RulesPanel.jsx'
 import AttachmentsCard from './AttachmentsCard.jsx'
+import SignerPanels from './SignerPanels.jsx'
 import CloseCaseModal from '../case/CloseCaseModal.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
@@ -48,6 +49,13 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
   const [closing, setClosing] = useState(false)
+  // "Multiple directors must sign" (spec nd2-multi-signer). Off, the stage is
+  // exactly what it was. On, one panel per required signer replaces the single
+  // recipient picker and send, and the case waits for all of them.
+  const multi = Boolean(data.multi_signer)
+  const [signerState, setSignerState] = useState(null)
+  const [signerError, setSignerError] = useState(false)
+  const [toggling, setToggling] = useState(false)
   const [waiving, setWaiving] = useState(false)
   const [waiveReason, setWaiveReason] = useState('')
   const noDirector = data.form_code === 'Nd2a' && Array.isArray(data.rules?.board?.directors)
@@ -77,13 +85,45 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.id, (data.entries || []).length])
 
+  // The signers are read whatever the option is set to: the toggle needs the
+  // count to know whether turning it on is possible at all. Re-read when a
+  // send, a restart, an answer or the option itself moves the round, and when
+  // a change is added or removed (an incoming director is a new signer). A
+  // late reply from an earlier request must not overwrite a newer one.
+  const signerRequest = useRef(0)
+  const refreshSigners = useCallback(async () => {
+    const mine = ++signerRequest.current
+    try {
+      const next = await officerChangeApi.signers(data.id)
+      if (mine !== signerRequest.current) return
+      setSignerState(next && Array.isArray(next.signers) ? next : null)
+      setSignerError(!(next && Array.isArray(next.signers)))
+    } catch {
+      if (mine === signerRequest.current) setSignerError(true)
+    }
+  }, [data.id])
+  useEffect(() => {
+    refreshSigners()
+    return () => { signerRequest.current += 1 }
+  }, [refreshSigners, data.verification_revision, data.client_approved, data.multi_signer,
+    (data.entries || []).length])
+
   const problems = data.problems || []
-  const blocked = data.rules?.blocking
+  const formBlocked = data.rules?.blocking
     ? 'A company rule is breached — see the rules below.'
     : !(data.entries || []).length ? 'Add at least one change first.'
       : problems.length ? 'The form cannot be prepared yet — see the list below.'
-        : !respondBy ? 'Choose the date the client should reply by.'
-          : !to.length ? 'Add at least one recipient.' : null
+        : !respondBy ? 'Choose the date the client should reply by.' : null
+  const blocked = formBlocked || (!to.length ? 'Add at least one recipient.' : null)
+  const required = typeof signerState?.required === 'number' ? signerState.required : null
+  const converged = multi && Boolean(signerState?.converged)
+
+  async function toggleMulti(next) {
+    setError(null); setToggling(true)
+    try { await reload(await officerChangeApi.patch(data.id, { multi_signer: next })) }
+    catch (e) { setError(errorOf(e)) }
+    finally { setToggling(false) }
+  }
 
   async function send() {
     setError(null); setSending(true); setResult(null)
@@ -114,6 +154,17 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
     try { await reload(await officerChangeApi.recordResponse(data.id, { approved })) }
     catch (e) { setError(errorOf(e)) }
   }
+
+  const replyByField = (
+    <div className="f-group">
+      <label className="f-label" htmlFor="oc-reply-by">Reply by <span className="f-req">*</span></label>
+      <input id="oc-reply-by" type="date" className="f-input" value={respondBy}
+             onChange={e => { setRespondByTouched(true); setRespondBy(e.target.value) }} />
+      {data.deadline?.date && (
+        <div className="f-hint">CR's deadline is {formatDate(data.deadline.date)}.</div>
+      )}
+    </div>
+  )
 
   return (
     <>
@@ -202,21 +253,45 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
           </div>
         )}
 
-        {can.write && !sent && (
+        {(can.write || multi) && (
+          // The option sits ABOVE the send controls and outlives the send: after
+          // the first email it stays on screen, disabled, saying how to change it.
+          <div className="oc-multi">
+            <label className="oc-multi-opt">
+              <input type="checkbox" checked={multi} aria-describedby="oc-multi-hint"
+                     disabled={!can.write || toggling || sent || (!multi && required === 0)}
+                     onChange={e => toggleMulti(e.target.checked)} />
+              <span>Multiple directors must sign</span>
+            </label>
+            <div className="f-hint" id="oc-multi-hint">
+              {multi
+                ? 'Each director below gets their own email and signs separately. The case moves on only when all of them have signed.'
+                : required === 0 ? 'No director on this form has a box to sign.'
+                  : required > 0
+                    ? `Off: one email goes to the recipients you choose, and the first confirmation counts. On: each of the ${required} director${required === 1 ? '' : 's'} who sign${required === 1 ? 's' : ''} this form gets their own email.`
+                    : 'Off: one email goes to the recipients you choose, and the first confirmation counts.'}
+            </div>
+            {sent && <div className="f-hint">Restart verification to change this.</div>}
+          </div>
+        )}
+
+        {multi && can.write && !converged && (
+          <div className="oc-send-row">{replyByField}</div>
+        )}
+        {multi && (
+          <SignerPanels data={data} state={signerState} loadError={signerError} can={can}
+                        respondBy={respondBy} blocked={formBlocked} nextRevision={nextRevision}
+                        refresh={refreshSigners} reload={reload} goTo={goTo} />
+        )}
+
+        {!multi && can.write && !sent && (
           <>
             <div style={{ marginTop: 12 }}>
               <RecipientPicker recipients={recipients || []} to={to} onChange={setTo}
                                disabled={sending || recipients === null} />
             </div>
             <div className="oc-send-row">
-              <div className="f-group">
-                <label className="f-label" htmlFor="oc-reply-by">Reply by <span className="f-req">*</span></label>
-                <input id="oc-reply-by" type="date" className="f-input" value={respondBy}
-                       onChange={e => { setRespondByTouched(true); setRespondBy(e.target.value) }} />
-                {data.deadline?.date && (
-                  <div className="f-hint">CR's deadline is {formatDate(data.deadline.date)}.</div>
-                )}
-              </div>
+              {replyByField}
               <button className="btn btn-primary" disabled={Boolean(blocked) || sending} onClick={send}>
                 {sending ? 'Sending…' : 'Send to client'}
               </button>
@@ -236,8 +311,12 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
 
         {can.write && sent && data.client_approved == null && (
           <div className="oc-send-row">
-            <span className="f-hint">Client answered by email or phone?</span>
-            <button className="btn btn-outline" onClick={() => answer(true)}>Client approved</button>
+            <span className="f-hint">
+              {multi ? 'Client asked for changes by email or phone?' : 'Client answered by email or phone?'}
+            </span>
+            {/* "Approved" on a relayed reply would converge the case without the
+                signatures the option exists to collect (spec §2.4). */}
+            {!multi && <button className="btn btn-outline" onClick={() => answer(true)}>Client approved</button>}
             <button className="btn btn-outline" onClick={() => answer(false)}>Client declined</button>
             {nd2b && (
               // Jacqueline BQ1: "We usually submit the ND2B even if the client has
@@ -249,7 +328,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
           </div>
         )}
 
-        {data.client_approved === true && (
+        {data.client_approved === true && !converged && (
           <div className="oc-send-row">
             <button className="btn btn-primary" onClick={() => goTo(2)}>Continue to Data Verification →</button>
           </div>
