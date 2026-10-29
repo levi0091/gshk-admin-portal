@@ -38,7 +38,7 @@ def test_055_revises_054_and_057_follows_it():
     m = _migration()
     assert (m.revision, m.down_revision) == ("055", "054")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["059"]
+    assert script.get_heads() == ["060"]
     assert script.get_revision("057").down_revision == "055"
 
 
