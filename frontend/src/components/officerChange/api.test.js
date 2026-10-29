@@ -48,6 +48,12 @@ describe('officerChangeApi', () => {
     ['recipients', () => oc.recipients('c1'), 'get', '/officer-changes/c1/verification/recipients'],
     ['send', () => oc.send('c1', {}), 'post', '/officer-changes/c1/verification/send'],
     ['delivery', () => oc.delivery('c1'), 'get', '/officer-changes/c1/verification/delivery'],
+    ['signers', () => oc.signers('c1'), 'get', '/officer-changes/c1/verification/signers'],
+    ['sendToSigner', () => oc.sendToSigner('c1', 'p9', { email: 'a@b.co', respond_by: '2026-11-03' }), 'post',
+      '/officer-changes/c1/verification/signers/p9/send'],
+    ['signers', () => oc.signers('c1'), 'get', '/officer-changes/c1/verification/signers'],
+    ['sendToSigner', () => oc.sendToSigner('c1', 'p9', { email: 'a@b.co', respond_by: '2026-11-03' }), 'post',
+      '/officer-changes/c1/verification/signers/p9/send'],
     ['recordResponse', () => oc.recordResponse('c1', {}), 'post', '/officer-changes/c1/verification/response'],
     ['validate', () => oc.validate('c1'), 'post', '/officer-changes/c1/validate'],
     ['markChecked', () => oc.markChecked('c1'), 'post', '/officer-changes/c1/mark-checked'],
@@ -112,6 +118,19 @@ describe('officerChangeApi — bodies added for Jacqueline\'s feedback', () => {
       { signing_method: 'esign' })
     await oc.markChecked('c1')
     expect(api.post).toHaveBeenLastCalledWith('/officer-changes/c1/mark-checked', {})
+  })
+})
+
+describe('officerChangeApi — one send per director (nd2-multi-signer)', () => {
+  it('posts the single address and the shared reply-by date to the signer\'s own route', async () => {
+    await oc.sendToSigner('c1', 'p9', { email: 'jkoh@client.com', respond_by: '2026-11-03' })
+    expect(api.post).toHaveBeenLastCalledWith('/officer-changes/c1/verification/signers/p9/send',
+      { email: 'jkoh@client.com', respond_by: '2026-11-03' })
+  })
+
+  it('flips the option through the ordinary patch, not a route of its own', async () => {
+    await oc.patch('c1', { multi_signer: true })
+    expect(api.patch).toHaveBeenLastCalledWith('/officer-changes/c1', { multi_signer: true })
   })
 })
 

@@ -220,3 +220,37 @@ label.oc-check-main { cursor: pointer; }
 .oc-consent-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .oc-consent-main .badge { margin-left: auto; }
 .oc-consent-error { margin-top: 6px; font-size: 12.5px; color: var(--t-head); overflow-wrap: anywhere; }
+
+/* -- "Multiple directors must sign": one panel per signer (nd2-multi-signer) ------------------
+ * Brand tokens only. Signed is --bang and a failed delivery is --carrot, the same
+ * pair the stepper and the delivery splash already use; nothing else is coloured. */
+.oc-multi { margin-top: 12px; padding: 10px 12px; border-radius: var(--r); background: var(--indigo-5); }
+.oc-multi-opt {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 13.5px; font-weight: 600; color: var(--t-head);
+}
+.oc-multi-opt input { width: 16px; height: 16px; margin: 0; accent-color: var(--indigo); }
+.oc-multi-opt input:disabled { cursor: not-allowed; }
+.oc-multi .f-hint { margin: 4px 0 0 24px; font-size: 12px; }
+
+.oc-signers { margin-top: 4px; }
+.oc-signer-list { display: grid; gap: 12px; margin-top: 12px; }
+.oc-signer {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 14px 16px; box-shadow: var(--sh-sm);
+}
+.oc-signer[data-status="signed"] { border-color: #CFE3DA; background: var(--bang-10); }
+.oc-signer-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.oc-signer-name { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--t-head); overflow-wrap: anywhere; }
+.oc-signer-status { font-size: 13px; color: var(--t-body); }
+.oc-signer-status.is-signed { color: var(--bang); font-weight: 600; }
+.oc-signer-status.is-bad { color: var(--carrot); font-weight: 600; }
+.oc-signer-meta { margin-top: 4px; font-size: 12.5px; color: var(--t-muted); overflow-wrap: anywhere; }
+.oc-signer-meta-warn { color: #8A3B12; }
+.oc-signer-act { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.oc-signers-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin-top: 12px; padding: 10px 14px; border-radius: var(--r);
+  border: 1px dashed var(--indigo-20); font-size: 13px; font-weight: 600; color: var(--t-head);
+}
+.oc-signers-foot.is-done { border-style: solid; border-color: #CFE3DA; background: var(--bang-10); color: var(--bang); }
