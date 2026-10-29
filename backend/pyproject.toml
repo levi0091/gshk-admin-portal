@@ -24,6 +24,7 @@ dependencies = [
     # --no-dev would have shipped an image whose client-verification send
     # raised ImportError on the first real use.
     "pypdf>=6.16.1",
+    "pillow>=12.3.0",
 ]
 
 [dependency-groups]

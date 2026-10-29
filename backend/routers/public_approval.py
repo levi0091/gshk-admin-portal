@@ -33,6 +33,11 @@ that there is no vulnerability to exploit"):
     which is why the form posts to the same path the browser is already on.
   * The only accepted POST body is empty. There is no field to supply, so there
     is nothing to inject. FastAPI parses no body here at all.
+    ONE EXCEPTION (e-signature-nd2, Levi 2026-10-29): on the ND2A / ND2B page, a
+    DIRECTOR's POST carries one field, `signature`, a drawn PNG. It is read from
+    the raw stream under a 300 KB cap (never the framework's form parser),
+    validated by `signatures.decode` BEFORE the claim, and kept only after the
+    claim wins. Every other POST on every page is still bodyless.
   * The token is read from the PATH and validated as an opaque URL-safe string
     before it reaches the database layer.
   * Rate-limited per token and per source IP.
@@ -48,12 +53,14 @@ import re
 import sys
 import time
 from collections import defaultdict
+from urllib.parse import parse_qs
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 
 from services import audit_events as ev, nar1_approvals, nar1_cases
+from services.officer_changes import signatures
 from services.audit_service import log_event
 # ONE OWNER FOR THE ADDRESS. The verification email tells the client that
 # replies are not monitored and to write to this mailbox instead; a page that
@@ -217,6 +224,16 @@ _PAGE = """<!doctype html>
   .warn-t {{ margin:0; font-size:15px; color:#3A4060; }}
   .warn-foot {{ display:flex; justify-content:flex-end; padding:14px 22px;
                border-top:1px solid #E2E4ED; background:#FAFBFD; }}
+  button:disabled {{ opacity:.45; cursor:not-allowed; }}
+  button.ghost {{ background:#fff; color:#3A4060; border:1px solid #E2E4ED;
+                 padding:8px 16px; font-size:14px; }}
+  .sig {{ margin:0 0 20px; }}
+  .sig-pad {{ display:block; width:100%; height:auto; aspect-ratio:3/1;
+             background:#fff; border:1px solid #E2E4ED; border-radius:8px;
+             touch-action:none; cursor:crosshair; }}
+  .sig-bar {{ display:flex; justify-content:space-between; align-items:center;
+             gap:12px; margin-top:8px; }}
+  .sig-bar p {{ margin:0; font-size:13px; color:#7C80A3; }}
   .note {{ margin-top:18px; font-size:13px; color:#7C80A3; }}
   .done {{ padding:14px 16px; border-radius:8px; background:#E6F1ED;
           color:#027248; font-weight:600; }}
@@ -519,9 +536,111 @@ _FORM_TITLES = {"Nd2a": ("ND2A", "the change of company secretary and directors"
                 "Nd2b": ("ND2B", "the change in particulars of your company officers")}
 
 
+#: The drawing pad's script. INLINE, SELF-CONTAINED, NO NETWORK: it draws on a
+#: <canvas> with Pointer Events and, on submit, writes the PNG data URL into the
+#: hidden `signature` field of the form that is already there. It is the only
+#: script this route has ever served, and it is served only to a director who has
+#: a box to sign (`signatures.must_sign`); the NAR1 page and every other ND2 page
+#: still run none. `test_a_directors_page_runs_the_pad_and_nothing_else` pins it.
+#:
+#: Nothing here may reach the network, and it touches only the five ids below.
+_PAD_SCRIPT = """(function () {
+  var panel = document.getElementById('sigpanel');
+  var canvas = document.getElementById('sigpad');
+  var field = document.getElementById('sigdata');
+  var go = document.getElementById('sigok');
+  var clear = document.getElementById('sigclear');
+  if (!panel || !canvas || !field || !go || !clear) { return; }
+  if (!canvas.getContext || !window.PointerEvent) {
+    panel.textContent = 'Signing needs a newer browser. Please use a current ' +
+      'version of Chrome, Safari, Edge or Firefox.';
+    panel.hidden = false;
+    return;
+  }
+  var ctx = canvas.getContext('2d');
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#1A2050';
+  var drawing = false;
+  var inked = false;
+  function at(e) {
+    var r = canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * canvas.width / r.width,
+             y: (e.clientY - r.top) * canvas.height / r.height };
+  }
+  canvas.addEventListener('pointerdown', function (e) {
+    drawing = true;
+    canvas.setPointerCapture(e.pointerId);
+    var p = at(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x + 0.1, p.y + 0.1);
+    ctx.stroke();
+    if (!inked) { inked = true; go.disabled = false; }
+    e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    if (!drawing) { return; }
+    var p = at(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    e.preventDefault();
+  });
+  function lift() { drawing = false; }
+  canvas.addEventListener('pointerup', lift);
+  canvas.addEventListener('pointercancel', lift);
+  clear.addEventListener('click', function () {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    inked = false;
+    go.disabled = true;
+    field.value = '';
+  });
+  // A <canvas> is not a form control and has no `.form`; the hidden input is.
+  field.form.addEventListener('submit', function (e) {
+    if (!inked) { e.preventDefault(); return; }
+    field.value = canvas.toDataURL('image/png');
+  });
+  panel.hidden = false;
+})();"""
+
+#: Said on the ask page when the drawing could not be used, whatever the reason.
+#: One fixed sentence: the page does not tell an unauthenticated caller which of
+#: the checks it failed.
+_SIGNATURE_RETRY = "We could not read your signature. Please draw it again."
+
+
+def _signature_panel(form_code: str, error: str = "") -> str:
+    """The "Your signature" panel, ABOVE the warning and the button.
+
+    The pad is hidden until the script runs, so without script the director sees
+    the <noscript> note instead and the button (rendered disabled) cannot be
+    pressed. The canvas is a fixed 600 x 200 whatever the screen, far inside the
+    server's 1600 x 600 limit, and it keeps a phone's pixel ratio from inflating
+    the upload.
+    """
+    on = ("the form and the written resolution" if form_code == "Nd2a"
+          else "the form")
+    return (
+        '<div class="sig"><p class="conf-h">Your signature</p>'
+        + (f'<p class="stop">{html.escape(error)}</p>' if error else "")
+        + '<noscript><p class="stop">Signing needs JavaScript. Turn it on, or '
+          f"reply to {html.escape(RENEWAL_MAILBOX)}.</p></noscript>"
+        '<div id="sigpanel" hidden>'
+        '<canvas id="sigpad" class="sig-pad" width="600" height="200" '
+        'role="img" aria-label="Signature drawing area"></canvas>'
+        '<input type="hidden" name="signature" id="sigdata" value="">'
+        '<div class="sig-bar"><p>Draw your signature. It will be printed on '
+        f"{on} listed above where a director signs.</p>"
+        '<button type="button" class="ghost" id="sigclear">Clear</button></div>'
+        "</div></div>"
+    )
+
+
 def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no: str,
                         deadline: str, revision: str = "",
-                        documents=()) -> HTMLResponse:
+                        documents=(), sign: bool = False,
+                        signature_error: str = "") -> HTMLResponse:
     code, what = _FORM_TITLES.get(form_code, _FORM_TITLES["Nd2a"])
     # "Revision" from Rev. 2 only, exactly as NAR1's page (`_ask`).
     rows = [("Company", company), ("Business Registration No.", br_number),
@@ -532,20 +651,27 @@ def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no
     body = (
         f"<dl>{ledger}</dl>"
         f"{_confirming(documents)}"
-        '<form method="post"><div class="warn">'
+        '<form method="post">'
+        + (_signature_panel(form_code, signature_error) if sign else "")
+        + '<div class="warn">'
         f'<div class="warn-top"><div class="warn-ico">{_WARNING_MARK}</div>'
         '<div><p class="warn-h">Warning</p>'
         '<p class="warn-t">By clicking <strong>Confirm &amp; File</strong>, you '
         f"confirm that you have reviewed the draft Form {code} and that the changes "
         "it reports are correct. It will then be arranged for submission to the "
         "Companies Registry without further confirmation.</p></div></div>"
-        '<div class="warn-foot"><button type="submit">Confirm &amp; File</button>'
+        # Disabled until something is drawn; with no script it stays disabled,
+        # which the <noscript> note above says.
+        '<div class="warn-foot"><button type="submit"'
+        + (' id="sigok" disabled' if sign else "")
+        + ">Confirm &amp; File</button>"
         "</div></div></form>"
         '<p class="note">If anything is wrong, do not press Confirm &amp; File '
         f"— email {html.escape(RENEWAL_MAILBOX)} instead and tell us what needs "
         "changing."
         + (f" Please let us know by {html.escape(deadline)}." if deadline else "")
         + "</p>"
+        + (f"<script>{_PAD_SCRIPT}</script>" if sign else "")
     )
     return _render(title=f"Confirm Form {code}",
                    heading=f"Please confirm {what}",
@@ -571,25 +697,102 @@ def _confirmed_officer_change(case: dict):
     return page
 
 
+def _officer_change_ask(case: dict, entity: dict, row: dict, error: str = "") -> HTMLResponse:
+    """The ND2A / ND2B page for this link: with the drawing pad when the person
+    it was issued to is a director with a box to sign, today's page otherwise.
+
+    Decided HERE, on the server, from the link's own `person_id` — never from
+    anything the browser sent — and decided again on the POST.
+    """
+    return _ask_officer_change(
+        company=entity.get("company_name") or "",
+        br_number=entity.get("br_number") or "",
+        form_code=case.get("form_code"), case_no=case.get("case_no") or "",
+        deadline=_hkt(row.get("expires_at")),
+        revision=revision_label(row.get("revision")),
+        documents=confirmed_documents(case, row),
+        sign=signatures.must_sign(case, row.get("person_id")),
+        signature_error=error)
+
+
 @router.get("/officer-change-approval/{token}", response_class=HTMLResponse)
 async def show_officer_change_approval(token: str, request: Request):
     """WRITES NOTHING, exactly as the NAR1 page."""
-    return await _show(
-        token, request, forms=_OFFICER_CHANGE_FORMS,
-        ask=lambda case, entity, row: _ask_officer_change(
-            company=entity.get("company_name") or "",
-            br_number=entity.get("br_number") or "",
-            form_code=case.get("form_code"), case_no=case.get("case_no") or "",
-            deadline=_hkt(row.get("expires_at")),
-            revision=revision_label(row.get("revision")),
-            documents=confirmed_documents(case, row)))
+    return await _show(token, request, forms=_OFFICER_CHANGE_FORMS,
+                       ask=_officer_change_ask)
+
+
+#: A POST carrying more than this is refused before it is parsed. The decoded
+#: signature is capped at 200 KB (about 267 KB as base64); the rest of the form
+#: is one short field. Starlette puts no limit of its own on an urlencoded body.
+_MAX_POST_BYTES = 300 * 1024
+
+
+class _Signature:
+    """What the signature policy decided about one POST."""
+
+    def __init__(self, required: bool, png: bytes | None = None):
+        self.required = required
+        self.png = png
+
+    @property
+    def refused(self) -> bool:
+        return self.required and self.png is None
+
+
+async def _read_signature_field(request: Request) -> str | None:
+    """The `signature` form field, reading at most `_MAX_POST_BYTES`.
+
+    Reads the raw stream under a cap instead of calling the framework's form
+    parser, which would buffer whatever an unauthenticated caller sends. None
+    when the body is over the cap, malformed or has no such field.
+    """
+    declared = request.headers.get("content-length")
+    try:
+        if declared is not None and int(declared) > _MAX_POST_BYTES:
+            return None
+    except ValueError:
+        return None
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > _MAX_POST_BYTES:
+            return None
+    try:
+        fields = parse_qs(bytes(body).decode("ascii"), keep_blank_values=True,
+                          max_num_fields=10)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    values = fields.get("signature") or []
+    return values[0] if values else None
+
+
+async def _officer_change_signature(request: Request, row: dict, case: dict) -> _Signature:
+    """Validate the drawn signature BEFORE the claim (spec section 3).
+
+    Not required of anybody `must_sign` says has no box. For a director it must
+    be a readable drawing with ink on it: the claim cannot be undone, so a
+    confirmation that arrives without one is answered with the page again and
+    nothing is recorded.
+    """
+    if not signatures.must_sign(case, row.get("person_id")):
+        return _Signature(required=False)
+    field = await _read_signature_field(request)
+    try:
+        return _Signature(required=True, png=signatures.decode(field))
+    except signatures.SignatureError as exc:
+        print(f"[public_approval] signature refused on case {case.get('id')}: {exc}",
+              file=sys.stderr)
+        return _Signature(required=True)
 
 
 @router.post("/officer-change-approval/{token}", response_class=HTMLResponse)
 async def record_officer_change_approval(token: str, request: Request,
                                          background: BackgroundTasks):
     return await _record(token, request, forms=_OFFICER_CHANGE_FORMS,
-                         confirmed=None, background=background)
+                         confirmed=None, background=background,
+                         ask=_officer_change_ask,
+                         signature_policy=_officer_change_signature)
 
 
 def _earlier_revision(row: dict, case: dict, forms) -> HTMLResponse | None:
@@ -641,8 +844,12 @@ async def _show(token: str, request: Request, *, forms, ask) -> HTMLResponse:
 
 
 async def _record(token: str, request: Request, *, forms, confirmed,
-                  background: BackgroundTasks | None = None) -> HTMLResponse:
-    """The only mutating half. Takes NO body — there is nothing to supply."""
+                  background: BackgroundTasks | None = None,
+                  ask=None, signature_policy=None) -> HTMLResponse:
+    """The only mutating half. Takes NO body — there is nothing to supply —
+    except on the officer-change route for a director, whose `signature_policy`
+    reads the one drawn-signature field (capped) and whose `ask` re-draws the
+    page when it cannot be used."""
     resolved = _resolve(token, request, forms)
     if resolved is None:
         return _unavailable(_miss_for(forms))
@@ -670,6 +877,13 @@ async def _record(token: str, request: Request, *, forms, confirmed,
     if settled is not None:
         return settled
 
+    # THE SIGNATURE IS CHECKED BEFORE THE CLAIM, because the claim cannot be
+    # undone. A director who pressed Confirm & File without a usable drawing is
+    # shown the page again with one sentence, and nothing is recorded.
+    drawn = signature_policy and await signature_policy(request, row, case)
+    if drawn and drawn.refused:
+        return ask(case, _entity_or_empty(case), row, _SIGNATURE_RETRY)
+
     # FIRST APPROVAL WINS, settled by Postgres. The condition travels with the
     # UPDATE, so two directors pressing in the same second cannot both record a
     # decision on one return — and audit_log is insert-only, so a second row
@@ -685,6 +899,12 @@ async def _record(token: str, request: Request, *, forms, confirmed,
 
     name = claimed.get("recipient_name") or row.get("recipient_name")
     responded = claimed.get("responded_at")
+
+    # Kept only now, past the claim: a lost race, a stale link or a replay never
+    # leaves a signature behind. The image is never put in the audit row below —
+    # only whether one was captured, and its id.
+    signature = (_keep_signature(drawn, case, row, claimed)
+                 if drawn and drawn.required else None)
 
     try:
         nar1_cases.update_case(case["id"], {
@@ -737,6 +957,8 @@ async def _record(token: str, request: Request, *, forms, confirmed,
             # Which emailed revision the director confirmed. NULL for a link
             # issued before migration 051.
             "revision": claimed.get("revision", row.get("revision")),
+            # Only on a link that was asked for a signature.
+            **({"signature": signature} if signature is not None else {}),
         },
     )
 
@@ -749,6 +971,30 @@ async def _record(token: str, request: Request, *, forms, confirmed,
 
     page = confirmed or _confirmed_officer_change(case)
     return page(entity.get("company_name") or "")
+
+
+def _keep_signature(drawn, case: dict, row: dict, claimed: dict) -> dict:
+    """Store the drawing for the approval that just won; `{"captured": ...}`.
+
+    One retry: the claim cannot be undone, so a transient fault here must not
+    cost the director their signature when a second attempt would have kept it.
+    If both fail the confirmation still stands (the director did confirm), the
+    audit row says `captured: false`, and nothing is printed for that person.
+    """
+    revision = claimed.get("revision", row.get("revision"))
+    if revision is None:
+        revision = nar1_approvals.current_revision(case)
+    for attempt in (1, 2):
+        try:
+            saved = signatures.store(
+                case_id=case["id"], approval_id=claimed["id"],
+                person_id=claimed.get("person_id") or row.get("person_id"),
+                revision=int(revision), png=drawn.png)
+            return {"captured": True, "signature_id": saved.get("id")}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[public_approval] signature store failed (attempt {attempt}) on "
+                  f"case {case.get('id')}: {exc}", file=sys.stderr)
+    return {"captured": False}
 
 
 def _entity_or_empty(case: dict) -> dict:
