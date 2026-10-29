@@ -39,6 +39,8 @@ predates v1.0.14 (no AESGCMEncryptionKey tag) and gives no plaintext password,
 so it cannot be reproduced. Correctness is proven by a live verifyPinSigning.
 """
 import base64
+import binascii
+import html
 import os
 import re
 import secrets as pysecrets
@@ -186,7 +188,21 @@ def signing_public_key_pem(validated_xml: str) -> str:
             "no <ds:X509Certificate> in the validated payload; CR did not sign "
             "this response, so there is no key to encrypt the signature to"
         )
-    der = base64.b64decode(re.sub(r"\s+", "", match.group(1)))
+    # Since 2026-10-26 CR wraps this base64 at 76 characters with "&#13;" and
+    # a newline (Santuario's line-breaking); until then it was one line.
+    # Stripping whitespace alone left "&#13;" in, a lenient b64decode dropped
+    # "&#;" but KEPT "13", and the DER came out corrupt at the issuer -- an
+    # asn1 ParseError that named nothing. So resolve character references
+    # first (decimal and hex alike), then decode strictly: a stray character
+    # now fails here, naming the certificate, instead of as garbage DER.
+    text = re.sub(r"\s+", "", html.unescape(match.group(1)))
+    try:
+        der = base64.b64decode(text, validate=True)
+    except binascii.Error as exc:
+        raise ValueError(
+            f"<ds:X509Certificate> in the validated payload is not valid "
+            f"base64 ({exc}); CR's signing certificate cannot be read"
+        ) from exc
     public_key = x509.load_der_x509_certificate(der).public_key()
     return public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
