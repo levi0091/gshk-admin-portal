@@ -670,21 +670,32 @@ def test_composite_lists_missing_dates(db, nd2a, monkeypatch):
 
 
 def test_composite_carries_the_manual_checks(db, nd2a, monkeypatch):
+    """KYC only: a cessation raises no resignation-letter check any more
+    (Levi 2026-10-29)."""
     monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
     cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",
                            "cessation_reason": "R"}, user_id="U1")
+    assert asyncio.run(cases.composite(nd2a["id"], user=USER))["manual_checks"] == []
+    cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                           "person_id": "P9", "capacity": "director"}, user_id="U1")
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
-    assert [c["code"] for c in data["manual_checks"]] == ["resignation_letter"]
-    assert data["manual_checks"][0]["label"] == "Resignation letter on file — CHAN Tai Man"
+    assert [c["code"] for c in data["manual_checks"]] == ["kyc"]
+    assert data["manual_checks"][0]["label"] == "KYC / WorldCheck cleared — HO New"
 
 
-def test_manual_checks_open_names_the_leaver(db, nd2a, monkeypatch):
+def test_a_cessation_no_longer_blocks_leaving_data_verification(db, nd2a, monkeypatch):
     monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
     cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",
                            "cessation_reason": "R"}, user_id="U1")
-    assert cases.manual_checks_open(nd2a, route="manual") == [
-        "Resignation letter on file — CHAN Tai Man"]
+    assert cases.manual_checks_open(nd2a, route="manual") == []
 
+
+def test_manual_checks_open_names_an_uncleared_appointee(db, nd2a, monkeypatch):
+    monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
+    cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                           "person_id": "P9", "capacity": "director"}, user_id="U1")
+    assert cases.manual_checks_open(nd2a, route="manual") == [
+        "KYC / WorldCheck cleared — HO New"]
 
 
 def test_composite_says_how_each_new_director_consents(db, nd2a, monkeypatch):
@@ -863,3 +874,114 @@ def test_composite_consents_carry_their_status(db, nd2a, monkeypatch):
     data = asyncio.run(cases.composite(nd2a["id"], user=USER))
     row = data["route"]["consents"][0]
     assert row["status"] == "error" and row["error"] == "ERR_PIN: Invalid signing password"
+
+
+# -- mark_maintenance (PRD nd2-change-requests §4, review B1) ----------------------
+
+def _keys(entry):
+    return [i["key"] for i in entry["items"]]
+
+
+def _entry_with_two_changes(db, nd2b):
+    """CHAN's email AND surname differ from CR's last-known particulars."""
+    db.tables["persons"][0]["surname"] = "WONG"
+    return cases.add_entry(nd2b, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+
+
+def _stored_entry(db, entry_id):
+    return next(r for r in db.rows("officer_change_entries") if r["id"] == entry_id)
+
+
+def test_maintenance_moves_one_items_baseline_and_the_line_leaves_the_entry(db, nd2b):
+    entry = _entry_with_two_changes(db, nd2b)
+    assert set(_keys(entry)) == {"email", "name_en"}
+
+    done = cases.mark_maintenance(nd2b, entry["id"], "email", user_id="U1")
+
+    assert done["item"]["key"] == "email" and done["item"]["label"]
+    # The REAL refresh_items ran: the stored entry no longer carries the line, so
+    # apply._apply_change cannot file it.
+    assert _keys(_stored_entry(db, entry["id"])) == ["name_en"]
+    held = particulars.baseline("E1", person_id="P1")
+    assert held["email"] == "new@example.com"
+    assert held["name_en"]["surname"] == "CHAN"          # the other line is untouched
+    assert [r["source"] for r in db.rows("officer_cr_particulars")] == ["dismissed"]
+    assert _keys({"items": particulars.pending_for_officer(
+        "E1", person_id="P1", capacity="director")}) == ["name_en"]
+
+
+def test_a_line_that_was_omitted_first_can_still_be_marked(db, nd2b):
+    """`advance` skips an item flagged omitted, and the stored entry item is
+    omitted whenever the operator used Omit first. The route must hand it the
+    FRESH item, or the baseline would not move and the call would do nothing."""
+    entry = _entry_with_two_changes(db, nd2b)
+    cases.update_entry(nd2b, entry["id"], {"items": [
+        {"key": "email", "omitted": True}]}, user_id="U1")
+    assert next(i for i in _stored_entry(db, entry["id"])["items"]
+                if i["key"] == "email")["omitted"] is True
+
+    cases.mark_maintenance(nd2b, entry["id"], "email", user_id="U1")
+
+    assert particulars.baseline("E1", person_id="P1")["email"] == "new@example.com"
+    assert _keys(_stored_entry(db, entry["id"])) == ["name_en"]
+
+
+def test_other_lines_keep_their_dates_and_omissions(db, nd2b):
+    entry = _entry_with_two_changes(db, nd2b)
+    cases.update_entry(nd2b, entry["id"], {"items": [
+        {"key": "name_en", "effective_date": "2026-09-25", "omitted": True}]}, user_id="U1")
+    cases.mark_maintenance(nd2b, entry["id"], "email", user_id="U1")
+    (left,) = _stored_entry(db, entry["id"])["items"]
+    assert left["key"] == "name_en"
+    assert left["effective_date"] == "2026-09-25" and left["omitted"] is True
+
+
+def test_an_item_that_is_not_pending_is_not_found(db, nd2b):
+    entry = _entry_with_two_changes(db, nd2b)
+    with pytest.raises(LookupError):
+        cases.mark_maintenance(nd2b, entry["id"], "hkid", user_id="U1")
+    with pytest.raises(LookupError):
+        cases.mark_maintenance(nd2b, "no-such-entry", "email", user_id="U1")
+    # Marked once, it is no longer pending: a second call is a 404, not a no-op.
+    cases.mark_maintenance(nd2b, entry["id"], "email", user_id="U1")
+    with pytest.raises(LookupError):
+        cases.mark_maintenance(nd2b, entry["id"], "email", user_id="U1")
+
+
+def test_marking_residential_leaves_correspondence_pending_by_design(db, nd2b):
+    """advance() pins (e) to the OLD residential address, because CR still holds
+    it. Treating (d) as maintenance says nothing about (e)."""
+    db.tables["persons"][0]["residential_address_id"] = "A2"
+    entry = cases.add_entry(nd2b, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+    assert {"residential_address", "correspondence_address"} <= set(_keys(entry))
+
+    cases.mark_maintenance(nd2b, entry["id"], "residential_address", user_id="U1")
+
+    keys = _keys(_stored_entry(db, entry["id"]))
+    assert "residential_address" not in keys and "correspondence_address" in keys
+
+
+def test_maintenance_refuses_a_sent_case(db, nd2b):
+    entry = _entry_with_two_changes(db, nd2b)
+    db.tables["nar1_cases"][0]["verification_sent_at"] = "2026-10-01T00:00:00+00:00"
+    sent = db.tables["nar1_cases"][0]
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.mark_maintenance(sent, entry["id"], "email", user_id="U1")
+    assert exc.value.reason == "not_editable"
+    assert particulars.baseline("E1", person_id="P1")["email"] == "p1@example.com"
+
+
+def test_maintenance_refuses_a_closed_case(db, nd2b):
+    entry = _entry_with_two_changes(db, nd2b)
+    closed = {**nd2b, "closed_at": "2026-10-01T00:00:00+00:00"}
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.mark_maintenance(closed, entry["id"], "email", user_id="U1")
+    assert exc.value.reason == "case_closed"
+
+
+def test_maintenance_is_for_an_nd2b_change_only(db, nd2a):
+    entry = cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                   "person_id": "P9", "capacity": "director"}, user_id="U1")
+    with pytest.raises(cases.CaseRefused) as exc:
+        cases.mark_maintenance(nd2a, entry["id"], "email", user_id="U1")
+    assert exc.value.reason == "not_a_change"

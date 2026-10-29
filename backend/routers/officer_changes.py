@@ -370,6 +370,44 @@ async def set_effective_date(case_id: str, entry_id: str, body: EffectiveDateIn,
     return await respond(case_id, user)
 
 
+#: Lines whose old and new values are an identity number or an address. The
+#: audit trail never carries those (see `_entry_metadata`), so a maintenance row
+#: for one of them names the line and says nothing of its value.
+_UNLOGGED_VALUES = frozenset({"hkid", "passport", "residential_address",
+                              "correspondence_address", "address"})
+
+
+@router.post("/{case_id}/entries/{entry_id}/items/{item_key}/maintenance")
+async def mark_maintenance(case_id: str, entry_id: str, item_key: str,
+                           user=Depends(require_permission(MODULE, "write"))):
+    """'This difference is a correction to our records, not a change CR needs to
+    hear about' (Levi 2026-10-29). Settles ONE line of an ND2B for good: that
+    item's baseline moves to the profile's current value, for this appointment
+    only, and the line comes off the case. Irreversible from the screen -- the
+    way back is to change the profile value, which raises the difference again.
+    Audited as `OFFICER_PARTICULARS_DISMISSED` with `reason: data_maintenance`,
+    the same code the whole-person Dismiss writes."""
+    case = load_case(case_id)
+    refuse_if_closed(case, "treating a line of it as data maintenance")
+    try:
+        done = svc.mark_maintenance(case, entry_id, item_key, user_id=user["id"])
+    except svc.CaseRefused as exc:
+        raise refused(exc)
+    except LookupError:
+        raise HTTPException(404, "That line is not a pending change on this entry")
+    entry, item = done["entry"], done["item"]
+    logged = item["key"] not in _UNLOGGED_VALUES
+    await audit(case, user, ev.OFFICER_PARTICULARS_DISMISSED,
+                new_value=item["label"],
+                metadata={**_entry_metadata(entry), "reason": "data_maintenance",
+                          "case_id": case_id, "entity_id": case.get("entity_id"),
+                          "capacity": entry.get("capacity"),
+                          "item_key": item["key"], "items": [item["label"]],
+                          "old": item["old_text"] if logged else None,
+                          "new": item["new_text"] if logged else None})
+    return await respond(case_id, user)
+
+
 # -- supporting documents (answers 7, 11, 13) ---------------------------------------------
 
 @router.post("/{case_id}/entries/{entry_id}/documents")

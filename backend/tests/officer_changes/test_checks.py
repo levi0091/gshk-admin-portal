@@ -33,33 +33,24 @@ def test_kyc_per_appointment():
         ("KYC / WorldCheck cleared — HO New", False, "tick")]
 
 
-def test_resignation_letter_per_cessation_not_by_death():
-    items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling"),
-                                        cease("N2", "LATE Person", reason="D")],
-                                 [doc("N1", "resignation_letter", "resignation.pdf")],
-                                 route="manual")
-    letters = by_code(items, "resignation_letter")
-    assert len(letters) == 1
-    assert letters[0]["label"] == "Resignation letter on file — WONG Mei Ling"
-    assert letters[0]["ok"] is True and letters[0]["document"]["file_name"] == "resignation.pdf"
-    assert letters[0]["document_type"] == "resignation_letter"
+def test_a_cessation_raises_no_check_and_a_resignation_letter_is_never_one():
+    """Levi 2026-10-29 (ND2 change request 5): the resignation-letter check is
+    gone, so a leaver -- by resignation or by death -- adds nothing to the list
+    and a letter on file or off it changes nothing."""
+    entries = [cease("N1", "WONG Mei Ling"), cease("N2", "LATE Person", reason="D")]
+    for docs in ([], [doc("N1", "resignation_letter", "resignation.pdf")]):
+        assert checks.manual_checks(ND2A, entries, docs, route="manual") == []
 
 
-def test_checks_are_kyc_and_letters_only():
+def test_checks_are_kyc_only():
     """Levi 2026-10-05: the written resolution goes to the client WITH the
-    ND2A, and CR's consent signature is the consent — neither is a check."""
+    ND2A, and CR's consent signature is the consent -- neither is a check.
+    Levi 2026-10-29: nor is a resignation letter."""
     entries = [cease("N1", "WONG Mei Ling"), appoint("N2", "LEE Ka Ho")]
     for route in ("esign", "manual"):
         items = checks.manual_checks(ND2A, entries, [], route=route)
-        assert [i["code"] for i in items] == ["kyc", "resignation_letter"], route
-
-
-def test_the_latest_document_of_a_type_is_the_one_shown():
-    items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling")], [
-        doc("N1", "resignation_letter", "old.pdf", "2026-09-01T00:00:00Z"),
-        {**doc("N1", "resignation_letter", "new.pdf", "2026-09-15T00:00:00Z"), "id": "D2"}],
-        route="manual")
-    assert by_code(items, "resignation_letter")[0]["document"]["file_name"] == "new.pdf"
+        assert [i["code"] for i in items] == ["kyc"], route
+        assert not by_code(items, "resignation_letter")
 
 
 def test_nd2b_has_no_checks():
@@ -68,5 +59,13 @@ def test_nd2b_has_no_checks():
 
 
 def test_incomplete_names_what_is_left():
+    items = checks.manual_checks(ND2A, [appoint("N1", "LEE Ka Ho"),
+                                        appoint("N2", "HO New", kyc=True)], [],
+                                 route="manual")
+    assert checks.incomplete(items) == ["KYC / WorldCheck cleared — LEE Ka Ho"]
+
+
+def test_a_cessation_alone_leaves_nothing_incomplete():
+    """It no longer blocks leaving Data Verification."""
     items = checks.manual_checks(ND2A, [cease("N1", "WONG Mei Ling")], [], route="manual")
-    assert checks.incomplete(items) == ["Resignation letter on file — WONG Mei Ling"]
+    assert checks.incomplete(items) == []
