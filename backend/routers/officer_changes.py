@@ -635,6 +635,170 @@ def _addresses(body: SendIn, case: dict, entries: list[dict]) -> tuple[list[str]
     return out, failures
 
 
+def _filing_for_send(case: dict, xml: str, user: dict) -> tuple[dict, int]:
+    """The CR filing a verification letter is about, and how many live filings
+    the send superseded. Shared by the single send and the first per-director
+    send of a round, so the two can never disagree about what is being asked."""
+    case_id = case["id"]
+    filing = nar1_cases.current_filing(case_id)
+    superseded = 0
+    if filing is not None and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
+        # A re-send after CR validated (or signed) the form. That filing froze
+        # the XML CR checked; mailing a freshly built form and leaving it live
+        # would have the client approve one document while the old one is
+        # signed and filed. The re-send starts the CR steps again instead.
+        superseded = tpsi_filings.supersede_all_for_case(case_id)
+        filing = None
+    if filing is None:
+        filing = tpsi_filings.create_filing(entity_id=case["entity_id"],
+                                            form_code=case["form_code"], form_xml=xml,
+                                            user_id=user["id"], nar1_case_id=case_id)
+    else:
+        filing = tpsi_filings.rebuild_draft(filing["id"], xml) or filing
+    return filing, superseded
+
+
+async def _letter_files(case: dict, data: dict, xml: str, filing: dict | None,
+                        revision: int) -> list[tuple[str, bytes]]:
+    """Everything that goes with the letter, gathered BEFORE any link is issued
+    (Jacqueline A3: one email, not two): the form, an ND2A's written resolution
+    and the ticked supporting documents. A file that cannot be read stops the
+    send -- a letter must not promise an attachment it does not carry.
+
+    Shared by the single send and the per-director send (nd2-multi-signer). The
+    form is rendered WITHOUT signatures: what is mailed is a draft, and a draft
+    is unsigned by definition.
+    """
+    case_id = case["id"]
+    try:
+        # The FULL form (Jacqueline A8/B2): the client checks the PI sheets too.
+        pdf = await _render(case, xml, filing, public_only=False)
+    except FormFillError as exc:
+        raise HTTPException(422, {"message": f"The form could not be rendered: {exc}"})
+    attachment = (f"{case['form_code'].upper()}-{case.get('case_no') or case_id}"
+                  f"{f'-Rev{revision}' if revision >= 2 else ''}.pdf")
+    files = [(attachment, pdf)]
+    # An ND2A always goes with its written resolution (Levi 2026-10-05: "When
+    # they click send to client button then both are sent to client").
+    if case["form_code"] == "Nd2a":
+        entity_row = nar1_cases.entity_for(case["entity_id"]) or {}
+        files.append((resolution.file_name(case), await asyncio.to_thread(
+            resolution.render, case, entity_row, data.get("entries") or [],
+            data.get("officers") or [])))
+    try:
+        files += documents.email_attachments(case_id)
+    except documents.AttachmentError as exc:
+        # 409, not 502 (review finding 5): behind Cloudflare a 502's body never
+        # reaches the page, and naming the file is the point of the refusal.
+        raise HTTPException(409, {"message": f"The email was not sent: {exc.file_name} "
+                                             "could not be read from storage. Upload it "
+                                             "again or untick it.",
+                                  "reason": "attachment_unreadable"})
+    return files
+
+
+async def _mail(case: dict, entity: dict, data: dict, targets: list[dict],
+                link_base: str | None, revision: int, respond_day: date,
+                files: list[tuple[str, bytes]],
+                consents: dict[str, dict]) -> tuple[list[dict], list[dict]]:
+    """One message per target, each carrying its own link.
+
+    Returns `(sends, failures)`: `sends` is `[{"target", "sent"}]` for every
+    message Resend took, `failures` is `[{"email", "reason"}]` for every one it
+    refused. The caller decides what "nobody got it" means; a RuntimeError from
+    the transport (no key configured) is a 503 here because nothing can be sent.
+    """
+    names = [name for name, _ in files]
+    sends: list[dict] = []
+    failures: list[dict] = []
+    for target in targets:
+        url = (f"{link_base}/public/officer-change-approval/{target['token']}"
+               if link_base and target.get("token") else None)
+        subject, html = emails.officer_change_email(
+            case, entity, data["entries"], approval_url=url, respond_by=respond_day,
+            revision=revision, attachments=names,
+            consent=consents.get(target.get("person_id")))
+        try:
+            sent = await asyncio.to_thread(
+                email_service.send, to=[target["email"]], cc=[email_service.CLIENT_CC],
+                reply_to=email_service.CLIENT_CC, subject=subject, html=html,
+                attachments=files)
+        except email_service.EmailError as exc:
+            failures.append({"email": target["email"], "reason": str(exc)})
+            continue
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc))
+        sends.append({"target": target, "sent": sent})
+    return sends, failures
+
+
+async def _audit_send(case: dict, user: dict, sends: list[dict], failures: list[dict],
+                      *, revision: int, deadline_at: datetime, names: list[str],
+                      superseded: int, extra_metadata: dict | None = None,
+                      person_ids: bool = False) -> dict:
+    """The `EMAIL_SENT` row, one `CLIENT_APPROVAL_LINK_SENT` row per link, and
+    the response fields every send reports (`delivered`, `intended`,
+    `message_ids`, `deliveries`, `redirected`).
+
+    `extra_metadata` is merged into the `EMAIL_SENT` row. `person_ids` adds each
+    target's `person_id` to its `deliveries` entry, which the per-director send
+    needs (its delivery report is keyed by person) and the single send must NOT
+    get: its rows are read by the existing delivery check and stay as they were.
+    """
+    def across(key):
+        out = []
+        for record in sends:
+            for address in record["sent"].get(key) or []:
+                if address not in out:
+                    out.append(address)
+        return out
+
+    delivered = across("to") or [s["target"]["email"] for s in sends]
+    intended = across("intended_to") or [s["target"]["email"] for s in sends]
+    message_ids = [s["sent"].get("id") for s in sends if s["sent"].get("id")]
+    deliveries = []
+    for s in sends:
+        entry = {"email": s["target"]["email"], "name": s["target"].get("name"),
+                 "message_id": s["sent"].get("id"),
+                 "delivered_to": s["sent"].get("to") or [],
+                 "redirected": bool(s["sent"].get("redirected"))}
+        if person_ids and s["target"].get("person_id"):
+            entry["person_id"] = s["target"]["person_id"]
+        deliveries.append(entry)
+    await audit(case, user, ev.EMAIL_SENT, new_value=", ".join(delivered), metadata={
+        "form_code": case["form_code"], "message_id": message_ids[0] if message_ids else None,
+        "message_ids": message_ids, "deliveries": deliveries, "intended_to": intended,
+        "recipient_count": len(intended), "failed_to": [f["email"] for f in failures],
+        "failed": failures, "respond_by": deadline_at.isoformat(),
+        "cc": across("cc"), "intended_cc": across("intended_cc"),
+        "reply_to": across("reply_to"), "intended_reply_to": across("intended_reply_to"),
+        "redirected": any(d["redirected"] for d in deliveries),
+        "transport": sends[0]["sent"].get("transport", "resend"),
+        # A re-send after validation superseded the CR filing that froze the
+        # previous form (the CR steps start again).
+        "filings_superseded": superseded,
+        # Which email about this form — the "[Rev. N]" the client saw.
+        "revision": revision,
+        # What went with it (Jacqueline A3).
+        "attachments": names,
+        "case_no": case.get("case_no"), **(extra_metadata or {})})
+    for record in sends:
+        target = record["target"]
+        if target.get("token"):
+            expires = target.get("expires_at")
+            await audit(case, user, ev.CLIENT_APPROVAL_LINK_SENT,
+                        new_value=target.get("name") or target["email"],
+                        metadata={"recipient_email": target["email"],
+                                  "person_id": target.get("person_id"),
+                                  "expires_at": expires.isoformat()
+                                  if hasattr(expires, "isoformat") else expires,
+                                  "revision": revision,
+                                  "case_no": case.get("case_no")})
+    return {"delivered": delivered, "intended": intended, "message_ids": message_ids,
+            "deliveries": deliveries,
+            "redirected": any(d["redirected"] for d in deliveries)}
+
+
 @router.post("/{case_id}/verification/send")
 async def send_verification(case_id: str, body: SendIn, request: Request,
                             user=Depends(require_permission(MODULE, "write"))):
@@ -664,21 +828,7 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     except prepare.MappingError as exc:
         raise _problems(exc)
 
-    filing = nar1_cases.current_filing(case_id)
-    superseded = 0
-    if filing is not None and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
-        # A re-send after CR validated (or signed) the form. That filing froze
-        # the XML CR checked; mailing a freshly built form and leaving it live
-        # would have the client approve one document while the old one is
-        # signed and filed. The re-send starts the CR steps again instead.
-        superseded = tpsi_filings.supersede_all_for_case(case_id)
-        filing = None
-    if filing is None:
-        filing = tpsi_filings.create_filing(entity_id=case["entity_id"],
-                                            form_code=case["form_code"], form_xml=xml,
-                                            user_id=user["id"], nar1_case_id=case_id)
-    else:
-        filing = tpsi_filings.rebuild_draft(filing["id"], xml) or filing
+    filing, superseded = _filing_for_send(case, xml, user)
 
     deadline_at = nar1_router._deadline_from(body.respond_by)
     addresses, failures = _addresses(body, case, entries)
@@ -690,38 +840,12 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         raise HTTPException(422, "Nothing was sent: no address can receive mail ("
                                  + "; ".join(f"{f['email']} ({f['reason']})"
                                              for f in failures) + ")")
-    try:
-        # The FULL form (Jacqueline A8/B2): the client checks the PI sheets too.
-        pdf = await _render(case, xml, filing, public_only=False)
-    except FormFillError as exc:
-        raise HTTPException(422, {"message": f"The form could not be rendered: {exc}"})
     # Which verification email this is (Levi 2026-10-02, migration 051): the
     # client sees "[Rev. 2]" and up from the second send, exactly as on NAR1.
     # Stored only once something has gone out (the patch below), so a send
     # that reached nobody does not use a number up.
     revision = nar1_approvals.next_revision(case)
-    attachment = (f"{case['form_code'].upper()}-{case.get('case_no') or case_id}"
-                  f"{f'-Rev{revision}' if revision >= 2 else ''}.pdf")
-    # Everything that goes with the letter, gathered BEFORE any link is issued
-    # (Jacqueline A3: one email, not two). A file that cannot be read stops the
-    # send: a letter must not promise an attachment it does not carry.
-    files = [(attachment, pdf)]
-    # An ND2A always goes with its written resolution (Levi 2026-10-05: "When
-    # they click send to client button then both are sent to client").
-    if case["form_code"] == "Nd2a":
-        entity_row = nar1_cases.entity_for(case["entity_id"]) or {}
-        files.append((resolution.file_name(case), await asyncio.to_thread(
-            resolution.render, case, entity_row, data.get("entries") or [],
-            data.get("officers") or [])))
-    try:
-        files += documents.email_attachments(case_id)
-    except documents.AttachmentError as exc:
-        # 409, not 502 (review finding 5): behind Cloudflare a 502's body never
-        # reaches the page, and naming the file is the point of the refusal.
-        raise HTTPException(409, {"message": f"The email was not sent: {exc.file_name} "
-                                             "could not be read from storage. Upload it "
-                                             "again or untick it.",
-                                  "reason": "attachment_unreadable"})
+    files = await _letter_files(case, data, xml, filing, revision)
     names = [name for name, _ in files]
     consents = await _consent_wording(case, entries)
 
@@ -744,25 +868,9 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
 
     entity = nar1_cases.entity_for(case["entity_id"]) or {}
     respond_day = deadline_at.astimezone(nar1_router._HK).date()
-    sends = []
-    for target in targets:
-        url = (f"{link_base}/public/officer-change-approval/{target['token']}"
-               if link_base and target.get("token") else None)
-        subject, html = emails.officer_change_email(
-            case, entity, data["entries"], approval_url=url, respond_by=respond_day,
-            revision=revision, attachments=names,
-            consent=consents.get(target.get("person_id")))
-        try:
-            sent = await asyncio.to_thread(
-                email_service.send, to=[target["email"]], cc=[email_service.CLIENT_CC],
-                reply_to=email_service.CLIENT_CC, subject=subject, html=html,
-                attachments=files)
-        except email_service.EmailError as exc:
-            failures.append({"email": target["email"], "reason": str(exc)})
-            continue
-        except RuntimeError as exc:
-            raise HTTPException(503, str(exc))
-        sends.append({"target": target, "sent": sent})
+    sends, mail_failures = await _mail(case, entity, data, targets, link_base, revision,
+                                       respond_day, files, consents)
+    failures.extend(mail_failures)
     if not sends:
         raise HTTPException(502, "The verification email was not sent: "
                                  + ("; ".join(f["reason"] for f in failures) or "no recipients"))
@@ -786,59 +894,17 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         print(f"[officer_changes] mark_deferred failed for {case_id}: {exc!r}",
               file=sys.stderr)
 
-    def across(key):
-        out = []
-        for record in sends:
-            for address in record["sent"].get(key) or []:
-                if address not in out:
-                    out.append(address)
-        return out
-
-    delivered = across("to") or [s["target"]["email"] for s in sends]
-    intended = across("intended_to") or [s["target"]["email"] for s in sends]
-    message_ids = [s["sent"].get("id") for s in sends if s["sent"].get("id")]
-    deliveries = [{"email": s["target"]["email"], "name": s["target"].get("name"),
-                   "message_id": s["sent"].get("id"),
-                   "delivered_to": s["sent"].get("to") or [],
-                   "redirected": bool(s["sent"].get("redirected"))} for s in sends]
-    await audit(case, user, ev.EMAIL_SENT, new_value=", ".join(delivered), metadata={
-        "form_code": case["form_code"], "message_id": message_ids[0] if message_ids else None,
-        "message_ids": message_ids, "deliveries": deliveries, "intended_to": intended,
-        "recipient_count": len(intended), "failed_to": [f["email"] for f in failures],
-        "failed": failures, "respond_by": deadline_at.isoformat(),
-        "cc": across("cc"), "intended_cc": across("intended_cc"),
-        "reply_to": across("reply_to"), "intended_reply_to": across("intended_reply_to"),
-        "redirected": any(d["redirected"] for d in deliveries),
-        "transport": sends[0]["sent"].get("transport", "resend"),
-        # A re-send after validation superseded the CR filing that froze the
-        # previous form (the CR steps start again).
-        "filings_superseded": superseded,
-        # Which email about this form — the "[Rev. N]" the client saw.
-        "revision": revision,
-        # What went with it (Jacqueline A3).
-        "attachments": names,
-        "case_no": case.get("case_no")})
-    for record in sends:
-        target = record["target"]
-        if target.get("token"):
-            expires = target.get("expires_at")
-            await audit(case, user, ev.CLIENT_APPROVAL_LINK_SENT,
-                        new_value=target.get("name") or target["email"],
-                        metadata={"recipient_email": target["email"],
-                                  "person_id": target.get("person_id"),
-                                  "expires_at": expires.isoformat()
-                                  if hasattr(expires, "isoformat") else expires,
-                                  "revision": revision,
-                                  "case_no": case.get("case_no")})
+    report = await _audit_send(case, user, sends, failures, revision=revision,
+                               deadline_at=deadline_at, names=names, superseded=superseded)
     if "client_approved" in patch:
         await audit(case, user, ev.CASE_STATUS_CHANGED,
                     old_value="approved" if previous else "rejected",
                     new_value="awaiting_client",
                     metadata={"reason": "a fresh verification superseded the previous answer"})
-    return {"sent_at": sent_at, "to": delivered, "intended_to": intended,
+    return {"sent_at": sent_at, "to": report["delivered"], "intended_to": report["intended"],
             "revision": revision,
-            "redirected": any(d["redirected"] for d in deliveries),
-            "message_ids": message_ids, "deliveries": deliveries,
+            "redirected": report["redirected"],
+            "message_ids": report["message_ids"], "deliveries": report["deliveries"],
             "failed_to": [f["email"] for f in failures], "failed": failures,
             "respond_by": deadline_at.isoformat(), "approval_links": bool(link_base)}
 
