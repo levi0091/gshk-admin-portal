@@ -73,14 +73,6 @@ export const officerChangeApi = {
   signers: (id) => api.get(`${base(id)}/verification/signers`),
   sendToSigner: (id, personId, body) =>
     api.post(`${base(id)}/verification/signers/${personId}/send`, body),
-  // "Multiple directors must sign" (spec nd2-multi-signer §3.1). `signers` is the
-  // state of the round — one entry per required signer, whatever the option is
-  // set to, so the toggle can say how many directors would sign. `sendToSigner`
-  // is the per-director send: body {email, respond_by}, one address. The option
-  // itself is `patch(id, { multi_signer })`.
-  signers: (id) => api.get(`${base(id)}/verification/signers`),
-  sendToSigner: (id, personId, body) =>
-    api.post(`${base(id)}/verification/signers/${personId}/send`, body),
   recordResponse: (id, body) => api.post(`${base(id)}/verification/response`, body),
   // ND2B only: file without the client's confirmation, with the reason (BQ1).
   proceed: (id, reason) => api.post(`${base(id)}/verification/proceed`, { reason }),

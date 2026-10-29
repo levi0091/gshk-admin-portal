@@ -108,6 +108,17 @@ export default function SignerPanels({
 
   return (
     <div className="oc-signers">
+      {/* A refresh that failed after an earlier one worked: what is on screen
+          may be out of date (a panel can still read "Not sent" after a send
+          that succeeded), so say so rather than let it pass as current. */}
+      {loadError && (
+        <div className="alert al-warn" role="status">
+          <div className="al-body">
+            The latest status could not be loaded, so what is shown may be out of date.{' '}
+            <button type="button" className="btn btn-outline" onClick={() => refresh()}>Try again</button>
+          </div>
+        </div>
+      )}
       {state.set_changed && (
         <div className="card-note card-note-warn" role="status">
           The board has changed since this form was sent. Restart verification to ask the current directors.

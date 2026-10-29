@@ -335,4 +335,17 @@ describe('loading', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(props.refresh).toHaveBeenCalled()
   })
+
+  it('warns that the panels may be stale when a later refresh fails', async () => {
+    const user = userEvent.setup()
+    const props = panels({ loadError: true })
+    expect(screen.getByText(/may be out of date/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(props.refresh).toHaveBeenCalled()
+  })
+
+  it('shows no stale warning when the last refresh worked', () => {
+    panels()
+    expect(screen.queryByText(/may be out of date/)).toBeNull()
+  })
 })
