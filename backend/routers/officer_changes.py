@@ -163,6 +163,10 @@ class CasePatchIn(BaseModel):
     signing_method: str | None = None
     signatory_capacity: str | None = None
     restart_verification: bool | None = None
+    #: "Multiple directors must sign" (nd2-multi-signer). Off, the form is sent
+    #: once and the first confirmation wins; on, each required director is sent
+    #: a link of their own and the case is approved when the last has signed.
+    multi_signer: bool | None = None
 
 
 @router.patch("/{case_id}")
@@ -174,6 +178,23 @@ async def patch_case(case_id: str, body: CasePatchIn,
         raise HTTPException(409, {"message": "This form has been filed.",
                                   "reason": "already_filed"})
     patch: dict = {}
+    if body.multi_signer is not None:
+        # Decided before anything is written, so a refusal leaves no half of the
+        # request behind.
+        if case.get("verification_sent_at") and not body.restart_verification:
+            # The mode decides what the client was sent, so it cannot change
+            # under a letter that is already out.
+            raise HTTPException(409, {
+                "message": "The form has already been sent. Restart verification "
+                           "to change who must sign.",
+                "reason": "already_sent"})
+        if body.multi_signer and not signatures.required_signers(case):
+            raise HTTPException(409, {
+                "message": "No director on this form has a box to sign, so there is "
+                           "nobody to send a separate link to.",
+                "reason": "no_signers"})
+        if body.multi_signer != bool(case.get("multi_signer")):
+            patch["multi_signer"] = body.multi_signer
     if body.signing_method is not None:
         if body.signing_method not in ("esign", "manual"):
             raise HTTPException(400, "signing_method is 'esign' or 'manual'")
@@ -221,7 +242,11 @@ async def _restart(case: dict, user: dict, patch: dict) -> None:
     links = nar1_approvals.supersede_outstanding(case["id"])
     superseded = tpsi_filings.supersede_all_for_case(case["id"])
     nar1_cases.update_case(case["id"], {
+        # `required_signers` is the set the round froze at its first send; the
+        # new round recomputes it. `multi_signer` is the operator's choice and
+        # survives the restart.
         **patch, "verification_sent_at": None, "verification_xml": None,
+        "required_signers": None,
         "client_approved": None, "client_response_at": None,
         "client_approval_source": None, "client_approval_person_id": None,
         "client_approval_name": None, "data_checked_at": None, "data_checked_by": None,
@@ -816,6 +841,11 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     if filed(case):
         raise HTTPException(409, {"message": "This form has been filed.",
                                   "reason": "already_filed"})
+    if case.get("multi_signer"):
+        # One message to several addresses with the first confirmation winning is
+        # exactly what the option replaces (nd2-multi-signer).
+        raise HTTPException(409, {"message": "Each director is sent their own link below.",
+                                  "reason": "multi_signer"})
     data = await svc.composite(case_id, user=user)
     if data["rules"]["blocking"]:
         failing = [c["text"] for c in data["rules"]["checks"]
@@ -955,6 +985,13 @@ async def record_response(case_id: str, body: ResponseIn,
     """The client's answer, relayed by staff (a reply to renewal@, a call)."""
     case = load_case(case_id)
     refuse_if_closed(case, "recording a client decision on it")
+    if body.approved and case.get("multi_signer"):
+        # Approving on a relayed reply would converge the case without the
+        # signatures the option exists to collect. A decline is still recorded.
+        raise HTTPException(409, {
+            "message": "Each director signs from their own link. An approval cannot "
+                       "be recorded for them.",
+            "reason": "multi_signer"})
     if not case.get("verification_sent_at"):
         raise HTTPException(409, "No verification has been sent for this case")
     previous = case.get("client_approved")
