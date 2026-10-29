@@ -113,6 +113,77 @@ async def test_a_document_that_will_not_render_is_left_off_not_fatal():
 
 
 # --------------------------------------------------------------------------- #
+#  Naming what is being confirmed (nd2-change-requests PRD section 6, tests 8 and 10)
+# --------------------------------------------------------------------------- #
+
+NAR1_TITLE = "Form NAR1 — Annual Return 2026"
+ND2A_TITLE = "Form ND2A — Change of company secretary and director"
+ND2B_TITLE = "Form ND2B — Change in particulars of company secretary and director"
+RESOLUTION_TITLE = "Written resolution of the directors"
+
+
+def test_a_nar1_names_its_return_year_and_its_revision_from_rev_2():
+    assert receipt.confirmed_documents(NAR1, APPROVAL) == [
+        {"title": f"{NAR1_TITLE} (Rev. 2)", "file_name": "NAR1-NAR-2026-0042-Rev2.pdf"}]
+    # The first send is unmarked, as the verification letter's subject is.
+    assert receipt.confirmed_documents(NAR1, {**APPROVAL, "revision": 1}) == [
+        {"title": NAR1_TITLE, "file_name": "NAR1-NAR-2026-0042.pdf"}]
+
+
+def test_an_nd2a_names_the_form_and_the_written_resolution():
+    docs = receipt.confirmed_documents(ND2A, {**APPROVAL, "revision": 1})
+    assert docs == [
+        {"title": ND2A_TITLE, "file_name": "ND2A-ND2A-2026-0001.pdf"},
+        {"title": RESOLUTION_TITLE, "file_name": "Written-Resolution-ND2A-2026-0001.pdf"}]
+    # The resolution travels with the form; it carries no revision of its own.
+    revised = receipt.confirmed_documents(ND2A, {**APPROVAL, "revision": 3})
+    assert revised[0]["title"] == f"{ND2A_TITLE} (Rev. 3)"
+    assert revised[1]["title"] == RESOLUTION_TITLE
+
+
+def test_an_nd2b_names_the_form_only():
+    assert receipt.confirmed_documents(ND2B, {**APPROVAL, "revision": 2}) == [
+        {"title": f"{ND2B_TITLE} (Rev. 2)", "file_name": "ND2B-ND2B-2026-0001-Rev2.pdf"}]
+
+
+def test_the_revision_is_the_links_own_else_the_cases():
+    # Same rule as the attachment: a director who confirmed Rev. 1 is not told
+    # they confirmed Rev. 2 because the case has since moved on.
+    assert receipt.confirmed_documents(NAR1, {"revision": 1})[0]["title"] == NAR1_TITLE
+    assert receipt.confirmed_documents(NAR1, {})[0]["title"] == f"{NAR1_TITLE} (Rev. 2)"
+
+
+def test_a_nar1_with_no_return_year_is_named_without_one():
+    docs = receipt.confirmed_documents({**NAR1, "ar_period_year": None}, APPROVAL)
+    assert docs[0]["title"] == "Form NAR1 — Annual Return (Rev. 2)"
+
+
+@pytest.mark.parametrize("case", [NAR1, ND2A, ND2B])
+@pytest.mark.parametrize("revision", [1, 2, 5])
+def test_the_file_names_are_the_ones_the_send_gives_its_attachments(case, revision):
+    """The page promises these names, so they must match what the verification
+    email actually attached. The send builds them INLINE (the NAR1 send in
+    routers/cases.py; ND2A and ND2B in routers/officer_changes.py; the
+    resolution through `resolution.file_name`), so this restates those
+    formulas: if either side changes, this fails rather than the page quietly
+    naming a file that does not exist."""
+    rev = f"-Rev{revision}" if revision >= 2 else ""
+    if case["form_code"] == "Nar1":
+        expected = f"NAR1-{case['case_no']}{rev}.pdf"
+    else:
+        expected = f"{case['form_code'].upper()}-{case['case_no']}{rev}.pdf"
+    docs = receipt.confirmed_documents(case, {"revision": revision})
+    assert docs[0]["file_name"] == expected
+    if case["form_code"] == "Nd2a":
+        assert docs[1]["file_name"] == f"Written-Resolution-{case['case_no']}.pdf"
+
+
+def test_a_case_with_no_number_is_named_by_its_id_as_the_send_does():
+    case = {**NAR1, "case_no": None}
+    assert receipt.confirmed_documents(case, {"revision": 1})[0]["file_name"] == "NAR1-c1.pdf"
+
+
+# --------------------------------------------------------------------------- #
 #  Sending it
 # --------------------------------------------------------------------------- #
 
@@ -187,3 +258,35 @@ async def test_no_address_on_the_token_sends_nothing():
     with _Stack(_world()) as (_c, _e, _d, send, _log):
         await receipt.send("c1", {**APPROVAL, "recipient_email": None})
     send.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+#  The receipt names every document, attached or not (PRD section 6, test 10)
+# --------------------------------------------------------------------------- #
+
+async def test_the_receipt_names_every_document_even_when_one_could_not_be_attached():
+    """An ND2A whose resolution failed to render goes out carrying the form
+    only; the letter still says the client confirmed both."""
+    failures = [{"file": "Written-Resolution-ND2A-2026-0001.pdf", "reason": "font missing"}]
+    world = _world(case=ND2A, files=(("ND2A-ND2A-2026-0001.pdf", b"%PDF"),),
+                   failures=failures)
+    with _Stack(world) as (_c, _e, _d, send, _log):
+        await receipt.send("k1", {**APPROVAL, "revision": 1})
+    html = send.call_args.kwargs["html"]
+    assert ND2A_TITLE in html
+    assert RESOLUTION_TITLE in html
+    # The Attached box is unchanged: it lists only what is actually attached.
+    assert "Written-Resolution-ND2A-2026-0001.pdf" not in html
+
+
+async def test_the_trail_records_the_titles_the_client_confirmed():
+    with _Stack(_world(case=ND2A, files=(("ND2A-x.pdf", b"%PDF"),))) as (*_, log):
+        await receipt.send("k1", {**APPROVAL, "revision": 1})
+    assert log.await_args.kwargs["metadata"]["documents"] == [ND2A_TITLE, RESOLUTION_TITLE]
+
+
+async def test_a_nar1_receipt_names_the_return_and_its_year():
+    with _Stack(_world()) as (_c, _e, _d, send, log):
+        await receipt.send("c1", APPROVAL)
+    assert f"{NAR1_TITLE} (Rev. 2)" in send.call_args.kwargs["html"]
+    assert log.await_args.kwargs["metadata"]["documents"] == [f"{NAR1_TITLE} (Rev. 2)"]

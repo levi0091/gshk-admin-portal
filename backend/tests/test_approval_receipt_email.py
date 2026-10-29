@@ -132,3 +132,43 @@ def test_an_unreadable_moment_does_not_stop_the_receipt():
 def test_it_fits_a_phone_without_losing_outlooks_width():
     _, html = _receipt()
     assert 'width="600"' in html and "width:100%;max-width:600px" in html
+
+
+# --- the Documents row (nd2-change-requests PRD section 6, test 10) ----------
+
+DOCS = ["Form ND2A — Change of company secretary and director",
+        "Written resolution of the directors"]
+
+
+def test_the_ledger_has_a_documents_row_listing_every_title():
+    _, html = _receipt(documents=DOCS, attachments=["ND2A-x.pdf"])
+    text = _text(html)
+    assert "Documents" in text
+    for title in DOCS:
+        assert title in text
+    # Inside the stamp's ledger, in the same label/value cells as the other rows.
+    ledger = html[html.index("Confirmed by"):html.index("Our reference")]
+    assert DOCS[0] in ledger and DOCS[1] in ledger
+
+
+def test_titles_are_listed_whether_or_not_anything_is_attached():
+    text = _text(_receipt(documents=DOCS, attachments=[])[1])
+    assert DOCS[1] in text
+    assert "We could not attach a copy of the form to this email" in text
+
+
+def test_the_attached_box_still_lists_only_what_is_attached():
+    html = _receipt(documents=DOCS, attachments=["ND2A-x.pdf"])[1]
+    box = html[html.index(">Attached<"):]
+    assert "ND2A-x.pdf" in box
+    assert DOCS[1] not in box
+
+
+def test_without_documents_there_is_no_documents_row():
+    assert "Documents" not in _text(_receipt()[1])
+
+
+def test_document_titles_are_escaped_and_the_markup_stays_table_based():
+    _, html = _receipt(documents=["<script>x</script> & co"])
+    assert "<script>" not in html and "&lt;script&gt;x&lt;/script&gt; &amp; co" in html
+    assert "<style" not in html.lower() and "<ul" not in html.lower()

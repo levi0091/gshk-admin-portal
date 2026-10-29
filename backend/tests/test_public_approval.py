@@ -576,6 +576,62 @@ def test_the_page_runs_no_script_at_all(client):
 
 
 # --------------------------------------------------------------------------- #
+#  "You are confirming" (nd2-change-requests PRD section 6, test 9)
+# --------------------------------------------------------------------------- #
+
+ND2_PATH = f"/public/officer-change-approval/{TOKEN}"
+ND2A_CASE = {**CASE, "case_no": "ND2A-2026-0001", "form_code": "Nd2a"}
+
+
+def _confirming(text: str) -> str:
+    """The list, cut out of the page: from its heading to the Warning panel."""
+    return text[text.index("You are confirming"):text.index('class="warn"')]
+
+
+def test_a_nar1_page_names_the_return_and_its_file(client):
+    with _Stack(*_world(approval=row(revision=2))):
+        text = client.get(PATH).text
+    listed = _confirming(text)
+    assert "Form NAR1 — Annual Return 2026 (Rev. 2)" in listed
+    assert "NAR1-NAR-2026-0041-Rev2.pdf" in listed
+    assert "<script" not in text.lower()
+
+
+def test_an_nd2a_page_names_the_form_and_the_resolution(client):
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)):
+        text = client.get(ND2_PATH).text
+    listed = _confirming(text)
+    assert "Form ND2A — Change of company secretary and director" in listed
+    assert "ND2A-ND2A-2026-0001.pdf" in listed
+    assert "Written resolution of the directors" in listed
+    assert "Written-Resolution-ND2A-2026-0001.pdf" in listed
+    assert "<script" not in text.lower()
+
+
+def test_an_nd2b_page_names_the_form_only(client):
+    nd2b = {**CASE, "case_no": "ND2B-2026-0001", "form_code": "Nd2b"}
+    with _Stack(*_world(approval=row(), case=nd2b)):
+        listed = _confirming(client.get(ND2_PATH).text)
+    assert "Form ND2B" in listed and "ND2B-ND2B-2026-0001.pdf" in listed
+    assert "resolution" not in listed.lower()
+
+
+def test_the_list_is_above_the_warning_and_the_button(client):
+    with _Stack(*_world(approval=row())):
+        text = client.get(PATH).text
+    assert text.index("You are confirming") < text.index("Warning") < text.index("</button>")
+
+
+def test_a_case_number_carrying_markup_is_escaped_in_the_list(client):
+    """Titles and file names are built from the case, which holds free text."""
+    bad = {**CASE, "case_no": "<img src=x onerror=alert(1)>"}
+    with _Stack(*_world(approval=row(), case=bad)):
+        text = client.get(PATH).text
+    assert "<img src=x" not in text
+    assert "&lt;img src=x onerror=alert(1)&gt;" in _confirming(text)
+
+
+# --------------------------------------------------------------------------- #
 #  An earlier revision's link (Levi 2026-10-02, migration 051)
 # --------------------------------------------------------------------------- #
 
