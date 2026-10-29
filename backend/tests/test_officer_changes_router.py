@@ -649,6 +649,58 @@ def test_send_tells_an_esign_director_no_signature_is_needed(env):
     assert letter.call_args.kwargs["consent"]["mode"] == "esign"
 
 
+# -- drawn signatures (e-signature-nd2 ticket 02): staff see them, the send never prints one --
+
+def test_the_staff_preview_prints_the_signatures_a_director_drew(env):
+    """Spec section 4: the admin portal's ND2 form download after confirmation
+    (and the manual route's ND2B download, which is the same route)."""
+    mark = object()
+    with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock, return_value="<x/>"), \
+         patch.object(oc, "render_form", return_value=b"%PDF") as render, \
+         patch.object(oc.signed_copies, "for_form", return_value=mark) as for_form:
+        resp = client.get("/officer-changes/K1/preview", headers=H)
+    assert resp.status_code == 200
+    for_form.assert_called_once()
+    assert for_form.call_args.args[0]["id"] == "K1"
+    assert render.call_args.kwargs["signatures"] is mark
+
+
+def test_a_preview_with_nothing_signed_is_rendered_as_before(env):
+    with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock, return_value="<x/>"), \
+         patch.object(oc, "render_form", return_value=b"%PDF") as render:
+        client.get("/officer-changes/K1/preview", headers=H)
+    assert render.call_args.kwargs["signatures"] is None
+
+
+def test_the_resolution_preview_prints_the_directors_signatures(env):
+    env.composite.return_value = {**COMPOSITE, "officers": [], "entries": []}
+    images = {"P1": b"png"}
+    with patch.object(oc.resolution, "render", return_value=b"%PDF-res") as render, \
+         patch.object(oc.signatures, "images_for", return_value=images):
+        resp = client.get("/officer-changes/K1/resolution", headers=H)
+    assert resp.status_code == 200
+    assert render.call_args.kwargs["signatures"] == images
+
+
+def test_the_send_never_stamps_a_signature_on_the_draft(env):
+    """Technical review B3: the send renders the new draft BEFORE the revision
+    moves on, so the previous revision's signatures would land on it. Neither
+    renderer is asked for one, and nobody even looks them up."""
+    sent = []
+    stack, render, _letter = _send_patches(sent)
+    with stack, \
+            patch.object(oc.signed_copies, "for_form") as for_form, \
+            patch.object(oc.signatures, "images_for") as images_for, \
+            patch.object(oc.resolution, "render", return_value=b"%PDF-res") as res_render:
+        resp = client.post("/officer-changes/K1/verification/send", headers=H, json={
+            "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
+    assert resp.status_code == 200, resp.text
+    for_form.assert_not_called()
+    images_for.assert_not_called()
+    assert not render.call_args.kwargs.get("signatures")
+    assert not res_render.call_args.kwargs.get("signatures")
+
+
 def test_preview_public_audience_is_public_only(env):
     with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock, return_value="<x/>"), \
          patch.object(oc, "render_form", return_value=b"%PDF") as render:

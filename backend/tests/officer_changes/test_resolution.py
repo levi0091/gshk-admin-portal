@@ -17,8 +17,11 @@ PyMuPDF off the file itself:
 The sample's case is reproduced below: one director resigning, one appointed,
 both on 20 March 2026, the newcomer the only director left to sign.
 """
+import io
+
 import pymupdf
 import pytest
+from PIL import Image, ImageChops, ImageDraw
 
 from services.officer_changes import resolution
 
@@ -243,3 +246,113 @@ def test_a_signature_block_is_never_split_across_pages():
         names = sum(t.startswith("Name:") for t in texts)
         labels = sum(t == "Director" for t in texts)
         assert rules == names == labels, (rules, names, labels)
+
+
+# -- directors' drawn signatures (e-signature-nd2, ticket 02; spec §4, §6 test 6) -----------
+
+def _stroke_png() -> bytes:
+    img = Image.new("RGBA", (600, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(img).rectangle([100, 70, 499, 129], fill=(0, 0, 0, 255))
+    out = io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()
+
+
+def _two_directors_world():
+    """Two directors stay, one leaves and one is appointed: three signature lines."""
+    officers = [{"officer_id": "O1", "role": "director", "name": "STAYING One",
+                 "person_id": "P1"},
+                {"officer_id": "O2", "role": "director", "name": "STAYING Two",
+                 "person_id": "P2"},
+                {"officer_id": "O3", "role": "director", "name": "LEAVING Three",
+                 "person_id": "P3"}]
+    entries = [{"id": "C1", "kind": "cessation", "capacity": "director", "officer_id": "O3",
+                "person_id": "P3", "cessation_reason": "R", "effective_date": "2026-03-20",
+                "party": {"name": "LEAVING Three"}},
+               {"id": "A1", "kind": "appointment", "capacity": "director",
+                "person_id": "P4", "effective_date": "2026-03-20",
+                "party": {"name": "INCOMING Four"}}]
+    return entries, officers
+
+
+def _ink_boxes(before: bytes, after: bytes, dpi=144):
+    """Changed-pixel bbox in points per page, ignoring re-serialisation noise."""
+    out = {}
+    scale = dpi / 72.0
+    for i, (a, b) in enumerate(zip(_pages(before), _pages(after))):
+        pa, pb = (p.get_pixmap(dpi=dpi, colorspace=pymupdf.csRGB) for p in (a, b))
+        diff = ImageChops.difference(Image.frombytes("RGB", (pa.width, pa.height), pa.samples),
+                                     Image.frombytes("RGB", (pb.width, pb.height), pb.samples))
+        box = diff.convert("L").point(lambda v: 255 if v > 24 else 0).getbbox()
+        if box:
+            out[i] = tuple(v / scale for v in box)
+    return out
+
+
+def test_signatories_come_with_their_person_ids_in_the_same_order():
+    entries, officers = _two_directors_world()
+    assert resolution.signatory_people(entries, officers) == [
+        ("STAYING One", "P1"), ("STAYING Two", "P2"), ("INCOMING Four", "P4")]
+    assert resolution.signatories(entries, officers) == [
+        n for n, _ in resolution.signatory_people(entries, officers)]
+
+
+def _rules(pdf: bytes) -> list[tuple[int, dict]]:
+    """Every signature rule in the document, as (page index, line), in order."""
+    return [(i, r) for i, page in enumerate(_pages(pdf)) for r in _lines(page)
+            if r["text"].startswith("____")]
+
+
+def test_a_signed_directors_image_prints_above_their_own_rule_only():
+    entries, officers = _two_directors_world()
+    base = resolution.render(CASE, ENTITY, entries, officers)
+    signed = resolution.render(CASE, ENTITY, entries, officers,
+                               signatures={"P2": _stroke_png()})
+    boxes = _ink_boxes(base, signed)
+    rules = _rules(base)
+    assert len(rules) == 3
+    page_no, rule = rules[1]                          # STAYING Two is the second line
+    assert list(boxes) == [page_no], "only that director's page changes"
+    x0, top, x1, bottom = boxes[page_no]
+    assert x0 >= resolution.SIGNATURE_X - 1 and x1 <= rule["x1"] + 1
+    assert bottom <= rule["y"] + 1, "the image sits on the rule, not below it"
+    assert top > rule["y"] - 13.8 * 3, "and inside the three blank lines above it"
+
+
+def test_a_director_who_did_not_sign_keeps_a_blank_line():
+    entries, officers = _two_directors_world()
+    base = resolution.render(CASE, ENTITY, entries, officers)
+    signed = resolution.render(CASE, ENTITY, entries, officers,
+                               signatures={"P4": _stroke_png()})
+    page_no, rule = _rules(base)[2]                   # INCOMING Four is the third
+    (box_page, (_x0, top, _x1, bottom)), = _ink_boxes(base, signed).items()
+    assert box_page == page_no and bottom <= rule["y"] + 1
+
+
+def test_a_signature_from_somebody_off_the_board_prints_nowhere():
+    entries, officers = _two_directors_world()
+    base = resolution.render(CASE, ENTITY, entries, officers)
+    # P3 is leaving: no line for them, so their picture has nowhere to go
+    stamped = resolution.render(CASE, ENTITY, entries, officers,
+                                signatures={"P3": _stroke_png(), "NOBODY": _stroke_png()})
+    assert _ink_boxes(base, stamped) == {}
+
+
+def test_with_no_signatures_the_resolution_is_unchanged():
+    """(reportlab stamps a creation time, so bytes differ run to run: compare
+    what is drawn, as the spec's test 6 does — "the same text content".)"""
+    entries, officers = _two_directors_world()
+    base = resolution.render(CASE, ENTITY, entries, officers)
+    for signatures in (None, {}):
+        again = resolution.render(CASE, ENTITY, entries, officers, signatures=signatures)
+        assert _ink_boxes(base, again) == {} and _text(base) == _text(again)
+
+
+def test_signing_adds_no_text_and_no_page():
+    entries, officers = _two_directors_world()
+    base = resolution.render(CASE, ENTITY, entries, officers)
+    signed = resolution.render(CASE, ENTITY, entries, officers,
+                               signatures={"P1": _stroke_png(), "P2": _stroke_png(),
+                                           "P4": _stroke_png()})
+    assert _text(base) == _text(signed)
+    assert len(_pages(base)) == len(_pages(signed))

@@ -40,13 +40,16 @@ ascent and descent) — which is why the sample's second lines are at +16.0.
 from __future__ import annotations
 
 import io
+import sys
 from datetime import date
 from pathlib import Path
 
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
+from services.officer_change_form import stamp
 from services.officer_changes.deadlines import _as_date
 
 # -- the sample's geometry (points; y measured DOWN from the top edge) -----------
@@ -63,6 +66,9 @@ FIRST_FLOW_AFTER_RULE2 = 192.3 - 179.54  # second rule -> first (blank) body lin
 UNDERLINE_BELOW, UNDERLINE_THICK = 1.28, 1.2
 SIGNATURE_X = 77.4
 SIGNATURE_RULE = "_" * 36
+#: A drawn signature sits on its rule: at most this tall (the three blank lines
+#: above a rule leave about 38pt), this far above the underscores.
+SIGN_HEIGHT, SIGN_LIFT = 36.0, 1.5
 TOP_MARGIN, BOTTOM_MARGIN = 72.0, 72.0
 
 #: (ascent, descent) per line kind — see LINE HEIGHT in the module docstring.
@@ -217,23 +223,50 @@ def dated(entries: list[dict]) -> str | None:
     return f"{day.day} {day:%B %Y}" if isinstance(day, date) else None
 
 
-def signatories(entries: list[dict], officers: list[dict]) -> list[str]:
-    """Every director in office AFTER the changes: those staying, then those
-    appointed. With nobody left, the directors in office before."""
+def _board_after(entries: list[dict], officers: list[dict]) -> list[tuple[str, str | None]]:
+    """`[(name, person_id)]` for every director in office AFTER the changes:
+    those staying, then those appointed; with nobody left, the directors in
+    office before. Not yet de-duplicated or filtered: this is the ONE statement
+    of who signs, and both views below read it."""
     leaving = {e.get("officer_id") for e in entries
                if e.get("kind") == "cessation" and e.get("officer_id")}
     directors = [o for o in officers if o.get("role") == "director"]
-    names = [_display(o.get("name"), o.get("name_zh")) for o in directors
-             if o.get("officer_id") not in leaving]
-    names += [_party(e) for e in entries
-              if e.get("kind") == "appointment" and e.get("capacity") == "director"]
-    if not names:
-        names = [_display(o.get("name"), o.get("name_zh")) for o in directors]
+    rows = [(_display(o.get("name"), o.get("name_zh")), o.get("person_id"))
+            for o in directors if o.get("officer_id") not in leaving]
+    rows += [(_party(e), e.get("person_id")) for e in entries
+             if e.get("kind") == "appointment" and e.get("capacity") == "director"]
+    if not rows:
+        rows = [(_display(o.get("name"), o.get("name_zh")), o.get("person_id"))
+                for o in directors]
+    return rows
+
+
+def signatories(entries: list[dict], officers: list[dict]) -> list[str]:
+    """Every director in office AFTER the changes: those staying, then those
+    appointed. With nobody left, the directors in office before."""
     seen, out = set(), []
-    for name in names:
+    for name, _person_id in _board_after(entries, officers):
         if name and name not in seen:
             seen.add(name)
             out.append(name)
+    return out
+
+
+def signatory_people(entries: list[dict], officers: list[dict]) -> list[tuple[str, str | None]]:
+    """`[(name, person_id)]`: the same signature lines as `signatories`, in the
+    same order, each with the person it belongs to (None for a line the portal
+    cannot attribute). `signatories` keeps returning names alone because its
+    callers and tests expect `list[str]`.
+
+    A person is one line even when a raw entry (which carries no display name)
+    stands in for them, so the identity is the person id when there is one, and
+    the name otherwise."""
+    seen, out = set(), []
+    for name, person_id in _board_after(entries, officers):
+        key = person_id or name
+        if name and key not in seen:
+            seen.add(key)
+            out.append((name, person_id))
     return out
 
 
@@ -291,8 +324,14 @@ def _rule(pdf: canvas.Canvas, top: float) -> None:
              stroke=0, fill=1)
 
 
-def render(case: dict, entity: dict, entries: list[dict], officers: list[dict]) -> bytes:
-    """The PDF."""
+def render(case: dict, entity: dict, entries: list[dict], officers: list[dict],
+           signatures: dict[str, bytes] | None = None) -> bytes:
+    """The PDF.
+
+    `signatures` is `{person_id: PNG}`, OFF by default: only a caller rendering a
+    resolution the client has CONFIRMED passes it (`signatures.images_for`), and
+    the send never does, so a draft is unsigned by definition. Each director on
+    a signature line who has a picture gets it printed on their rule."""
     for name in (REGULAR, BOLD, CJK):
         _font(name)
     company = (str(entity.get("company_name") or "").strip()
@@ -329,7 +368,7 @@ def render(case: dict, entity: dict, entries: list[dict], officers: list[dict]) 
     for _ in range(5):
         page.blank()
     page.line(f"Dated: {dated(entries) or '_' * 20}")
-    for n, name in enumerate(signatories(entries, officers)):
+    for n, (name, person_id) in enumerate(signatory_people(entries, officers)):
         # A block is its spacing plus the rule, the name and 'Director' (review
         # finding 4): 4 + 3 lines for the first, 3 + 3 after.
         if not page.room_for(7 if n == 0 else 6):
@@ -338,7 +377,23 @@ def render(case: dict, entity: dict, entries: list[dict], officers: list[dict]) 
         for _ in range(4 if n == 0 else 3):
             page.blank()
         page.line(SIGNATURE_RULE, x=SIGNATURE_X)
+        if signatures and person_id in signatures:
+            _sign(pdf, signatures[person_id], page.y)
         page.line(f"Name: {name}", x=SIGNATURE_X)
         page.line("Director", x=SIGNATURE_X)
     pdf.save()
     return buffer.getvalue()
+
+
+def _sign(pdf: canvas.Canvas, png: bytes, rule_baseline: float) -> None:
+    """Draw one director's picture ON their rule: left edge at the rule's,
+    bottom just above the underscores' baseline, scaled to fit the room the
+    blank lines above the rule leave (never beyond 1 pixel : 1 point). A picture
+    that will not draw is left off; the rule stays for a pen."""
+    try:
+        img = stamp.prepared(png)
+        w, h = stamp.fit(img.width, img.height, _width(SIGNATURE_RULE, REGULAR), SIGN_HEIGHT)
+        pdf.drawImage(ImageReader(img), SIGNATURE_X, PAGE_H - rule_baseline + SIGN_LIFT,
+                      width=w, height=h, mask="auto")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[resolution] a signature could not be drawn: {exc}", file=sys.stderr)

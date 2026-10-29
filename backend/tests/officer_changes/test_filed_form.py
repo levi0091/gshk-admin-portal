@@ -67,3 +67,18 @@ def test_nothing_it_does_can_raise(over):
     out, _, _, update = _save(**over)
     assert set(out) == {"error"} and out["error"]
     update.assert_not_called()
+
+
+def test_the_filed_copy_carries_the_signatures_the_director_drew():
+    """e-signature-nd2: the signed copy saved to the company's documents is the
+    same confirmed form, so it prints the picture. `for_form` gets the case."""
+    mark = object()
+    with patch.object(filed_form.signed_copies, "for_form", return_value=mark) as for_form:
+        _, rendered, _, _ = _save()
+    for_form.assert_called_once_with(CASE)
+    assert rendered.call_args.kwargs["signatures"] is mark
+
+
+def test_a_filed_copy_with_nothing_signed_is_rendered_unsigned():
+    _, rendered, _, _ = _save()
+    assert rendered.call_args.kwargs["signatures"] is None

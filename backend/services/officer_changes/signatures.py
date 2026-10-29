@@ -31,7 +31,7 @@ from PIL import Image, ImageChops
 
 from db.supabase import get_supabase
 from services import nar1_approvals
-from services.officer_changes import cases
+from services.officer_changes import cases, resolution
 
 _TABLE = "officer_change_signatures"
 
@@ -109,27 +109,16 @@ def _is_current_director(sb, entity_id: str, person_id: str) -> bool:
     return bool(rows)
 
 
-def _signs_resolution(sb, entity_id: str, entries: list[dict], person_id: str) -> bool:
+def _signs_resolution(entity_id: str, entries: list[dict], person_id: str) -> bool:
     """Is this person on the written resolution's signature lines?
 
-    The same rule as `resolution.signatories`: every director in office AFTER
-    the changes — those staying, then those appointed — and, with nobody left,
-    the directors in office before. Not shared with that function because it
-    returns display names and its tests assert `list[str]`; kept beside it in
-    meaning, so change both together.
-    """
-    leaving = {e.get("officer_id") for e in entries
-               if e.get("kind") == "cessation" and e.get("officer_id")}
-    directors = (sb.table("entity_officers").select("id,person_id")
-                 .eq("entity_id", entity_id).eq("is_current", True)
-                 .eq("role", "director").execute().data) or []
-    staying = {d.get("person_id") for d in directors if d["id"] not in leaving}
-    incoming = {e.get("person_id") for e in entries
-                if e.get("kind") == "appointment" and e.get("capacity") == "director"}
-    after = {p for p in staying | incoming if p}
-    if not after:
-        after = {d.get("person_id") for d in directors if d.get("person_id")}
-    return person_id in after
+    Asked of `resolution.signatory_people`, the sibling of the function that
+    draws those lines, so there is one rule for who signs and the pad can never
+    be offered to someone the resolution has no line for. The officers it reads
+    are the pickers' own list (`cases._current_officers`), named and carrying
+    their person ids."""
+    officers = cases._current_officers(entity_id, entries)
+    return person_id in {pid for _name, pid in resolution.signatory_people(entries, officers)}
 
 
 def must_sign(case: dict, person_id) -> bool:
@@ -159,7 +148,7 @@ def must_sign(case: dict, person_id) -> bool:
         if any(e.get("kind") == "appointment" and e.get("capacity") == "director"
                and e.get("person_id") == person_id for e in entries):
             return True
-        return _signs_resolution(sb, entity_id, entries, person_id)
+        return _signs_resolution(entity_id, entries, person_id)
     except Exception as exc:  # noqa: BLE001 — see the module docstring
         print(f"[signatures] must_sign failed: {exc}", file=sys.stderr)
         return False
