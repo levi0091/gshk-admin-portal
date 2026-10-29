@@ -14,7 +14,7 @@ on a validated form the XML's own name is used when none is given.
 from __future__ import annotations
 
 from services.nar1_form import fill as nar1_fill
-from services.officer_change_form import kit
+from services.officer_change_form import kit, stamp
 
 FORM_CODES = ("Nd2a", "Nd2b")
 FormFillError = kit.FormFillError
@@ -70,15 +70,22 @@ def render_fields(form_code: str, form_xml: str, *, section5_confirmed: bool = F
 
 def render(form_code: str, form_xml: str, *, section5_confirmed: bool = False,
            submitted_on="", presenter: dict | None = None,
-           public_only: bool = False, company_name: str | None = None) -> bytes:
-    """The flat PDF."""
+           public_only: bool = False, company_name: str | None = None,
+           signatures: "stamp.Signatures | None" = None) -> bytes:
+    """The flat PDF.
+
+    `signatures` is OFF by default and only a caller that is rendering a form the
+    client has CONFIRMED passes it (`officer_changes.signed_copies`). The send
+    must never: it renders the draft before the revision moves on, so a stamp
+    there would print the previous revision's signatures on the next draft."""
     module, pages, strike = _composed(form_code, form_xml, company_name=company_name,
                                       submitted_on=submitted_on, presenter=presenter,
                                       public_only=public_only)
     filled = kit.fill(module.TEMPLATE, [(page, values) for page, values, _s in pages])
-    return kit.bake(filled, sizes=module.m.FIELD_SIZES,
+    flat = kit.bake(filled, sizes=module.m.FIELD_SIZES,
                     regular=module.m.REGULAR_WEIGHT_FIELDS,
                     centred=module.m.CENTRED_FIELDS, strike=strike)
+    return stamp.stamp(flat, form_code, pages, signatures)
 
 
 def page_plan(form_code: str, form_xml: str, *, public_only: bool = False) -> list[dict]:

@@ -46,7 +46,7 @@ from services.audit_service import log_event
 from services.nar1_form import fill as nar1_form_fill
 from services.officer_change_form import render as render_officer_form
 from services.officer_changes import cases as officer_cases
-from services.officer_changes import resolution
+from services.officer_changes import resolution, signatures, signed_copies
 
 TEMPLATE = "approval_receipt"
 ACTOR = "G-FlowDesk (automatic)"
@@ -113,9 +113,12 @@ async def _render_form(case: dict, entity: dict, xml: str) -> bytes:
             submitted_on=submitted_on,
             incorporated_on=entity.get("incorporation_date"))
     name = "  ".join(p for p in (entity.get("company_name"), entity.get("company_name_zh")) if p)
+    # The client CONFIRMED this form, so the copy they get back carries the
+    # signature they drew (e-signature-nd2). None when nobody signed, or when
+    # anything about it cannot be read: today's unsigned copy.
     return await asyncio.to_thread(
         render_officer_form, form_code, xml, company_name=name, public_only=False,
-        submitted_on=submitted_on)
+        submitted_on=submitted_on, signatures=signed_copies.for_form(case))
 
 
 async def documents(case: dict, entity: dict, approval: dict) -> tuple[list, list]:
@@ -139,7 +142,7 @@ async def documents(case: dict, entity: dict, approval: dict) -> tuple[list, lis
             data = await officer_cases.composite(case["id"], user=None)
             files.append((name, await asyncio.to_thread(
                 resolution.render, case, entity, data.get("entries") or [],
-                data.get("officers") or [])))
+                data.get("officers") or [], signatures=signatures.images_for(case))))
         except Exception as exc:  # noqa: BLE001
             failures.append({"file": name, "reason": str(exc)})
     return files, failures

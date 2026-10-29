@@ -23,6 +23,7 @@ import sys
 
 from services import document_service, nar1_cases
 from services.officer_change_form import render as render_form
+from services.officer_changes import signed_copies
 
 _PREFIX = {"Nd2a": "ND2A", "Nd2b": "ND2B"}
 
@@ -41,7 +42,8 @@ async def save(case: dict, user: dict) -> dict:
                                      entity.get("company_name_zh")) if p)
         pdf = await asyncio.to_thread(
             render_form, case["form_code"], xml, company_name=name, public_only=False,
-            submitted_on=nar1_cases.filed_on(filing, case))
+            submitted_on=nar1_cases.filed_on(filing, case),
+            signatures=signed_copies.for_form(case))
         case_no = case.get("case_no") or case["id"]
         file_name = f"{form}-{case_no}-signed.pdf"
         document = await document_service.upload_document(

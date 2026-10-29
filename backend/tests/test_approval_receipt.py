@@ -113,6 +113,47 @@ async def test_a_document_that_will_not_render_is_left_off_not_fatal():
 
 
 # --------------------------------------------------------------------------- #
+#  The director's drawn signature on the copies they are sent back
+#  (e-signature-nd2 ticket 02, spec section 6 test 7)
+# --------------------------------------------------------------------------- #
+
+async def test_an_nd2a_receipt_carries_the_signed_form_and_the_signed_resolution():
+    mark = object()
+    images = {"P1": b"png"}
+    with _Stack(_renderers()) as (_n, form, res, _f, _c), \
+            patch("services.approval_receipt.signed_copies.for_form",
+                  return_value=mark) as for_form, \
+            patch("services.approval_receipt.signatures.images_for", return_value=images):
+        await receipt.documents(ND2A, ENTITY, {**APPROVAL, "revision": 1})
+    for_form.assert_called_once_with(ND2A)
+    assert form.call_args.kwargs["signatures"] is mark
+    assert res.call_args.kwargs["signatures"] == images
+
+
+async def test_an_nd2b_receipt_carries_the_signed_form():
+    mark = object()
+    with _Stack(_renderers()) as (_n, form, *_), \
+            patch("services.approval_receipt.signed_copies.for_form", return_value=mark):
+        await receipt.documents(ND2B, ENTITY, {**APPROVAL, "revision": 1})
+    assert form.call_args.kwargs["signatures"] is mark
+
+
+async def test_a_nar1_receipt_is_never_given_signatures():
+    with _Stack(_renderers()) as (render, *_), \
+            patch("services.approval_receipt.signed_copies.for_form") as for_form:
+        await receipt.documents(NAR1, ENTITY, APPROVAL)
+    for_form.assert_not_called()
+    assert "signatures" not in render.call_args.kwargs
+
+
+async def test_a_case_with_no_signatures_is_rendered_as_it_always_was():
+    with _Stack(_renderers()) as (_n, form, res, *_):
+        await receipt.documents(ND2A, ENTITY, {**APPROVAL, "revision": 1})
+    assert form.call_args.kwargs["signatures"] is None
+    assert not res.call_args.kwargs["signatures"]
+
+
+# --------------------------------------------------------------------------- #
 #  Naming what is being confirmed (nd2-change-requests PRD section 6, tests 8 and 10)
 # --------------------------------------------------------------------------- #
 

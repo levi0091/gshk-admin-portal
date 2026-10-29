@@ -29,7 +29,7 @@ from services.audit_service import log_event
 from services.officer_change_form import FormFillError, render as render_form
 from services.officer_changes import (
     cases as svc, documents, emails, eservice, prepare,
-    recipients as recipients_svc, resolution,
+    recipients as recipients_svc, resolution, signatures, signed_copies,
 )
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms.cr_vocabularies import CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL
@@ -491,8 +491,11 @@ async def resolution_preview(case_id: str,
                                   "reason": "nd2a_only"})
     data = await svc.composite(case_id, user=user)
     entity = nar1_cases.entity_for(case["entity_id"]) or {}
+    # The resolution a director has confirmed carries their drawn signature
+    # (e-signature-nd2); `images_for` is empty until the client has approved.
     pdf = await asyncio.to_thread(resolution.render, case, entity, data.get("entries") or [],
-                                  data.get("officers") or [])
+                                  data.get("officers") or [],
+                                  signatures=signatures.images_for(case))
     return Response(pdf, media_type="application/pdf", headers={
         "Content-Disposition": f'inline; filename="{resolution.file_name(case)}"'})
 
@@ -541,12 +544,15 @@ async def _form_xml(case: dict, filing: dict | None) -> str:
     return await prepare.build_form_xml(case, svc.list_entries(case["id"]))
 
 
-async def _render(case: dict, xml: str, filing: dict | None, *, public_only: bool) -> bytes:
+async def _render(case: dict, xml: str, filing: dict | None, *, public_only: bool,
+                  signatures=None) -> bytes:
+    """`signatures` is for a form the client has CONFIRMED and is passed only by
+    `preview`; the send never passes it, so a draft is unsigned by definition."""
     entity = nar1_cases.entity_for(case["entity_id"]) or {}
     name = "  ".join(p for p in (entity.get("company_name"), entity.get("company_name_zh")) if p)
     return await asyncio.to_thread(
         render_form, case["form_code"], xml, company_name=name, public_only=public_only,
-        submitted_on=nar1_cases.filed_on(filing, case))
+        submitted_on=nar1_cases.filed_on(filing, case), signatures=signatures)
 
 
 @router.get("/{case_id}/preview")
@@ -561,7 +567,8 @@ async def preview(case_id: str, audience: str = Query("client"),
     filing = nar1_cases.current_filing(case_id)
     try:
         xml = await _form_xml(case, filing)
-        pdf = await _render(case, xml, filing, public_only=audience == "public")
+        pdf = await _render(case, xml, filing, public_only=audience == "public",
+                            signatures=signed_copies.for_form(case))
     except prepare.MappingError as exc:
         raise _problems(exc)
     except FormFillError as exc:
