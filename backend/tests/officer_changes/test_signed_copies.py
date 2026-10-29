@@ -91,6 +91,16 @@ def test_two_directors_who_print_as_the_same_name_are_not_told_apart(db):
     assert signed_copies.for_form(_case()) is None
 
 
+def test_a_same_named_director_who_did_not_sign_still_blocks_the_name(db):
+    """P2 signed, P4 did not, and both print as WONG SIU MING. Keyed by name,
+    P2's picture would match P4's consent box as well — one director's
+    signature on another's consent in a statutory copy. Neither is printed."""
+    _entry(db, "director", "P2")
+    _entry(db, "director", "P4")
+    _signed(db, "P2")
+    assert signed_copies.for_form(_case()) is None
+
+
 def test_a_natural_person_signatory_who_signed_gets_the_page_3_box(db):
     db.tables["company_secretaries"].append(
         {"id": "S1", "entity_id": "E1", "is_gshk": False, "is_current": True,

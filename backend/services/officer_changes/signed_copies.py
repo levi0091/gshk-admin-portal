@@ -35,15 +35,18 @@ def for_form(case: dict) -> stamp.Signatures | None:
             return None
         out = stamp.Signatures()
         if case.get("form_code") == "Nd2a":
+            # EVERY incoming director, signed or not: the same-name guard has to
+            # see the one who did not sign, or a signer's image would match that
+            # person's box too and print there.
             incoming = [e["person_id"] for e in cases.list_entries(case["id"])
                         if e.get("kind") == "appointment" and e.get("capacity") == "director"
-                        and e.get("person_id") in images]
+                        and e.get("person_id")]
             seen: dict = {}
             for person_id, person in cases._by_id("persons", incoming).items():
                 key = stamp.Signatures.key(*nd2a_mapper.english_name(person))
                 # Two directors who print as the same name cannot be told apart
                 # by it, so neither is printed rather than one in the other's box.
-                seen[key] = None if key in seen else images[person_id]
+                seen[key] = None if key in seen else images.get(person_id)
             out.consents = {k: v for k, v in seen.items() if v}
         name, is_corporate, person_id = cases._signatory_row(case["entity_id"])
         if person_id and not is_corporate and person_id in images:
