@@ -142,3 +142,39 @@ describe('AddPersonModal — the fields that were missing', () => {
     }))
   })
 })
+
+// PRD §8 test 11 (nd2-change-requests): the New Person modal offers the same
+// "do not print this email" checkbox as the profile ("Add and Edit offer the
+// SAME fields"), and what it sends is a real boolean.
+describe('AddPersonModal — hide email on forms', () => {
+  it('offers the checkbox beside Email, unticked', () => {
+    renderModal()
+    const box = screen.getByLabelText('Do not print this email on forms (NAR1, ND2A, ND2B)')
+    expect(box).toHaveAttribute('type', 'checkbox')
+    expect(box).not.toBeChecked()
+  })
+
+  it('posts hide_email_on_forms as the boolean true when ticked', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
+    await user.type(screen.getByLabelText('Email Address'), 'chan@example.com')
+    await user.click(screen.getByLabelText(/Do not print this email on forms/))
+    await user.click(screen.getByRole('button', { name: 'Create Person' }))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/persons', {
+      full_name: 'Chan Tai Man', email: 'chan@example.com', hide_email_on_forms: true,
+    }))
+    expect(api.post.mock.calls[0][1].hide_email_on_forms).toBe(true)
+  })
+
+  it('does not treat a ticked-then-unticked box as something worth protecting', async () => {
+    const user = userEvent.setup()
+    const { container } = renderModal()
+    const box = screen.getByLabelText(/Do not print this email on forms/)
+    await user.click(box)
+    await user.click(box)
+    await user.click(container.querySelector('.overlay'))
+    expect(onClose).toHaveBeenCalled()
+  })
+})

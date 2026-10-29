@@ -145,8 +145,44 @@ function CompanyPicker({ title, companies, initial, locked = [], lockedNote, not
   )
 }
 
+/** Fill the form from one of the person's residential addresses (nd2-change-
+ * requests §3). Every field, so what was typed is overwritten -- a half-copy
+ * that kept an old building name would file an address that never existed.
+ * A button for one address; with several, a dropdown that names each on one
+ * line and a Copy button, since the choice has to be made before the copy. */
+function CopyFromResidential({ entries, lookups, onCopy }) {
+  const [chosen, setChosen] = useState(0)
+  const copy = entry => onCopy(Object.fromEntries(
+    ADDRESS_KEYS.map(k => [k, entry.address?.[k] ?? ''])))
+  const label = 'Copy from residential address'
+  if (entries.length === 1) {
+    return (
+      <div className="pb-copy" style={{ marginBottom: 12 }}>
+        <button type="button" className="btn btn-outline btn-sm" onClick={() => copy(entries[0])}>
+          {label}
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div className="pb-copy f-group" style={{ marginBottom: 12 }}>
+      <label className="f-label" htmlFor="pb_copy_from">{label}</label>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <select id="pb_copy_from" className="f-select" value={chosen}
+                onChange={e => setChosen(Number(e.target.value))}>
+          {entries.map((e, i) => (
+            <option key={e.address_id} value={i}>{oneLine(e.address, lookups)}</option>
+          ))}
+        </select>
+        <button type="button" className="btn btn-outline btn-sm"
+                onClick={() => copy(entries[chosen])}>Copy</button>
+      </div>
+    </div>
+  )
+}
+
 function AddressForm({ title, kind, companies, start, usedBy, correcting, lookups, onSave,
-                       onClose }) {
+                       onClose, copyFrom = [] }) {
   const [draft, setDraft] = useState({ ...EMPTY, ...(start || {}) })
   const [picked, setPicked] = useState([])
   const [makeDefault, setMakeDefault] = useState(false)
@@ -174,6 +210,10 @@ function AddressForm({ title, kind, companies, start, usedBy, correcting, lookup
         {busy ? 'Saving…' : correcting ? 'Save correction' : 'Add address'}
       </button>
     </>}>
+      {copyFrom.length > 0 && (
+        <CopyFromResidential entries={copyFrom} lookups={lookups}
+                             onCopy={fields => setDraft(d => ({ ...d, ...fields }))} />
+      )}
       <AddressBlock value={draft} lookups={lookups}
                     onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
       {correcting ? (
@@ -302,6 +342,7 @@ function AddressGroup({ kind, book, canEdit, lookups, contract, write }) {
       {open?.type === 'new' && (
         <AddressForm title={`New ${kind} address`} kind={kind} companies={companies}
                      lookups={lookups} onClose={() => setOpen(null)}
+                     copyFrom={residential ? [] : (book.residential || [])}
                      onSave={body => write(api.post(`/persons/${book.personId}/addresses`, body))
                        .then(() => setOpen(null))} />
       )}

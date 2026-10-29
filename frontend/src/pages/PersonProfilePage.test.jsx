@@ -304,6 +304,64 @@ describe('PersonProfilePage', () => {
  * same field, and an operator reading the form and the screen side by side
  * had no way to know that.
  */
+// PRD §8 test 11 (nd2-change-requests): the checkbox saves a real boolean, and
+// the read-only line says it in words when set.
+describe('PersonProfilePage — hide email on forms', () => {
+  const openEdit = async user => {
+    const card = (await screen.findByText('Personal Information')).closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+    return card
+  }
+
+  it('shows "Email hidden on forms" read-only only when the flag is set', async () => {
+    mockGet({ ...PERSON, hide_email_on_forms: true })
+    renderPage()
+    await screen.findByText('Personal Information')
+    expect(screen.getByText('Email hidden on forms')).toBeInTheDocument()
+  })
+
+  it('says nothing about it for a person whose email is printed', async () => {
+    mockGet({ ...PERSON, hide_email_on_forms: false })
+    renderPage()
+    await screen.findByText('Personal Information')
+    expect(screen.queryByText('Email hidden on forms')).not.toBeInTheDocument()
+  })
+
+  it('ticking it PATCHes the real boolean true, and only that', async () => {
+    const user = userEvent.setup()
+    mockGet({ ...PERSON, hide_email_on_forms: false })
+    renderPage()
+    const card = await openEdit(user)
+    await user.click(screen.getByLabelText('Do not print this email on forms (NAR1, ND2A, ND2B)'))
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/persons/p1', { hide_email_on_forms: true }))
+    expect(api.patch.mock.calls[0][1].hide_email_on_forms).toBe(true)
+  })
+
+  it('unticking it PATCHes the boolean false rather than dropping it', async () => {
+    const user = userEvent.setup()
+    mockGet({ ...PERSON, hide_email_on_forms: true })
+    renderPage()
+    const card = await openEdit(user)
+    const box = screen.getByLabelText(/Do not print this email on forms/)
+    expect(box).toBeChecked()
+    await user.click(box)
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/persons/p1', { hide_email_on_forms: false }))
+  })
+
+  it('sends nothing when the box is left as it was, even if the API omits the field', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = await openEdit(user)
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByLabelText('Full Name')).toBeNull())
+    expect(api.patch).not.toHaveBeenCalled()
+  })
+})
+
 describe('PersonProfilePage — the CR form fields', () => {
   const openEdit = async (user) => {
     await screen.findByText('Personal Information')

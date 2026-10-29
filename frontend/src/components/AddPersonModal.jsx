@@ -36,6 +36,11 @@ const FIELDS = [
   { key: 'place_of_birth', label: 'Place of Birth', lookup: 'cr_country' },
   { key: 'occupation', label: 'Occupation' },
   { key: 'email', label: 'Email Address', type: 'email' },
+  // Leaves this person's email off every form we file or print (NAR1, ND2A,
+  // ND2B). The same wording as the profile's, so the two cannot disagree about
+  // what the box says (PRD nd2-change-requests §1).
+  { key: 'hide_email_on_forms', label: 'Do not print this email on forms (NAR1, ND2A, ND2B)',
+    type: 'checkbox', full: true },
   { key: 'phone', label: 'Phone' },
   // A TCSP licence held by an individual (migration 038).
   { key: 'tcsp_licence_no', label: 'TCSP Licence No.' },
@@ -50,7 +55,8 @@ export default function AddPersonModal({ onClose, onCreated }) {
 
   // Nothing here is pre-filled, so any value at all means the operator typed
   // something worth protecting (UAT F-1).
-  const isDirty = Object.values(form).some(v => v !== '' && v != null)
+  // A box ticked and then unticked is `false`, which is the untouched state.
+  const isDirty = Object.values(form).some(v => v !== '' && v != null && v !== false)
   const guard = useDiscardGuard(isDirty, onClose)
 
   function validate() {
@@ -68,7 +74,9 @@ export default function AddPersonModal({ onClose, onCreated }) {
     setSaving(true)
     setApiError('')
     const body = Object.fromEntries(
-      Object.entries(form).filter(([, v]) => v !== '' && v != null)
+      // `false` is the column's default, so only a ticked box is sent -- and
+      // as a real boolean, which is what the API's StrictBool insists on.
+      Object.entries(form).filter(([, v]) => v !== '' && v != null && v !== false)
     )
     try {
       onCreated(await api.post('/persons', body))
