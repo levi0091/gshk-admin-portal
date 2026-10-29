@@ -20,6 +20,11 @@ form, not their own passport scan. A document that cannot be rendered is left
 off and named in the audit row; the receipt still goes, and lists only what it
 carries.
 
+WHAT IT NAMES (Levi 2026-10-29). Every document the client confirmed, by title
+in the stamp's Documents row, from `confirmed_documents` — the same list the
+Confirm & File page shows — whether or not its attachment rendered. The
+Attached box still lists only files actually attached.
+
 HOW. A FastAPI background task, after the confirmation page has been returned:
 the director never waits on a PDF render or on Resend. It NEVER raises —
 everything is caught and printed to stderr, because by the time it runs the
@@ -65,6 +70,36 @@ def _form_file_name(case: dict, revision: int) -> str:
     prefix = _PREFIX.get(case.get("form_code") or "Nar1", "NAR1")
     return (f"{prefix}-{case.get('case_no') or case['id']}"
             f"{f'-Rev{revision}' if revision >= 2 else ''}.pdf")
+
+
+RESOLUTION_TITLE = "Written resolution of the directors"
+
+
+def confirmed_documents(case: dict, approval: dict) -> list[dict]:
+    """What the client is confirming: `[{"title", "file_name"}]`, one per document.
+
+    THE ONE LIST behind the Confirm & File page ("You are confirming") and the
+    receipt's Documents row (nd2-change-requests PRD section 6, Levi 2026-10-29),
+    so the page, the receipt and the verification email's attachments cannot
+    name three different sets. PURE: no I/O, so a page render never waits on a
+    PDF, and the receipt can name a document whose attachment failed to render.
+
+    `approval` is the link's own row, because the revision is the link's before
+    it is the case's (`_revision`): a director who confirmed Rev. 1 is not told
+    they confirmed Rev. 2. File names come from `_form_file_name` and
+    `resolution.file_name`, which MIRROR the send's inline names rather than
+    being the code that builds them — `test_approval_receipt.py` pins the three
+    forms against the send's formulas. An ND2A is always sent with its written
+    resolution (Levi 2026-10-05), which carries no revision of its own.
+    """
+    form_code = case.get("form_code") or "Nar1"
+    revision = _revision(case, approval or {})
+    year = case.get("ar_period_year") if form_code == "Nar1" else None
+    docs = [{"title": email_service.confirmed_form_title(form_code, year, revision),
+             "file_name": _form_file_name(case, revision)}]
+    if form_code == "Nd2a":
+        docs.append({"title": RESOLUTION_TITLE, "file_name": resolution.file_name(case)})
+    return docs
 
 
 async def _render_form(case: dict, entity: dict, xml: str) -> bytes:
@@ -122,11 +157,14 @@ async def send(case_id: str, approval: dict) -> None:
         entity = nar1_cases.entity_for(case["entity_id"]) or {}
         files, failures = await documents(case, entity, approval)
         names = [name for name, _ in files]
+        # Every document, by title — including one that would not render and
+        # so is not in `names`.
+        titles = [d["title"] for d in confirmed_documents(case, approval)]
         subject, html = email_service.approval_receipt_email(
             case, entity, form_code=case.get("form_code") or "Nar1",
             confirmed_by=approval.get("recipient_name"), confirmed_email=recipient,
             confirmed_at=approval.get("responded_at"),
-            revision=_revision(case, approval), attachments=names)
+            revision=_revision(case, approval), attachments=names, documents=titles)
         # The same three headers as the verification letter; outside
         # production `send` itself redirects the recipient and drops the copy.
         sent = await asyncio.to_thread(
@@ -157,6 +195,7 @@ async def send(case_id: str, approval: dict) -> None:
                 "cc": sent.get("cc"),
                 "intended_cc": sent.get("intended_cc"),
                 "redirected": bool(sent.get("redirected")),
+                "documents": titles,
                 "attachments": names,
                 "attachment_failures": failures,
             })

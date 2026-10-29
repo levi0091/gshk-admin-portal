@@ -1267,15 +1267,35 @@ def _hk_moment(value) -> tuple[str, str]:
     return hkt.strftime("%d %B %Y"), hkt.strftime("%H:%M")
 
 
+def confirmed_form_title(form_code: str, year=None, revision=None) -> str:
+    """"Form NAR1 — Annual Return 2026 (Rev. 2)": what a client is told they are
+    confirming, on the Confirm & File page and in the receipt alike.
+
+    Built from `_RECEIPT_FORMS`, so the form's name has one owner. The year is
+    the NAR1's (an ND2 has none), and the revision rides as `revision_label`
+    renders it everywhere else, unmarked on the first send.
+    """
+    code, what = _RECEIPT_FORMS.get(form_code, _RECEIPT_FORMS["Nar1"])
+    rev = revision_label(revision)
+    return (f"Form {code} — {what}" + (f" {year}" if year else "")
+            + (f" ({rev})" if rev else ""))
+
+
 def approval_receipt_email(case: dict, entity: dict, *, form_code: str,
                            confirmed_by: str | None, confirmed_email: str | None,
                            confirmed_at, revision=None,
-                           attachments=()) -> tuple[str, str]:
+                           attachments=(), documents=()) -> tuple[str, str]:
     """The receipt for a client's own Confirm & File: subject and HTML body.
 
     `confirmed_at` is the claim's `responded_at` (an ISO string or a datetime);
     `attachments` names the files the caller attached, which this message lists
     and counts — it must not promise a copy it does not carry.
+
+    `documents` is the TITLES of everything the client confirmed
+    (`approval_receipt.confirmed_documents`), listed in the stamp's ledger
+    whether or not each one could be attached: the confirmation is of the
+    documents, and a PDF that failed to render does not make it a confirmation
+    of fewer. The Attached box below is unchanged and still lists only files.
     """
     code, what = _RECEIPT_FORMS.get(form_code, _RECEIPT_FORMS["Nar1"])
     company = (entity.get("company_name") or "").strip()
@@ -1311,7 +1331,11 @@ def approval_receipt_email(case: dict, entity: dict, *, form_code: str,
     if confirmed_by and confirmed_email:
         who += (f'<br><span style="font-weight:400;color:{_T_BODY}">'
                 f"{esc(confirmed_email)}</span>")
+    titles = [str(t) for t in (documents or []) if t]
     rows = [("Confirmed by", who), ("Form", esc(form_line)),
+            # One title per line, in the same table cell as every other row:
+            # a <ul> is not something Outlook's Word engine can be trusted with.
+            ("Documents", "<br>".join(esc(t) for t in titles)),
             ("Our reference", esc(case_no))]
     ledger = "".join(
         f'<tr><td valign="top" width="128" style="width:128px;padding:10px 14px 0 0;'

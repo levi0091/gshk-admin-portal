@@ -67,6 +67,7 @@ from services import audit_subject
 # The receipt mailed after a press that claimed the approval (Levi 2026-10-17).
 # Bound by name so the suite can stub THIS binding (conftest) and still test
 # the service itself.
+from services.approval_receipt import confirmed_documents
 from services.approval_receipt import send as send_receipt
 
 router = APIRouter()
@@ -201,6 +202,14 @@ _PAGE = """<!doctype html>
   button {{ padding:13px 24px; border:0; border-radius:8px;
            background:#F36C32; color:#fff; font-size:16px; font-weight:600;
            cursor:pointer; }}
+  .conf-h {{ margin:0 0 8px; font-size:11px; letter-spacing:.07em;
+            text-transform:uppercase; color:#7C80A3; }}
+  .conf {{ margin:0 0 24px; padding:0; list-style:none; }}
+  .conf li {{ padding:10px 14px; margin-bottom:8px; border:1px solid #E2E4ED;
+             border-radius:8px; background:#FAFBFD; color:#1A2050;
+             font-weight:600; }}
+  .conf-file {{ display:block; margin-top:2px; font-size:13px; font-weight:400;
+               color:#7C80A3; word-break:break-all; }}
   .warn {{ border:1px solid #E2E4ED; border-radius:10px; overflow:hidden; }}
   .warn-top {{ display:flex; gap:14px; padding:20px 22px 18px; }}
   .warn-ico {{ flex:0 0 auto; line-height:0; padding-top:2px; }}
@@ -307,8 +316,26 @@ _WARNING_MARK = (
 )
 
 
+def _confirming(documents) -> str:
+    """The "You are confirming" list: each document by title, with the file name
+    it carries in the verification email.
+
+    Plain `<ul>` and escaped text, no script (the page runs none). Titles and
+    file names are built from the case, which holds free text, so every value
+    goes through `html.escape`. Empty when there is nothing to name, so a
+    caller that has no list still renders the page it always did.
+    """
+    items = "".join(
+        f'<li>{html.escape(str(d.get("title") or ""))}'
+        f'<span class="conf-file">{html.escape(str(d.get("file_name") or ""))}</span></li>'
+        for d in documents or () if d.get("title"))
+    if not items:
+        return ""
+    return f'<p class="conf-h">You are confirming</p><ul class="conf">{items}</ul>'
+
+
 def _ask(*, company: str, br_number: str, period: str, case_no: str,
-         deadline: str, revision: str = "") -> HTMLResponse:
+         deadline: str, revision: str = "", documents=()) -> HTMLResponse:
     """The confirmation page, carrying the approved warning panel.
 
     THE WARNING IS SHOWN ON ARRIVAL, not behind a first press. The mock draws
@@ -339,6 +366,7 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
     # attribute, not anywhere a "view source" or a copied page would carry it.
     body = (
         f"<dl>{ledger}</dl>"
+        f"{_confirming(documents)}"
         '<form method="post"><div class="warn">'
         f'<div class="warn-top"><div class="warn-ico">{_WARNING_MARK}</div>'
         '<div><p class="warn-h">Warning</p>'
@@ -465,7 +493,8 @@ async def show_approval(token: str, request: Request):
         case_no=case.get("case_no") or "",
         deadline=_hkt(row.get("expires_at")),
         # The LINK's revision, from its own row — a stale one never gets here.
-        revision=revision_label(row.get("revision"))))
+        revision=revision_label(row.get("revision")),
+        documents=confirmed_documents(case, row)))
 
 
 @router.post("/nar1-approval/{token}", response_class=HTMLResponse)
@@ -491,7 +520,8 @@ _FORM_TITLES = {"Nd2a": ("ND2A", "the change of company secretary and directors"
 
 
 def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no: str,
-                        deadline: str, revision: str = "") -> HTMLResponse:
+                        deadline: str, revision: str = "",
+                        documents=()) -> HTMLResponse:
     code, what = _FORM_TITLES.get(form_code, _FORM_TITLES["Nd2a"])
     # "Revision" from Rev. 2 only, exactly as NAR1's page (`_ask`).
     rows = [("Company", company), ("Business Registration No.", br_number),
@@ -501,6 +531,7 @@ def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no
                      for label, value in rows if value)
     body = (
         f"<dl>{ledger}</dl>"
+        f"{_confirming(documents)}"
         '<form method="post"><div class="warn">'
         f'<div class="warn-top"><div class="warn-ico">{_WARNING_MARK}</div>'
         '<div><p class="warn-h">Warning</p>'
@@ -547,7 +578,8 @@ async def show_officer_change_approval(token: str, request: Request):
             br_number=entity.get("br_number") or "",
             form_code=case.get("form_code"), case_no=case.get("case_no") or "",
             deadline=_hkt(row.get("expires_at")),
-            revision=revision_label(row.get("revision"))))
+            revision=revision_label(row.get("revision")),
+            documents=confirmed_documents(case, row)))
 
 
 @router.post("/officer-change-approval/{token}", response_class=HTMLResponse)
