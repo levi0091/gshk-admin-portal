@@ -237,6 +237,95 @@ describe('ParticularsByCompany', () => {
     expect(await screen.findByText('A company still uses this address.')).toBeInTheDocument()
   })
 
+  // PRD §8 test 13 (nd2-change-requests).
+  describe('Copy from residential address', () => {
+    const openNewCorrespondence = async user => {
+      const corr = await screen.findByRole('region', { name: 'Correspondence addresses' })
+      await user.click(within(corr).getByRole('button', { name: 'New' }))
+      return screen.getByRole('dialog', { name: 'New correspondence address' })
+    }
+    const onlyHome = { ...BOOK, residential: [BOOK.residential[0]] }
+
+    it('with one residential address is a button that fills every field', async () => {
+      const user = userEvent.setup()
+      get.mockResolvedValue({ ...onlyHome, residential: [{ ...onlyHome.residential[0],
+        address: { ...HOME, state_region: 'HK Island', postal_code: '999077' } }] })
+      renderCards()
+      const dialog = await openNewCorrespondence(user)
+      // Typed text is overwritten, not merged.
+      await user.type(within(dialog).getByLabelText('Flat/Floor/Block etc.'), 'typed first')
+      await user.click(within(dialog).getByRole('button', { name: 'Copy from residential address' }))
+      expect(within(dialog).getByLabelText(/^Flat\/Floor\/Block etc\./)).toHaveValue('Flat A, 10/F')
+      expect(within(dialog).getByLabelText(/^Building \(Name\)/)).toHaveValue('Harbour View')
+      expect(within(dialog).getByLabelText(/^Street\/Estate\/Lot\/Village etc\./)).toHaveValue("1 Queen's Road")
+      expect(within(dialog).getByLabelText('Country/Region')).toHaveValue('HK')
+      // Saved through the existing route, carrying the copied fields (including
+      // the two the block has no input for).
+      await user.click(within(dialog).getByRole('button', { name: 'Add address' }))
+      await waitFor(() => expect(post).toHaveBeenCalled())
+      expect(post.mock.calls[0][0]).toBe('/persons/p1/addresses')
+      expect(post.mock.calls[0][1]).toMatchObject({
+        kind: 'correspondence', line1: 'Flat A, 10/F', line2: 'Harbour View',
+        line3: "1 Queen's Road", city: 'CENTRAL', state_region: 'HK Island',
+        postal_code: '999077', country: 'HK' })
+    })
+
+    it('overwrites a field the chosen address leaves empty', async () => {
+      const user = userEvent.setup()
+      get.mockResolvedValue({ ...BOOK, residential: [BOOK.residential[1]] })
+      renderCards()
+      const dialog = await openNewCorrespondence(user)
+      await user.type(within(dialog).getByLabelText(/^Building \(Name\)/), 'old building')
+      await user.click(within(dialog).getByRole('button', { name: 'Copy from residential address' }))
+      expect(within(dialog).getByLabelText(/^Building \(Name\)/)).toHaveValue('')
+      expect(within(dialog).getByLabelText(/^Flat\/Floor\/Block etc\./)).toHaveValue('12 Rue de Rivoli')
+    })
+
+    it('with several offers a dropdown naming each on one line, then copies the chosen one', async () => {
+      const user = userEvent.setup()
+      renderCards()
+      const dialog = await openNewCorrespondence(user)
+      const pick = within(dialog).getByRole('combobox', { name: 'Copy from residential address' })
+      expect(within(pick).getAllByRole('option').map(o => o.textContent)).toEqual([
+        "Flat A, 10/F, Harbour View, 1 Queen's Road, CENTRAL, Hong Kong",
+        '12 Rue de Rivoli, PARIS 75001, France',
+        'Old Flat, CENTRAL, Hong Kong'])
+      await user.selectOptions(pick, '12 Rue de Rivoli, PARIS 75001, France')
+      await user.click(within(dialog).getByRole('button', { name: 'Copy' }))
+      expect(within(dialog).getByLabelText(/^Flat\/Floor\/Block etc\./)).toHaveValue('12 Rue de Rivoli')
+      expect(within(dialog).getByLabelText('Country/Region')).toHaveValue('FR')
+      expect(within(dialog).getByLabelText(/^District\/City/)).toHaveValue('PARIS')
+    })
+
+    it('is absent when the person has no residential address', async () => {
+      const user = userEvent.setup()
+      get.mockResolvedValue({ ...BOOK, residential: [] })
+      renderCards()
+      const dialog = await openNewCorrespondence(user)
+      expect(within(dialog).queryByText(/Copy from residential address/)).not.toBeInTheDocument()
+      expect(within(dialog).queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
+    })
+
+    it('is absent on the residential form itself', async () => {
+      const user = userEvent.setup()
+      renderCards()
+      const res = await screen.findByRole('region', { name: 'Residential addresses' })
+      await user.click(within(res).getByRole('button', { name: 'New' }))
+      const dialog = screen.getByRole('dialog', { name: 'New residential address' })
+      expect(within(dialog).queryByText(/Copy from residential address/)).not.toBeInTheDocument()
+    })
+
+    it('is absent when correcting an existing correspondence address', async () => {
+      const user = userEvent.setup()
+      renderCards()
+      const corr = await screen.findByRole('region', { name: 'Correspondence addresses' })
+      const entry = within(corr).getByText(/Room 1201/).closest('[data-entry]')
+      await user.click(within(entry).getByRole('button', { name: 'Edit' }))
+      const dialog = screen.getByRole('dialog', { name: 'Correct this address' })
+      expect(within(dialog).queryByText(/Copy from residential address/)).not.toBeInTheDocument()
+    })
+  })
+
   it('draws no control without persons (edit)', async () => {
     renderCards({ canEdit: false })
     await screen.findByRole('region', { name: 'Residential addresses' })

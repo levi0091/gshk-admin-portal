@@ -11,6 +11,27 @@ export default function FormField({ field, value, lookups, onChange }) {
   const { key, label, type, lookup, required, placeholder } = field
   const id = `f_${key}`
 
+  // A boolean (nd2-change-requests, review B4). It reports a REAL boolean --
+  // `e.target.checked`, never the string "true", which Python would read as
+  // true for "false" too -- and renders the label beside the box rather than
+  // above it, since the label IS the sentence the box answers.
+  if (type === 'checkbox') {
+    return (
+      <div className={`f-group${field.full ? ' full' : ''}`}>
+        <label className="f-label" htmlFor={id}
+               style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input
+            id={id}
+            type="checkbox"
+            checked={value === true}
+            onChange={e => onChange(key, e.target.checked)}
+          />
+          <span>{label}</span>
+        </label>
+      </div>
+    )
+  }
+
   const control = lookup ? (
     <select
       id={id}
@@ -50,6 +71,8 @@ export default function FormField({ field, value, lookups, onChange }) {
  * values still show rather than vanishing.
  */
 export function displayValue(field, value, lookups) {
+  // React prints `true` as nothing, so a ticked box needs words (review B4).
+  if (field.type === 'checkbox') return value === true ? 'Yes' : null
   if (value == null || value === '') return null
   if (!field.lookup) return value
   const values = lookups?.[field.lookup]

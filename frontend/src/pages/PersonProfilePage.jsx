@@ -64,6 +64,11 @@ const EDITABLE = [
   { key: 'place_of_birth', label: 'Place of Birth', lookup: 'cr_country' },
   { key: 'occupation', label: 'Occupation' },
   { key: 'email', label: 'Email Address' },
+  // Leaves the email off what we file with CR and print (NAR1, ND2A, ND2B) --
+  // nd2-change-requests §1. Read-only it appears only when set, and in words:
+  // "Email hidden on forms", not a row reading "Yes" under a long question.
+  { key: 'hide_email_on_forms', label: 'Do not print this email on forms (NAR1, ND2A, ND2B)',
+    readLabel: 'Email hidden on forms', type: 'checkbox', full: true, onlyWhenSet: true },
   { key: 'phone', label: 'Phone' },
   // A TCSP licence held by an INDIVIDUAL (migration 038). The Company Secretary
   // tile on every company profile prints "TCSP Licence No.", and it could only
@@ -308,15 +313,20 @@ export default function PersonProfilePage() {
     enabled: Boolean(person) && !person?.deleted_at,
   })
 
+  // What a field holds on the record, in the shape the draft holds it. A box
+  // is a boolean whether or not the API sent the key (an older deploy omits it).
+  const stored = (f, p) => (f.type === 'checkbox' ? p[f.key] === true : (p[f.key] ?? ''))
+
   function startEdit() {
-    setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, person[f.key] ?? ''])))
+    setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, stored(f, person)])))
     setEditing(true)
   }
 
   async function saveEdit() {
     setBusy(true)
     const changed = Object.fromEntries(
-      Object.entries(draft).filter(([k, v]) => (person[k] ?? '') !== v && v !== '')
+      EDITABLE.filter(f => stored(f, person) !== draft[f.key] && draft[f.key] !== '')
+        .map(f => [f.key, draft[f.key]])
     )
     try {
       if (Object.keys(changed).length) await api.patch(`/persons/${personId}`, changed)
@@ -599,8 +609,8 @@ export default function PersonProfilePage() {
               </div>
             ) : (
               <div className="kv-list">
-                {EDITABLE.filter(f => !f.onlyWhenSet || person[f.key]).map(f => (
-                  <Kv key={f.key} label={f.label}
+                {EDITABLE.filter(f => !f.onlyWhenSet || stored(f, person)).map(f => (
+                  <Kv key={f.key} label={f.readLabel || f.label}
                       warning={warnFor('persons', f.key, person[f.key])}>
                     {f.type === 'date'
                       ? formatDate(person[f.key])
