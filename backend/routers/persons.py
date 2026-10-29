@@ -9,7 +9,7 @@ import sys
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from middleware.auth import require_permission, has_permission
 from db.supabase import get_supabase
@@ -63,6 +63,9 @@ _EDITABLE_FIELDS = {
     # The two STORED inputs to a client's VIP status (migration 041). The
     # verdict itself is derived on read — see `vip_status`.
     "is_affiliated_agent", "is_vip_marked",
+    # Keeps this person's email off NAR1 / ND2A / ND2B (migration 058, Levi
+    # 2026-10-29). Not a CR particular, so it is not in TRACKED_PERSON_FIELDS.
+    "hide_email_on_forms",
 }
 
 #: "VIP clients are those who have more than three companies with us" (GSHK
@@ -175,6 +178,10 @@ class CreatePersonRequest(BaseModel):
     # be one on the day they are entered, and `extra = "forbid"` would 422 it.
     is_affiliated_agent: Optional[bool] = None
     is_vip_marked: Optional[bool] = None
+    # Add and Edit offer the same fields. StrictBool, not bool: plain `bool`
+    # coerces "false" and 1, and this is a flag whose wrong reading either puts
+    # an address on a statutory form or takes it off one.
+    hide_email_on_forms: Optional[StrictBool] = None
 
 
 class UpdatePersonRequest(BaseModel):
@@ -207,6 +214,9 @@ class UpdatePersonRequest(BaseModel):
     # None`, so un-flagging an agent or un-marking a VIP reaches the database.
     is_affiliated_agent: Optional[bool] = None
     is_vip_marked: Optional[bool] = None
+    # `False` survives the `is not None` filter below, so unticking reaches the
+    # database. Strict for the reason given on CreatePersonRequest.
+    hide_email_on_forms: Optional[StrictBool] = None
 
 
 def _person_subject(sb, person_id: str) -> dict:

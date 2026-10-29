@@ -434,3 +434,61 @@ def test_a_short_search_does_not_look_up_identity_numbers():
         client.get("/persons?search=K7654", headers=H)
     assert looked == [25]
     assert max(len(e) for e in ors) < 2000
+
+
+# -- hide_email_on_forms (PRD nd2-change-requests §1, test 4) -----------------------
+
+@pytest.mark.parametrize("new", [True, False])
+def test_hide_email_on_forms_is_editable_and_writes_one_audit_row(new):
+    """Both directions, as the VIP inputs: `False` is an answer, and the route
+    filters on `is not None`."""
+    field = "hide_email_on_forms"
+    current = {"id": "p1", "full_name": "Jane", "email": "j@example.com", field: not new}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.audit_subject.primary_id_number", return_value=None), \
+         patch("routers.persons.log_events", new=AsyncMock()) as audit:
+        sb = msb.return_value
+        sb.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = current
+        sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+            {**current, field: new}]
+        resp = client.patch("/persons/p1", json={field: new}, headers=H)
+    assert resp.status_code == 200
+    assert sb.table.return_value.update.call_args.args[0] == {field: new}
+    (event,) = audit.await_args.args[0]
+    assert event["action_type"] == "PERSON_FIELD_UPDATED"
+    assert event["before_state"] == {"field": field, "old": not new}
+    assert event["after_state"] == {"field": field, "new": new}
+
+
+@pytest.mark.parametrize("bad", ["false", "true", 1, 0, "yes"])
+def test_hide_email_on_forms_must_be_a_real_boolean(bad):
+    """`Optional[bool]` would coerce "false" and 1; StrictBool refuses them."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase"):
+        resp = client.patch("/persons/p1", json={"hide_email_on_forms": bad}, headers=H)
+    assert resp.status_code == 422
+
+
+def test_hide_email_on_forms_needs_persons_write():
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        msb.return_value.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        resp = client.patch("/persons/p1", json={"hide_email_on_forms": True}, headers=H)
+    assert resp.status_code == 403
+
+
+def test_a_new_person_can_be_created_with_the_email_hidden():
+    """Add and Edit offer the same fields (CLAUDE.md); `extra = forbid` would 422
+    an undeclared one."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.audit_subject.for_person", return_value={}), \
+         patch("routers.persons.log_event", new=AsyncMock()):
+        sb = msb.return_value
+        sb.table.return_value.insert.return_value.execute.return_value.data = [
+            {"id": "p9", "full_name": "Jane", "hide_email_on_forms": True}]
+        resp = client.post("/persons", json={"full_name": "Jane", "email": "j@example.com",
+                                             "hide_email_on_forms": True}, headers=H)
+    assert resp.status_code in (200, 201), resp.text
+    assert sb.table.return_value.insert.call_args.args[0]["hide_email_on_forms"] is True

@@ -209,3 +209,30 @@ def test_hkid_holder_is_unchanged():
     graph, entries = _director_world()
     bean = nd2a_mapper.map_case(graph, entries)["appOfNpBeans"][0]
     assert bean["indvHkidNo"] == "A123456" and bean["indvHkidChkDgt"] == "3"
+
+
+# -- hide_email_on_forms (PRD nd2-change-requests §1, test 2) -----------------------
+
+def test_a_hidden_email_is_blank_on_the_appointee_and_absent_from_the_xml():
+    graph, entries = _director_world()
+    pid = entries[0]["person_id"]
+    graph["persons"][pid]["email"] = "appointee@example.com"
+    shown = nd2a_mapper.map_case(graph, entries)["appOfNpBeans"][0]
+    assert shown["indvEmailAddr"] == "appointee@example.com"
+
+    graph["persons"][pid]["hide_email_on_forms"] = True
+    data = nd2a_mapper.map_case(graph, entries)
+    # The key stays (L223 always sets it) and is blank; the XML builder drops a
+    # blank, so CR is not told the address at all.
+    assert data["appOfNpBeans"][0]["indvEmailAddr"] == ""
+    xml = form_xml.build("Nd2a", data)
+    assert "appointee@example.com" not in xml and "indvEmailAddr" not in xml
+
+
+def test_an_unset_flag_leaves_the_email_filed():
+    graph, entries = _director_world()
+    pid = entries[0]["person_id"]
+    graph["persons"][pid]["email"] = "appointee@example.com"
+    graph["persons"][pid]["hide_email_on_forms"] = False
+    bean = nd2a_mapper.map_case(graph, entries)["appOfNpBeans"][0]
+    assert bean["indvEmailAddr"] == "appointee@example.com"

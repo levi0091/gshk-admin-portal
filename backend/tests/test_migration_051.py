@@ -63,7 +63,7 @@ def test_the_officer_changes_migration_follows_this_one_in_a_single_line():
     # removed) and 055 (date of death, e-Sign signed form). 050 revises 056, the
     # duplicate-submission hotfix that reached master first, which revises 051;
     # 057 restates the case view after both lines met.
-    assert script.get_heads() == ["057"]
+    assert script.get_heads() == ["058"]
     assert script.get_revision("057").down_revision == "055"
     assert script.get_revision("050").down_revision == "056"
     assert script.get_revision("056").down_revision == "051"
