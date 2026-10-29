@@ -1,5 +1,6 @@
 import base64
 import re
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -204,3 +205,65 @@ def test_consent_signature_targets_a_director_tag(pem):
         uri="#S1", sign_id="S1", rand=RAND, gcm_key=GCM_KEY,
     )
     assert '<cr:PinSign URI="#S1">' in xml
+
+
+# -- signing_public_key_pem: the certificate CR signs its validate reply with --
+#
+# The fixture is the verbatim inner text of <ds:X509Certificate> from a PROD
+# validateForm reply of 2026-10-26: CR's own public encipherment certificate,
+# carrying no client data. From that date CR wraps the base64 at 76 characters
+# with "&#13;" and a newline; before it, the value was one unbroken line, and
+# the wrapped form failed signing on PROD with an asn1 ParseError at
+# TbsCertificate::issuer.
+
+_WRAPPED_CERT = (
+    Path(__file__).parent.parent / "fixtures" / "cr-signing-cert-wrapped-2026-10-26.txt"
+).read_text()
+
+
+def _validated(cert_text):
+    return (
+        '<cr:validateFormNar1Response xmlns:cr="x" xmlns:ds="y">'
+        "<ds:Signature><ds:SignatureValue>AAAA</ds:SignatureValue>"
+        f"<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{cert_text}"
+        "</ds:X509Certificate></ds:X509Data></ds:KeyInfo></ds:Signature>"
+        "</cr:validateFormNar1Response>"
+    )
+
+
+def _single_line():
+    return re.sub(r"&#13;|\s+", "", _WRAPPED_CERT)
+
+
+def test_crs_wrapped_certificate_with_carriage_return_references_parses():
+    from cryptography import x509
+
+    pem_text = crypto.signing_public_key_pem(_validated(_WRAPPED_CERT))
+
+    cert = x509.load_der_x509_certificate(base64.b64decode(_single_line()))
+    assert "CN=Companies Registry" in cert.subject.rfc4514_string()
+    assert "CN=Hongkong Post e-Cert CA 2 - 17" in cert.issuer.rfc4514_string()
+    assert pem_text == cert.public_key().public_bytes(
+        Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+
+
+def test_the_old_single_line_certificate_still_parses():
+    assert "&#13;" not in _single_line()
+    old = crypto.signing_public_key_pem(_validated(_single_line()))
+    assert old.startswith("-----BEGIN PUBLIC KEY-----")
+    assert old == crypto.signing_public_key_pem(_validated(_WRAPPED_CERT))
+
+
+def test_the_hex_form_of_the_carriage_return_reference_parses():
+    hex_form = _WRAPPED_CERT.replace("&#13;", "&#xD;")
+    assert "&#xD;" in hex_form
+    assert crypto.signing_public_key_pem(_validated(hex_form)) == \
+        crypto.signing_public_key_pem(_validated(_single_line()))
+
+
+def test_a_stray_character_is_a_clear_value_error_not_corrupt_der():
+    line = _single_line()
+    corrupt = line[:60] + "&amp;" + line[60:]
+    with pytest.raises(ValueError, match="X509Certificate"):
+        crypto.signing_public_key_pem(_validated(corrupt))
