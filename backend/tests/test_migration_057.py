@@ -50,7 +50,7 @@ def test_057_revises_055_and_is_the_head():
     m57 = _migration(M057)
     assert (m57.revision, m57.down_revision) == ("057", "055")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["058"]
+    assert script.get_heads() == ["059"]
 
 
 def test_the_chain_runs_through_056_before_the_nd2_migrations():

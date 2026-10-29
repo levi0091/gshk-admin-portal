@@ -899,15 +899,17 @@ def _summary(entry: dict) -> str:
     return f"{capacity} · {len(filed)} of {len(entry['items'])} change(s) to file"
 
 
-def _signatory_party(entity_id: str) -> tuple[str, bool]:
-    """`(name, is_corporate)` of whoever signs, in the ORDER the XML takes them
-    (`nar1_mapper._signatory_candidates`): the secretary REGISTER first, a
-    GSHK-flagged row before any other, then a secretary on the officer list.
+def _signatory_row(entity_id: str) -> tuple[str, bool, str | None]:
+    """`(name, is_corporate, person_id)` of whoever signs, in the ORDER the XML
+    takes them (`nar1_mapper._signatory_candidates`): the secretary REGISTER
+    first, a GSHK-flagged row before any other, then a secretary on the officer
+    list.
 
     Reading the officer list alone named nobody for a company whose secretary
     is on the register only — and offered a natural-person secretary CR's Body
     Corporate capacities, a value that does not fit the signer the XML then
-    names."""
+    names. `person_id` is the natural person's id and None for a body corporate
+    (or for nobody), which is what the e-signature pad needs to know."""
     sb = get_supabase()
     register = (sb.table("company_secretaries").select("*").eq("entity_id", entity_id)
                 .eq("is_current", True).execute().data) or []
@@ -920,12 +922,30 @@ def _signatory_party(entity_id: str) -> tuple[str, bool]:
     for row in candidates:
         person = people.get(row.get("person_id") or "")
         if person:
-            return person.get("full_name") or person.get("full_name_zh") or "", False
+            return (person.get("full_name") or person.get("full_name_zh") or "",
+                    False, person["id"])
         name = (row.get("secretary_name") or row.get("corporate_name")
                 or (corps.get(row.get("corporate_entity_id") or "") or {}).get("company_name"))
         if name:
-            return name, True
-    return "", True
+            return name, True, None
+    return "", True, None
+
+
+def _signatory_party(entity_id: str) -> tuple[str, bool]:
+    """`(name, is_corporate)` of whoever signs — see `_signatory_row`."""
+    name, is_corporate, _person_id = _signatory_row(entity_id)
+    return name, is_corporate
+
+
+def signatory_person_id(entity_id: str) -> str | None:
+    """The natural person who signs the form-level declaration, or None.
+
+    None for a body corporate — which is nearly every GSHK client, whose
+    secretary is GSHK Ltd — and for a company with no secretary on record. Read
+    in the same order as the XML names the signer, so the person asked to draw a
+    signature is the person the form prints.
+    """
+    return _signatory_row(entity_id)[2]
 
 
 def _signatory(entity_id: str, case: dict) -> dict:

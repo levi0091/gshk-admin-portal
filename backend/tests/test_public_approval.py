@@ -62,6 +62,20 @@ def _clean_rate_limiter():
     public_approval._HITS.clear()
 
 
+@pytest.fixture(autouse=True)
+def _nobody_is_asked_to_sign(request):
+    """The suite's default is today's page: no pad. `must_sign` reads the
+    officer tables, and `_world` patches no Supabase -- left alone, every ND2
+    test here would reach for a live database (it fails safe to False, but a
+    test must not depend on that). The e-signature tests below take
+    `a_director_signs` to ask for the pad."""
+    if "a_director_signs" in request.fixturenames:
+        yield
+        return
+    with patch("routers.public_approval.signatures.must_sign", return_value=False):
+        yield
+
+
 def _world(approval=None, case=None, claimed=..., approved_row=None):
     """Every collaborator, patched at this router's own module boundary."""
     return [
@@ -821,3 +835,263 @@ def test_an_expired_link_sends_no_receipt(client, _no_receipt_mail_in_tests):
     with _Stack(*_world(approval=row(expires_at=_past()))):
         client.post(PATH)
     _no_receipt_mail_in_tests.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+#  A director draws a signature (e-signature-nd2, spec section 6, tests 3-4)
+# --------------------------------------------------------------------------- #
+
+import base64
+import io
+import re
+
+from PIL import Image, ImageDraw
+
+
+def _drawing(ink=True) -> str:
+    img = Image.new("RGBA", (600, 200), (0, 0, 0, 0))
+    if ink:
+        ImageDraw.Draw(img).line([(20, 150), (120, 40), (200, 160), (320, 60)],
+                                 fill=(26, 32, 80, 255), width=6)
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode()
+
+
+@pytest.fixture
+def a_director_signs():
+    """The link was issued to a director with a box to sign. Taking this fixture
+    by name switches off the suite-wide `False` stub (see above) and patches the
+    answer to True; the store is patched too, so no test reaches Supabase."""
+    with patch("routers.public_approval.signatures.must_sign",
+               return_value=True) as ask, \
+         patch("routers.public_approval.signatures.store",
+               return_value={"id": "sig-1"}) as store:
+        yield ask, store
+
+
+def _scripts(text: str) -> list[str]:
+    return re.findall(r"<script\b[^>]*>.*?</script>", text, flags=re.S | re.I)
+
+
+def test_a_directors_page_has_the_pad_a_disabled_button_and_a_noscript_note(
+        client, a_director_signs):
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)):
+        text = client.get(ND2_PATH).text
+    assert "Your signature" in text
+    assert '<canvas id="sigpad"' in text
+    assert ' name="signature"' in text and 'type="hidden"' in text
+    assert 'id="sigclear"' in text and ">Clear</button>" in text
+    assert re.search(r'<button type="submit" id="sigok" disabled>Confirm &amp; File</button>',
+                     text)
+    assert ('<noscript><p class="stop">Signing needs JavaScript. Turn it on, or '
+            'reply to renewal@getstarted.hk.</p></noscript>') in text
+    assert "listed above where a director signs" in text
+    # Above the warning and the button it arms.
+    assert text.index("Your signature") < text.index("Warning") < text.index("sigok")
+
+
+def test_a_directors_page_runs_the_pad_and_nothing_else(client, a_director_signs):
+    """Exactly one script, inline, with no src, and nothing in it that can reach
+    the network. It is reached from an unauthenticated link in an email."""
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)):
+        text = client.get(ND2_PATH).text
+    scripts = _scripts(text)
+    assert len(scripts) == 1
+    tag = scripts[0].lower()
+    assert " src" not in tag.split(">")[0]
+    for forbidden in ("fetch", "xmlhttprequest", "sendbeacon", "websocket",
+                      "eventsource", "import(", "eval(", "document.write",
+                      "innerhtml", "location", "cookie", "localstorage"):
+        assert forbidden not in tag, forbidden
+    assert "pointerdown" in tag and "toDataURL('image/png')" in scripts[0]
+    for handler in ("onclick", "onerror", "onload", "javascript:"):
+        assert handler not in text.lower()
+    # No other element of the page loads anything.
+    assert "<link" not in text.lower() and "<img" not in text.lower()
+
+
+def test_the_nd2b_pad_names_only_the_form(client, a_director_signs):
+    nd2b = {**CASE, "case_no": "ND2B-2026-0001", "form_code": "Nd2b"}
+    with _Stack(*_world(approval=row(), case=nd2b)):
+        text = client.get(ND2_PATH).text
+    assert "printed on the form listed above" in text
+
+
+def test_the_page_decides_from_the_links_own_person(client, a_director_signs):
+    ask, _ = a_director_signs
+    with _Stack(*_world(approval=row(person_id="p7"), case=ND2A_CASE)):
+        client.get(ND2_PATH)
+    assert ask.call_args.args[1] == "p7"
+
+
+def test_a_non_director_nd2_page_has_no_pad_and_no_script(client):
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)):
+        text = client.get(ND2_PATH).text
+    assert "<script" not in text.lower() and "<canvas" not in text.lower()
+    assert "Your signature" not in text and "noscript" not in text.lower()
+    assert '<button type="submit">Confirm &amp; File</button>' in text
+
+
+def test_a_nar1_page_has_no_pad_even_if_the_person_would_sign(client, a_director_signs):
+    with _Stack(*_world(approval=row())):
+        text = client.get(PATH).text
+    assert "<script" not in text.lower() and "<canvas" not in text.lower()
+
+
+def test_getting_a_directors_page_writes_nothing(client, a_director_signs):
+    _, store = a_director_signs
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched:
+        client.get(ND2_PATH)
+    store.assert_not_called()
+    patched[4].assert_not_called()   # claim
+    patched[7].assert_not_awaited()  # log_event
+
+
+def test_a_director_who_signs_is_claimed_stored_and_audited(client, a_director_signs):
+    _, store = a_director_signs
+    drawn = _drawing()
+    with _Stack(*_world(approval=row(revision=1), case={**ND2A_CASE, "verification_revision": 1},
+                        claimed=row(id="a1", revision=1, outcome="approved",
+                                    responded_at="2026-09-02T03:00:00+00:00"))) as patched:
+        response = client.post(ND2_PATH, data={"signature": drawn})
+    assert "your confirmation is recorded" in response.text
+    patched[4].assert_called_once()
+    store.assert_called_once()
+    kwargs = store.call_args.kwargs
+    assert (kwargs["case_id"], kwargs["approval_id"], kwargs["person_id"],
+            kwargs["revision"]) == ("c1", "a1", "p1", 1)
+    assert kwargs["png"] == base64.b64decode(drawn.split(",", 1)[1])
+    audit = patched[7].await_args.kwargs
+    assert audit["metadata"]["signature"] == {"captured": True, "signature_id": "sig-1"}
+
+
+def test_the_image_never_enters_an_audit_row(client, a_director_signs):
+    drawn = _drawing()
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched:
+        client.post(ND2_PATH, data={"signature": drawn})
+    audit_text = repr(patched[7].await_args)
+    assert drawn.split(",", 1)[1][:60] not in audit_text
+    assert "data:image" not in audit_text
+
+
+@pytest.mark.parametrize("data", [
+    {},                                          # no field at all
+    {"signature": ""},
+    {"signature": "data:image/png;base64,AAAA"},  # not a PNG
+    {"signature": "not even a data url"},
+])
+def test_a_director_without_a_usable_signature_is_not_claimed(client, a_director_signs, data):
+    _, store = a_director_signs
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched:
+        response = client.post(ND2_PATH, data=data)
+    assert "We could not read your signature. Please draw it again." in response.text
+    assert ">Confirm &amp; File</button>" in response.text   # the page, again
+    patched[4].assert_not_called()    # claim
+    patched[3].assert_not_called()    # update_case
+    patched[7].assert_not_awaited()   # log_event
+    store.assert_not_called()
+
+
+def test_a_blank_canvas_is_not_a_signature(client, a_director_signs):
+    _, store = a_director_signs
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched:
+        response = client.post(ND2_PATH, data={"signature": _drawing(ink=False)})
+    assert "We could not read your signature" in response.text
+    patched[4].assert_not_called()
+    store.assert_not_called()
+
+
+def test_a_body_over_300_kb_is_refused_before_it_is_parsed(client, a_director_signs):
+    _, store = a_director_signs
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched, \
+            patch("starlette.requests.Request.form") as form:
+        response = client.post(ND2_PATH, data={"signature": "A" * (301 * 1024)})
+    assert "We could not read your signature" in response.text
+    form.assert_not_called()
+    patched[4].assert_not_called()
+    store.assert_not_called()
+
+
+def test_a_chunked_body_over_the_cap_is_refused_too(client, a_director_signs):
+    """No Content-Length to check, so the cap has to hold while reading."""
+    _, store = a_director_signs
+
+    def body():
+        yield b"signature="
+        for _ in range(31):
+            yield b"A" * 10_240
+
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched:
+        response = client.post(ND2_PATH, content=body(),
+                               headers={"content-type": "application/x-www-form-urlencoded"})
+    assert "We could not read your signature" in response.text
+    patched[4].assert_not_called()
+    store.assert_not_called()
+
+
+def test_the_retry_page_keeps_the_pad_and_does_not_echo_the_submission(client, a_director_signs):
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)):
+        response = client.post(ND2_PATH, data={"signature": "<b>x</b>"})
+    assert "<b>x</b>" not in response.text
+    assert '<canvas id="sigpad"' in response.text and len(_scripts(response.text)) == 1
+
+
+def test_a_non_director_claims_as_before_and_stores_nothing(client):
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched, \
+            patch("routers.public_approval.signatures.store") as store:
+        response = client.post(ND2_PATH)
+    assert "your confirmation is recorded" in response.text
+    patched[4].assert_called_once()
+    store.assert_not_called()
+    assert "signature" not in patched[7].await_args.kwargs["metadata"]
+
+
+def test_a_non_directors_post_is_not_read_for_a_signature(client):
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)), \
+            patch("routers.public_approval._read_signature_field") as reader:
+        client.post(ND2_PATH, data={"signature": _drawing()})
+    reader.assert_not_called()
+
+
+def test_the_director_who_loses_the_race_leaves_no_signature(client, a_director_signs):
+    _, store = a_director_signs
+    with _Stack(*_world(approval=row(), case=ND2A_CASE, claimed=None,
+                        approved_row=CLAIMED)):
+        response = client.post(ND2_PATH, data={"signature": _drawing()})
+    assert "already been confirmed" in response.text
+    store.assert_not_called()
+
+
+def test_a_stale_expired_or_replayed_link_leaves_no_signature(client, a_director_signs):
+    _, store = a_director_signs
+    resent = {**ND2A_CASE, "verification_revision": 2}
+    for approval, case in ((row(revision=1), resent),
+                           (row(expires_at=_past()), ND2A_CASE),
+                           (CLAIMED, ND2A_CASE)):
+        with _Stack(*_world(approval=approval, case=case)) as patched:
+            client.post(ND2_PATH, data={"signature": _drawing()})
+        patched[4].assert_not_called()
+    store.assert_not_called()
+
+
+def test_a_failed_insert_is_retried_once(client, a_director_signs):
+    _, store = a_director_signs
+    store.side_effect = [RuntimeError("blip"), {"id": "sig-2"}]
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched:
+        response = client.post(ND2_PATH, data={"signature": _drawing()})
+    assert "your confirmation is recorded" in response.text
+    assert store.call_count == 2
+    assert patched[7].await_args.kwargs["metadata"]["signature"] == {
+        "captured": True, "signature_id": "sig-2"}
+
+
+def test_a_signature_that_cannot_be_stored_still_confirms_and_says_so(client, a_director_signs):
+    _, store = a_director_signs
+    store.side_effect = RuntimeError("down")
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)) as patched:
+        response = client.post(ND2_PATH, data={"signature": _drawing()})
+    assert "your confirmation is recorded" in response.text
+    assert store.call_count == 2
+    patched[4].assert_called_once()   # the claim stands: the director did confirm
+    assert patched[7].await_args.kwargs["metadata"]["signature"] == {"captured": False}
