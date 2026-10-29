@@ -69,7 +69,8 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
     officerChangeApi.recipients(data.id).then(r => {
       if (!live) return
       setRecipients(r.recipients || [])
-      setTo(r.default_to || [])
+      // `to` is deliberately NOT seeded from `default_to` (Levi 2026-10-29): the
+      // board is offered as suggestion pills, and nobody is mailed unchosen.
       if (!respondByTouched && r.reply_by_default) setRespondBy(r.reply_by_default)
     }).catch(() => { if (live) setRecipients([]) })
     return () => { live = false }

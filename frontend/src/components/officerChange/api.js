@@ -32,6 +32,11 @@ export const officerChangeApi = {
   addEntry: (id, entry) => api.post(`${base(id)}/entries`, entry),
   updateEntry: (id, entryId, patch) => api.patch(`${base(id)}/entries/${entryId}`, patch),
   removeEntry: (id, entryId) => api.del(`${base(id)}/entries/${entryId}`),
+  // ND2B: treat ONE pending line as data maintenance — a correction to our
+  // records, not a change CR needs to hear about (Levi 2026-10-29). Moves that
+  // item's baseline only, empty body, returns the refreshed case. Not undoable.
+  markMaintenance: (id, entryId, itemKey) =>
+    api.post(`${base(id)}/entries/${entryId}/items/${encodeURIComponent(itemKey)}/maintenance`, {}),
   setKyc: (id, entryId, cleared) =>
     api.post(`${base(id)}/entries/${entryId}/kyc`, { cleared }),
 

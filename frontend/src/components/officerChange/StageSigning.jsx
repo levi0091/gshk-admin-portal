@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { officerChangeApi } from './api.js'
 import CrRefusal from './CrRefusal.jsx'
 import EffectiveDatesPanel from './EffectiveDatesPanel.jsx'
@@ -24,6 +25,40 @@ import { errorOf, isManual } from './workflow.js'
  * 'Signing – e-Page' and 'Signing – Paper' pages before we complete the
  * signature"). On e-Sign that also means CR validates here, after the dates.
  */
+/**
+ * What GSHK can do about each new director's consent (Levi 2026-10-29: moved
+ * here from Data Verification's "Officers on this form" card, which was
+ * removed). Only appointments carry `eservice`. With a complete e-Registry
+ * account the consent is PIN-signed here and the client signs nothing; without
+ * one the ND2A can only be filed on the manual route, and the profile is where
+ * the account is added.
+ */
+function ERegistryHints({ entries, manual }) {
+  const rows = (entries || []).filter(e => e.eservice)
+  if (rows.length === 0) return null
+  return (
+    <div className="oc-eregistry" data-testid="eregistry-hints">
+      {rows.map(entry => {
+        const ready = entry.eservice.configured && entry.eservice.has_password
+        // On the manual route a stored account is not used, so saying "GSHK
+        // applies this consent" would promise something that will not happen.
+        if (manual && ready) return null
+        return (
+          <div key={entry.id} className="f-hint" data-eregistry={ready ? 'ready' : 'missing'}>
+            <b>{entry.party?.name}:</b>{' '}
+            {ready
+              ? <>GSHK applies this director's consent at Signing with the e-Registry account
+                set up with them ({entry.eservice.eservice_user_id}). The client signs nothing.</>
+              : <>No complete e-Registry account stored, so this ND2A can only be filed on the
+                manual route.{' '}
+                {entry.party?.profile_path && <Link to={entry.party.profile_path}>Add it on the profile</Link>}</>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 const CONSENT_STATUS = {
   signed: { label: 'Signed', cls: 'b-live' },
   error: { label: 'Error', cls: 'b-client-rejected' },
@@ -62,6 +97,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
       {!data.manual_signed_document_id && <EffectiveDatesPanel data={data} reload={reload} can={can} />}
       <div className="card">
         <div className="card-title">Signing — manual (CR portal)</div>
+        <ERegistryHints entries={data.entries} manual />
         {data.form_code === 'Nd2a' ? (
           <p className="f-hint" style={{ marginTop: 6 }}>
             Prepare the ND2A on the Companies Registry's portal, have it signed, and upload the
@@ -103,6 +139,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
     {!validated && <EffectiveDatesPanel data={data} reload={reload} can={can} />}
     <div className="card">
       <div className="card-title">Signing — e-Sign via CR</div>
+      <ERegistryHints entries={data.entries} />
       {mismatches.length > 0 && (
         // Jacqueline, note 1: e-Reg is not updated when CR's register is.
         <div className="alert al-warn" role="alert" style={{ marginTop: 10 }}>

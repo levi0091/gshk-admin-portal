@@ -64,9 +64,6 @@ const CASE = {
   },
   manual_checks: [
     { code: 'kyc', entry_id: 'n2', label: 'KYC / WorldCheck cleared — LEE Ka Ho', kind: 'tick', ok: true },
-    { code: 'resignation_letter', entry_id: 'n1', label: 'Resignation letter on file — WONG Mei Ling',
-      kind: 'document', ok: true, document: { file_name: 'resignation-letter-wong-mei-ling.pdf',
-        uploaded_at: '2026-09-15T02:00:00Z' } },
     { code: 'written_resolution', entry_id: null, label: 'Signed written resolution on file',
       kind: 'document', ok: false, document: null },
   ],

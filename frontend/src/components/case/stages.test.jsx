@@ -97,6 +97,21 @@ const RECIPIENTS = {
   max_recipients: 20,
 }
 
+/** THE LIST STARTS EMPTY (Levi 2026-10-29): the board is offered as pills,
+    and nobody is mailed until the operator clicks one. Waits for the pills,
+    so the recipients GET has resolved before the first click. */
+const chooseBoard = async (user, ...emails) => {
+  const wanted = emails.length ? emails : ['chan@example.com', 'lee@example.com']
+  for (const email of wanted) {
+    // Idempotent: an address already chosen has no pill, so a test that picked
+    // it by hand and then runs through reviewAndSend does not fail on the click.
+    await screen.findByText(email)
+    const pill = screen.queryByRole('button',
+      { name: new RegExp(`Add .* \\(${email.replace('.', '\\.')}\\)`) })
+    if (pill) await user.click(pill)
+  }
+}
+
 //: GET /tpsi/credentials — the SIGNING credential of whoever is logged in. It
 //: is the only thing that can sign a NAR1 (Q1), so the Signing stage reads it
 //: to say whose signature is about to be applied, and refuses without it.
@@ -430,7 +445,7 @@ describe('Client Verification', () => {
     // live.
     const user = userEvent.setup()
     renderIt()
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
@@ -777,6 +792,7 @@ describe('Client Verification', () => {
     renderIt()
     const send = screen.getByRole('button', { name: /Send to client/ })
     expect(send).toBeDisabled()
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await setDeadline(user)
     expect(screen.getByRole('button', { name: /Send to client/ })).toBeEnabled()
@@ -790,7 +806,7 @@ describe('Client Verification', () => {
     // silence, which is not a decision to make by default.
     const user = userEvent.setup()
     renderIt()
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
     // And it SAYS which field is missing, rather than leaving a dead button. A
@@ -826,18 +842,56 @@ describe('Client Verification', () => {
   })
 
   const reviewAndSend = async user => {
-    // The chips must be on screen first — the send button is gated on them.
-    await screen.findByText('chan@example.com')
+    // A recipient must be chosen first — the send button is gated on one.
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await setDeadline(user)
     await user.click(screen.getByRole('button', { name: /Send to client/ }))
   }
 
-  it('seeds the recipients with every director who has an address', async () => {
+  // ── Levi 2026-10-29: nobody is mailed unless the operator chose them ─────
+
+  it('starts with NO recipient, though the API still sends default_to', async () => {
+    // RECIPIENTS.default_to names both directors. It is not used to seed the list.
     renderIt()
     await screen.findByText('chan@example.com')
-    expect(screen.getByText('lee@example.com')).toBeInTheDocument()
-    expect(screen.getByText('AH CHAN')).toBeInTheDocument()
+    expect(screen.queryByTestId('recipient-chips')).toBeNull()
+    expect(screen.getByText(/No recipients/)).toBeInTheDocument()
+    expect(screen.getByText(/No one is added automatically/)).toBeInTheDocument()
+    expect(screen.queryByText(/Every current director/)).toBeNull()
+  })
+
+  it('offers each director with an address as a pill, and the one without as a reason', async () => {
+    renderIt()
+    await screen.findByText('chan@example.com')
+    const pills = within(screen.getByTestId('recipient-suggestions')).getAllByRole('button')
+    expect(pills.map(b => b.getAttribute('aria-label'))).toEqual([
+      'Add AH CHAN (chan@example.com)', 'Add BO LEE (lee@example.com)'])
+    expect(screen.getByText(/HOLDCO LIMITED — a corporate director has no address on record/))
+      .toBeInTheDocument()
+  })
+
+  it('a pill adds its address and disappears; removing the chip brings it back', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await chooseBoard(user, 'chan@example.com')
+    expect(within(screen.getByTestId('recipient-chips')).getByText('chan@example.com'))
+      .toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add AH CHAN/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Add BO LEE/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
+    expect(screen.getByRole('button', { name: 'Add AH CHAN (chan@example.com)' })).toBeInTheDocument()
+  })
+
+  it('keeps Send disabled until a recipient is chosen, then enables it', async () => {
+    const user = userEvent.setup()
+    renderIt()
+    await screen.findByText('chan@example.com')
+    await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
+    await setDeadline(user)
+    expect(screen.getByRole('button', { name: /Send to client/ })).toBeDisabled()
+    await chooseBoard(user, 'lee@example.com')
+    expect(screen.getByRole('button', { name: /Send to client/ })).toBeEnabled()
   })
 
   // ── Levi 2026-08-30: one section, in the order the decision is made ──────
@@ -846,7 +900,7 @@ describe('Client Verification', () => {
     // Not decoration. They used to be a separate card BELOW the button, so an
     // operator met the list of who was mailed only after mailing them.
     renderIt()
-    await screen.findByText('chan@example.com')
+    await chooseBoard(userEvent.setup())
     const card = screen.getByText('Send for verification').closest('.card')
     const tick = within(card).getByRole('button', { name: /I have reviewed this return/ })
     const chips = within(card).getByTestId('recipient-chips')
@@ -1028,7 +1082,7 @@ describe('Client Verification', () => {
   it('sends the list on screen, so a removed director is not mailed', async () => {
     const user = userEvent.setup()
     renderIt()
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await setDeadline(user)
@@ -1041,7 +1095,7 @@ describe('Client Verification', () => {
   it('adds an extra recipient who is not on the board', async () => {
     const user = userEvent.setup()
     renderIt()
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.type(screen.getByLabelText('Add a recipient'), 'levi@zenexflow.com')
     await user.click(screen.getByRole('button', { name: 'Add recipient' }))
     await reviewAndSend(user)
@@ -1063,7 +1117,7 @@ describe('Client Verification', () => {
   it('will not send with an empty recipient list', async () => {
     const user = userEvent.setup()
     renderIt()
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
     await user.click(screen.getByRole('button', { name: 'Remove lee@example.com' }))
@@ -2111,16 +2165,18 @@ describe('Stage permissions — controls are absent, never merely disabled', () 
         .not.toBeInTheDocument()
     })
 
-    it('still SHOWS who the return would go to', async () => {
-      // The recipient list is the thing a reviewer is here to check. Only the
-      // ways to change it are gone.
+    it('still SHOWS who the board can be reached at, as text and not as controls', async () => {
+      // The board's addresses are what a reviewer is here to check. Only the
+      // ways to choose a recipient are gone — and since nobody is chosen by
+      // default any more, nothing is drawn as one.
       renderIt()
       await screen.findByText(/Client's answer/)
 
-      const chips = await screen.findByTestId('recipient-chips')
-      expect(chips).toHaveTextContent('chan@example.com')
-      expect(within(chips).queryByRole('button', { name: /Remove chan/ }))
-        .not.toBeInTheDocument()
+      const board = await screen.findByTestId('recipient-board')
+      expect(board).toHaveTextContent('chan@example.com')
+      expect(within(board).queryByRole('button')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('recipient-chips')).not.toBeInTheDocument()
+      expect(screen.queryByText(/No recipients/)).not.toBeInTheDocument()
     })
 
     it('says who can send, rather than showing an empty stage', async () => {
@@ -2381,7 +2437,7 @@ describe('Client Verification names the revision the client holds (migration 051
     // first email — so the next one is Rev. 2, not a fresh Rev. 1.
     const user = userEvent.setup()
     renderIt({ verification_sent_at: null, verification_revision: 1 })
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
     expect(screen.getByText(/It goes out as Rev\. 2, and the Confirm link in the earlier email stops working/))
@@ -2399,7 +2455,7 @@ describe('Client Verification names the revision the client holds (migration 051
   it('a send again does not promise the next revision', async () => {
     const user = userEvent.setup()
     renderIt({ verification_sent_at: '2026-09-10T02:00:00Z', verification_revision: 2 })
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
     expect(screen.getByText(/The return will be attached as a PDF/)).toBeInTheDocument()
     expect(screen.queryByText(/goes out as Rev\./)).toBeNull()
@@ -2416,7 +2472,7 @@ describe('Client Verification names the revision the client holds (migration 051
   it('a first send promises no revision at all', async () => {
     const user = userEvent.setup()
     renderIt({ verification_sent_at: null, verification_revision: 0 })
-    await screen.findByText('chan@example.com')
+    await chooseBoard(user)
     await user.click(screen.getByRole('button', { name: /I have reviewed this return/ }))
     await user.type(screen.getByLabelText(/Client must reply by/), '2027-12-31')
     expect(screen.getByText(/The return will be attached as a PDF/)).toBeInTheDocument()

@@ -35,6 +35,13 @@ function AddressValue({ value, lookups }) {
  * read-only. The operator gives each line its effective date, and may omit a
  * line that is genuine but not for this form. A value that is wrong is put
  * right on the profile, and the line disappears on the next load.
+ *
+ * A third action, "Data maintenance" (Levi 2026-10-29), is for the difference
+ * that is a tidy-up of OUR record rather than a change CR needs told. Omit
+ * leaves the line pending; this moves that one item's baseline to the profile's
+ * value for good, so the line is gone from this case and every other. It cannot
+ * be undone from here — changing the profile value back raises the difference
+ * again.
  */
 export default function ParticularsChangeCard({ data, reload, can }) {
   const entries = (data.entries || []).filter(e => e.kind === 'change')
@@ -50,6 +57,7 @@ export default function ParticularsChangeCard({ data, reload, can }) {
   const lookups = useLookups()
   const [adding, setAdding] = useState('')
   const [omitting, setOmitting] = useState(null)
+  const [maintaining, setMaintaining] = useState(null)
   const [removing, setRemoving] = useState(null)
   const [error, setError] = useState(null)
 
@@ -145,12 +153,19 @@ export default function ParticularsChangeCard({ data, reload, can }) {
                         <span className="td-muted">{item.effective_date ? formatDate(item.effective_date) : '—'}</span>
                       )}
                     </td>
-                    <td>
+                    <td className="oc-pc-actions">
                       {editable && (item.omitted
                         ? <button className="btn btn-ghost btn-sm"
                                   onClick={() => setItem(entry, item.key, { omitted: false })}>Include</button>
                         : <button className="btn btn-ghost btn-sm"
                                   onClick={() => setOmitting({ entry, item })}>Omit</button>)}
+                      {/* Settles this ONE line for good, which Omit does not:
+                          an omitted line is still pending. */}
+                      {editable && (
+                        <button className="btn btn-ghost btn-sm"
+                                aria-label={`Data maintenance — ${item.label}`}
+                                onClick={() => setMaintaining({ entry, item })}>Data maintenance</button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -177,6 +192,31 @@ export default function ParticularsChangeCard({ data, reload, can }) {
               <button className="btn btn-danger" onClick={() => {
                 setItem(omitting.entry, omitting.item.key, { omitted: true }); setOmitting(null)
               }}>Omit</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {maintaining && (
+        <div className="modal-confirm" role="alertdialog" aria-label="Data maintenance">
+          <div className="modal-confirm-card">
+            <div className="modal-confirm-title">Treat "{maintaining.item.label}" as data maintenance?</div>
+            <div className="modal-confirm-text">
+              G-FlowDesk will stop reporting this difference for {maintaining.entry.party?.name}
+              {data.company_name ? ` at ${data.company_name}` : ''}. CR will not be told. Use this
+              only for a correction to our records, not for a real change in the officer's
+              particulars.
+              {maintaining.item.key === 'residential_address' && (
+                // The two addresses are separate CR items; settling one does not
+                // settle the other, and that is by design, not a bug.
+                <> A correspondence address that differs stays pending until you settle it too.</>
+              )}
+            </div>
+            <div className="modal-confirm-actions">
+              <button className="btn btn-outline" onClick={() => setMaintaining(null)}>Cancel</button>
+              <button className="btn btn-danger" onClick={() => {
+                run(officerChangeApi.markMaintenance(data.id, maintaining.entry.id, maintaining.item.key))
+                setMaintaining(null)
+              }}>Data maintenance</button>
             </div>
           </div>
         </div>

@@ -29,11 +29,18 @@ const ALL = { write: true, tpsiWrite: true, tpsiSubmit: true, tpsiRead: true }
 const CHECKS = [
   { code: 'kyc', entry_id: 'n2', label: 'KYC / WorldCheck cleared — LEE Ka Ho', kind: 'tick',
     document_type: null, ok: true, document: null },
-  { code: 'resignation_letter', entry_id: 'n1', label: 'Resignation letter on file — WONG Mei Ling',
-    kind: 'document', document_type: 'resignation_letter', ok: true,
-    document: { id: 'd1', file_name: 'resignation-letter-wong-mei-ling.pdf', uploaded_at: '2026-09-15T02:00:00Z' } },
-  { code: 'resignation_letter', entry_id: 'n3', label: 'Resignation letter on file — HO Old',
-    kind: 'document', document_type: 'resignation_letter', ok: false, document: null },
+  { code: 'kyc', entry_id: 'n4', label: 'KYC / WorldCheck cleared — HO New', kind: 'tick',
+    document_type: null, ok: false, document: null },
+]
+// The backend stopped sending a resignation-letter row on 2026-10-29. A
+// `document` row is still drawn if one ever arrives, so the rendering is pinned
+// with a made-up code that names no particular paper.
+const DOC_CHECKS = [
+  { code: 'extra_paper', entry_id: 'n1', label: 'Some paper on file — WONG Mei Ling',
+    kind: 'document', document_type: 'officer_change_support', ok: true,
+    document: { id: 'd1', file_name: 'paper-wong-mei-ling.pdf', uploaded_at: '2026-09-15T02:00:00Z' } },
+  { code: 'extra_paper', entry_id: 'n3', label: 'Some paper on file — HO Old',
+    kind: 'document', document_type: 'officer_change_support', ok: false, document: null },
 ]
 const ENTRIES = [
   { id: 'n1', kind: 'cessation', capacity: 'director', party: { name: 'WONG Mei Ling' },
@@ -54,26 +61,27 @@ const wrap = ui => render(<MemoryRouter>{ui}</MemoryRouter>)
 beforeEach(() => { vi.clearAllMocks(); get.mockResolvedValue({}) })
 
 describe('ManualChecks (A4, the mock-up on p. 25)', () => {
-  it('lists every check, ticked when done, with the attached file', () => {
+  it('lists every check, ticked when done', () => {
     wrap(<ManualChecks data={BASE} reload={vi.fn()} can={ALL} />)
     expect(screen.getByText('KYC / WorldCheck cleared — LEE Ka Ho')).toBeInTheDocument()
-    expect(screen.getByText('resignation-letter-wong-mei-ling.pdf')).toBeInTheDocument()
-    const open = screen.getByText('Resignation letter on file — HO Old').closest('[data-check]')
+    const open = screen.getByText('KYC / WorldCheck cleared — HO New').closest('[data-check]')
     expect(open).toHaveAttribute('data-ok', 'false')
+    expect(screen.queryByText(/Resignation letter/)).not.toBeInTheDocument()
     // Levi 2026-10-05: the resolution goes with the ND2A; consent is CR's signature.
     expect(screen.queryByText(/written resolution/i)).not.toBeInTheDocument()
   })
 
-  it('attaches each letter to its own entry', async () => {
+  it('still draws and fills a document row if the backend sends one', async () => {
     upload.mockResolvedValue({ id: 'k1' })
     const user = userEvent.setup()
-    wrap(<ManualChecks data={BASE} reload={vi.fn()} can={ALL} />)
-    await user.upload(screen.getByLabelText('Attach a file for Resignation letter on file — HO Old'),
+    wrap(<ManualChecks data={{ ...BASE, manual_checks: DOC_CHECKS }} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText('paper-wong-mei-ling.pdf')).toBeInTheDocument()
+    await user.upload(screen.getByLabelText('Attach a file for Some paper on file — HO Old'),
       new File(['x'], 'letter.pdf'))
     await waitFor(() => expect(upload).toHaveBeenCalled())
     expect(upload.mock.calls[0][0]).toBe('/officer-changes/k1/entries/n3/documents')
-    expect(upload.mock.calls[0][1].get('document_type_code')).toBe('resignation_letter')
-    await user.upload(screen.getByLabelText('Replace the file for Resignation letter on file — WONG Mei Ling'),
+    expect(upload.mock.calls[0][1].get('document_type_code')).toBe('officer_change_support')
+    await user.upload(screen.getByLabelText('Replace the file for Some paper on file — WONG Mei Ling'),
       new File(['x'], 'letter2.pdf'))
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(2))
     expect(upload.mock.calls[1][0]).toBe('/officer-changes/k1/entries/n1/documents')
@@ -98,7 +106,7 @@ describe('Data Verification gate (A4) and the e-Sign route with a deferred date 
   it('will not validate while a check is open, and says which', () => {
     wrap(<StageDataVerification data={{ ...BASE, signing_method: 'esign' }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Validate with CR Portal' })).toBeDisabled()
-    expect(screen.getByText(/Finish the manual checks first: Resignation letter on file — HO Old/)).toBeInTheDocument()
+    expect(screen.getByText(/Finish the manual checks first: KYC \/ WorldCheck cleared — HO New/)).toBeInTheDocument()
   })
 
   it('with a date still blank, e-Sign continues to Signing without CR', async () => {

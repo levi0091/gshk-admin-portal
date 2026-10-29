@@ -100,6 +100,8 @@ describe('OfficerChangeCasePage', () => {
   it('sends with the chosen reply-by date', async () => {
     post.mockResolvedValue({ deliveries: [], failed: [] })
     renderPage(ND2A)
+    // The list starts empty (Levi 2026-10-29): choose the director first.
+    await userEvent.click(await screen.findByRole('button', { name: 'Add A (a@example.com)' }))
     const send = await screen.findByRole('button', { name: 'Send to client' })
     await waitFor(() => expect(send).toBeEnabled())
     await userEvent.click(send)

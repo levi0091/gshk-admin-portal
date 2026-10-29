@@ -39,6 +39,8 @@ describe('officerChangeApi', () => {
     ['updateEntry', () => oc.updateEntry('c1', 'n1', {}), 'patch', '/officer-changes/c1/entries/n1'],
     ['removeEntry', () => oc.removeEntry('c1', 'n1'), 'del', '/officer-changes/c1/entries/n1'],
     ['setKyc', () => oc.setKyc('c1', 'n1', true), 'post', '/officer-changes/c1/entries/n1/kyc'],
+    ['markMaintenance', () => oc.markMaintenance('c1', 'n1', 'email'), 'post',
+      '/officer-changes/c1/entries/n1/items/email/maintenance'],
     ['removeDocument', () => oc.removeDocument('c1', 'd1'), 'del', '/officer-changes/c1/documents/d1'],
     ['documentUrl', () => oc.documentUrl('c1', 'd1'), 'get', '/officer-changes/c1/documents/d1/download'],
     ['preview', () => oc.preview('c1'), 'blob', '/officer-changes/c1/preview?audience=client'],
@@ -62,6 +64,12 @@ describe('officerChangeApi', () => {
   ])('%s calls %s', async (_name, call, verb, path) => {
     await call()
     expect(api[verb].mock.calls.at(-1)[0]).toBe(path)
+  })
+
+  it('marks a line as data maintenance with an empty body, and escapes the key', async () => {
+    await oc.markMaintenance('c1', 'n1', 'residential_address')
+    expect(api.post).toHaveBeenLastCalledWith(
+      '/officer-changes/c1/entries/n1/items/residential_address/maintenance', {})
   })
 
   it('sends an empty body to sign, and confirm on the irreversible steps', async () => {
