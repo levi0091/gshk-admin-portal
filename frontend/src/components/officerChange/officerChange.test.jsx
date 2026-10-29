@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -176,7 +177,101 @@ describe('ParticularsChangeCard', () => {
   })
 })
 
+describe('ParticularsChangeCard — Data maintenance (Levi 2026-10-29)', () => {
+  const item = (key, label) => ({ key, cr_item: 'f', label, old_text: 'a', new_text: 'b',
+    effective_date: null, omitted: false })
+  const ND2B = (items = [item('email', 'Email address'), item('name_en', 'Name in English')]) => ({
+    ...BASE, form_code: 'Nd2b', company_name: 'Skyline Capital Limited',
+    entries: [{ id: 'n3', kind: 'change', officer_id: 'o1', capacity: 'director',
+      party: { name: 'CHAN Tai Man' }, items }] })
+
+  /** reload() swaps in whatever the endpoint returned, as the page does. */
+  function Harness({ first, then }) {
+    const [data, setData] = useState(first)
+    return <ParticularsChangeCard data={data} can={ALL}
+                                  reload={async next => setData(next || then)} />
+  }
+  const removeEmail = data => ({ ...data, entries: [{ ...data.entries[0],
+    items: data.entries[0].items.filter(i => i.key !== 'email') }] })
+
+  it('settles one line: confirms by name, calls the endpoint, and the line is gone', async () => {
+    const first = ND2B()
+    post.mockResolvedValue(removeEmail(first))
+    wrap(<Harness first={first} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Data maintenance — Email address' }))
+    const dialog = screen.getByRole('alertdialog')
+    // It names what is lost, and says CR is not told.
+    expect(dialog).toHaveTextContent(/Treat "Email address" as data maintenance\?/)
+    expect(dialog).toHaveTextContent(/stop reporting this difference for CHAN Tai Man at Skyline Capital Limited/)
+    expect(dialog).toHaveTextContent(/CR will not be told/)
+    expect(post).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Data maintenance' }))
+    expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries/n3/items/email/maintenance', {})
+    await waitFor(() => expect(screen.queryByText('Email address', { exact: false })).not.toBeInTheDocument())
+    // The other pending line on the same officer is untouched.
+    expect(screen.getByText(/Name in English/)).toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('does nothing on Cancel', async () => {
+    wrap(<Harness first={ND2B()} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Data maintenance — Email address' }))
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+    expect(post).not.toHaveBeenCalled()
+    expect(patch).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(screen.getByText(/Email address/)).toBeInTheDocument()
+  })
+
+  it('is offered only while the case is editable and the role may write', () => {
+    const { unmount } = wrap(<ParticularsChangeCard data={{ ...ND2B(), editable: false }}
+                                                    reload={vi.fn()} can={ALL} />)
+    expect(screen.queryByRole('button', { name: /Data maintenance/ })).not.toBeInTheDocument()
+    unmount()
+    wrap(<ParticularsChangeCard data={ND2B()} reload={vi.fn()} can={{ ...ALL, write: false }} />)
+    expect(screen.queryByRole('button', { name: /Data maintenance/ })).not.toBeInTheDocument()
+  })
+
+  it('says a correspondence address stays pending when the residential one is settled', async () => {
+    wrap(<Harness first={ND2B([item('residential_address', 'Residential address')])} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Data maintenance — Residential address' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(/correspondence address that differs stays pending/)
+  })
+
+  it('shows the refusal if the endpoint refuses, and leaves the line', async () => {
+    post.mockRejectedValue(Object.assign(new Error('This case is closed.'), { status: 409 }))
+    wrap(<Harness first={ND2B()} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Data maintenance — Email address' }))
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Data maintenance' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/closed/)
+    expect(screen.getByText(/Email address/)).toBeInTheDocument()
+  })
+})
+
 describe('StageDataVerification', () => {
+  const NO_CARD = [
+    { code: 'kyc', entry_id: 'n2', label: 'KYC / WorldCheck cleared — HO New', kind: 'tick', ok: true },
+  ]
+  const WITH_ENTRIES = { ...BASE, manual_checks: NO_CARD, entries: [
+    { id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' }, summary: 'Director · ceases' },
+    { id: 'n2', kind: 'appointment', party: { name: 'HO New', profile_path: '/persons/p9' },
+      summary: 'Director · appointed', eservice: { configured: false, has_password: false } }] }
+
+  it('has no resignation-letter row, no "Officers on this form" card, and keeps the KYC tick', () => {
+    wrap(<StageDataVerification data={WITH_ENTRIES} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByText(/Resignation letter/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Officers on this form')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Supporting documents/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Choose file|Attach a file/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('KYC / WorldCheck cleared — HO New')).toBeInTheDocument()
+  })
+
+  it('does not hold a leaver back for a letter: with the KYC ticked the form can be checked', () => {
+    wrap(<StageDataVerification data={{ ...WITH_ENTRIES, signing_method: 'manual' }}
+                                reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Mark as checked' })).toBeEnabled()
+  })
+
   it('disables e-Sign and names who has no e-Registry account', () => {
     const data = { ...BASE, route: { esign_available: false, consents: [],
       reasons: ['HO New has no e-Registry account stored on their profile'] } }
@@ -212,6 +307,42 @@ describe('StageSigning', () => {
                                          reload={reload} can={ALL} goTo={goTo} /></MemoryRouter>)
     await userEvent.click(screen.getByRole('button', { name: /Continue to Submission/ }))
     expect(goTo).toHaveBeenCalledWith(4)
+  })
+
+  describe('the e-Registry hint, moved here from Data Verification (Levi 2026-10-29)', () => {
+    const entries = [
+      { id: 'n2', kind: 'appointment', party: { name: 'HO New', profile_path: '/persons/p9' },
+        eservice: { configured: true, has_password: true, eservice_user_id: 'ER9' } },
+      { id: 'n4', kind: 'appointment', party: { name: 'LAM Missing', profile_path: '/persons/p4' },
+        eservice: { configured: false, has_password: false } },
+      { id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' } },
+    ]
+
+    it('on e-Sign, says the client signs nothing for a director with an account', () => {
+      const data = { ...BASE, entries, signing_method: 'esign', filing: { stage: 'validated' } }
+      wrap(<StageSigning data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+      const hint = screen.getByTestId('eregistry-hints')
+      expect(within(hint).getByText(/set up with them \(ER9\)\. The client signs nothing/)).toBeInTheDocument()
+      // A leaver carries no e-Registry block, so no line.
+      expect(within(hint).queryByText(/CHAN Tai Man/)).not.toBeInTheDocument()
+    })
+
+    it('on the manual route, names the director with no account and links the profile', () => {
+      wrap(<StageSigning data={{ ...BASE, entries, signing_method: 'manual', data_checked_at: 'x' }}
+                         reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+      const hint = screen.getByTestId('eregistry-hints')
+      expect(within(hint).getByText(/can only be filed on the manual route/)).toBeInTheDocument()
+      expect(within(hint).getByRole('link', { name: 'Add it on the profile' }))
+        .toHaveAttribute('href', '/persons/p4')
+      // The stored account is not used on this route, so it is not promised.
+      expect(within(hint).queryByText(/GSHK applies this director's consent/)).not.toBeInTheDocument()
+    })
+
+    it('draws nothing when no entry carries an e-Registry block', () => {
+      wrap(<StageSigning data={{ ...BASE, entries: [entries[2]], signing_method: 'manual', data_checked_at: 'x' }}
+                         reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+      expect(screen.queryByTestId('eregistry-hints')).not.toBeInTheDocument()
+    })
   })
 
   it('e-Sign applies the signatures with one press and no password field', async () => {

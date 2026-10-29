@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 
@@ -53,12 +53,56 @@ describe('RecipientPicker', () => {
     expect(onChange).toHaveBeenCalledWith(['lee@example.com'])
   })
 
-  it('says which director was taken off, so the removal is undoable by name', async () => {
+  // ── suggestion pills (Levi 2026-10-29) ──────────────────────────────────
+
+  it('offers each director with an address as a pill, and none without one', () => {
+    renderPicker({ to: [] })
+    const pills = within(screen.getByTestId('recipient-suggestions')).getAllByRole('button')
+    expect(pills.map(b => b.getAttribute('aria-label'))).toEqual([
+      'Add AH CHAN (chan@example.com)', 'Add BO LEE (lee@example.com)'])
+    // The corporate director has no address: listed with its reason, never a pill.
+    expect(screen.getByText(/HOLDCO LIMITED/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add HOLDCO/ })).toBeNull()
+  })
+
+  it('adds the pill\'s address when it is clicked', async () => {
     const user = userEvent.setup()
-    renderPicker({ to: ['lee@example.com'] })
-    expect(screen.getByText(/Removed from this send: AH CHAN/)).toBeInTheDocument()
-    // And an unrelated extra address does not get named as a removed director.
-    await user.click(screen.getByRole('button', { name: 'Remove lee@example.com' }))
+    const { onChange } = renderPicker({ to: [] })
+    await user.click(screen.getByRole('button', { name: 'Add AH CHAN (chan@example.com)' }))
+    expect(onChange).toHaveBeenCalledWith(['chan@example.com'])
+  })
+
+  it('drops a pill once its address is chosen, and brings it back when the chip goes', () => {
+    const { rerender, props } = renderPicker({ to: ['lee@example.com'] })
+    expect(screen.queryByRole('button', { name: /Add BO LEE/ })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Add AH CHAN (chan@example.com)' })).toBeInTheDocument()
+    rerender(<RecipientPicker {...props} to={[]} />)
+    expect(screen.getByRole('button', { name: 'Add BO LEE (lee@example.com)' })).toBeInTheDocument()
+  })
+
+  it('shows no suggestions when every address is already chosen', () => {
+    renderPicker()
+    expect(screen.queryByTestId('recipient-suggestions')).toBeNull()
+  })
+
+  it('does not say anyone is added automatically', () => {
+    renderPicker({ to: [] })
+    expect(screen.queryByText(/Every current director/)).toBeNull()
+    expect(screen.getByText(/No one is added automatically/)).toBeInTheDocument()
+  })
+
+  it('disables the pills while a send is running', () => {
+    renderPicker({ to: [], disabled: true })
+    expect(screen.getByRole('button', { name: /Add AH CHAN/ })).toBeDisabled()
+  })
+
+  it('shows the board as plain text, with no pills and no warning, to a reader who cannot send', () => {
+    renderPicker({ to: [], readOnly: true })
+    const board = screen.getByTestId('recipient-board')
+    expect(board).toHaveTextContent('chan@example.com')
+    expect(within(board).queryByRole('button')).toBeNull()
+    expect(screen.queryByTestId('recipient-suggestions')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('adds a typed address', async () => {

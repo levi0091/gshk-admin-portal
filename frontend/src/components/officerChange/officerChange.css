@@ -85,6 +85,8 @@
   padding: 4px 8px 6px 0; border-bottom: 1px solid var(--border);
 }
 .oc-pc-items td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--indigo-10); vertical-align: top; }
+/* Omit and Data maintenance sit side by side rather than stacking. */
+.oc-pc-items td.oc-pc-actions { white-space: nowrap; }
 .oc-pc-items tr:last-child td { border-bottom: none; }
 .oc-pc-items tr.omitted td { color: var(--t-muted); }
 .oc-pc-items tr.omitted .oc-new { text-decoration: line-through; }

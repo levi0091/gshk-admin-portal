@@ -3,10 +3,14 @@ import { useState } from 'react'
 /**
  * Who the verification email goes to (wireframe_v11 s5, "CC Recipients").
  *
- * Every current director is seeded by the backend and shown as a removable
- * chip, because a three-director board is one message with three recipients —
- * not three separate sends, and not one send to whichever director sorted
- * first.
+ * THE LIST STARTS EMPTY (Levi 2026-10-29). It used to be seeded with every
+ * current director, which meant a statutory notice could go to an address
+ * nobody had looked at: an operator who pressed Send without reading the chip
+ * row mailed the whole board. Each director with an address is now offered as a
+ * SUGGESTION PILL instead, so reaching a director is one deliberate click and
+ * the screen never implies the mail "will go to the directors". A chosen
+ * address becomes a removable chip and its pill goes; removing the chip brings
+ * the pill back, so a mis-click is undone by name rather than by retyping.
  *
  * Directors with NO address on record are rendered too, dashed and muted, with
  * the reason beside them. Omitting them would make a three-director board look
@@ -41,14 +45,15 @@ export default function RecipientPicker({
   const [draft, setDraft] = useState('')
   const [addError, setAddError] = useState(null)
 
-  // Which chips came from the company record, so a removed director can be put
-  // back by name rather than retyped from memory.
+  // Which chips came from the company record, so a chip can carry the
+  // director's name and a removed one can come back as a pill.
   const byEmail = new Map()
   for (const r of recipients || []) {
     if (r.email) byEmail.set(r.email.toLowerCase(), r)
   }
   const missing = (recipients || []).filter(r => !r.email)
-  const dropped = (recipients || []).filter(
+  // Suggestions: directors with an address who are not (or no longer) chosen.
+  const suggestions = (recipients || []).filter(
     r => r.email && !to.some(a => a.toLowerCase() === r.email.toLowerCase()))
 
   function add(address) {
@@ -87,11 +92,11 @@ export default function RecipientPicker({
         </span>
       </div>
       <div className="f-hint" style={{ marginBottom: 10 }}>
-        Every current director is added automatically. Remove anyone who should
-        not receive it, or add someone else.
+        No one is added automatically. Choose who should receive it from the
+        suggestions below, or type another address.
       </div>
 
-      {to.length === 0 ? (
+      {to.length === 0 && readOnly ? null : to.length === 0 ? (
         <div className="alert al-warn" role="alert">
           <span className="al-icon">⚠</span>
           <div className="al-body">
@@ -133,9 +138,38 @@ export default function RecipientPicker({
         </div>
       )}
 
-      {dropped.length > 0 && (
-        <div className="f-hint" style={{ marginTop: 12 }}>
-          Removed from this send: {dropped.map(r => r.name).join(', ')}.
+      {readOnly && suggestions.length > 0 && (
+        // A role that may not send still sees WHO the board can be reached at —
+        // that is what a reviewer is here to check — as plain text, not a
+        // control. Nothing is "chosen", so nothing is drawn as a recipient.
+        <div style={{ marginTop: 12 }} data-testid="recipient-board">
+          <div className="f-hint" style={{ marginBottom: 6 }}>On the board:</div>
+          <div className="chip-row">
+            {suggestions.map(r => (
+              <span className="chip chip-plain" key={r.email}>
+                <span className="chip-name">{r.name}</span>
+                <span className="chip-addr">{r.email}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!readOnly && suggestions.length > 0 && (
+        <div style={{ marginTop: 12 }} data-testid="recipient-suggestions">
+          <div className="f-hint" style={{ marginBottom: 6 }}>Suggested:</div>
+          <div className="chip-row">
+            {suggestions.map(r => (
+              <button type="button" className="chip chip-suggest" key={r.email}
+                      disabled={disabled}
+                      aria-label={`Add ${r.name} (${r.email})`}
+                      onClick={() => add(r.email)}>
+                <span aria-hidden="true">+ </span>
+                <span className="chip-name">{r.name}</span>
+                <span className="chip-addr">{r.email}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

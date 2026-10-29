@@ -1,16 +1,18 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import SupportingDocuments from './SupportingDocuments.jsx'
 import ManualChecks from './ManualChecks.jsx'
 import CrRefusal from './CrRefusal.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
 /**
- * Stage 2 (spec §5): the manual checks (Jacqueline A4) — KYC, resignation
- * letters, the signed written resolution and, on the manual route, each new
- * director's consent; any other supporting documents; the signing capacity;
- * and the route. e-Sign validates with CR (free, no PIN); the manual route is
+ * Stage 2 (spec §5): the manual checks (Jacqueline A4) — KYC for each new
+ * officer; the signing capacity; and the route.
+ *
+ * There is no "Officers on this form" card and no resignation-letter check
+ * (Levi 2026-10-29). Both asked the operator to attach papers CR never asks for;
+ * the upload routes and anything already uploaded stay on the officer's
+ * profile. The per-director e-Registry hint that card carried now sits on the
+ * Signing stage, where the consent is actually applied. e-Sign validates with CR (free, no PIN); the manual route is
  * "Mark as checked" and calls nobody. With an effective date still blank
  * (A1), e-Sign leaves here by "Continue to Signing": CR checks the dates, so it
  * validates at Signing once they are entered. Nothing leaves while a check is
@@ -47,35 +49,6 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
   return (
     <>
       <ManualChecks data={data} reload={reload} can={can} />
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-hdr"><div>
-          <div className="card-title">Officers on this form</div>
-          <div className="card-sub">Any other supporting documents. Everything attached here and above
-            is saved to each officer's profile when the form is filed.</div>
-        </div></div>
-        {(data.entries || []).map(entry => (
-          <div key={entry.id} className="oc-pc" data-testid={`dv-${entry.id}`}>
-            <div className="oc-pc-hd">
-              <span className="oc-pc-name">{entry.party?.name}</span>
-              <span className="td-muted">{entry.summary}</span>
-            </div>
-            {entry.eservice && (
-              <div className="f-hint">
-                {entry.eservice.configured && entry.eservice.has_password
-                  ? <>GSHK applies this director's consent at Signing with the e-Registry account
-                    set up with them ({entry.eservice.eservice_user_id}). The client signs nothing.</>
-                  : <>No complete e-Registry account stored, so this ND2A can only be filed on the
-                    manual route.{' '}
-                    {entry.party?.profile_path && <Link to={entry.party.profile_path}>Add it on the profile</Link>}</>}
-              </div>
-            )}
-            {entry.kind !== 'change' && (
-              <SupportingDocuments data={data} entry={entry} reload={reload} can={can} />
-            )}
-          </div>
-        ))}
-      </div>
 
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-title">Signing</div>

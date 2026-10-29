@@ -12,11 +12,14 @@ const Tick = () => (
  * Data Verification's manual checks (Jacqueline A4, the mock-up on p. 25):
  * "Things the portal cannot confirm for you."
  *
- * The list is the backend's (`checks.manual_checks`) — KYC per new officer and
- * a resignation letter per leaver (Levi 2026-10-05: the written resolution
- * goes to the client with the ND2A, and CR's consent signature is the
- * consent). A letter check is DONE when its file is attached, so attaching is
- * the tick: there is no box to tick over a missing letter. Done rows are
+ * The list is the backend's (`checks.manual_checks`): KYC per new officer
+ * (Levi 2026-10-05: the written resolution goes to the client with the ND2A,
+ * and CR's consent signature is the consent). The resignation-letter check was
+ * removed on 2026-10-29 and the backend no longer sends one.
+ *
+ * A `document` row, should the backend ever send one, is still drawn: it is DONE
+ * when its file is attached, so attaching is the tick, with no box to tick over
+ * a missing file. Nothing here names a particular document. Done rows are
  * green, as on the mock-up, and say which file and when.
  *
  * Without Officer changes (edit) the list is read, with no control drawn.

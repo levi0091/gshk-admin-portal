@@ -195,6 +195,69 @@ describe('ND2B card (B1, B3)', () => {
   })
 })
 
+describe('Recipients start empty, with the board as suggestion pills (Levi 2026-10-29)', () => {
+  const BOARD = {
+    recipients: [
+      { person_id: 'p1', name: 'CHAN Tai Man', email: 'chan@example.com', role: 'director' },
+      { person_id: 'p2', name: 'LEE Ka Ho', email: 'lee@example.com', role: 'director' },
+      { person_id: null, name: 'HOLDCO LIMITED', email: null, role: 'director',
+        reason: 'a corporate director has no address on record' },
+    ],
+    // The backend still sends it; the screen must not use it.
+    default_to: ['chan@example.com', 'lee@example.com'], reply_by_default: '2026-10-07',
+  }
+  const stage = (over = {}) => {
+    get.mockResolvedValue(BOARD)
+    return wrap(<StageClientVerification
+      data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' },
+        summary: 'Director' }], ...over }}
+      reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+  }
+
+  it('starts with no recipient chosen even though default_to is full', async () => {
+    stage()
+    await screen.findByRole('button', { name: 'Add CHAN Tai Man (chan@example.com)' })
+    expect(screen.queryByTestId('recipient-chips')).not.toBeInTheDocument()
+    expect(screen.getByText(/No recipients/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send to client' })).toBeDisabled()
+    expect(screen.getByText('Add at least one recipient.')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('does not say the email goes to the directors', async () => {
+    stage()
+    await screen.findByRole('button', { name: /Add CHAN Tai Man/ })
+    expect(screen.queryByText(/Every current director/i)).not.toBeInTheDocument()
+  })
+
+  it('a pill adds its address and disappears; removing the chip brings it back', async () => {
+    const user = userEvent.setup()
+    stage()
+    await user.click(await screen.findByRole('button', { name: 'Add CHAN Tai Man (chan@example.com)' }))
+    const chips = screen.getByTestId('recipient-chips')
+    expect(chips).toHaveTextContent('chan@example.com')
+    expect(screen.queryByRole('button', { name: /Add CHAN Tai Man/ })).not.toBeInTheDocument()
+    // The other director is still only a suggestion, and the one without an
+    // address is listed with its reason and offered nothing.
+    expect(screen.getByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' })).toBeInTheDocument()
+    expect(screen.getByText(/HOLDCO LIMITED — a corporate director has no address on record/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
+    expect(screen.getByRole('button', { name: 'Add CHAN Tai Man (chan@example.com)' })).toBeInTheDocument()
+    expect(screen.queryByTestId('recipient-chips')).not.toBeInTheDocument()
+  })
+
+  it('sends only the chosen address', async () => {
+    post.mockResolvedValue({ deliveries: [], failed: [] })
+    const user = userEvent.setup()
+    stage()
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send to client' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Send to client' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/verification/send',
+      { emails: ['lee@example.com'], respond_by: '2026-10-07' }))
+  })
+})
+
 describe('Send card (A8) and the ND2B waiver (BQ1)', () => {
   it('tells the operator the client gets the full form with the PI sheets', () => {
     wrap(<StageClientVerification data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation',
