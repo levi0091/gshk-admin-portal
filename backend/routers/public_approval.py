@@ -60,7 +60,7 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 
 from services import audit_events as ev, nar1_approvals, nar1_cases
-from services.officer_changes import signatures
+from services.officer_changes import signatures, signers
 from services.audit_service import log_event
 # ONE OWNER FOR THE ADDRESS. The verification email tells the client that
 # replies are not monitored and to write to this mailbox instead; a page that
@@ -75,6 +75,7 @@ from services import audit_subject
 # Bound by name so the suite can stub THIS binding (conftest) and still test
 # the service itself.
 from services.approval_receipt import confirmed_documents
+from services.approval_receipt import ACTOR
 from services.approval_receipt import send as send_receipt
 
 router = APIRouter()
@@ -640,7 +641,7 @@ def _signature_panel(form_code: str, error: str = "") -> str:
 def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no: str,
                         deadline: str, revision: str = "",
                         documents=(), sign: bool = False,
-                        signature_error: str = "") -> HTMLResponse:
+                        signature_error: str = "", note: str = "") -> HTMLResponse:
     code, what = _FORM_TITLES.get(form_code, _FORM_TITLES["Nd2a"])
     # "Revision" from Rev. 2 only, exactly as NAR1's page (`_ask`).
     rows = [("Company", company), ("Business Registration No.", br_number),
@@ -651,7 +652,10 @@ def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no
     body = (
         f"<dl>{ledger}</dl>"
         f"{_confirming(documents)}"
-        '<form method="post">'
+        # One extra line, only when the caller has something to add (the
+        # multi-signer page says each director signs from their own email).
+        + (f'<p class="note">{html.escape(note)}</p>' if note else "")
+        + '<form method="post">'
         + (_signature_panel(form_code, signature_error) if sign else "")
         + '<div class="warn">'
         f'<div class="warn-top"><div class="warn-ico">{_WARNING_MARK}</div>'
@@ -697,12 +701,17 @@ def _confirmed_officer_change(case: dict):
     return page
 
 
-def _officer_change_ask(case: dict, entity: dict, row: dict, error: str = "") -> HTMLResponse:
+def _officer_change_ask(case: dict, entity: dict, row: dict, error: str = "", *,
+                        sign: bool | None = None, note: str = "") -> HTMLResponse:
     """The ND2A / ND2B page for this link: with the drawing pad when the person
     it was issued to is a director with a box to sign, today's page otherwise.
 
     Decided HERE, on the server, from the link's own `person_id` — never from
     anything the browser sent — and decided again on the POST.
+
+    `sign=None` is that rule. The multi-signer page passes `sign=True`: there,
+    membership of the round's frozen signer set is what puts a person on a box,
+    and `must_sign` reads live data that the round deliberately does not follow.
     """
     return _ask_officer_change(
         company=entity.get("company_name") or "",
@@ -711,15 +720,18 @@ def _officer_change_ask(case: dict, entity: dict, row: dict, error: str = "") ->
         deadline=_hkt(row.get("expires_at")),
         revision=revision_label(row.get("revision")),
         documents=confirmed_documents(case, row),
-        sign=signatures.must_sign(case, row.get("person_id")),
-        signature_error=error)
+        sign=(signatures.must_sign(case, row.get("person_id")) if sign is None else sign),
+        signature_error=error, note=note)
 
 
 @router.get("/officer-change-approval/{token}", response_class=HTMLResponse)
 async def show_officer_change_approval(token: str, request: Request):
     """WRITES NOTHING, exactly as the NAR1 page."""
+    resolved = _resolve(token, request, _OFFICER_CHANGE_FORMS)
+    if resolved is not None and resolved[1].get("multi_signer"):
+        return await _show_signer(resolved)
     return await _show(token, request, forms=_OFFICER_CHANGE_FORMS,
-                       ask=_officer_change_ask)
+                       ask=_officer_change_ask, resolved=resolved)
 
 
 #: A POST carrying more than this is refused before it is parsed. The decoded
@@ -789,10 +801,15 @@ async def _officer_change_signature(request: Request, row: dict, case: dict) -> 
 @router.post("/officer-change-approval/{token}", response_class=HTMLResponse)
 async def record_officer_change_approval(token: str, request: Request,
                                          background: BackgroundTasks):
+    # Resolved ONCE (one rate-limiter hit), then dispatched on the case's mode.
+    resolved = _resolve(token, request, _OFFICER_CHANGE_FORMS)
+    if resolved is not None and resolved[1].get("multi_signer"):
+        return await _record_signer(resolved, request, background)
     return await _record(token, request, forms=_OFFICER_CHANGE_FORMS,
                          confirmed=None, background=background,
                          ask=_officer_change_ask,
-                         signature_policy=_officer_change_signature)
+                         signature_policy=_officer_change_signature,
+                         resolved=resolved)
 
 
 def _earlier_revision(row: dict, case: dict, forms) -> HTMLResponse | None:
@@ -817,8 +834,15 @@ def _earlier_revision(row: dict, case: dict, forms) -> HTMLResponse | None:
     return _decided(case) or _unavailable(_miss_for(forms))
 
 
-async def _show(token: str, request: Request, *, forms, ask) -> HTMLResponse:
-    resolved = _resolve(token, request, forms)
+#: "Resolve the token yourself". `None` is a real answer to `_resolve` (a miss),
+#: so it cannot stand for "not supplied".
+_UNRESOLVED = object()
+
+
+async def _show(token: str, request: Request, *, forms, ask,
+                resolved=_UNRESOLVED) -> HTMLResponse:
+    if resolved is _UNRESOLVED:
+        resolved = _resolve(token, request, forms)
     if resolved is None:
         return _unavailable(_miss_for(forms))
     row, case = resolved
@@ -845,12 +869,14 @@ async def _show(token: str, request: Request, *, forms, ask) -> HTMLResponse:
 
 async def _record(token: str, request: Request, *, forms, confirmed,
                   background: BackgroundTasks | None = None,
-                  ask=None, signature_policy=None) -> HTMLResponse:
+                  ask=None, signature_policy=None,
+                  resolved=_UNRESOLVED) -> HTMLResponse:
     """The only mutating half. Takes NO body — there is nothing to supply —
     except on the officer-change route for a director, whose `signature_policy`
     reads the one drawn-signature field (capped) and whose `ask` re-draws the
     page when it cannot be used."""
-    resolved = _resolve(token, request, forms)
+    if resolved is _UNRESOLVED:
+        resolved = _resolve(token, request, forms)
     if resolved is None:
         return _unavailable(_miss_for(forms))
     row, case = resolved
@@ -1004,3 +1030,262 @@ def _entity_or_empty(case: dict) -> dict:
         return nar1_cases.entity_for(case["entity_id"]) or {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+# --------------------------------------------------------------------------- #
+#  ND2A / ND2B when SEVERAL DIRECTORS MUST SIGN (nd2-multi-signer, spec 2.5)
+#
+#  Dispatched to from the two officer-change routes above, only when the case
+#  carries `multi_signer`. The NAR1 routes never come here, and `_show` /
+#  `_record` above are the same code they always were: single-mode ND2 and NAR1
+#  keep "the first confirmation wins".
+#
+#  Here a link is one DIRECTOR's, it stays live until that director signs, and
+#  the case counts as client-approved only when every director in the round's
+#  frozen set holds a signed row (`signers.record_signing`). The pages obey the
+#  rules of the rest of this file: a GET writes nothing, the answers for a
+#  link that cannot be used are the same few sentences, and the route
+#  authenticates nobody -- so the waiting page shows a COUNT and never names
+#  another director.
+# --------------------------------------------------------------------------- #
+
+_EACH_DIRECTOR_SIGNS = ("Each director signs from their own email. The form is "
+                        "filed once every director has signed.")
+
+
+def _converged(case: dict) -> bool:
+    """Every director has signed and the case says so. A staff waiver is not it."""
+    return (case.get("client_approved") is True
+            and case.get("client_approval_source") != nar1_approvals.SOURCE_STAFF_WAIVER)
+
+
+def _decided_signer(case: dict) -> HTMLResponse | None:
+    """The page to show when the CASE is settled, or None to carry on.
+
+    Closed or declined -> "unavailable", with no reason, by the rule at the top
+    of this file. Converged -> everyone has signed. An ND2B filed without
+    confirmation is NOT settled: nobody confirmed, and the signatures still count.
+    """
+    if case.get("closed_at") or case.get("client_approved") is False:
+        return _unavailable(_miss_for(case))
+    if _converged(case):
+        return _signer_all_signed(case)
+    return None
+
+
+def _signer_counts(case: dict) -> dict | None:
+    """`{"signed", "required"}` for the round, or None when it cannot be read.
+
+    A count that could not be read is left off the page; a wrong "1 of 2" would
+    tell a director something false about a statutory filing.
+    """
+    try:
+        frozen, _ = signers.signer_set(case)
+        ids = {s["person_id"] for s in frozen}
+        signed = {r.get("person_id") for r in signers.round_approvals(case)
+                  if r.get("outcome") == nar1_approvals.OUTCOME_APPROVED}
+        return {"signed": len(signed & ids), "required": len(ids)}
+    except Exception as exc:  # noqa: BLE001 — a page must not 500 over a count
+        print(f"[public_approval] could not count the signatures on case "
+              f"{case.get('id')}: {exc}", file=sys.stderr)
+        return None
+
+
+def _signer_waiting(case: dict, counts: dict | None) -> HTMLResponse:
+    """This director has signed; others have not. A count, never a name."""
+    code, _what = _FORM_TITLES.get(case.get("form_code"), _FORM_TITLES["Nd2a"])
+    company = _entity_or_empty(case).get("company_name") or ""
+    counted = (f"{counts['signed']} of {counts['required']} directors have signed. "
+               if counts else "")
+    return _render(
+        title="Signature recorded",
+        heading="Thank you — your signature is recorded",
+        sub=(f"Form {code} for {company} will be filed once the other directors "
+             "have signed." if company else
+             f"Form {code} will be filed once the other directors have signed."),
+        body='<p class="done">Signature recorded.</p>'
+             f'<p class="note">{counted}You will receive the signed form by email '
+             "once everyone has signed.</p>")
+
+
+def _signer_all_signed(case: dict) -> HTMLResponse:
+    code, _what = _FORM_TITLES.get(case.get("form_code"), _FORM_TITLES["Nd2a"])
+    company = _entity_or_empty(case).get("company_name") or ""
+    return _render(
+        title="Signed",
+        heading="Thank you — every director has now signed",
+        sub=f"We will file Form {code} for {company}." if company
+            else f"We will file Form {code}.",
+        body='<p class="done">All signatures recorded.</p>'
+             '<p class="note">The signed form is on its way to you by email. If you '
+             f"later notice something wrong, email {html.escape(RENEWAL_MAILBOX)} "
+             "as soon as you can.</p>")
+
+
+def _in_round(case: dict, row: dict) -> bool:
+    frozen, _ = signers.signer_set(case)
+    return row.get("person_id") in {s["person_id"] for s in frozen}
+
+
+def _signer_ask(case: dict, row: dict, error: str = "") -> HTMLResponse:
+    return _officer_change_ask(case, _entity_or_empty(case), row, error,
+                               sign=True, note=_EACH_DIRECTOR_SIGNS)
+
+
+async def _show_signer(resolved) -> HTMLResponse:
+    """The GET. WRITES NOTHING -- a mail scanner fetching a director's link must
+    neither sign for them nor retry a convergence."""
+    row, case = resolved
+    stale = _earlier_revision(row, case, _OFFICER_CHANGE_FORMS)
+    if stale is not None:
+        return stale
+    if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
+        return _decided_signer(case) or _signer_waiting(case, _signer_counts(case))
+    if row.get("outcome") or nar1_approvals.is_expired(row):
+        return _decided_signer(case) or _unavailable(_miss_for(case))
+    settled = _decided_signer(case)
+    if settled is not None:
+        return settled
+    if not _in_round(case, row):
+        return _unavailable(_miss_for(case))
+    return _signer_ask(case, row)
+
+
+async def _converge(case: dict, outcome: dict, background: BackgroundTasks | None) -> None:
+    """What only the request that WON the convergence may do (spec 2.3, 2.6).
+
+    Called with `record_signing`'s result when `won` is true: the leftover links,
+    the status row, and ONE combined receipt per signer. Receipts go out here and
+    not at each signature because `images_for` prints nothing until the case is
+    approved -- a receipt at signing time would carry an unsigned copy.
+    """
+    revoked = None
+    try:
+        revoked = nar1_approvals.supersede_outstanding(case["id"])
+    except Exception as exc:  # noqa: BLE001 — the case is approved; this is housekeeping
+        print(f"[public_approval] could not supersede the leftover links on case "
+              f"{case.get('id')}: {exc}", file=sys.stderr)
+    entity = _entity_or_empty(case)
+    approvals = outcome["approvals"]
+    names = {s["person_id"]: s.get("name") for s in signers.signer_set(case)[0]}
+    await log_event(
+        user_id=None, user_display_name=ACTOR,
+        action_type=ev.CASE_STATUS_CHANGED, event_code=ev.CASE_STATUS_CHANGED,
+        case_id=case.get("entity_id"), entity_type="nar1_case", entity_id=case["id"],
+        company_name=entity.get("company_name"), **audit_subject.for_case(case),
+        old_value="awaiting_client", new_value="approved",
+        metadata={
+            "reason": "every required director has signed",
+            "revision": case.get("verification_revision"),
+            "signers": [{"person_id": a.get("person_id"),
+                         "name": a.get("recipient_name") or names.get(a.get("person_id")),
+                         "responded_at": a.get("responded_at")} for a in approvals],
+            "approval_links_revoked": revoked,
+        })
+    if background is not None:
+        for approval in approvals:
+            background.add_task(send_receipt, case["id"], approval)
+
+
+async def _after_signing(case: dict, outcome: dict,
+                         background: BackgroundTasks | None) -> HTMLResponse:
+    """Act on a counted round and choose the page: the convergence side effects
+    for the one request that won, then everyone-signed or the waiting page."""
+    if outcome["won"]:
+        await _converge(case, outcome, background)
+    if outcome["converged"]:
+        return _signer_all_signed(case)
+    counts = ({"signed": outcome["signed"], "required": outcome["required"]}
+              if outcome["required"] else _signer_counts(case))
+    return _signer_waiting(case, counts)
+
+
+async def _record_signer(resolved, request: Request,
+                         background: BackgroundTasks) -> HTMLResponse:
+    """The POST: one director signs. Spec 2.5, steps 1 to 11."""
+    row, case = resolved
+
+    # 1. A link from an earlier revision records nothing.
+    stale = _earlier_revision(row, case, _OFFICER_CHANGE_FORMS)
+    if stale is not None:
+        return stale
+
+    # 2. This director already signed: a replay, or a second tab. Idempotent --
+    # and the place a convergence that FAILED is retried (S6). The last signer's
+    # UPDATE can fail after every claim has landed; nothing else would ever run
+    # it again, and a fully signed case must never be stuck. `record_signing`
+    # is conditional, so calling it for a case that already converged does
+    # nothing and `won` is false.
+    if row.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
+        settled = _decided_signer(case)
+        if settled is not None:
+            return settled
+        return await _after_signing(case, signers.record_signing(case, row), background)
+
+    # 3. Superseded or expired.
+    if row.get("outcome") or nar1_approvals.is_expired(row):
+        return _decided_signer(case) or _unavailable(_miss_for(case))
+
+    # 4. Closed, declined or converged. A waiver carries on.
+    settled = _decided_signer(case)
+    if settled is not None:
+        return settled
+
+    # 5. Defence in depth: multi-signer links are only ever issued to signers.
+    if not _in_round(case, row):
+        return _unavailable(_miss_for(case))
+
+    # 6. The drawing is ALWAYS required: membership of the set is what puts a
+    # person on a box. Validated before the claim, which cannot be undone.
+    field = await _read_signature_field(request)
+    try:
+        drawn = _Signature(required=True, png=signatures.decode(field))
+    except signatures.SignatureError as exc:
+        print(f"[public_approval] signature refused on case {case.get('id')}: {exc}",
+              file=sys.stderr)
+        return _signer_ask(case, row, _SIGNATURE_RETRY)
+
+    # 7. This director's claim, settled by Postgres. If it was lost, this
+    # director's other tab answered the row between our read and now.
+    claimed = nar1_approvals.claim(
+        row["id"], ip=_client_ip(request),
+        user_agent=request.headers.get("user-agent"))
+    if claimed is None:
+        now = next((r for r in signers.round_approvals(case)
+                    if r.get("id") == row["id"]), None)
+        if now and now.get("outcome") == nar1_approvals.OUTCOME_APPROVED:
+            return _decided_signer(case) or _signer_waiting(case, _signer_counts(case))
+        return _unavailable(_miss_for(case))
+
+    # 8. Kept only past the claim, then counted.
+    signature = _keep_signature(drawn, case, row, claimed)
+    outcome = signers.record_signing(case, claimed)
+
+    # 9. The director's act, in the same words as a single-mode approval.
+    name = claimed.get("recipient_name") or row.get("recipient_name")
+    entity = _entity_or_empty(case)
+    await log_event(
+        user_id=None,
+        user_display_name=name or claimed.get("recipient_email") or "Client",
+        action_type=ev.CLIENT_APPROVAL_SELF_SERVICE,
+        event_code=ev.CLIENT_APPROVAL_SELF_SERVICE,
+        case_id=case.get("entity_id"), entity_type="nar1_case", entity_id=case["id"],
+        company_name=entity.get("company_name"), **audit_subject.for_case(case),
+        new_value="approved",
+        metadata={
+            "case_no": case.get("case_no"),
+            "person_id": claimed.get("person_id"),
+            "recipient_email": claimed.get("recipient_email"),
+            "ip_address": claimed.get("ip_address"),
+            "user_agent": claimed.get("user_agent"),
+            "responded_at": claimed.get("responded_at"),
+            "channel": "self_service",
+            "revision": claimed.get("revision", row.get("revision")),
+            "signature": signature,
+            "multi_signer": {"signed": outcome["signed"],
+                             "required": outcome["required"],
+                             "converged": outcome["converged"]},
+        })
+
+    # 10 and 11.
+    return await _after_signing(case, outcome, background)
