@@ -349,3 +349,13 @@ describe('loading', () => {
     expect(screen.queryByText(/may be out of date/)).toBeNull()
   })
 })
+
+describe('an ND2B filed without the client (waiver)', () => {
+  it('stops waiting and offers no Send', () => {
+    panels({ data: { ...DATA, form_code: 'Nd2b', client_approved: true,
+                     client_approval: { source: 'staff_waiver' } } })
+    expect(screen.queryByText(/case waits for all/)).toBeNull()
+    expect(screen.getByText(/proceeding without the remaining signatures/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Send|Re-send)$/ })).toBeNull()
+  })
+})

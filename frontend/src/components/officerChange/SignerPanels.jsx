@@ -78,6 +78,9 @@ export default function SignerPanels({
   const signers = state.signers
   const required = state.required ?? signers.length
   const converged = Boolean(state.converged)
+  // An ND2B the operator chose to file without the client (the waiver) is no
+  // longer waiting for anybody: no "waits for all", and no Send to arm.
+  const waived = data.client_approved === true && data.client_approval?.source === 'staff_waiver'
 
   async function settle() {
     await Promise.all([refresh(), reload()])
@@ -158,7 +161,7 @@ export default function SignerPanels({
                 </div>
               )}
 
-              {can.write && !signed && !converged && (
+              {can.write && !signed && !converged && !waived && (
                 <>
                   <RecipientPicker
                     recipients={[{ name: s.name, person_id: s.person_id, email: s.suggested_email || null,
@@ -209,6 +212,8 @@ export default function SignerPanels({
               Continue to Data Verification →
             </button>
           </>
+        ) : waived ? (
+          <span>Signatures: {state.signed ?? 0} of {required} — proceeding without the remaining signatures</span>
         ) : (
           <span>Signatures: {state.signed ?? 0} of {required} — case waits for all</span>
         )}
