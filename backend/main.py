@@ -7,7 +7,8 @@ load_dotenv()
 
 from routers import (auth, users, roles, cases, cases_audit, audit, companies,
                      persons, documents, form_contract, lookups,
-                     officer_change_filing, officer_changes, public_approval, tpsi)
+                     officer_change_filing, officer_change_signers, officer_changes,
+                     public_approval, tpsi)
 from services.app_env import is_production
 from services import api_errors
 
@@ -49,6 +50,9 @@ app.include_router(tpsi.router, prefix="/tpsi", tags=["tpsi"])
 app.include_router(officer_changes.router, prefix="/officer-changes",
                    tags=["officer-changes"])
 app.include_router(officer_change_filing.router, prefix="/officer-changes",
+                   tags=["officer-changes"])
+# One director at a time when several must sign (nd2-multi-signer).
+app.include_router(officer_change_signers.router, prefix="/officer-changes",
                    tags=["officer-changes"])
 # THE ONLY UNAUTHENTICATED ROUTER (spec §5). Mounted under its own prefix so
 # `/public/...` is visibly separate from everything require_permission guards --
