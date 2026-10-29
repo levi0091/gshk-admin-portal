@@ -596,7 +596,8 @@ _PAD_SCRIPT = """(function () {
     go.disabled = true;
     field.value = '';
   });
-  canvas.form.addEventListener('submit', function (e) {
+  // A <canvas> is not a form control and has no `.form`; the hidden input is.
+  field.form.addEventListener('submit', function (e) {
     if (!inked) { e.preventDefault(); return; }
     field.value = canvas.toDataURL('image/png');
   });

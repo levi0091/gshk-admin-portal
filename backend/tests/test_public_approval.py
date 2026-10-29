@@ -13,6 +13,9 @@ The two things this file exists to hold in place:
      rate-limited all produce the SAME answer, so the page cannot be used to
      learn which tokens or cases exist.
 """
+import json
+import shutil
+import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -909,6 +912,52 @@ def test_a_directors_page_runs_the_pad_and_nothing_else(client, a_director_signs
         assert handler not in text.lower()
     # No other element of the page loads anything.
     assert "<link" not in text.lower() and "<img" not in text.lower()
+
+
+_PAD_HARNESS = r"""
+const script = require('fs').readFileSync(0, 'utf8');
+function el(extra) {
+  return Object.assign({ hidden: true, disabled: false, value: '', listeners: {},
+    addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+    fire(type, event) { (this.listeners[type] || []).forEach(fn => fn(event)); } }, extra);
+}
+// As in a browser: the hidden input and the button carry `.form`; a <canvas>
+// is not a form control and does not.
+const form = el({});
+const field = el({ form }), go = el({ form, disabled: true }), clear = el({ form });
+const panel = el({});
+const ctx = { beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, clearRect() {} };
+const canvas = el({ width: 600, height: 200, getContext: () => ctx,
+  getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 200 }),
+  setPointerCapture() {}, toDataURL: () => 'data:image/png;base64,SIGNED' });
+const byId = { sigpanel: panel, sigpad: canvas, sigdata: field, sigok: go, sigclear: clear };
+globalThis.window = { PointerEvent: function () {} };
+globalThis.document = { getElementById: id => byId[id] || null };
+new Function(script)();
+const shown = panel.hidden === false, armedBefore = !go.disabled;
+canvas.fire('pointerdown', { pointerId: 1, clientX: 10, clientY: 10, preventDefault() {} });
+const armed = !go.disabled;
+let prevented = false;
+form.fire('submit', { preventDefault() { prevented = true; } });
+console.log(JSON.stringify({ shown, armedBefore, armed, prevented, value: field.value }));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_pad_script_shows_arms_and_fills_the_field(client, a_director_signs):
+    """RUN the pad, not just read it: the first version called
+    `canvas.form.addEventListener`, which throws in every browser (a canvas has
+    no `.form`), so the panel never appeared and no director could confirm —
+    while every text assertion above still passed."""
+    with _Stack(*_world(approval=row(), case=ND2A_CASE)):
+        script = re.search(r"<script>(.*?)</script>", client.get(ND2_PATH).text,
+                           re.S).group(1)
+    out = subprocess.run(["node", "-e", _PAD_HARNESS], input=script,
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result == {"shown": True, "armedBefore": False, "armed": True,
+                      "prevented": False, "value": "data:image/png;base64,SIGNED"}
 
 
 def test_the_nd2b_pad_names_only_the_form(client, a_director_signs):

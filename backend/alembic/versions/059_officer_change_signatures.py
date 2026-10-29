@@ -57,8 +57,23 @@ def upgrade() -> None:
           ON public.officer_change_signatures (case_id, revision);
         """
     )
-    op.execute("ALTER TABLE public.officer_change_signatures "
-               "ENABLE ROW LEVEL SECURITY")
+    # Drawn signatures are personal data: locked down exactly as migration 050
+    # locks its personal-data tables — RLS on, no policy, and no grant left to
+    # anon or authenticated. The backend reaches it as service_role.
+    op.execute(
+        """
+        ALTER TABLE public.officer_change_signatures ENABLE ROW LEVEL SECURITY;
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+            REVOKE ALL ON public.officer_change_signatures FROM anon;
+          END IF;
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+            REVOKE ALL ON public.officer_change_signatures FROM authenticated;
+          END IF;
+        END $$;
+        """
+    )
 
 
 def downgrade() -> None:

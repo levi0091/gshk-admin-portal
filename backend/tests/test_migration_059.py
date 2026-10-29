@@ -79,6 +79,14 @@ def test_rls_is_on_and_no_policy_is_created():
     assert "CREATE POLICY" not in sql.upper()
 
 
+def test_anon_and_authenticated_keep_no_grant():
+    """Drawn signatures are personal data: locked down as migration 050 does,
+    so a stray policy later cannot expose them through PostgREST either."""
+    sql = _statements("upgrade")
+    assert "REVOKE ALL ON public.officer_change_signatures FROM anon" in sql
+    assert "REVOKE ALL ON public.officer_change_signatures FROM authenticated" in sql
+
+
 def test_the_downgrade_drops_the_table():
     assert "DROP TABLE IF EXISTS public.officer_change_signatures" in _statements("downgrade")
 
