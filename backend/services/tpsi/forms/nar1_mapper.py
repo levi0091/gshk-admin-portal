@@ -800,7 +800,12 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
     }
     if person.get("former_name"):
         block["indvPrevEngName"] = person["former_name"]
-    if person.get("email"):
+    # `hide_email_on_forms` (migration 058, Levi 2026-10-29): the person asked
+    # that their address not appear on anything we file or print. CR marks
+    # indvEmailAddr Mandatory = N, so leaving it out cannot cause a refusal; the
+    # rendered PDF reads this XML, so it is blank there too. The address stays
+    # on the profile and is still used to SEND mail.
+    if person.get("email") and not person.get("hide_email_on_forms"):
         block["indvEmailAddr"] = person["email"]
     block.update(_identity(identity_documents.get(person["id"], []), problems, where))
     return {k: v for k, v in block.items() if v not in ("", None, {})}

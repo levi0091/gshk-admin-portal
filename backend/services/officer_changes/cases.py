@@ -465,6 +465,52 @@ def update_entry(case: dict, entry_id: str, patch: dict, *, user_id) -> tuple[di
     return before, after
 
 
+def mark_maintenance(case: dict, entry_id: str, item_key: str, *, user_id) -> dict:
+    """Treat ONE line of an ND2B as data maintenance (Levi 2026-10-29, ND2 change
+    request 4): "this difference is a correction to our records, not a change CR
+    needs to hear about". Moves that item's baseline, for that one appointment,
+    to the profile's current value (`source = 'dismissed'`), and takes the line
+    off the case. Not undoable from the screen -- undo is to change the profile
+    value back, which raises the difference again.
+
+    Returns `{"entry": <refreshed row>, "item": <the fresh item>}`; the caller
+    audits. Raises `CaseRefused` (closed / already sent / not an ND2B change)
+    and `LookupError` (unknown entry, or the key is not pending on it).
+
+    Two traps, both from the technical review (B1):
+
+      * `particulars.advance` SKIPS an item flagged `omitted`, and the stored
+        entry item is omitted whenever the operator used Omit first. So it is
+        handed the FRESH item from `pending_for_officer`, never the stored one;
+        otherwise the baseline would not move and the call would silently do
+        nothing for exactly the line an operator was likeliest to have touched.
+      * Nothing re-diffs on `respond`; only `GET` calls `refresh_items`. Without
+        the refresh below the baseline would move while `entry.items` still
+        carried the line, and `apply._apply_change` would FILE it.
+
+    Marking a director's residential address (d) leaves their correspondence
+    address (e) pending, by design: `advance` pins (e) to the address CR still
+    holds, because telling CR nothing about (d) says nothing about (e).
+    """
+    _refuse_unless_editable(case)
+    entry = _entry(case, entry_id)
+    if case.get("form_code") != "Nd2b" or entry.get("kind") != "change":
+        raise CaseRefused("not_a_change",
+                          "Only a line of an ND2B can be treated as data maintenance.")
+    party = ({"person_id": entry["person_id"]} if entry.get("person_id")
+             else {"corporate_entity_id": entry.get("corporate_entity_id")})
+    fresh = particulars.pending_for_officer(
+        case["entity_id"], capacity=entry["capacity"], **party)
+    item = next((i for i in fresh if i["key"] == item_key), None)
+    if item is None:
+        raise LookupError(f"{item_key!r} is not a pending change on entry {entry_id}")
+    particulars.advance(case["entity_id"], **party, items=[item], user_id=user_id,
+                        capacity=entry["capacity"], source="dismissed")
+    refreshed = refresh_items(case, list_entries(case["id"]))
+    return {"entry": next((e for e in refreshed if e["id"] == entry_id), entry),
+            "item": item}
+
+
 def remove_entry(case: dict, entry_id: str) -> dict:
     _refuse_unless_editable(case)
     gone = _entry(case, entry_id)

@@ -133,6 +133,10 @@ def snapshot_person(person_id: str) -> dict:
         "residential_address": home,
         "correspondence_address": None,
         "email": _s(person.get("email")),
+        # `persons.hide_email_on_forms` (migration 058). Carried BESIDE the
+        # email, never by blanking it: a blank would itself differ from a
+        # baseline that holds the address. `diff` reads it off the CURRENT side.
+        "hide_email": bool(person.get("hide_email_on_forms")),
         "hkid": _s(hkid.get("id_number")) if hkid else "",
         "passport": ({"number": _s(passport.get("id_number")),
                       "issuing_country": _s(passport.get("issuing_country"))}
@@ -277,6 +281,13 @@ def diff(baseline: dict, current: dict, *, capacity: str) -> list[dict]:
     out = []
     for key, cr_item, label, only_for in (_CORPORATE_ITEMS if corporate else _PERSON_ITEMS):
         if only_for and only_for != capacity:
+            continue
+        if key == "email" and not corporate and current.get("hide_email"):
+            # Levi 2026-10-29: "not printed on any forms NAR1, ND2A or ND2B", so
+            # a hidden address is never offered as a change to CR either. The
+            # baseline is left alone: unticking the box brings back any real
+            # difference. (Per-person Dismiss still writes the whole snapshot,
+            # so it moves the email baseline too -- accepted, PRD §9.)
             continue
         if key == "correspondence_address":
             old = _effective_correspondence(baseline)

@@ -220,7 +220,11 @@ def _natural_appointment(graph, entry, bean_id, problems, for_esign,
                                       f"{where} (correspondence address)", hkg_only=secretary)
     if not secretary:
         bean["indvResAddr"] = cr_address(home, problems, f"{where} (residential address)")
-    bean["indvEmailAddr"] = _s(person.get("email"))
+    # Hidden on forms (migration 058): the key stays and is blank rather than
+    # absent -- every bean in this file always carries its keys -- and CR marks
+    # the box Mandatory = N.
+    bean["indvEmailAddr"] = ("" if person.get("hide_email_on_forms")
+                             else _s(person.get("email")))
     bean.update(full_ids(graph, entry["person_id"], problems, where))
     if secretary:
         bean.update(tcsp("indv", person.get("tcsp_licence_no"),

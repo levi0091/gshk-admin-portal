@@ -552,3 +552,62 @@ def test_the_baseline_is_captured_from_the_linked_particulars(db):
     db.tables["entity_officers"][0]["identity_document_id"] = "D2"
     pt.capture_before_edit(person_id="P1", user_id="U1")
     assert pt.baseline("E1", person_id="P1")["passport"]["number"] == "K7654321"
+
+
+# -- hide_email_on_forms (PRD nd2-change-requests §1, test 3) -----------------------
+
+def test_snapshot_carries_the_flag_without_blanking_the_email(db):
+    """The snapshot keeps the real address -- blanking it would itself read as a
+    difference against a baseline that holds it."""
+    _person(db, hide_email_on_forms=True)
+    snap = pt.snapshot_person("P1")
+    assert snap["hide_email"] is True
+    assert snap["email"] == "tm@example.com"
+    _person(db, hide_email_on_forms=False)
+    assert pt.snapshot_person("P1")["hide_email"] is False
+
+
+def test_a_hidden_email_is_never_offered_as_a_change():
+    base = _base_person()
+    now = copy.deepcopy(base)
+    now["email"] = "new@example.com"
+    now["hide_email"] = True
+    assert pt.diff(base, now, capacity="director") == []
+
+
+def test_a_hidden_email_does_not_hide_the_other_items():
+    base = _base_person()
+    now = copy.deepcopy(base)
+    now["email"] = "new@example.com"
+    now["name_zh"] = "陳小文"
+    now["hide_email"] = True
+    assert _keys(pt.diff(base, now, capacity="director")) == ["name_zh"]
+
+
+def test_clearing_the_flag_brings_the_email_difference_back():
+    base = _base_person()
+    now = copy.deepcopy(base)
+    now["email"] = "new@example.com"
+    now["hide_email"] = True
+    assert pt.diff(base, now, capacity="director") == []
+    now["hide_email"] = False
+    assert _keys(pt.diff(base, now, capacity="director")) == ["email"]
+
+
+def test_the_flag_is_honoured_through_the_pending_lists(db):
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, email="changed@example.com", hide_email_on_forms=True)
+    assert pt.pending_for_person("P1") == []
+    assert pt.pending_for_officer("E1", person_id="P1", capacity="director") == []
+    _person(db, hide_email_on_forms=False)
+    assert _keys(pt.pending_for_officer("E1", person_id="P1", capacity="director")) == ["email"]
+
+
+def test_the_flag_does_not_touch_a_corporate_email():
+    base = {"party_type": "corporate", "name": {"name": "X", "name_zh": ""},
+            "address": dict(OFFICE), "email": "a@example.com",
+            "tcsp": {"licence_no": "", "exemption_reason": ""}}
+    now = copy.deepcopy(base)
+    now["email"] = "b@example.com"
+    now["hide_email"] = True
+    assert _keys(pt.diff(base, now, capacity="director")) == ["email"]

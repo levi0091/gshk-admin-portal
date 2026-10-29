@@ -3,6 +3,7 @@
 Happy path, 403 and an edge case per route group; services are patched at the
 names the router calls, so nothing reaches Supabase, Resend, DNS or CR.
 """
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -57,6 +58,7 @@ ROUTES = [
     ("post", "/officer-changes/K1/entries", {"kind": "cessation"}),
     ("delete", "/officer-changes/K1/entries/N1", None),
     ("post", "/officer-changes/K1/entries/N1/kyc", {"cleared": True}),
+    ("post", "/officer-changes/K1/entries/N1/items/email/maintenance", None),
     ("put", "/officer-changes/K1/entries/N1/effective-date", {"effective_date": "2026-10-01"}),
     ("patch", "/officer-changes/K1/documents/D1", {"send_with_email": True}),
     ("get", "/officer-changes/K1/resolution", None),
@@ -750,3 +752,134 @@ def test_a_mixed_board_on_a_manual_only_case_is_never_told_no_signature_is_neede
             "emails": ["lee@example.com"], "respond_by": "2099-01-01"})
     assert resp.status_code == 200, resp.text
     assert letter.call_args.kwargs["consent"] is None
+
+
+# -- data maintenance (PRD nd2-change-requests §4, test 6; review B1) ----------------
+
+@pytest.fixture
+def world(monkeypatch):
+    """A REAL ND2B with a REAL change list over the in-memory database.
+
+    Only the composite, the audit writer and the user are patched. The services
+    that move a baseline and re-diff the entry run for real: a test that
+    patched `refresh_items` could not notice a route that moved the baseline
+    and left the line on the entry for `apply` to file.
+    """
+    from services import nar1_cases
+    from services.officer_changes import cases as cases_svc, particulars
+    from tests.officer_changes.fakes import FakeSupabase
+    from tests.officer_changes.test_cases import _tables
+
+    db = FakeSupabase(_tables())
+    for module in (cases_svc, particulars, nar1_cases):
+        monkeypatch.setattr(module, "get_supabase", lambda: db)
+    monkeypatch.setattr(cases_svc.soft_delete, "is_deleted", lambda sb, t, i: False)
+    particulars.capture_before_edit(person_id="P1", user_id="U1")
+    db.tables["persons"][0]["email"] = "new@example.com"
+    db.tables["persons"][0]["surname"] = "WONG"
+    case, _ = cases_svc.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
+    entry = cases_svc.add_entry(case, {"kind": "change", "officer_id": "O1"}, user_id="U1")
+    with patch("middleware.auth._resolve_user", return_value=ADMIN), \
+         patch.object(oc.svc, "composite", new_callable=AsyncMock,
+                      return_value={"id": case["id"]}) as composite, \
+         patch.object(oc, "log_event", new_callable=AsyncMock) as audit:
+        yield SimpleNamespace(db=db, case=case, entry=entry, audit=audit,
+                              composite=composite, particulars=particulars)
+
+
+def _post(w, key="email", entry=None, case=None):
+    return client.post(f"/officer-changes/{(case or w.case)['id']}/entries/"
+                       f"{(entry or w.entry)['id']}/items/{key}/maintenance", headers=H)
+
+
+def _stored_keys(w):
+    row = next(r for r in w.db.rows("officer_change_entries") if r["id"] == w.entry["id"])
+    return [i["key"] for i in row["items"]]
+
+
+def test_maintenance_settles_one_line_and_audits_it(world):
+    assert set(_stored_keys(world)) == {"email", "name_en"}
+
+    resp = _post(world)
+
+    assert resp.status_code == 200
+    # The real refresh_items ran: the entry no longer carries the line, so
+    # nothing downstream can file it; the OTHER line is still pending.
+    assert _stored_keys(world) == ["name_en"]
+    assert world.particulars.baseline("E1", person_id="P1")["email"] == "new@example.com"
+    assert world.particulars.baseline("E1", person_id="P1")["name_en"]["surname"] == "CHAN"
+    world.composite.assert_awaited_once()
+
+    (call,) = world.audit.await_args_list
+    assert call.kwargs["action_type"] == "OFFICER_PARTICULARS_DISMISSED"
+    meta = call.kwargs["metadata"]
+    assert meta["reason"] == "data_maintenance"
+    assert meta["case_id"] == world.case["id"] and meta["entity_id"] == "E1"
+    assert meta["capacity"] == "director" and meta["items"] == ["Email address"]
+    assert meta["old"] == "p1@example.com" and meta["new"] == "new@example.com"
+
+
+def test_a_previously_omitted_line_can_still_be_marked(world):
+    oc.svc.update_entry(world.case, world.entry["id"],
+                        {"items": [{"key": "email", "omitted": True}]}, user_id="U1")
+    assert _post(world).status_code == 200
+    assert _stored_keys(world) == ["name_en"]
+    assert world.particulars.baseline("E1", person_id="P1")["email"] == "new@example.com"
+
+
+def test_maintenance_never_logs_an_identity_number_or_an_address(world):
+    world.db.tables["person_identity_documents"][0]["id_number"] = "B1234564"
+    world.db.tables["persons"][0]["residential_address_id"] = "A2"
+    entry = oc.svc.refresh_items(world.case, oc.svc.list_entries(world.case["id"]))[0]
+    assert {"hkid", "residential_address"} <= {i["key"] for i in entry["items"]}
+    for key in ("hkid", "residential_address"):
+        world.audit.reset_mock()
+        assert _post(world, key).status_code == 200
+        meta = world.audit.await_args.kwargs["metadata"]
+        assert meta["old"] is None and meta["new"] is None and meta["item_key"] == key
+
+
+def test_maintenance_on_a_closed_case_is_409_and_changes_nothing(world):
+    world.db.tables["nar1_cases"][0]["closed_at"] = "2026-10-01T00:00:00+00:00"
+    resp = _post(world)
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "case_closed"
+    assert world.particulars.baseline("E1", person_id="P1")["email"] == "p1@example.com"
+    world.audit.assert_not_awaited()
+
+
+def test_maintenance_when_the_case_is_not_editable_is_409(world):
+    world.db.tables["nar1_cases"][0]["verification_sent_at"] = "2026-10-01T00:00:00+00:00"
+    resp = _post(world)
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "not_editable"
+    assert world.particulars.baseline("E1", person_id="P1")["email"] == "p1@example.com"
+    world.audit.assert_not_awaited()
+
+
+def test_maintenance_on_an_item_that_is_not_pending_is_404(world):
+    assert _post(world, "hkid").status_code == 404
+    assert _post(world, "email", entry={"id": "no-such-entry"}).status_code == 404
+    assert _post(world, case={"id": "no-such-case"}).status_code == 404
+    world.audit.assert_not_awaited()
+
+
+def test_maintenance_twice_is_404_the_second_time(world):
+    assert _post(world).status_code == 200
+    assert _post(world).status_code == 404
+    assert len(world.audit.await_args_list) == 1
+
+
+def test_maintenance_on_an_nd2a_case_is_refused(world):
+    nd2a, _ = oc.svc.create_case(entity_id="E1", form_code="Nd2a", user_id="U1")
+    entry = oc.svc.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                    "person_id": "P9", "capacity": "director"},
+                             user_id="U1")
+    resp = _post(world, case=nd2a, entry=entry)
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "not_a_change"
+
+
+def test_maintenance_needs_a_valid_token():
+    with patch("middleware.auth._resolve_user",
+               side_effect=HTTPException(status_code=401, detail="x")):
+        resp = client.post("/officer-changes/K1/entries/N1/items/email/maintenance", headers=H)
+    assert resp.status_code == 401
+    assert client.post("/officer-changes/K1/entries/N1/items/email/maintenance").status_code == 403
