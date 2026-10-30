@@ -280,6 +280,82 @@ describe('Recipients start empty, with the board as suggestion pills (Levi 2026-
   })
 })
 
+describe('Send again after the first email, as on NAR1 (Levi 2026-10-30)', () => {
+  const SENT = { verification_sent_at: '2026-10-30T10:27:00Z', verification_revision: 1 }
+  const BOARD = {
+    recipients: [{ person_id: 'p2', name: 'LEE Ka Ho', email: 'lee@example.com', role: 'director' }],
+    default_to: ['lee@example.com'], reply_by_default: '2026-10-07',
+  }
+  const stage = (over = {}) => {
+    get.mockResolvedValue(BOARD)
+    return wrap(<StageClientVerification
+      data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' },
+        summary: 'Director' }], ...SENT, ...over }}
+      reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+  }
+
+  it('offers Send again and says it is the same frozen copy', async () => {
+    stage()
+    await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' })
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send to client' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Send again re-sends this same frozen copy/)).toBeInTheDocument()
+    expect(screen.queryByText(/goes out as Rev\./)).not.toBeInTheDocument()
+  })
+
+  it('posts the chosen address, and keeps the relayed-answer buttons', async () => {
+    post.mockResolvedValue({ deliveries: [], failed: [] })
+    const user = userEvent.setup()
+    stage()
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    expect(screen.getByRole('button', { name: 'Client approved' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Send again' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/verification/send',
+      { emails: ['lee@example.com'], respond_by: '2026-10-07' }))
+  })
+
+  it('a form that cannot be rebuilt now does not stop re-sending the frozen one', async () => {
+    const user = userEvent.setup()
+    stage({ problems: ['The registered office has no country.'] })
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeEnabled()
+  })
+
+  it('is withheld, with the way forward, once a date was filled in after the send', async () => {
+    const user = userEvent.setup()
+    stage({ entries: [{ id: 'n1', kind: 'appointment', party: { name: 'LEE Ka Ho' }, summary: 'Director',
+      date_deferred: true, effective_date: '2026-10-29' }] })
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeDisabled()
+    expect(screen.getByText(/A date has been filled in since this was sent/)).toBeInTheDocument()
+  })
+
+  it('warns that it clears a recorded answer', async () => {
+    stage({ client_approved: false })
+    await screen.findByRole('button', { name: 'Send again' })
+    expect(screen.getByText(/clears the answer recorded above/)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['filed', { changes_applied_at: '2026-10-30T11:00:00Z' }],
+    ['closed', { closed_at: '2026-10-30T11:00:00Z' }],
+    ['possibly at CR', { filing: { stage: 'submission_unknown' } }],
+  ])('is not offered once the case is %s', (_, over) => {
+    stage(over)
+    expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Send again re-sends/)).not.toBeInTheDocument()
+  })
+
+  it('without write permission there is nothing to press', () => {
+    get.mockResolvedValue(BOARD)
+    wrap(<StageClientVerification
+      data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' },
+        summary: 'Director' }], ...SENT }}
+      reload={vi.fn()} can={{ ...ALL, write: false }} goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument()
+  })
+})
+
 describe('Send card (A8) and the ND2B waiver (BQ1)', () => {
   it('tells the operator the client gets the full form with the PI sheets', () => {
     wrap(<StageClientVerification data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation',

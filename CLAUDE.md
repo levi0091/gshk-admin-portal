@@ -244,7 +244,7 @@ The `frontend-design` skill is available in Claude Code and must be used when ge
 >
 > **Left at brand values on purpose:** `--t-muted` text (3.84:1 on white) and small carrot labels such as "IN PROGRESS" and the required asterisk (3.0:1) both miss AA. They are verbatim brand tokens, so changing them is Levi's call.
 >
-> **ND2's single send offers Send again, as NAR1 does:** it mails the frozen `verification_xml` under the same revision and leaves the CR filing alone; a correction goes through Restart verification.
+> **ND2's single send offers Send again, as NAR1 does:** it mails the frozen `verification_xml` under the same revision and leaves the CR filing alone; a correction goes through Restart verification. **Unlike NAR1, a sent ND2 can move:** a deferred date may be filled in later, and then the frozen form no longer matches the letter and resolution written from live changes, so the send refuses (`dates_filled_since_send`) and points at Restart. It also refuses while CR may hold the form (`cr_may_hold`).
 
 ### Profile-screen conventions (the 2026-09-04 pass)
 

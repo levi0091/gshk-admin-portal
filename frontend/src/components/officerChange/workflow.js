@@ -39,6 +39,20 @@ export function isFiled(c) {
     || FILED_STAGES.has(c?.filing?.stage))
 }
 
+// A submit in flight or with no answer: CR may hold the form, so nothing that
+// asks the client again is on offer. The backend refuses it as `cr_may_hold`.
+export function crMayHold(c) {
+  return c?.filing?.stage === 'submitting' || c?.filing?.stage === 'submission_unknown'
+}
+
+// A deferred date with a value: filled in after the form was mailed, so it is not
+// in the frozen copy. Mirrors `cases.dates_filled_since_send`.
+export function datesFilledSinceSend(entries) {
+  return (entries || []).some(e => (e.kind === 'change'
+    ? (e.items || []).some(i => i.deferred && i.effective_date && !i.omitted)
+    : e.date_deferred && e.effective_date))
+}
+
 export function isClosed(c) {
   return Boolean(c?.closed_at)
 }

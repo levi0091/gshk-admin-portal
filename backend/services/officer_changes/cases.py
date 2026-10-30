@@ -577,6 +577,20 @@ def _dated_by_default(case: dict, items: list[dict]) -> list[dict]:
             for item in items]
 
 
+def dates_filled_since_send(entries: list[dict]) -> bool:
+    """A DEFERRED date that now has a value: filled in after the form was mailed
+    (`set_effective_date` leaves the flag up until the next send), so it is not in
+    the frozen copy the client holds."""
+    for entry in entries:
+        if entry.get("kind") == "change":
+            if any(i.get("deferred") and i.get("effective_date") and not i.get("omitted")
+                   for i in entry.get("items") or []):
+                return True
+        elif entry.get("date_deferred") and entry.get("effective_date"):
+            return True
+    return False
+
+
 def mark_deferred(case_id: str) -> int:
     """At send: every undated change is DEFERRED — the client was told its date
     will be confirmed when GSHK files (Jacqueline A1) — and every dated one is

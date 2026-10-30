@@ -10,7 +10,7 @@ import AttachmentsCard from './AttachmentsCard.jsx'
 import SignerPanels from './SignerPanels.jsx'
 import CloseCaseModal from '../case/CloseCaseModal.jsx'
 import { officerChangeApi } from './api.js'
-import { errorOf } from './workflow.js'
+import { crMayHold, datesFilledSinceSend, errorOf, isClosed, isFiled } from './workflow.js'
 
 /** Jacqueline A7: the reason a case is closed when no director would remain. */
 export const NO_DIRECTOR_REASON = 'Pending further instructions — no director would remain after ' +
@@ -112,11 +112,17 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
   const formBlocked = data.rules?.blocking
     ? 'A company rule is breached — see the rules below.'
     : !(data.entries || []).length ? 'Add at least one change first.'
-      : problems.length ? 'The form cannot be prepared yet — see the list below.'
+      // Not on a send again: that mails the frozen copy and prepares nothing.
+      : problems.length && !sent ? 'The form cannot be prepared yet — see the list below.'
+        : sent && datesFilledSinceSend(data.entries)
+          ? 'A date has been filled in since this was sent, so the copy the client holds no longer matches. Restart verification to send them the form with that date.'
         : !respondBy ? 'Choose the date the client should reply by.' : null
   const blocked = formBlocked || (!to.length ? 'Add at least one recipient.' : null)
   const required = typeof signerState?.required === 'number' ? signerState.required : null
   const converged = multi && Boolean(signerState?.converged)
+  // Send stays on offer after the first email, as it does on NAR1 (Levi
+  // 2026-10-30), until the form is in CR's hands or the case is closed.
+  const canSend = !multi && can.write && !isFiled(data) && !isClosed(data) && !crMayHold(data)
 
   async function toggleMulti(next) {
     setError(null); setToggling(true)
@@ -237,7 +243,8 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
 
         {sent && (
           <div className={`alert ${data.client_approved === true ? 'al-success'
-            : data.client_approved === false ? 'al-warn' : 'al-info'}`} style={{ marginTop: 12 }}>
+            : data.client_approved === false ? 'al-warn' : 'al-info'}`} role="status"
+               style={{ marginTop: 12, marginBottom: 0 }}>
             <div className="al-body">
               {revisionTag ? `${revisionTag} sent` : 'Sent'}{' '}
               {formatDateTime(data.verification_sent_at)}.{' '}
@@ -249,6 +256,8 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
               {data.client_approved === false && <>The client asked for changes. Correct the
                 record, then restart verification from the header.</>}
               {data.client_approved == null && <>Waiting for the client to confirm.</>}
+              {canSend && <>{' '}Send again re-sends this same frozen copy — to send a
+                corrected form, restart verification first.</>}
             </div>
           </div>
         )}
@@ -284,7 +293,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
                         refresh={refreshSigners} reload={reload} goTo={goTo} />
         )}
 
-        {!multi && can.write && !sent && (
+        {canSend && (
           <>
             <div style={{ marginTop: 12 }}>
               <RecipientPicker recipients={recipients || []} to={to} onChange={setTo}
@@ -293,38 +302,46 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
             <div className="oc-send-row">
               {replyByField}
               <button className="btn btn-primary" disabled={Boolean(blocked) || sending} onClick={send}>
-                {sending ? 'Sending…' : 'Send to client'}
+                {sending ? 'Sending…' : sent ? 'Send again' : 'Send to client'}
               </button>
             </div>
             {blocked && <div className="oc-locked-note">{blocked}</div>}
             {/* Said BEFORE the press: the one consequence of a resend the
                 client notices is that the button in the email they already
-                have goes dead. */}
-            {nextRevision >= 2 && (
+                have goes dead. Only after a RESTART: a send again repeats the
+                client's current Rev. */}
+            {!sent && nextRevision >= 2 && (
               <div className="f-hint" style={{ marginTop: 8 }}>
                 This goes out as Rev. {nextRevision}, and the Confirm link in the
                 earlier email stops working.
+              </div>
+            )}
+            {sent && data.client_approved != null && (
+              <div className="f-hint" style={{ marginTop: 8 }}>
+                Sending again clears the answer recorded above and asks the client again.
               </div>
             )}
           </>
         )}
 
         {can.write && sent && data.client_approved == null && (
-          <div className="oc-send-row">
+          <div className="oc-answer-row">
             <span className="f-hint">
               {multi ? 'Client asked for changes by email or phone?' : 'Client answered by email or phone?'}
             </span>
-            {/* "Approved" on a relayed reply would converge the case without the
-                signatures the option exists to collect (spec §2.4). */}
-            {!multi && <button className="btn btn-outline" onClick={() => answer(true)}>Client approved</button>}
-            <button className="btn btn-outline" onClick={() => answer(false)}>Client declined</button>
-            {nd2b && (
-              // Jacqueline BQ1: "We usually submit the ND2B even if the client has
-              // not confirmed the form." Never offered on an ND2A.
-              <button className="btn btn-outline" onClick={() => setWaiving(true)}>
-                Proceed without confirmation
-              </button>
-            )}
+            <div className="oc-answer-btns">
+              {/* "Approved" on a relayed reply would converge the case without the
+                  signatures the option exists to collect (spec §2.4). */}
+              {!multi && <button className="btn btn-outline" onClick={() => answer(true)}>Client approved</button>}
+              <button className="btn btn-outline" onClick={() => answer(false)}>Client declined</button>
+              {nd2b && (
+                // Jacqueline BQ1: "We usually submit the ND2B even if the client has
+                // not confirmed the form." Never offered on an ND2A.
+                <button className="btn btn-outline" onClick={() => setWaiving(true)}>
+                  Proceed without confirmation
+                </button>
+              )}
+            </div>
           </div>
         )}
 

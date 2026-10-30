@@ -207,6 +207,132 @@ def test_the_single_send_still_works_while_it_is_off(env):
     assert resp.status_code == 200, resp.text
 
 
+# -- send again: the frozen copy, as on NAR1 (Levi 2026-10-30) -------------------------------
+
+def _send_again(env, case):
+    """Post a single send with every collaborator patched; hand back what they saw."""
+    env.case = case
+    with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock,
+                      return_value="<rebuilt/>") as build, \
+         patch.object(oc.tpsi_filings, "create_filing", return_value={"id": "F1"}) as create, \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case") as supersede, \
+         patch.object(oc.nar1_router, "_undeliverable", new_callable=AsyncMock,
+                      return_value={}), \
+         patch.object(oc, "render_form", return_value=b"%PDF") as render, \
+         patch.object(oc.documents, "email_attachments", return_value=[]), \
+         patch.object(oc.resolution, "render", return_value=b"%PDF-res"), \
+         patch.object(oc.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]), \
+         patch.object(oc.recipients_svc, "default_recipients", return_value=[]), \
+         patch.object(oc.nar1_router, "_approval_link_base", return_value="https://x"), \
+         patch.object(oc.nar1_approvals, "issue",
+                      side_effect=lambda **k: [{**r, "token": "t"} for r in k["recipients"]]) as issue, \
+         patch.object(oc.email_service, "send",
+                      side_effect=lambda **k: {"id": "m1", "to": k["to"]}) as send, \
+         patch.object(oc.emails, "officer_change_email", return_value=("s", "h")):
+        resp = client.post("/officer-changes/K1/verification/send", headers=H,
+                           json={"emails": ["a@example.com"], "respond_by": "2099-01-01"})
+    return resp, dict(build=build, create=create, supersede=supersede, render=render,
+                      issue=issue, send=send)
+
+
+SENT = {**CASE, "verification_sent_at": "2026-10-29T00:00:00Z", "verification_revision": 2,
+        "verification_xml": "<frozen/>"}
+
+
+def test_send_again_mails_the_frozen_copy_and_builds_nothing(env):
+    resp, seen = _send_again(env, dict(SENT))
+    assert resp.status_code == 200, resp.text
+    seen["build"].assert_not_awaited()
+    seen["create"].assert_not_called()
+    seen["supersede"].assert_not_called()
+    call = seen["render"].call_args
+    assert "<frozen/>" in [*call.args, *call.kwargs.values()]
+    assert env.update.call_args.args[1]["verification_xml"] == "<frozen/>"
+
+
+def test_send_again_repeats_the_revision_the_client_holds(env):
+    resp, seen = _send_again(env, dict(SENT))
+    assert resp.json()["revision"] == 2
+    assert env.update.call_args.args[1]["verification_revision"] == 2
+    kwargs = seen["issue"].call_args.kwargs
+    assert kwargs["revision"] == 2 and kwargs["new_revision"] is False
+
+
+def test_a_send_after_a_restart_is_the_next_revision_and_built_afresh(env):
+    # Restart verification clears the send and the copy but keeps the count.
+    resp, seen = _send_again(env, {**CASE, "verification_revision": 2})
+    assert resp.json()["revision"] == 3
+    seen["build"].assert_awaited_once()
+    assert seen["issue"].call_args.kwargs["new_revision"] is True
+    assert env.update.call_args.args[1]["verification_xml"] == "<rebuilt/>"
+
+
+def test_send_again_clears_an_earlier_answer_as_a_first_send_does(env):
+    resp, _ = _send_again(env, {**SENT, "client_approved": False,
+                                "client_response_at": "2026-10-29T01:00:00Z"})
+    assert resp.status_code == 200, resp.text
+    assert env.update.call_args.args[1]["client_approved"] is None
+
+
+def test_send_again_refuses_when_no_copy_was_kept(env):
+    resp, seen = _send_again(env, {**SENT, "verification_xml": None})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "no_frozen_copy"
+    seen["send"].assert_not_called()
+    env.update.assert_not_called()
+
+
+@pytest.mark.parametrize("entries", [
+    [{"id": "E1", "kind": "appointment", "date_deferred": True, "effective_date": "2026-10-29"}],
+    [{"id": "E1", "kind": "change", "items": [
+        {"key": "name", "deferred": True, "effective_date": "2026-10-29"}]}],
+])
+def test_send_again_refuses_a_date_the_frozen_copy_does_not_carry(env, entries):
+    with patch.object(oc.svc, "list_entries", return_value=entries):
+        resp, seen = _send_again(env, dict(SENT))
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "dates_filled_since_send"
+    seen["send"].assert_not_called()
+    env.update.assert_not_called()
+
+
+@pytest.mark.parametrize("entries", [
+    # Still deferred and still blank: the frozen copy is right about it.
+    [{"id": "E1", "kind": "appointment", "date_deferred": True, "effective_date": None}],
+    # Dated before the send: the client saw it.
+    [{"id": "E1", "kind": "cessation", "date_deferred": False, "effective_date": "2026-10-01"}],
+    # A line left off the form has no date to carry.
+    [{"id": "E1", "kind": "change", "items": [
+        {"key": "name", "deferred": True, "effective_date": "2026-10-29", "omitted": True}]}],
+])
+def test_send_again_goes_when_the_frozen_copy_is_still_true(env, entries):
+    with patch.object(oc.svc, "list_entries", return_value=entries):
+        resp, _ = _send_again(env, dict(SENT))
+    assert resp.status_code == 200, resp.text
+
+
+def test_send_again_says_nothing_new_about_what_the_client_has_seen(env):
+    resp, _ = _send_again(env, dict(SENT))
+    assert resp.status_code == 200, resp.text
+    oc.svc.mark_deferred.assert_not_called()
+
+
+def test_a_first_send_still_marks_the_undated_changes_deferred(env):
+    resp, _ = _send_again(env, dict(CASE))
+    assert resp.status_code == 200, resp.text
+    oc.svc.mark_deferred.assert_called_once_with("K1")
+
+
+@pytest.mark.parametrize("stage", ["submitting", "submission_unknown"])
+def test_no_send_while_cr_may_hold_the_form(env, stage):
+    with patch.object(oc.nar1_cases, "current_filing", return_value={"id": "F1", "stage": stage}):
+        resp, seen = _send_again(env, dict(SENT))
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "cr_may_hold"
+    seen["send"].assert_not_called()
+    env.update.assert_not_called()
+
+
 def test_staff_cannot_record_an_approval_while_it_is_on(env):
     env.case = {**CASE, "multi_signer": True,
                 "verification_sent_at": "2026-10-29T00:00:00Z"}
