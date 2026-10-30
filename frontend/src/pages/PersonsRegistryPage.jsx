@@ -211,7 +211,7 @@ export default function PersonsRegistryPage() {
       />
 
       {error ? (
-        <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+        <div className="alert al-danger" role="alert">
           Failed to load persons: {error}
         </div>
       ) : (

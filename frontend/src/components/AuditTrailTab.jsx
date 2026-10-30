@@ -83,7 +83,7 @@ function AuditEntry({ entry }) {
               <> · Status: <strong>{entry.metadata.response_status}</strong></>
             )}
             {entry.metadata.error_code && (
-              <> · Error: <span style={{ color: '#C53030' }}>{entry.metadata.error_code}</span></>
+              <> · Error: <span style={{ color: 'var(--danger)' }}>{entry.metadata.error_code}</span></>
             )}
           </div>
         )}
@@ -113,7 +113,7 @@ export default function AuditTrailTab({ caseId }) {
   )
 
   if (error) return (
-    <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+    <div className="alert al-danger" role="alert">
       Failed to load audit trail: {error}
     </div>
   )

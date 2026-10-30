@@ -94,12 +94,12 @@ function AddUserModal({ roles, onClose, onCreated }) {
               own the first time they sign in. Nobody else ever sees it.
             </div>
             {warning && (
-              <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410' }}>
+              <div className="card-note card-note-warn" style={{ marginBottom: 0 }}>
                 {warning}
               </div>
             )}
             {error && (
-              <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C' }}>
+              <div className="alert al-danger" role="alert" style={{ marginBottom: 0 }}>
                 {error}
               </div>
             )}
@@ -161,7 +161,7 @@ function EditUserModal({ user, roles, onClose, onSaved }) {
               </select>
             </div>
             {error && (
-              <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C' }}>
+              <div className="alert al-danger" role="alert" style={{ marginBottom: 0 }}>
                 {error}
               </div>
             )}
@@ -246,7 +246,7 @@ function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
               </div>
 
               {isSelf && (
-                <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410', marginTop: 14 }}>
+                <div className="card-note card-note-warn" style={{ marginTop: 14, marginBottom: 0 }}>
                   This is your own account. You will be asked to choose a new
                   password straight away, and nothing else in the portal opens
                   until you do.
@@ -272,7 +272,7 @@ function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
               mailboxes they are now locked out — and nothing else on this screen
               would say why. */}
           {redirected && (
-            <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410' }}>
+            <div className="card-note card-note-warn" style={{ marginBottom: 0 }}>
               The password was reset, but this is a test environment: the email
               went to the test mailboxes, not to {result.email}. They cannot
               sign in until somebody passes them the password from that mailbox.
@@ -280,7 +280,7 @@ function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
           )}
 
           {failed && (
-            <div style={{ background: '#FEF0EB', border: '1px solid #F36C32', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#8A3410' }}>
+            <div className="card-note card-note-warn" style={{ marginBottom: 0 }}>
               The password was reset, but the email did not send
               {result.reset_email_error ? ` — ${result.reset_email_error}` : ''}.
               Their old password has already stopped working, so they are locked
@@ -290,7 +290,7 @@ function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
           )}
 
           {error && (
-            <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C', marginTop: 14 }}>
+            <div className="alert al-danger" role="alert" style={{ marginTop: 14, marginBottom: 0 }}>
               {error}
             </div>
           )}
@@ -356,7 +356,7 @@ function DeactivateModal({ user, onClose, onDeactivated }) {
             restores access and lifts the Auth ban.
           </p>
           {error && (
-            <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C', marginTop: 14 }}>
+            <div className="alert al-danger" role="alert" style={{ marginTop: 14, marginBottom: 0 }}>
               {error}
             </div>
           )}
@@ -438,7 +438,7 @@ function ReactivateModal({ user, onClose, onReactivated }) {
           </p>
 
           {error && (
-            <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C', marginTop: 14 }}>
+            <div className="alert al-danger" role="alert" style={{ marginTop: 14, marginBottom: 0 }}>
               {error}
             </div>
           )}
@@ -540,7 +540,7 @@ export default function UserManagementPage() {
                     {u.is_active && u.roles?.name !== 'super_admin' && (
                       <button
                         className="btn btn-ghost btn-sm"
-                        style={{ color: '#C53030' }}
+                        style={{ color: 'var(--danger)' }}
                         onClick={() => setDeactivateTarget(u)}
                       >
                         Deactivate

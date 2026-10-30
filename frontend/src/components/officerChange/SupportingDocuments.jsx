@@ -72,7 +72,7 @@ export default function SupportingDocuments({ data, entry, reload, can }) {
           </button>
         </div>
       )}
-      {error && <div className="f-hint" role="alert" style={{ color: '#B91C1C' }}>{error}</div>}
+      {error && <div className="f-error" role="alert">{error}</div>}
     </div>
   )
 }

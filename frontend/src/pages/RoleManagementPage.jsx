@@ -186,7 +186,7 @@ function RoleModal({ role, onClose, onSaved }) {
             </div>
 
             {error && (
-              <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', borderRadius: 6, padding: '10px 14px', fontSize: 13, color: '#B91C1C' }}>
+              <div className="alert al-danger" role="alert" style={{ marginBottom: 0 }}>
                 {error}
               </div>
             )}

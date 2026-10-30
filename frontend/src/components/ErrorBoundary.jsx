@@ -38,12 +38,12 @@ export default class ErrorBoundary extends Component {
     if (!error) return this.props.children
 
     return (
-      <div style={{ padding: 28, fontFamily: 'Outfit, sans-serif', color: '#3A4060' }}>
+      <div style={{ padding: 28, fontFamily: 'Outfit, sans-serif', color: 'var(--t-body)' }}>
         <div style={{
-          maxWidth: 900, background: '#FEF5F5', border: '1px solid #F5A9A9',
+          maxWidth: 900, background: 'var(--danger-5)', border: '1px solid var(--danger-border)',
           borderRadius: 10, padding: '18px 20px',
         }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#C53030', marginBottom: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--danger)', marginBottom: 8 }}>
             This screen failed to render
           </div>
           <p style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 14 }}>
@@ -53,9 +53,9 @@ export default class ErrorBoundary extends Component {
           </p>
 
           <pre style={{
-            background: '#fff', border: '1px solid #F5D0D0', borderRadius: 6,
-            padding: 12, fontSize: 11.5, lineHeight: 1.5, overflowX: 'auto',
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#C53030',
+            background: '#fff', border: '1px solid var(--danger-border)', borderRadius: 6,
+            padding: 12, fontSize: 11, lineHeight: 1.5, overflowX: 'auto',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--danger)',
           }}>
             {String(error?.stack || error?.message || error)}
             {info?.componentStack ? `\n\nComponent stack:${info.componentStack}` : ''}
@@ -76,7 +76,7 @@ export default class ErrorBoundary extends Component {
               onClick={() => { window.location.href = '/dashboard' }}
               style={{
                 padding: '8px 16px', borderRadius: 6, border: '1.5px solid #E2E4ED',
-                background: '#fff', color: '#3A4060', fontSize: 13,
+                background: '#fff', color: 'var(--t-body)', fontSize: 13,
                 fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
               }}
             >

@@ -99,7 +99,7 @@ export default function AddPersonModal({ onClose, onCreated }) {
                   onChange={(k, v) => setForm(s => ({ ...s, [k]: v }))}
                 />
                 {errors[f.key] && (
-                  <span className="f-hint" style={{ color: '#C53030' }}>{errors[f.key]}</span>
+                  <span className="f-error">{errors[f.key]}</span>
                 )}
               </div>
             ))}

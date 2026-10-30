@@ -466,7 +466,7 @@ export default function CompanyProfilePage() {
   }
   if (error) {
     return (
-      <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+      <div className="alert al-danger" role="alert">
         Failed to load company: {error}
       </div>
     )
@@ -784,7 +784,7 @@ export default function CompanyProfilePage() {
                   <div className="card-sub">Sections could not be loaded</div>
                 </div>
               </div>
-              <div className="reveal-note" style={{ color: '#B91C1C', background: '#FEE2E2' }}>
+              <div className="reveal-note reveal-note-danger">
                 {sectionsError} — this company’s documents are not shown below
                 because the section list is unavailable, not because there are
                 none. Reload the page.
@@ -1135,7 +1135,7 @@ export default function CompanyProfilePage() {
                   fields on THIS company that are missing, which is work for
                   whoever maintains the profile. */}
               {filingProblems.length > 0 && (
-                <div className="reveal-note" role="note">
+                <div className="card-note card-note-warn" role="note">
                   <b>This company cannot file an annual return yet.</b>
                   <ul className="filing-problems">
                     {filingProblems.map(p => <li key={p.field}>{p.message}</li>)}

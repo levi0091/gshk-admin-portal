@@ -169,7 +169,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
 
         <div className="modal-body">
           {apiError && (
-            <div style={{ marginBottom: 14, padding: 10, background: '#FEE2E2', borderRadius: 6, color: '#B91C1C', fontSize: 12 }}>
+            <div className="modal-error" role="alert">
               {apiError}
             </div>
           )}
@@ -180,15 +180,17 @@ export default function AddCompanyModal({ onClose, onCreated }) {
               </label>
               <input id="company_name" className="f-input" type="text"
                      placeholder="e.g. Skyline Capital Management"
-                     value={form.company_name} onChange={set('company_name')} />
-              {errors.company_name && <span className="f-hint" style={{ color: '#C53030' }}>{errors.company_name}</span>}
+                     value={form.company_name} onChange={set('company_name')}
+                     aria-invalid={errors.company_name ? 'true' : undefined} />
+              {errors.company_name && <span className="f-error">{errors.company_name}</span>}
             </div>
 
             <div className="f-group">
               <label className="f-label" htmlFor="br_number">BRN</label>
               <input id="br_number" className="f-input" type="text" placeholder="8-digit BR number"
-                     value={form.br_number} onChange={set('br_number')} />
-              {errors.br_number && <span className="f-hint" style={{ color: '#C53030' }}>{errors.br_number}</span>}
+                     value={form.br_number} onChange={set('br_number')}
+                     aria-invalid={errors.br_number ? 'true' : undefined} />
+              {errors.br_number && <span className="f-error">{errors.br_number}</span>}
             </div>
 
             <div className="f-group">
@@ -197,7 +199,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
                 <option value="">Select…</option>
                 {STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
               </select>
-              {errors.status && <span className="f-hint" style={{ color: '#C53030' }}>{errors.status}</span>}
+              {errors.status && <span className="f-error">{errors.status}</span>}
             </div>
 
             <div className="f-group full">
@@ -208,7 +210,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
                   <option key={t.code} value={t.code}>{t.label}</option>
                 ))}
               </select>
-              {errors.company_type && <span className="f-hint" style={{ color: '#C53030' }}>{errors.company_type}</span>}
+              {errors.company_type && <span className="f-error">{errors.company_type}</span>}
             </div>
 
             <div className="f-group">
@@ -222,7 +224,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
                   <option key={c.code} value={c.code}>{c.label}</option>
                 ))}
               </select>
-              {errors.incorporation_place && <span className="f-hint" style={{ color: '#C53030' }}>{errors.incorporation_place}</span>}
+              {errors.incorporation_place && <span className="f-error">{errors.incorporation_place}</span>}
             </div>
 
             {OPTIONAL_FIELDS.map(f => (
@@ -242,7 +244,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
                 lookups={lookups}
                 onChange={(k, v) => setAddress(a => ({ ...a, [k]: v }))}
               />
-              {errors.address && <span className="f-hint" style={{ color: '#C53030' }}>{errors.address}</span>}
+              {errors.address && <span className="f-error">{errors.address}</span>}
             </div>
 
             <div className="f-group full">
@@ -257,7 +259,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
                 <input id="company_phone" className="f-input" type="tel" placeholder="9123 4567"
                        value={form.phone_number} onChange={set('phone_number')} />
               </div>
-              {errors.company_phone && <span className="f-hint" style={{ color: '#C53030' }}>{errors.company_phone}</span>}
+              {errors.company_phone && <span className="f-error">{errors.company_phone}</span>}
             </div>
           </div>
 

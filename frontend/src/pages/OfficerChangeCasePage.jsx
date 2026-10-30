@@ -139,6 +139,12 @@ export default function OfficerChangeCasePage() {
         </div>
         <div className="pg-actions">
           <span className="perm-tag">Modules: <b>officer_changes</b>, <b>tpsi</b></span>
+          <button className="btn btn-outline" onClick={() => navigate('/dashboard')}>Back to cases</button>
+          {c.entity_id && (
+            <button className="btn btn-outline" onClick={() => navigate(`/companies/${c.entity_id}`)}>
+              Company profile
+            </button>
+          )}
           {caps.write && c.verification_sent_at && !isFiled(c) && !isClosed(c) && (
             <button className="btn btn-outline" disabled={busy}
                     onClick={() => setConfirmRestart(true)}>
@@ -148,12 +154,6 @@ export default function OfficerChangeCasePage() {
           {caps.write && !isClosed(c) && !isFiled(c) && (
             <button className="btn btn-outline btn-danger-outline"
                     onClick={() => setConfirmClose(true)}>Close case</button>
-          )}
-          <button className="btn btn-outline" onClick={() => navigate('/dashboard')}>Back to cases</button>
-          {c.entity_id && (
-            <button className="btn btn-outline" onClick={() => navigate(`/companies/${c.entity_id}`)}>
-              Company profile
-            </button>
           )}
         </div>
       </div>

@@ -34,6 +34,19 @@
   --sh-md:      0 4px 16px rgba(36,44,102,.10);
   --sh-lg:      0 8px 32px rgba(36,44,102,.14);
   --r-xs: 4px; --r-sm: 6px; --r: 8px; --r-lg: 12px; --r-xl: 16px;
+  /* ONE error red (Levi 2026-10-30). #B91C1C and #C53030 were both in use, and
+     only the first passes AA on its own tint (5.30:1 against 4.48:1). */
+  --danger:        #B91C1C;
+  --danger-hover:  #991B1B;
+  --danger-10:     #FEE2E2;
+  --danger-5:      #FEF5F5;
+  --danger-border: #FCA5A5;
+  /* --carrot as TEXT, where it is 2.7:1 on its own tint. Same reasoning as
+     --peridot-ink: the brand colour stays a fill. */
+  --carrot-ink:    #B8400E;
+  /* THE TYPE SCALE IS EIGHT SIZES: 10 uppercase labels, 11 hints and badges,
+     12 secondary text, 13 body and buttons, 14 emphasis, 16 modal titles, 20 page
+     titles, 26 big numbers. No half-pixels, and no size outside this list. */
 }
 
 /* ── RESET ────────────────────────────────────────────────── */
@@ -50,6 +63,7 @@ html, body {
 button { cursor: pointer; font-family: inherit; border: none; background: none; }
 input, select, textarea { font-family: inherit; }
 a { text-decoration: none; color: inherit; }
+:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
 
 /* ── BUTTONS ─────────────────────────────────────────────── */
 .btn {
@@ -66,20 +80,25 @@ a { text-decoration: none; color: inherit; }
 .btn-outline:hover { border-color: var(--indigo-20); color: var(--indigo); }
 .btn-ghost { background: transparent; color: var(--t-muted); border: none; }
 .btn-ghost:hover { color: var(--indigo); background: var(--indigo-5); }
-.btn-danger { background: #C53030; color: #fff; border: none; }
-.btn-danger:hover { background: #A42828; }
+.btn-danger { background: var(--danger); color: #fff; border: none; }
+.btn-danger:hover { background: var(--danger-hover); }
 /* A destructive action sitting in an ordinary action bar. Outlined, not solid:
    in the page header it is one of four buttons and a filled red would be the
    loudest thing on a screen whose actual work is elsewhere — but it must not
    read as identical to "Back to cases" either. The solid `.btn-danger` is kept
    for the confirmation, where the press is the irreversible one. */
 .btn-danger-outline {
-  color: #C53030; border-color: #FCA5A5; background: #fff;
+  color: var(--danger); border-color: var(--danger-border); background: #fff;
 }
-.btn-danger-outline:hover { background: #FEF5F5; border-color: #C53030; }
+.btn-danger-outline:hover { background: var(--danger-5); border-color: var(--danger); }
 .btn-lg { padding: 0 24px; height: 44px; font-size: 14px; border-radius: var(--r); }
-.btn-sm { padding: 0 10px; height: 28px; font-size: 11px; border-radius: var(--r-xs); }
+.btn-sm { padding: 0 12px; height: 30px; font-size: 12px; border-radius: var(--r-sm); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
+/* A filled button at 45% was a pale carrot that read as a different colour, not
+   as unavailable. */
+.btn-primary:disabled, .btn-action:disabled, .btn-danger:disabled {
+  opacity: 1; background: var(--indigo-10); color: var(--t-muted);
+}
 
 /* ── FORM ELEMENTS ───────────────────────────────────────── */
 .f-group { display: flex; flex-direction: column; gap: 5px; }
@@ -111,10 +130,10 @@ a { text-decoration: none; color: inherit; }
    keeps its own carrot rule below, because an over-long address line is a
    warning that does not block a save and this is a refusal that does. */
 .f-input[aria-invalid="true"], .f-select[aria-invalid="true"] {
-  border-color: #C53030; background: #FFFBFB;
+  border-color: var(--danger); background: #FFFBFB;
 }
 .f-input[aria-invalid="true"]:focus, .f-select[aria-invalid="true"]:focus {
-  border-color: #C53030; box-shadow: 0 0 0 3px rgba(197,48,48,.10);
+  border-color: var(--danger); box-shadow: 0 0 0 3px rgba(197,48,48,.10);
 }
 /* The same field, allowed to be more than one line. `.f-input` pins height to
    36px, which flattens a <textarea> to a single squashed row; this restores the
@@ -124,6 +143,7 @@ a { text-decoration: none; color: inherit; }
   line-height: 1.5; resize: vertical;
 }
 .f-hint { font-size: 11px; color: var(--t-muted); }
+.f-error { font-size: 11px; font-weight: 500; color: var(--danger); }
 /* A settled value shown where an input used to be — the signatory on the
    Signing stage, which is the session's and is not editable (Q1). Sized like
    .f-input so the row keeps its rhythm, but plainly not a control. */
@@ -154,14 +174,14 @@ a { text-decoration: none; color: inherit; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 thead { background: var(--indigo-5); }
 thead th {
-  padding: 9px 14px; text-align: left;
-  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
-  color: var(--t-muted); border-bottom: 1px solid var(--border); white-space: nowrap;
+  padding: 9px 8px; text-align: left;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--t-muted); border-bottom: 1px solid var(--border);
 }
 tbody tr { border-bottom: 1px solid var(--border); transition: .1s; }
 tbody tr:last-child { border-bottom: none; }
 tbody tr:hover { background: var(--indigo-5); }
-tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
+tbody td { padding: 11px 8px; color: var(--t-body); vertical-align: middle; }
 
 /* ── BADGES ──────────────────────────────────────────────── */
 .badge {
@@ -169,7 +189,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   padding: 3px 9px; border-radius: 20px;
   font-size: 11px; font-weight: 600; white-space: nowrap;
 }
-.badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: currentColor; }
 .b-active   { background: var(--bang-10); color: var(--bang); }
 .b-active::before { background: var(--bang); }
 .b-inactive { background: var(--indigo-10); color: var(--indigo-60); }
@@ -241,7 +261,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   background: #fff; border: 1px solid var(--border); border-radius: var(--r-lg);
   box-shadow: var(--sh-lg); padding: 22px 24px; max-width: 340px; text-align: center;
 }
-.modal-confirm-title { font-size: 15px; font-weight: 700; color: var(--t-head); }
+.modal-confirm-title { font-size: 14px; font-weight: 700; color: var(--t-head); }
 .modal-confirm-text { font-size: 12px; color: var(--t-muted); margin-top: 6px; }
 .modal-confirm-actions {
   display: flex; justify-content: center; gap: 10px; margin-top: 18px;
@@ -276,12 +296,15 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 
 /* ── PAGE CHROME ─────────────────────────────────────────── */
 .pg-hdr {
-  margin-bottom: 22px; display: flex; align-items: flex-start;
+  margin-bottom: 22px; display: flex; align-items: flex-start; flex-wrap: wrap;
   justify-content: space-between; gap: 16px;
 }
+/* The title block gives way first, so the buttons stay at the top right beside a
+   long subtitle and only drop to their own line when they truly do not fit. */
+.pg-hdr > :first-child { flex: 1 1 320px; min-width: 0; }
 .pg-title { font-size: 20px; font-weight: 700; color: var(--t-head); letter-spacing: -.01em; }
 .pg-sub { font-size: 12px; color: var(--t-muted); margin-top: 2px; }
-.pg-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.pg-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
 
 /* Breadcrumb + the two-vocabulary status strip on the case workflow (v11 s20). */
 .crumb {
@@ -328,7 +351,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
   margin-top: 4px; font-size: 12px; color: var(--t-body);
   background: var(--indigo-5); padding: 6px 10px; border-radius: var(--r-sm);
 }
-.diff-old { color: #C53030; text-decoration: line-through; }
+.diff-old { color: var(--danger); text-decoration: line-through; }
 .diff-new { color: var(--bang); font-weight: 600; }
 
 /* ── MISC ────────────────────────────────────────────────── */
@@ -459,7 +482,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 /* ── SEARCH BAR ──────────────────────────────────────────── */
 .search-wrap { position: relative; margin-bottom: 14px; }
 .search-input {
-  width: 280px; height: 36px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
+  width: 340px; max-width: 100%; height: 36px; border: 1.5px solid var(--border); border-radius: var(--r-sm);
   padding: 0 11px 0 34px; font-size: 13px; color: var(--t-body);
   background: #fff; outline: none; font-family: var(--font); transition: .15s;
 }
@@ -473,7 +496,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .filter-tabs {
   display: flex; gap: 3px; flex-wrap: wrap;
   background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--r); padding: 3px; margin-bottom: 18px; width: fit-content;
+  border-radius: var(--r); padding: 3px; margin-bottom: 12px; width: fit-content;
 }
 .filter-tab { padding: 5px 12px; border-radius: 5px; font-size: 12px; font-weight: 600; color: var(--t-muted); transition: .15s; }
 .filter-tab:hover { color: var(--indigo); background: var(--indigo-5); }
@@ -508,7 +531,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 .b-ceased::before { background: #9CA3AF; }
 
 /* ── TABLE CELL VARIANTS + SORT HEADER ───────────────────── */
-.td-id { font-size: 12px; font-weight: 700; color: var(--indigo); font-variant: tabular-nums; }
+.td-id { font-size: 12px; font-weight: 700; color: var(--indigo); font-variant: tabular-nums; white-space: nowrap; }
 .td-primary { font-weight: 600; color: var(--t-head); }
 .td-muted { font-size: 11px; color: var(--t-muted); }
 /* The anniversary has passed — the cell reads "37d overdue" (Levi 2026-09-07).
@@ -517,7 +540,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
    A statutory deadline that has gone by is not a suggestion, and the word
    beside it now says so. `.td-muted` still carries the countdown, which is the
    ordinary case and has no business competing with this. */
-.td-anniv-overdue { font-size: 11px; font-weight: 700; color: #B91C1C; }
+.td-anniv-overdue { font-size: 11px; font-weight: 700; color: var(--danger); }
 
 /* `.anniv-bar` lived here — a standalone Days-to-anniversary control pinned
    above the registry table. It is gone (Levi 2026-09-03): the range is the
@@ -552,10 +575,10 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
    visible change to eight screens nobody asked to redesign. -9px against 32px
    leaves the same 14px of content the 26px/-6px pair did, so the header row is
    pixel-identical to before while the targets are half again as large. */
-.th-inner { display: flex; align-items: center; gap: 5px; margin: -9px 0; }
+.th-inner { display: flex; align-items: center; gap: 2px; margin: -9px 0; }
 .th-sort {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; margin-left: 6px;
+  width: 14px; height: 28px; margin-left: 2px;
   border-radius: var(--r-xs);
   opacity: .55; font-size: 13px; line-height: 1; flex-shrink: 0;
   transition: .15s;
@@ -563,7 +586,7 @@ tbody td { padding: 11px 14px; color: var(--t-body); vertical-align: middle; }
 thead th:hover .th-sort { opacity: .95; }
 tbody tr.clickable { cursor: pointer; }
 .filing-tag {
-  display: inline-block; margin-top: 4px; font-size: 9px; font-weight: 700; letter-spacing: .06em;
+  display: inline-block; margin-top: 4px; font-size: 10px; font-weight: 700; letter-spacing: .06em;
   color: var(--indigo-80); background: var(--indigo-5); border: 1px solid var(--border);
   border-radius: 3px; padding: 1px 5px;
 }
@@ -573,8 +596,10 @@ tbody tr.clickable { cursor: pointer; }
   border-top: 1px solid var(--border);
 }
 .tbl-group-row:hover td { background: var(--bg-page); }
-.sort-note { font-size: 11px; color: var(--t-muted); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
-.sort-note svg { color: var(--carrot); flex-shrink: 0; }
+/* A block, not a flex row: a sentence with <b> and a link in it was split into
+   columns of fragments wherever it had to wrap. */
+.sort-note { font-size: 11px; color: var(--t-muted); margin: 0 0 8px; }
+.sort-note svg { color: var(--carrot); margin-right: 6px; vertical-align: -2px; }
 
 /* ── COMPANY PROFILE (wireframe_v7 s3) ───────────────────── */
 .breadcrumb { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--t-muted); margin-bottom: 5px; }
@@ -667,9 +692,12 @@ tbody tr.clickable { cursor: pointer; }
 .flag-tog-sub { font-size: 10px; color: var(--t-muted); }
 
 .reveal-note {
-  display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600;
-  color: var(--carrot); background: var(--carrot-10); border-radius: 6px; padding: 5px 9px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600;
+  color: var(--carrot-ink); background: var(--carrot-10); border-radius: 6px; padding: 5px 9px; margin-bottom: 10px;
 }
+/* A block: it holds a sentence and a list, and in a flex row the list sat beside
+   the sentence instead of under it. */
+.reveal-note-danger { display: block; color: var(--danger); background: var(--danger-10); }
 /* The read-only banner. NOT `.reveal-note`, which is `display:flex` with a gap
    — built for a short one-line label, and it spaced this sentence out into
    drifting fragments with the permission chip marooned between them. This is a
@@ -732,12 +760,12 @@ tbody tr.clickable { cursor: pointer; }
 .case-card-hdr:focus-visible { outline: 2px solid var(--indigo); outline-offset: -2px; border-radius: var(--r); }
 .case-year {
   justify-self: center; text-align: center;
-  font-size: 19px; font-weight: 800; line-height: 1; letter-spacing: -.02em;
+  font-size: 20px; font-weight: 800; line-height: 1; letter-spacing: -.02em;
   font-variant-numeric: tabular-nums; color: var(--indigo);
 }
 .case-card.ended .case-year { color: var(--t-muted); font-weight: 700; }
 .case-year-none, .case-year-code {
-  display: block; font-size: 9px; font-weight: 700; line-height: 1.3;
+  display: block; font-size: 10px; font-weight: 700; line-height: 1.3;
   letter-spacing: .08em; text-transform: uppercase; color: var(--t-muted);
 }
 .case-year-code { font-size: 11px; letter-spacing: .04em; color: var(--indigo); }
@@ -768,11 +796,11 @@ tbody tr.clickable { cursor: pointer; }
 .case-stage.done { background: var(--bang); }
 .case-stage.now.tone-act  { background: var(--carrot); }
 .case-stage.now.tone-info { background: var(--indigo); }
-.case-stage.now.tone-bad  { background: #C53030; }
+.case-stage.now.tone-bad  { background: var(--danger); }
 
 .case-facts {
   display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; row-gap: 3px;
-  min-width: 0; font-size: 11.5px; line-height: 1.35;
+  min-width: 0; font-size: 11px; line-height: 1.35;
 }
 .case-facts dt { font-weight: 600; color: var(--t-muted); }
 .case-facts dd { font-weight: 500; color: var(--t-head); font-variant-numeric: tabular-nums; }
@@ -817,13 +845,13 @@ tbody tr.clickable { cursor: pointer; }
 
 .role-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border); }
 .role-item:last-child { border-bottom: none; }
-.role-item-main { font-size: 12.5px; color: var(--t-head); font-weight: 600; }
+.role-item-main { font-size: 12px; color: var(--t-head); font-weight: 600; }
 .role-item-sub { font-size: 11px; color: var(--t-muted); margin-top: 2px; }
 .role-open { font-size: 11px; color: var(--indigo); font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; background: none; border: none; }
 
 .id-doc-group { border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; margin-bottom: 10px; }
-.id-doc-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--t-head); margin-bottom: 8px; }
-.id-doc-head .pri-pill { font-size: 9.5px; font-weight: 700; color: var(--bang); background: var(--bang-10); padding: 2px 7px; border-radius: 8px; letter-spacing: .03em; }
+.id-doc-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--t-head); margin-bottom: 8px; }
+.id-doc-head .pri-pill { font-size: 10px; font-weight: 700; color: var(--bang); background: var(--bang-10); padding: 2px 7px; border-radius: 8px; letter-spacing: .03em; }
 
 /* The card's actions sit right, wrap on a narrow column rather than pushing
    the document type out of the card. */
@@ -832,7 +860,7 @@ tbody tr.clickable { cursor: pointer; }
 }
 /* Destructive, and only on hover — a Remove that is red at rest reads as a
    warning about the document rather than an action on it. */
-.btn-edit-danger:hover { border-color: #F2B8B8; color: #C53030; }
+.btn-edit-danger:hover { border-color: var(--danger-border); color: var(--danger); }
 
 /* One current document per type inside a section (the versions are in
    Document History, which is the only place that needs to show them). */
@@ -848,14 +876,14 @@ tbody tr.clickable { cursor: pointer; }
 }
 .sec-doc-actions { display: flex; gap: 12px; flex-shrink: 0; }
 .dv-rm { color: var(--t-muted) !important; }
-.dv-rm:hover { color: #C53030 !important; }
+.dv-rm:hover { color: var(--danger) !important; }
 
 .doc-hist-type { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: var(--t-head); margin: 14px 0 6px; }
 .doc-hist-type .cnt { font-size: 10px; font-weight: 600; color: var(--t-muted); background: var(--bg-page); border: 1px solid var(--border); border-radius: 8px; padding: 1px 7px; }
 /* Which SECTION the type belongs to. "Passport" alone does not say whether it
    was filed as identity or as proof of address. */
 .doc-hist-type .doc-hist-cat {
-  font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
   color: var(--t-muted); background: var(--bg-page); border: 1px solid var(--border);
   border-radius: 7px; padding: 1px 6px;
 }
@@ -864,14 +892,14 @@ tbody tr.clickable { cursor: pointer; }
   padding: 7px 0 7px 14px; margin-left: 5px; border-left: 2px solid var(--border); font-size: 11px;
 }
 .doc-ver .dv-l { display: flex; align-items: center; gap: 8px; color: var(--t-body); }
-.doc-ver .dv-tag { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 7px; }
+.doc-ver .dv-tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 7px; }
 .dv-current { color: var(--bang); background: var(--bang-10); }
 .dv-superseded { color: var(--t-muted); background: var(--bg-page); }
 /* A removed document keeps its whole history and loses its emphasis: it is a
    record of what happened, not something on file any more. The badge does that
    work; a strikethrough on top of it was a second way of saying the same
    thing, and it drew itself straight through the section tag beside it. */
-.dv-removed, .dv-rmv { color: #C53030; background: #FDECEC; }
+.dv-removed, .dv-rmv { color: var(--danger); background: var(--danger-10); }
 .dv-rmv { margin-left: 2px; }
 .doc-hist-removed { opacity: .72; }
 .doc-ver .dv-meta { color: var(--t-muted); }
@@ -911,8 +939,9 @@ tbody tr.clickable { cursor: pointer; }
 /* ── DOCUMENT UPLOAD + LINK PARTY (wireframe_v7 block 7) ─── */
 /* One definition — it was inlined identically in three modals. */
 .modal-error {
-  margin-bottom: 14px; padding: 10px; border-radius: 6px;
-  background: #FEE2E2; color: #B91C1C; font-size: 12px;
+  margin-bottom: 14px; padding: 10px 12px; border-radius: var(--r);
+  background: var(--danger-10); border: 1px solid var(--danger-border);
+  color: var(--t-body); font-size: 12px; line-height: 1.5;
 }
 .upload-owner-line { font-size: 12px; color: var(--t-muted); margin-bottom: 12px; }
 .upload-owner-line b { color: var(--t-head); }
@@ -925,7 +954,7 @@ tbody tr.clickable { cursor: pointer; }
 .drop-zone.is-over { border-color: var(--carrot); background: var(--carrot-10); color: var(--t-body); }
 .drop-zone:disabled { cursor: default; border-color: var(--border); }
 .dz-link { color: var(--carrot); font-weight: 600; }
-.dz-sub { font-size: 10.5px; margin-top: 3px; }
+.dz-sub { font-size: 10px; margin-top: 3px; }
 
 /* ── REGISTRY FLAG BADGES (wireframe_v7 s9) ──────────────── */
 .reg-badge {
@@ -972,6 +1001,11 @@ tbody tr.clickable { cursor: pointer; }
   .stats-grid { grid-template-columns: 1fr; }
   .search-input { width: 100%; }
   .filter-tabs { width: 100%; }
+  .form-grid { grid-template-columns: 1fr; }
+  .pg-actions { width: 100%; }
+  /* A fingertip needs more than the 14-25px these are on a desktop. */
+  .crumb-link, .role-open, .case-open, .dg-cancel { min-height: 32px; display: inline-flex; align-items: center; }
+  .filter-tab, .fchip { min-height: 32px; }
 
   /* Registry tables reflow into stacked cards (td carries data-label) */
   .tbl-stack { border: none; background: none; box-shadow: none; overflow: visible; }
@@ -1000,16 +1034,39 @@ tbody tr.clickable { cursor: pointer; }
    heavily — the CR fault panel, the balance pre-flight, and the irreversible
    submit gate are all alerts. */
 .alert {
-  border-radius: var(--r); padding: 13px 15px;
-  display: flex; align-items: flex-start; gap: 11px;
-  margin-bottom: 18px; border: 1.5px solid transparent;
+  border-radius: var(--r); padding: 12px 14px;
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-bottom: 16px; border: 1px solid var(--border);
+  font-size: 13px; color: var(--t-body); line-height: 1.5;
 }
-.al-icon { font-size: 15px; flex-shrink: 0; line-height: 1.4; }
-.al-body { font-size: 13px; color: var(--t-body); line-height: 1.5; }
-.al-info { background: var(--indigo-10); border-color: var(--indigo-20); }
-.al-success { background: var(--bang-10); border-color: #B3D5C8; }
-.al-danger { background: #FEE2E2; border-color: #FCA5A5; }
-.al-warn { background: var(--peridot-10); border-color: #EFD200; }
+/* THE ICON IS THE TONE'S, DRAWN HERE (Levi 2026-10-30). The markup carried text
+   glyphs -- a serif "i", an emoji padlock, a warning sign that changes shape per
+   OS -- and about a third of the alerts had none at all. `.al-icon` stays in the
+   markup for its text alternative, and is no longer shown. */
+.alert::before {
+  content: ''; flex: none; width: 16px; height: 16px; margin-top: 2px;
+  background: var(--n-ink, var(--indigo));
+  -webkit-mask: var(--n-icon) center / contain no-repeat; mask: var(--n-icon) center / contain no-repeat;
+}
+.al-icon { display: none; }
+.al-body { font-size: 13px; color: var(--t-body); line-height: 1.5; min-width: 0; flex: 1 1 auto; }
+.al-body b { color: var(--t-head); }
+.al-info {
+  background: var(--indigo-5); border-color: var(--indigo-20); --n-ink: var(--indigo);
+  --n-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='6.5'/%3E%3Cpath d='M8 7.2v3.6M8 5h.01'/%3E%3C/svg%3E");
+}
+.al-success {
+  background: var(--bang-10); border-color: #B3D5C8; --n-ink: var(--bang);
+  --n-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='6.5'/%3E%3Cpath d='m5.2 8.2 2 2 3.6-4'/%3E%3C/svg%3E");
+}
+.al-danger {
+  background: var(--danger-10); border-color: var(--danger-border); --n-ink: var(--danger);
+  --n-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='6.5'/%3E%3Cpath d='M8 4.8v3.8M8 11h.01'/%3E%3C/svg%3E");
+}
+.al-warn {
+  background: var(--peridot-10); border-color: #EFD200; --n-ink: var(--peridot-ink);
+  --n-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2 1.5 13.5h13L8 2Z'/%3E%3Cpath d='M8 6.5v3.2M8 11.8h.01'/%3E%3C/svg%3E");
+}
 
 .action-bar {
   background: var(--bg-card); border: 1px solid var(--border);
@@ -1018,6 +1075,7 @@ tbody tr.clickable { cursor: pointer; }
   gap: 16px; margin-top: 20px; box-shadow: var(--sh-sm);
 }
 .ab-note { font-size: 12px; color: var(--t-muted); }
+.form-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; }
 .ab-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 @media (max-width: 640px) {
@@ -1038,6 +1096,8 @@ tbody tr.clickable { cursor: pointer; }
   padding: 4px 9px; white-space: nowrap;
 }
 .perm-tag b { color: var(--t-body); font-weight: 600; }
+/* Among the page's buttons a bordered chip of the same height reads as one. */
+.pg-actions .perm-tag { background: none; border: 0; padding: 0 4px 0 0; white-space: normal; }
 
 /* Signing method — two cards, not a toggle. The sentence under each option is
    the consequence of choosing it, and a segmented control has nowhere to put
@@ -1074,7 +1134,7 @@ tbody tr.clickable { cursor: pointer; }
 }
 .meth-body { display: flex; flex-direction: column; gap: 3px; }
 .meth-body b { color: var(--t-head); font-weight: 600; }
-.meth-sub { font-size: 11.5px; color: var(--t-muted); line-height: 1.5; }
+.meth-sub { font-size: 11px; color: var(--t-muted); line-height: 1.5; }
 
 /* D-2 pre-flight strip. Quiet when everything is fine — a green "you have
    enough money" banner on every filing is noise — so only the framing changes
@@ -1086,7 +1146,7 @@ tbody tr.clickable { cursor: pointer; }
   font-size: 12px; color: var(--t-body); line-height: 1.55;
 }
 .preflight.warn { background: var(--peridot-10); border-color: #EFD200; }
-.preflight.bad { background: #FEE2E2; border-color: #FCA5A5; }
+.preflight.bad { background: var(--danger-10); border-color: var(--danger-border); }
 .preflight b { color: var(--t-head); }
 .pf-spacer { flex: 1 1 auto; }
 .pf-fee { font-size: 11px; color: var(--t-muted); white-space: nowrap; }
@@ -1102,7 +1162,7 @@ tbody tr.clickable { cursor: pointer; }
 }
 .up-zone:hover:not(:disabled) { border-color: var(--carrot); background: var(--carrot-10); }
 .up-zone:disabled { cursor: not-allowed; opacity: .55; }
-.up-arrow { font-size: 18px; color: var(--indigo-60); }
+.up-arrow { font-size: 16px; color: var(--indigo-60); }
 .up-done {
   display: flex; align-items: center; gap: 12px;
   border: 1.5px solid #B3D5C8; border-radius: var(--r);
@@ -1115,7 +1175,7 @@ tbody tr.clickable { cursor: pointer; }
 }
 .up-txt { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
 .up-txt b { color: var(--t-head); font-weight: 600; }
-.up-sub { font-size: 11.5px; color: var(--t-muted); }
+.up-sub { font-size: 11px; color: var(--t-muted); }
 
 /* Focusable but off-screen: the real <input type="file"> behind .up-zone.
    display:none would take it out of the tab order and break the picker. */
@@ -1134,7 +1194,7 @@ tbody tr.clickable { cursor: pointer; }
 .vip-eyebrow { font-size: 10px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
 .vip-bar.on .vip-eyebrow { color: rgba(255,255,255,.82); }
 .vip-bar.off .vip-eyebrow { color: var(--t-muted); }
-.vip-title { font-size: 19px; font-weight: 800; line-height: 1.15; margin: 2px 0 3px; }
+.vip-title { font-size: 20px; font-weight: 800; line-height: 1.15; margin: 2px 0 3px; }
 .vip-bar.on .vip-title { color: #fff; text-shadow: 0 1px 2px rgba(80,50,8,.35); }
 .vip-bar.off .vip-title { color: var(--t-head); }
 .vip-sub { font-size: 12px; line-height: 1.45; max-width: 520px; }
@@ -1152,7 +1212,7 @@ tbody tr.clickable { cursor: pointer; }
 .vip-sw-lbl { font-size: 12px; font-weight: 700; }
 .vip-bar.on .vip-sw-lbl { color: #fff; }
 .vip-bar.off .vip-sw-lbl { color: var(--t-head); }
-.vip-sw-hint { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.vip-sw-hint { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
 .vip-bar.on .vip-sw-hint { color: rgba(255,255,255,.78); }
 .vip-bar.off .vip-sw-hint { color: var(--t-muted); }
 .vip-sw { width: 42px; height: 24px; border-radius: 20px; position: relative; flex-shrink: 0; background: #C9CCDA; border: none; padding: 0; cursor: pointer; transition: background .18s; }
@@ -1169,7 +1229,7 @@ tbody tr.clickable { cursor: pointer; }
 .vip-mark-btn:hover:not(:disabled) { background: #E05A1F; }
 .vip-mark-btn:disabled { opacity: .6; cursor: progress; }
 .vip-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; letter-spacing: .03em; color: #6E450F; background: linear-gradient(100deg, #F4CF6B, #E2AE3E); border: 1px solid #C79A3A; border-radius: 20px; padding: 3px 10px; box-shadow: 0 1px 2px rgba(122,78,18,.25); }
-.vip-error { font-size: 12px; font-weight: 600; color: #B91C1C; margin-top: 8px; }
+.vip-error { font-size: 11px; font-weight: 500; color: var(--danger); margin-top: 8px; }
 .vip-bar.on .vip-error { color: #fff; }
 @media (max-width: 720px) { .vip-controls { width: 100%; justify-content: space-between; } }
 
@@ -1182,7 +1242,7 @@ tbody tr.clickable { cursor: pointer; }
 .receipt-grid > *, .pay-line > * { min-width: 0; }
 .receipt-grid .f-input, .pay-line .f-input { width: 100%; min-width: 0; }
 .pay-line-x { display: flex; align-items: flex-end; justify-content: center; }
-.pay-line-remove { width: 32px; height: 36px; display: inline-flex; align-items: center; justify-content: center; font-family: inherit; font-size: 18px; line-height: 1; color: var(--t-muted); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-sm); cursor: pointer; }
+.pay-line-remove { width: 32px; height: 36px; display: inline-flex; align-items: center; justify-content: center; font-family: inherit; font-size: 16px; line-height: 1; color: var(--t-muted); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-sm); cursor: pointer; }
 .pay-line-remove:hover:not(:disabled) { color: var(--carrot); border-color: var(--carrot); background: var(--carrot-10); }
 .f-money { position: relative; }
 .f-money-cur { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 12px; font-weight: 600; color: var(--t-muted); pointer-events: none; }
@@ -1206,22 +1266,22 @@ tbody tr.clickable { cursor: pointer; }
 .deposit-v { font-size: 20px; font-weight: 700; color: var(--t-head); }
 .deposit-r { text-align: right; }
 .fee-line { font-size: 12px; color: var(--t-body); }
-.fee-amt { font-size: 18px; font-weight: 700; color: var(--carrot); }
+.fee-amt { font-size: 16px; font-weight: 700; color: var(--carrot); }
 .fee-after { font-size: 11px; color: var(--t-muted); margin-top: 2px; }
 
 /* The one control on the workflow that spends money and cannot be undone.
    It sat in an ordinary action bar, which made it look like every other step
    on the screen (v11 `danger-gate`). */
 .danger-gate {
-  border: 1.5px solid #FCA5A5; border-radius: var(--r-lg);
-  background: #FEF5F5; padding: 16px 18px; margin-top: 20px;
+  border: 1.5px solid var(--danger-border); border-radius: var(--r-lg);
+  background: var(--danger-5); padding: 16px 18px; margin-top: 20px;
 }
 .dg-hd {
-  font-size: 12px; font-weight: 700; color: #B91C1C;
+  font-size: 12px; font-weight: 700; color: var(--danger);
   text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px;
 }
 .dg-warn {
-  font-size: 12.5px; color: var(--t-body); line-height: 1.6; margin-bottom: 12px;
+  font-size: 12px; color: var(--t-body); line-height: 1.6; margin-bottom: 12px;
 }
 .dg-actions {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px;
@@ -1232,7 +1292,6 @@ tbody tr.clickable { cursor: pointer; }
 }
 .dg-cancel:hover:not(:disabled) { color: var(--t-body); }
 .dg-cancel:disabled { cursor: not-allowed; opacity: .5; }
-.btn-lg { height: 42px; padding: 0 20px; font-size: 13.5px; }
 
 /* Confirmation hero — v11 `confirm-hero`. The stage that says the statutory
    job is finished should look finished. */
@@ -1241,10 +1300,10 @@ tbody tr.clickable { cursor: pointer; }
   width: 54px; height: 54px; margin: 0 auto 14px; border-radius: 50%;
   background: var(--bang-10); border: 3px solid var(--bang);
   display: flex; align-items: center; justify-content: center;
-  font-size: 24px; color: var(--bang);
+  font-size: 26px; color: var(--bang);
 }
 .confirm-h1 {
-  font-size: 19px; font-weight: 700; color: var(--t-head); margin-bottom: 6px;
+  font-size: 20px; font-weight: 700; color: var(--t-head); margin-bottom: 6px;
 }
 .confirm-p {
   font-size: 13px; color: var(--t-body); line-height: 1.6;
@@ -1259,9 +1318,9 @@ tbody tr.clickable { cursor: pointer; }
   border-radius: var(--r) var(--r) 0 0; background: var(--indigo-5);
   padding: 8px 12px;
 }
-.pdf-fname { font-size: 12px; font-weight: 600; color: var(--t-head); }
+.pdf-fname { font-size: 12px; font-weight: 600; color: var(--t-head); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pdf-pill {
-  font-size: 10.5px; padding: 3px 8px; border-radius: 20px;
+  font-size: 10px; padding: 3px 8px; border-radius: 20px;
   background: var(--indigo-10); color: var(--t-body); white-space: nowrap;
 }
 .pdf-pill.ok { background: var(--bang-10); color: var(--bang); }
@@ -1301,8 +1360,8 @@ tbody tr.clickable { cursor: pointer; }
 .badge.bw-verify::before    { background: var(--indigo); }
 .badge.bw-awaiting  { background: var(--indigo-10); color: var(--indigo); }
 .badge.bw-awaiting::before  { background: var(--indigo); }
-.badge.bw-rejected  { background: #FEE2E2;          color: #C53030; }
-.badge.bw-rejected::before  { background: #C53030; }
+.badge.bw-rejected  { background: var(--danger-10);          color: var(--danger); }
+.badge.bw-rejected::before  { background: var(--danger); }
 .badge.bw-sign      { background: var(--carrot-10); color: var(--carrot); }
 .badge.bw-sign::before      { background: var(--carrot); }
 .badge.bw-submit    { background: var(--carrot-10); color: var(--carrot); }
@@ -1323,13 +1382,13 @@ tbody tr.clickable { cursor: pointer; }
 .badge.bf-validated  { background: var(--bang-10);   color: var(--bang); }
 .badge.bf-signed     { background: var(--bang-10);   color: var(--bang); }
 .badge.bf-submitted  { background: var(--bang-10);   color: var(--bang); }
-.badge.bf-failed     { background: #FEE2E2;          color: #C53030; }
+.badge.bf-failed     { background: var(--danger-10);          color: var(--danger); }
 .badge.bf-superseded { background: var(--indigo-10); color: var(--t-muted); }
 
 /* Client Rejected is the one status that is neither "act on me" (carrot) nor
    "waiting on someone else" (indigo) — it is a refusal, so it gets its own red. */
-.filter-tab.ft-danger { color: #C53030; }
-.filter-tab.ft-danger.active { background: #C53030; color: #fff; }
+.filter-tab.ft-danger { color: var(--danger); }
+.filter-tab.ft-danger.active { background: var(--danger); color: #fff; }
 
 /* The overdue-anniversary treatment v11 calls `.anniv-due` already exists here
    as `.td-anniv-overdue` (line ~490), and the company listing already uses it.
@@ -1337,32 +1396,21 @@ tbody tr.clickable { cursor: pointer; }
    the same rule — Levi 2026-08-16 wants the column reading the same on both
    screens, which is easier to guarantee with one definition. */
 
-/* Pre-/Post-incorporation phase toggle. */
-.seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.seg-btn {
-  flex: 1; padding: 8px 10px; font-size: 12px; font-weight: 600;
-  color: var(--t-muted); background: var(--bg-card); border: none;
-  cursor: pointer; font-family: inherit; transition: background .12s;
-}
-.seg-btn.active { background: var(--indigo); color: #fff; }
-.seg.seg-inline { display: inline-flex; width: auto; margin-bottom: 14px; }
-.seg.seg-inline .seg-btn { flex: 0 0 auto; padding: 8px 18px; }
-
 .info-banner {
   display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px;
-  border-radius: 10px; background: var(--indigo-10);
-  border: 1px solid var(--border); margin-bottom: 16px;
+  border-radius: var(--r); background: var(--indigo-5);
+  border: 1px solid var(--indigo-20); margin-bottom: 16px;
 }
 .info-banner svg { flex-shrink: 0; color: var(--indigo); margin-top: 1px; }
-.info-banner-txt { font-size: 12px; color: var(--t-body); line-height: 1.5; }
+.info-banner-txt { font-size: 13px; color: var(--t-body); line-height: 1.5; }
 .info-banner-txt b { color: var(--t-head); }
 /* Carrot, not a new red token — the app's existing "action required" colour. */
 .info-banner.warn { background: var(--carrot-10); border-color: var(--carrot); }
-.info-banner.warn svg { color: var(--carrot); }
+.info-banner.warn svg { color: var(--carrot-ink); }
 .info-banner-cta {
   margin-left: auto; flex-shrink: 0; align-self: center; white-space: nowrap;
-  padding: 7px 14px; border: none; border-radius: var(--r-sm);
-  background: var(--carrot); color: #fff; font-size: 12px; font-weight: 700;
+  padding: 0 12px; height: 30px; border: none; border-radius: var(--r-sm);
+  background: var(--carrot); color: #fff; font-size: 12px; font-weight: 600;
   cursor: pointer; font-family: inherit; transition: opacity .15s;
 }
 .info-banner-cta:hover { opacity: .88; }
@@ -1421,13 +1469,13 @@ tbody tr.clickable { cursor: pointer; }
 .step-line.filled { background: var(--bang); }
 .step-num {
   width: 38px; height: 38px; border-radius: 50%; display: flex;
-  align-items: center; justify-content: center; font-weight: 800; font-size: 15px;
+  align-items: center; justify-content: center; font-weight: 800; font-size: 14px;
   z-index: 2; border: 2px solid var(--border); background: #fff;
   color: var(--t-muted); transition: .18s; flex-shrink: 0;
 }
 .step-lbl { font-size: 12px; font-weight: 700; color: var(--t-muted); line-height: 1.25; }
 .step-state {
-  font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .05em; color: var(--indigo-20);
 }
 .step.clickable { cursor: pointer; }
@@ -1471,7 +1519,7 @@ tbody tr.clickable { cursor: pointer; }
 .check-row.is-static.checked:hover { border-color: #B3D5C8; }
 .check-txt { font-size: 13px; color: var(--t-body); line-height: 1.5; }
 .check-txt b { color: var(--t-head); font-weight: 700; }
-.check-txt .cx-sub { font-size: 11.5px; color: var(--t-muted); margin-top: 2px; }
+.check-txt .cx-sub { font-size: 11px; color: var(--t-muted); margin-top: 2px; }
 /* The state spelt out, because a static tick alone is easy to misread. */
 .check-state {
   margin-left: 8px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
@@ -1481,23 +1529,23 @@ tbody tr.clickable { cursor: pointer; }
 
 /* CR returns EVERY fault at once so one pass fixes them all — the panel is
    built to show all of them, never just the first. */
-.fault-box { border: 1px solid #F5A9A9; border-radius: 10px; background: #FEF5F5; overflow: hidden; }
+.fault-box { border: 1px solid var(--danger-border); border-radius: 10px; background: var(--danger-5); overflow: hidden; }
 .fault-hd {
   display: flex; align-items: center; gap: 9px; padding: 12px 16px;
-  background: #FEE2E2; color: #C53030; font-size: 12.5px; font-weight: 800;
+  background: var(--danger-10); color: var(--danger); font-size: 12px; font-weight: 800;
 }
 .fault-hd .fh-count {
-  margin-left: auto; font-size: 10.5px; font-weight: 700; background: #C53030;
+  margin-left: auto; font-size: 10px; font-weight: 700; background: var(--danger);
   color: #fff; padding: 2px 9px; border-radius: 10px;
 }
 .fault-list { display: flex; flex-direction: column; }
-.fault-row { display: flex; gap: 14px; padding: 12px 16px; border-top: 1px solid #F5D0D0; align-items: flex-start; }
+.fault-row { display: flex; gap: 14px; padding: 12px 16px; border-top: 1px solid var(--danger-border); align-items: flex-start; }
 .fault-field {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
-  font-weight: 700; color: #C53030; background: #fff; border: 1px solid #F5D0D0;
+  font-weight: 700; color: var(--danger); background: #fff; border: 1px solid var(--danger-border);
   padding: 2px 7px; border-radius: 5px; flex-shrink: 0; max-width: 230px; word-break: break-all;
 }
-.fault-msg { font-size: 12.5px; color: var(--t-body); line-height: 1.5; }
+.fault-msg { font-size: 12px; color: var(--t-body); line-height: 1.5; }
 
 /* ── Verification recipients (wireframe_v11 s5, "CC Recipients") ─────────────
    One chip per address the return will be mailed to. Directors are seeded from
@@ -1508,7 +1556,7 @@ tbody tr.clickable { cursor: pointer; }
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--indigo-10); border: 1px solid var(--indigo-20);
   border-radius: 20px; padding: 5px 6px 5px 12px;
-  font-size: 11.5px; color: var(--indigo); font-weight: 500; max-width: 100%;
+  font-size: 11px; color: var(--indigo); font-weight: 500; max-width: 100%;
 }
 .chip .chip-name { font-weight: 700; }
 .chip .chip-addr { word-break: break-all; }
@@ -1544,7 +1592,7 @@ tbody tr.clickable { cursor: pointer; }
   display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px;
 }
 .sect-label {
-  font-size: 10.5px; font-weight: 700; letter-spacing: .07em;
+  font-size: 10px; font-weight: 700; letter-spacing: .07em;
   text-transform: uppercase; color: var(--t-muted);
 }
 .recip-count { font-size: 11px; color: var(--t-muted); }
@@ -1578,7 +1626,7 @@ tbody tr.clickable { cursor: pointer; }
 /* break-all, not break-word: an address has no spaces to break at, and a long
    one must not push the status column off the modal. */
 .dr-who { min-width: 0; word-break: break-all; }
-.dr-who b { color: var(--t-head); font-weight: 600; }
+.dr-who b { color: var(--t-head); font-weight: 600; word-break: normal; overflow-wrap: break-word; }
 .dr-status { font-size: 11px; font-weight: 600; color: var(--t-muted); white-space: nowrap; }
 /* Spans the two right-hand columns, under the address it explains. */
 .dr-detail { grid-column: 2 / -1; font-size: 11px; color: var(--t-muted); }
@@ -1604,7 +1652,7 @@ tbody tr.clickable { cursor: pointer; }
   .step { padding: 0 3px; gap: 7px; }
   .step-num { width: 30px; height: 30px; font-size: 13px; }
   .step-line { top: 14px; }
-  .step-lbl { font-size: 9.5px; }
+  .step-lbl { font-size: 10px; }
   .step-state { display: none; }
 }
 
@@ -1645,7 +1693,7 @@ tbody tr.clickable { cursor: pointer; }
 .fld-warn {
   display: block; margin-top: 3px;
   font-size: 11px; font-weight: 500; line-height: 1.35;
-  color: var(--carrot);
+  color: var(--carrot-ink);
 }
 /* THE EXCEPTION TO THE PARAGRAPH ABOVE, and the only one (Levi 2026-09-07).
    The per-field notes stay carrot because each is one incomplete value; this
@@ -1657,7 +1705,7 @@ tbody tr.clickable { cursor: pointer; }
 .warn-pill {
   display: inline-flex; align-items: center; height: 20px;
   margin-left: 8px; padding: 0 9px; border-radius: 10px;
-  background: #FEE2E2; color: #B91C1C; border: 1px solid #FCA5A5;
+  background: var(--danger-10); color: var(--danger); border: 1px solid var(--danger-border);
   font-size: 11px; font-weight: 800; letter-spacing: .01em;
   vertical-align: middle;
 }
@@ -1676,13 +1724,12 @@ tbody tr.clickable { cursor: pointer; }
    count is what it is — so an applied filter is carrot, and everything dormant
    stays at the hairline weight .th-sort already established. */
 
-.th-lbl { white-space: nowrap; }
 
 /* Dormant: the same .4 opacity the sort glyph sits at, so a header with both
    reads as one control cluster rather than two competing marks. */
 .th-filter {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; margin-left: 0; padding: 0;
+  width: 24px; height: 28px; margin-left: 0; padding: 0;
   border-radius: var(--r-xs); color: var(--t-muted); opacity: .55;
   transition: .15s; flex-shrink: 0;
 }
@@ -1850,7 +1897,7 @@ th.th-filtered {
    that reproduces it was the gap; the tile IS that filter now. */
 .stat-card.is-filter { cursor: pointer; text-align: left; width: 100%; transition: .15s; }
 .stat-card.is-filter:hover { box-shadow: var(--sh-md); }
-.stat-card.is-filter:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--indigo-20); }
+.stat-card.is-filter:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--indigo); }
 .stat-card.accent-left.is-on { border-color: var(--carrot); box-shadow: 0 0 0 3px var(--carrot-10); }
 .stat-card.accent-indigo.is-on { border-color: var(--indigo); box-shadow: 0 0 0 3px var(--indigo-10); }
 /* Hidden until it has something to say. Permanently printing "CLICK TO FILTER"
@@ -1886,14 +1933,14 @@ th.th-filtered {
   border-left: 3px solid var(--indigo-20);
   background: var(--indigo-5);
   border-radius: var(--r-xs);
-  padding: 10px 13px; margin-bottom: 14px;
+  padding: 10px 13px; margin-bottom: 16px;
   font-size: 13px; color: var(--t-body); line-height: 1.5;
 }
 .card-note b { color: var(--t-head); font-weight: 600; }
 /* Carrot, not red: these are things to know before acting, not refusals of
    something already attempted. Same reasoning as .fld-warn above. */
 .card-note-warn { border-left-color: var(--carrot); background: var(--carrot-10); }
-.card-note-warn b { color: var(--carrot); }
+.card-note-warn b { color: var(--carrot-ink); }
 
 /* ── WORKFLOW REFUSAL — the evidence under a blocked action ────────────────
    Levi 2026-09-03. The pre-submit gate used to report itself two ways at once:
@@ -1930,7 +1977,7 @@ th.th-filtered {
    subject. */
 .rf-where {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px;
-  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
   margin-bottom: 9px;
 }
 .rf-where-step { color: var(--t-muted); font-weight: 600; }
@@ -1950,7 +1997,7 @@ th.th-filtered {
   border-radius: var(--r-xs); padding: 8px 10px; min-width: 0;
 }
 .rf-val-lbl {
-  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  font-size: 10px; font-weight: 600; letter-spacing: .04em;
   text-transform: uppercase; color: var(--t-muted); margin-bottom: 4px;
 }
 .rf-val-txt {
@@ -1966,16 +2013,16 @@ th.th-filtered {
 .rf-absent { font-style: italic; font-weight: 500; color: var(--t-muted); }
 .rf-arrow {
   align-self: center; color: var(--t-muted);
-  font-size: 15px; line-height: 1; user-select: none;
+  font-size: 14px; line-height: 1; user-select: none;
 }
 
 /* The other card shape: a fault with no pair, because the record cannot make
    a return at all. Same rail, same eyebrow, so both read as one family. */
 .rf-problem {
-  font-size: 13.5px; font-weight: 600; color: var(--t-head); line-height: 1.45;
+  font-size: 13px; font-weight: 600; color: var(--t-head); line-height: 1.45;
 }
 .rf-detail {
-  font-size: 12.5px; color: var(--t-body); line-height: 1.6; margin-top: 5px;
+  font-size: 12px; color: var(--t-body); line-height: 1.6; margin-top: 5px;
 }
 
 /* What to do about it, under the evidence rather than buried above it. The
@@ -1983,10 +2030,10 @@ th.th-filtered {
    where the operator is already looking. */
 .rf-remedy {
   display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px;
-  margin-top: 13px; padding-top: 12px; border-top: 1px solid #FCA5A5;
+  margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--danger-border);
 }
 .rf-remedy-txt {
-  font-size: 12.5px; color: var(--t-body); line-height: 1.55; flex: 1 1 260px;
+  font-size: 12px; color: var(--t-body); line-height: 1.55; flex: 1 1 260px;
 }
 
 @media (max-width: 620px) {
@@ -2014,8 +2061,8 @@ th.th-filtered {
 .record-gone { padding: 24px; max-width: 520px; }
 /* A registry tab only a delete-holder sees, set apart from the filters it is
    not one of: it swaps the whole list, it does not narrow it. */
-.filter-tab.tab-deleted { color: #C53030; }
-.filter-tab.tab-deleted.active { background: #C53030; color: #fff; }
+.filter-tab.tab-deleted { color: var(--danger); }
+.filter-tab.tab-deleted.active { background: var(--danger); color: #fff; }
 
 /* Natural Person Registry: a second passport is there, not hidden (Levi 2026-10-05). */
 .reg-more-ids { display: block; font-size: 11px; margin-top: 2px; }
