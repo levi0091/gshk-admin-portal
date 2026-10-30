@@ -669,6 +669,15 @@ def test_composite_lists_missing_dates(db, nd2a, monkeypatch):
     assert data["dates_missing"] == ["HO New"]
 
 
+def test_composite_says_when_a_form_dated_ahead_can_be_filed(db, nd2a):
+    cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                           "person_id": "P9", "capacity": "director",
+                           "effective_date": "2099-01-28"}, user_id="U1")
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    assert data["filing_opens_on"] == "2099-01-28"
+    assert data["rules"]["blocking"] is False
+
+
 def test_composite_carries_the_manual_checks(db, nd2a, monkeypatch):
     monkeypatch.setattr(cases.documents, "list_for_case", lambda cid, entries=None: [])
     cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O1",

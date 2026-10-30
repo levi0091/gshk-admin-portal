@@ -4,7 +4,7 @@ import SupportingDocuments from './SupportingDocuments.jsx'
 import ManualChecks from './ManualChecks.jsx'
 import CrRefusal from './CrRefusal.jsx'
 import { officerChangeApi } from './api.js'
-import { errorOf } from './workflow.js'
+import { errorOf, filingOpensNote } from './workflow.js'
 
 /**
  * Stage 2 (spec §5): the manual checks (Jacqueline A4) — KYC, resignation
@@ -29,6 +29,8 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
   const signatory = data.signatory || {}
   const openChecks = (data.manual_checks || []).filter(c => !c.ok).map(c => c.label)
   const datesPending = (data.dates_missing || []).length > 0
+  const opensNote = filingOpensNote(data)
+  const validateLater = datesPending || Boolean(opensNote)
 
   async function run(promise) {
     setError(null); setBusy(true)
@@ -136,20 +138,22 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
         )}
 
         <div className="oc-send-row">
-          {method === 'esign' && !validated && !datesPending && can.tpsiWrite && (
+          {method === 'esign' && !validated && !validateLater && can.tpsiWrite && (
             <button className="btn btn-primary" disabled={busy || openChecks.length > 0}
                     onClick={() => run(officerChangeApi.validate(data.id))}>
               {busy ? 'Validating…' : 'Validate with CR Portal'}
             </button>
           )}
-          {method === 'esign' && !validated && datesPending && !checked && can.write && (
+          {method === 'esign' && !validated && validateLater && !checked && can.write && (
             <>
               <button className="btn btn-primary" disabled={busy || openChecks.length > 0}
                       onClick={() => run(officerChangeApi.markChecked(data.id, 'esign'))}>
                 Continue to Signing
               </button>
-              <span className="f-hint">An effective date is still blank, so CR validates the form at
-                Signing once it is entered.</span>
+              <span className="f-hint">
+                {datesPending ? 'An effective date is still blank, so CR validates the form at Signing once it is entered.'
+                  : `${opensNote} CR validates it at Signing from then.`}
+              </span>
             </>
           )}
           {method === 'manual' && !checked && can.write && (

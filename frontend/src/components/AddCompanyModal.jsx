@@ -160,7 +160,7 @@ export default function AddCompanyModal({ onClose, onCreated }) {
   }
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) guard.requestClose() }}>
+    <div className="overlay">
       <div className="modal" role="dialog" aria-label="New Company">
         <div className="modal-hdr">
           <div className="modal-title">New Company</div>

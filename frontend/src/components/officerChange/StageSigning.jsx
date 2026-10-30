@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { officerChangeApi } from './api.js'
 import CrRefusal from './CrRefusal.jsx'
 import EffectiveDatesPanel from './EffectiveDatesPanel.jsx'
-import { errorOf, isManual } from './workflow.js'
+import { errorOf, isManual, filingOpensNote } from './workflow.js'
 
 /**
  * Stage 3 (spec §5; answers 8, 9, 10, 17).
@@ -39,6 +39,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
   const validated = data.filing?.stage === 'validated' || signed
   const consents = data.route?.consents || []
   const datesPending = (data.dates_missing || []).length > 0
+  const opensNote = filingOpensNote(data)
   const mismatches = consents.filter(c => c.id_mismatch)
 
   async function run(promise) {
@@ -62,6 +63,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
       {!data.manual_signed_document_id && <EffectiveDatesPanel data={data} reload={reload} can={can} />}
       <div className="card">
         <div className="card-title">Signing — manual (CR portal)</div>
+        {opensNote && <div className="card-note" role="status">{opensNote} The signed copy can be uploaded before then.</div>}
         {data.form_code === 'Nd2a' ? (
           <p className="f-hint" style={{ marginTop: 6 }}>
             Prepare the ND2A on the Companies Registry's portal, have it signed, and upload the
@@ -147,13 +149,13 @@ export default function StageSigning({ data, reload, can, goTo }) {
         {!validated ? (
           can.tpsiWrite ? (
             <>
-              <button className="btn btn-primary" disabled={busy || datesPending}
+              <button className="btn btn-primary" disabled={busy || datesPending || Boolean(opensNote)}
                       onClick={() => run(officerChangeApi.validate(data.id))}>
                 {busy ? 'Validating…' : 'Validate with CR'}
               </button>
               <span className="f-hint">
                 {datesPending ? 'Enter the effective dates above first; CR checks them.'
-                  : 'CR checks the form, dates included, before it is signed.'}
+                  : opensNote || 'CR checks the form, dates included, before it is signed.'}
               </span>
             </>
           ) : <span className="f-hint">Validating with CR needs Companies Registry filing (Edit).</span>

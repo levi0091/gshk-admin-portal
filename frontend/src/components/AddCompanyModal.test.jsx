@@ -135,25 +135,33 @@ describe('AddCompanyModal', () => {
 describe('AddCompanyModal — discard guard (UAT F-1)', () => {
   it('closes straight away when nothing has been entered', async () => {
     const user = userEvent.setup()
+    renderModal()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalled()
+    expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
+  })
+
+  it('stays open when the backdrop is clicked, entries or not', async () => {
+    const user = userEvent.setup()
     const { container } = renderModal()
     await user.click(container.querySelector('.overlay'))
-    expect(onClose).toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
     expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
   })
 
   it('does not treat the auto-filled Hong Kong default as an edit', async () => {
     const user = userEvent.setup()
-    const { container } = renderModal()
+    renderModal()
     await waitFor(() => expect(screen.getByLabelText(/Country of Incorporation/)).toHaveValue('HK'))
-    await user.click(container.querySelector('.overlay'))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('asks before discarding a filled form dismissed by backdrop click', async () => {
+  it('asks before discarding a filled form dismissed by Cancel', async () => {
     const user = userEvent.setup()
-    const { container } = renderModal()
+    renderModal()
     await user.type(screen.getByLabelText(/Company Name/), 'NewCo')
-    await user.click(container.querySelector('.overlay'))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(await screen.findByText('Discard changes?')).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -179,10 +187,10 @@ describe('AddCompanyModal — discard guard (UAT F-1)', () => {
 
   it('treats a changed country of incorporation as an edit worth guarding', async () => {
     const user = userEvent.setup()
-    const { container } = renderModal()
+    renderModal()
     await waitFor(() => expect(screen.getByLabelText(/Country of Incorporation/)).toHaveValue('HK'))
     await user.selectOptions(screen.getByLabelText(/Country of Incorporation/), 'GB')
-    await user.click(container.querySelector('.overlay'))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(await screen.findByText('Discard changes?')).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })

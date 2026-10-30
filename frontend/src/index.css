@@ -921,6 +921,9 @@ tbody tr.clickable { cursor: pointer; }
   color: var(--t-muted); font-size: 12px; cursor: pointer; background: var(--bg-page); width: 100%;
 }
 .drop-zone:hover { border-color: var(--carrot); }
+.drop-zone:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+.drop-zone.is-over { border-color: var(--carrot); background: var(--carrot-10); color: var(--t-body); }
+.drop-zone:disabled { cursor: default; border-color: var(--border); }
 .dz-link { color: var(--carrot); font-weight: 600; }
 .dz-sub { font-size: 10.5px; margin-top: 3px; }
 

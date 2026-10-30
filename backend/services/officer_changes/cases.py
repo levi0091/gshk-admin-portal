@@ -567,6 +567,11 @@ def dates_missing_for(case_id: str) -> list[str]:
     return rules.dates_missing([{**e, "party": _party_view(e, ctx)} for e in entries])
 
 
+def filing_opens_on_for(case_id: str) -> date | None:
+    """`rules.filing_opens_on` for a case — what the filing routes refuse on."""
+    return rules.filing_opens_on(list_entries(case_id))
+
+
 def _cr_message(cr_error: dict | None) -> str | None:
     """CR's own words for a refused call, as `filings` stored them."""
     if not cr_error:
@@ -994,6 +999,8 @@ async def composite(case_id: str, *, user: dict) -> dict:
         # Jacqueline A1: what Signing must still ask for before anything is
         # signed or filed.
         "dates_missing": rules.dates_missing(view),
+        # A change dated ahead goes to the client now and to CR from this day.
+        "filing_opens_on": _iso(rules.filing_opens_on(view, today)),
         # Jacqueline B1: the date a new ND2B line starts on, for the card to say.
         "anniversary_default": (_soft(problems, "The anniversary date",
                                       lambda: _nd2b_default_date(case), None)

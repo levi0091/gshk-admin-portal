@@ -76,7 +76,7 @@ export function DeleteRecordModal({ kind, basePath, name, identifiers = [], onCl
   const cases = check?.cases || []
 
   return (
-    <div className="overlay" onClick={busy ? undefined : onClose}>
+    <div className="overlay">
       <div className="modal modal-sm" onClick={e => e.stopPropagation()}
            role="alertdialog" aria-label={`Delete ${noun}`}>
         <div className="modal-hdr">

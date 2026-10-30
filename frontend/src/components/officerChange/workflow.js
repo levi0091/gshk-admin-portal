@@ -6,6 +6,7 @@
 // stages 2-4: on the e-Sign route CR's filing stage moves it; on the manual
 // route "Mark as checked" and the uploaded signed form do, because nothing is
 // sent to CR until the operator records the filing made on CR's portal.
+import { formatDate } from '../../lib/format.js'
 import { officerChangeCaps } from '../../lib/screenCapabilities.js'
 
 export const STAGES = [
@@ -17,6 +18,13 @@ export const STAGES = [
   // status after filing, so the sixth, CR Status, is gone.
   'Confirmation',
 ]
+
+/** Why CR's steps are shut on a form dated ahead, or null when they are not. */
+export function filingOpensNote(data) {
+  return data.filing_opens_on
+    ? `This form can be filed from ${formatDate(data.filing_opens_on)}, the date of the latest change on it.`
+    : null
+}
 
 export const FORM_TITLE = {
   Nd2a: 'Appointment / cessation of officers',

@@ -80,7 +80,7 @@ export default function AddPersonModal({ onClose, onCreated }) {
   }
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) guard.requestClose() }}>
+    <div className="overlay">
       <div className="modal modal-lg" role="dialog" aria-label="New Person">
         <div className="modal-hdr">
           <div className="modal-title">New Person</div>

@@ -68,7 +68,7 @@ export default function UploadDocumentModal({
   }
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="overlay">
       <div className="modal" role="dialog" aria-label="Upload Document">
         <div className="modal-hdr">
           <div className="modal-title">

@@ -156,7 +156,6 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   return (
     <Drawer title={editing ? 'Edit appointment' : 'Add appointment'}
             sub="An officer joining the company."
-            onClose={onClose}
             footer={<>
               <button className="btn btn-outline" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" disabled={!ready || saving} onClick={save}>

@@ -277,7 +277,7 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
   }
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="overlay">
       <div className="modal" role="dialog" aria-label={isEdit ? `Edit ${meta.title}` : `Add ${meta.title}`}>
         <div className="modal-hdr">
           <div className="modal-title">{isEdit ? `Edit ${meta.title}` : `Add ${meta.title}`}</div>

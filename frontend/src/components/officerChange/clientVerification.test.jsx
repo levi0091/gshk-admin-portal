@@ -1,6 +1,6 @@
 // Client Verification after Jacqueline's feedback of 1 Oct 2026 (A1, A3, A6,
 // A7, A8, B1, B3, BQ1).
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -62,6 +62,17 @@ describe('RulesPanel — three lines (A6)', () => {
     expect(screen.getByText('There are changes to file.')).toBeInTheDocument()
   })
 
+  it('shows a future date as a reminder, not a breach', () => {
+    const text = 'A change is dated 28 Jan 2027, after today. The client can confirm the form now; it can be filed with CR from that date.'
+    render(<RulesPanel rules={{ ...RULES, blocking: false, checks: [...RULES.checks,
+      { code: 'no_future_dates', ok: false, level: 'reminder', text }] }} />)
+    const line = within(screen.getByRole('list', { name: 'Reminders' })).getByText(text).closest('li')
+    expect(line).toHaveClass('notice')
+    expect(screen.getByText('All rules met')).toBeInTheDocument()
+    expect(screen.queryByText(/Breach/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Rules breached' })).not.toBeInTheDocument()
+  })
+
   it('always shows a breached rule', () => {
     const breach = { ...RULES, blocking: true, checks: [...RULES.checks, {
       code: 'has_secretary', ok: false, level: 'rule',
@@ -93,12 +104,11 @@ describe('AttachmentsCard (A3)', () => {
   const DOCS = [{ id: 'd1', entry_id: null, file_name: 'resolution-signed.pdf', type_label: 'Board resolution',
     send_with_email: false, source: 'upload' }]
 
-  it('uploads a document for the whole form, ticked to go with the email', async () => {
+  it('uploads a dropped document for the whole form, ticked to go with the email', async () => {
     upload.mockResolvedValue({ id: 'k1' })
-    const user = userEvent.setup()
     render(<AttachmentsCard data={{ ...BASE, documents: [] }} reload={vi.fn()} can={ALL} />)
-    await user.upload(screen.getByLabelText('Choose file'), new File(['x'], 'memo.pdf'))
-    await user.click(screen.getByRole('button', { name: 'Upload' }))
+    fireEvent.drop(screen.getByRole('button', { name: /Drag files here/ }),
+                   { dataTransfer: { files: [new File(['x'], 'memo.pdf')] } })
     await waitFor(() => expect(upload).toHaveBeenCalled())
     const [path, form] = upload.mock.calls[0]
     expect(path).toBe('/officer-changes/k1/documents')
@@ -106,6 +116,18 @@ describe('AttachmentsCard (A3)', () => {
     // The written resolution is G-FlowDesk's own now (Levi 2026-10-05); an
     // upload here is anything else the client should have.
     expect(form.get('document_type_code')).toBe('officer_change_support')
+  })
+
+  it('uploads every file dropped, and names the one that was refused', async () => {
+    upload.mockReset()
+    upload.mockRejectedValueOnce(new Error('Too large')).mockResolvedValueOnce({ id: 'k1' })
+    const reload = vi.fn()
+    render(<AttachmentsCard data={{ ...BASE, documents: [] }} reload={reload} can={ALL} />)
+    fireEvent.drop(screen.getByRole('button', { name: /Drag files here/ }),
+                   { dataTransfer: { files: [new File(['x'], 'big.pdf'), new File(['x'], 'ok.pdf')] } })
+    expect(await screen.findByRole('alert')).toHaveTextContent('big.pdf: Too large')
+    expect(upload).toHaveBeenCalledTimes(2)
+    expect(reload).toHaveBeenCalledWith({ id: 'k1' })
   })
 
   it('ticks an uploaded document to go with the email', async () => {
@@ -127,7 +149,7 @@ describe('AttachmentsCard (A3)', () => {
   it('is read-only without edit', () => {
     render(<AttachmentsCard data={{ ...BASE, form_code: 'Nd2b', documents: DOCS }} reload={vi.fn()}
                             can={{ ...ALL, write: false }} />)
-    expect(screen.queryByRole('button', { name: 'Upload' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Drag files here/ })).not.toBeInTheDocument()
     expect(screen.getByText('resolution-signed.pdf')).toBeInTheDocument()
   })
 })

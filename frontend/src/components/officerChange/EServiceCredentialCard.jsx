@@ -201,7 +201,7 @@ export default function EServiceCredentialCard({ personId, canEdit }) {
       {error && <div className="ep-error" role="alert">{error}</div>}
 
       {confirmRemove && (
-        <div className="overlay" onClick={e => { if (e.target === e.currentTarget) setConfirmRemove(false) }}>
+        <div className="overlay">
           <div className="modal modal-sm" role="alertdialog" aria-label="Remove the e-Registry account">
             <div className="modal-hdr">
               <div className="modal-title">Remove the e-Registry account?</div>

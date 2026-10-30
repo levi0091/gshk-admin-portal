@@ -96,7 +96,6 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
   return (
     <Drawer title={editing ? 'Edit cessation' : 'Add cessation'}
             sub="An officer leaving the company. CR is told the date and, for a person, the reason."
-            onClose={onClose}
             footer={<>
               <button className="btn btn-outline" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" disabled={!ready || saving} onClick={save}>

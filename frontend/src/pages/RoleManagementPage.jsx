@@ -138,7 +138,7 @@ function RoleModal({ role, onClose, onSaved }) {
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay">
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <span className="modal-title">{role ? 'Edit Role' : 'Create Role'}</span>
