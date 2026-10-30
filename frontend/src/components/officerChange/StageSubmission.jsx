@@ -4,7 +4,7 @@ import ProfileChangesList from './ProfileChangesList.jsx'
 import CrRefusal from './CrRefusal.jsx'
 import OtherOpenCases from '../case/OtherOpenCases.jsx'
 import { officerChangeApi } from './api.js'
-import { errorOf, isFiled, isManual } from './workflow.js'
+import { errorOf, isFiled, isManual, filingOpensNote } from './workflow.js'
 
 /**
  * Stage 4 (spec §5, answers 11 and 12). First what filing will change — the
@@ -69,6 +69,7 @@ export default function StageSubmission({ data, reload, can, goTo }) {
     } catch (e) { setError(errorOf(e)) } finally { setBusy(false) }
   }
 
+  const opensNote = filingOpensNote(data)
   const receiptReady = receipt.caseNo.trim() && receipt.transactionDate
     && (file || data.manual_receipt_document_id)
 
@@ -116,8 +117,9 @@ export default function StageSubmission({ data, reload, can, goTo }) {
                 </div>
               </div>
               <div className="oc-send-row">
-                <button className="btn btn-primary" disabled={!receiptReady || busy}
+                <button className="btn btn-primary" disabled={!receiptReady || busy || Boolean(opensNote)}
                         onClick={() => setConfirming(true)}>{busy ? 'Recording…' : 'Record filing'}</button>
+                {opensNote && <span className="f-hint">{opensNote}</span>}
               </div>
             </>
           ) : (

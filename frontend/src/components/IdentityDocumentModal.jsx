@@ -85,7 +85,7 @@ export default function IdentityDocumentModal({
   }
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="overlay">
       <div className="modal" role="dialog" aria-label="Identity Document">
         <div className="modal-hdr">
           <div className="modal-title">

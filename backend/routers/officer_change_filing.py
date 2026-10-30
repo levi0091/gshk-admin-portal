@@ -69,6 +69,17 @@ def _refuse_if_dates_missing(case: dict) -> None:
                                   "reason": "dates_missing", "missing": missing})
 
 
+def _refuse_if_date_ahead(case: dict) -> None:
+    """A form may go to the CLIENT ahead of its effective date, but not to CR:
+    CR records what has happened (`rules.filing_opens_on`). Uploading a signed
+    copy stays open, because the client may well sign early."""
+    opens = svc.filing_opens_on_for(case["id"])
+    if opens:
+        raise HTTPException(409, {"message": f"This form can be filed from {opens:%d %b %Y}, "
+                                             "the date of the latest change on it.",
+                                  "reason": "date_ahead", "opens_on": opens.isoformat()})
+
+
 def _refuse_if_checks_incomplete(case: dict, *, route: str) -> None:
     """Data Verification's manual checks (Jacqueline A4) — KYC, resignation
     letters, the written resolution and, on the manual route, each consent."""
@@ -172,6 +183,7 @@ async def validate(case_id: str, user=Depends(require_permission("tpsi", "write"
     _require_approved(case)
     _refuse_if_filed(case)
     _refuse_if_dates_missing(case)
+    _refuse_if_date_ahead(case)
     _refuse_if_checks_incomplete(case, route="esign")
     entries = svc.list_entries(case_id)
     plan = await prepare.consent_plan(case, entries)
@@ -242,6 +254,7 @@ async def sign(case_id: str, request: Request,
         raise HTTPException(409, {"message": "Validate the form with CR before signing.",
                                   "reason": "not_validated"})
     _refuse_if_dates_missing(case)
+    _refuse_if_date_ahead(case)
     pair = credentials.load_eservice(user["id"])
     if pair is None:
         raise HTTPException(409, {"message": "You have no e-Service signing password stored. "
@@ -544,6 +557,7 @@ async def record_filing(case_id: str, body: RecordFilingIn,
         raise HTTPException(409, {"message": "Attach CR's receipt first.",
                                   "reason": "no_receipt"})
     _refuse_if_dates_missing(case)
+    _refuse_if_date_ahead(case)
     _refuse_if_checks_incomplete(case, route="manual")
     # NAR1's gate, for the same reason: an e-filing CR already holds, or a
     # CR-signed one waiting to be submitted, would make this a second filing of

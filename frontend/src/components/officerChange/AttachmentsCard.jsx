@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import FileDropZone from '../FileDropZone.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
@@ -10,17 +11,16 @@ import { errorOf } from './workflow.js'
  * GSHK's own sample — always goes with it (Levi 2026-10-05: "When they click
  * send to client button then both are sent"); both are previewed on the tabs
  * above. This card is for anything ELSE the client should have in the same
- * email: upload it and tick "Send with the email". Everything uploaded here is
- * filed to the company's documents once the form is filed. Without Officer
- * changes (edit), the card lists what will be attached and draws no control.
+ * email: drop it here and it goes with the email, unless its tick is cleared.
+ * Everything uploaded here is filed to the company's documents once the form is
+ * filed. Without Officer changes (edit), the card lists what will be attached
+ * and draws no control.
  */
 export default function AttachmentsCard({ data, reload, can }) {
   const docs = (data.documents || []).filter(d => d.entry_id == null)
   const writable = can.write && !data.verification_sent_at && !data.manual_receipt
     && !data.changes_applied_at
   const nd2a = data.form_code === 'Nd2a'
-  const [send, setSend] = useState(true)
-  const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -29,9 +29,18 @@ export default function AttachmentsCard({ data, reload, can }) {
     try { await reload(await promise) } catch (e) { setError(errorOf(e).message) } finally { setBusy(false) }
   }
 
-  async function upload() {
-    await run(officerChangeApi.uploadCaseDocument(data.id, file, 'officer_change_support', send))
-    setFile(null)
+  // One at a time, and one refused file does not lose the others: each is named.
+  async function upload(files) {
+    setError(null); setBusy(true)
+    const failed = []
+    let latest = null
+    for (const file of files) {
+      try { latest = await officerChangeApi.uploadCaseDocument(data.id, file, 'officer_change_support', true) }
+      catch (e) { failed.push(`${file.name}: ${errorOf(e).message}`) }
+    }
+    try { if (latest) await reload(latest) } catch (e) { failed.push(errorOf(e).message) }
+    if (failed.length) setError(failed.join(' '))
+    setBusy(false)
   }
 
   return (
@@ -68,15 +77,9 @@ export default function AttachmentsCard({ data, reload, can }) {
       ))}
 
       {writable && (
-        <div className="row gap-8" style={{ marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input type="file" aria-label="Choose file" onChange={e => setFile(e.target.files?.[0] || null)} />
-          <label className="oc-inline-check">
-            <input type="checkbox" checked={send} onChange={e => setSend(e.target.checked)} />
-            Send with the email
-          </label>
-          <button className="btn btn-outline btn-sm" disabled={!file || busy} onClick={upload}>
-            {busy ? 'Uploading…' : 'Upload'}
-          </button>
+        <div style={{ marginTop: 12 }}>
+          <FileDropZone onFiles={upload} busy={busy}
+                        sub="Each file goes with the email. Clear its tick to keep it on the case only." />
         </div>
       )}
       {error && <div className="alert al-danger" role="alert" style={{ marginTop: 10 }}>

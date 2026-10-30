@@ -8,15 +8,18 @@ import { useState } from 'react'
  * — how many directors and secretaries the company will have, who the
  * directors are, and who the secretary is. Those three lines are the card.
  * A breached rule is always listed beneath them (it stops the send, and the
- * reason must be where the eye is); every other check — the ones that pass and
- * the notices — sits behind "Show all checks".
+ * reason must be where the eye is), and so is a reminder, in amber: it stops
+ * nothing, but a form that cannot be filed yet is not something to find later.
+ * Every other check — the ones that pass and the notices — sits behind "Show
+ * all checks".
  */
 export default function RulesPanel({ rules }) {
   const [open, setOpen] = useState(false)
   if (!rules) return null
   const checks = rules.checks || []
-  const breaches = checks.filter(c => !c.ok && c.level !== 'notice')
-  const rest = checks.filter(c => !breaches.includes(c))
+  const breaches = checks.filter(c => !c.ok && c.level === 'rule')
+  const reminders = checks.filter(c => !c.ok && c.level === 'reminder')
+  const rest = checks.filter(c => !breaches.includes(c) && !reminders.includes(c))
   const lines = rules.lines || (rules.summary ? [rules.summary] : [])
   return (
     <div className="card" style={{ marginTop: 16 }} aria-label="Company rules">
@@ -32,6 +35,11 @@ export default function RulesPanel({ rules }) {
       {breaches.length > 0 && (
         <ul className="oc-rules" aria-label="Rules breached">
           {breaches.map(c => <Check key={c.code} check={c} />)}
+        </ul>
+      )}
+      {reminders.length > 0 && (
+        <ul className="oc-rules" aria-label="Reminders">
+          {reminders.map(c => <Check key={c.code} check={c} />)}
         </ul>
       )}
       {rest.length > 0 && (
@@ -50,7 +58,7 @@ export default function RulesPanel({ rules }) {
 }
 
 function Check({ check: c }) {
-  const tone = c.ok ? 'ok' : c.level === 'notice' ? 'notice' : 'bad'
+  const tone = c.ok ? 'ok' : c.level === 'rule' ? 'bad' : 'notice'
   return (
     <li className={`oc-rule ${tone}`} data-code={c.code}>
       <span className="oc-rule-mark" aria-hidden="true">

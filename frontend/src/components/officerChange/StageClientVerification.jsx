@@ -361,7 +361,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
                         onClosed={async () => { setClosing(false); await reload() }} />
       )}
       {waiving && (
-        <div className="overlay" onClick={e => { if (e.target === e.currentTarget) setWaiving(false) }}>
+        <div className="overlay">
           <div className="modal modal-sm" role="dialog" aria-label="Proceed without the client's confirmation">
             <div className="modal-hdr">
               <div className="modal-title">Proceed without the client's confirmation?</div>

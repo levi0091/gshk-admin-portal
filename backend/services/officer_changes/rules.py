@@ -11,6 +11,11 @@ a `level`:
   * `notice` — worth saying, never in the way: no date of birth on record, no
     identity document, a deadline already passed (late filing is an offence
     but carries no fee, so the case stays fileable — PRD E-13).
+  * `reminder` — a notice the operator must not miss, so the screen always
+    lists it. A change dated after today is the one case (Levi 2026-10-30: "we
+    purposefully wanted to prepare and send the form and written resolution to
+    the client early"): it goes to the client now, and the filing routes refuse
+    it until the date arrives (`filing_opens_on`).
 
 Pure: the caller passes the officers as they stand now, the entries, the
 company and the dates.
@@ -93,6 +98,21 @@ def dates_missing(entries: list[dict]) -> list[str]:
     return out
 
 
+def filing_opens_on(entries: list[dict], today: date | None = None) -> date | None:
+    """The first day this form can go to CR, while a change on it is still in
+    the future: its LATEST date, since CR records what has happened. `None`
+    when nothing is ahead. Omitted ND2B lines are not filed and so do not count."""
+    today = today or hk_today()
+    dated = []
+    for e in entries:
+        if e.get("kind") == "change":
+            dated += [i.get("effective_date") for i in e.get("items") or []
+                      if not i.get("omitted")]
+        else:
+            dated.append(e.get("effective_date"))
+    return max((d for d in map(_as_date, dated) if d and d > today), default=None)
+
+
 def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
@@ -115,13 +135,11 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
                              "There are changes to file."))
         undated = [i.get("label") or i.get("key") for _, i in lines
                    if not i.get("effective_date")]
-        dates = [_as_date(i.get("effective_date")) for _, i in lines]
     else:
         checks.append(_check("has_changes", bool(entries),
                              "Add at least one cessation or appointment." if not entries
                              else "There are changes to file."))
         undated = [e.get("capacity") for e in entries if not e.get("effective_date")]
-        dates = [_as_date(e.get("effective_date")) for e in entries]
     # A NOTICE since Jacqueline's A1: the client may be sent the draft with the
     # date blank, and it is entered at Signing (`dates_missing` gates filing).
     checks.append(_check(
@@ -130,12 +148,13 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
         f"{_plural(len(undated), 'change has', 'changes have')} no effective date yet — "
         "the client is told it will be confirmed when we file; enter it at Signing.",
         level="notice"))
-    future = sorted(d for d in dates if d and d > today)
+    opens = filing_opens_on(entries, today)
     checks.append(_check(
-        "no_future_dates", not future,
-        "No change is dated after today." if not future else
-        f"A change is dated {future[0]:%d %b %Y}, after today. CR records what has "
-        "happened; file it once the date has passed."))
+        "no_future_dates", opens is None,
+        "No change is dated after today." if opens is None else
+        f"A change is dated {opens:%d %b %Y}, after today. The client can confirm the "
+        "form now; it can be filed with CR from that date.",
+        level="reminder"))
 
     # -- the board after the change (ND2A only changes who is on it) ---------------
     board = board_after(officers_now, entries)

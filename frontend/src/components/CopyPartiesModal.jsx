@@ -205,7 +205,7 @@ export default function CopyPartiesModal({ companyId, officers, shareholders,
   const selectable = candidates.filter(c => !c.linked)
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="overlay">
       <div className="modal" role="dialog" aria-label="Copy beneficial owners">
         <div className="modal-hdr">
           <div className="modal-title">Copy Beneficial Owners</div>

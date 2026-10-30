@@ -1,5 +1,6 @@
 """The CR steps of an officer change: validate, sign, submit — and the manual
 route, which must reach "filed" without ever constructing a CR client."""
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -420,6 +421,39 @@ def test_validate_refuses_while_a_date_is_missing(env):
         resp = client.post("/officer-changes/K1/validate", headers=H)
     assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "dates_missing"
     env.cr.assert_not_called()
+
+
+AHEAD = date(2027, 1, 28)
+
+
+def test_validate_refuses_a_form_dated_ahead(env):
+    """Levi 2026-10-30: it goes to the client early, and to CR on its date."""
+    with patch.object(ocf.svc, "filing_opens_on_for", return_value=AHEAD):
+        resp = client.post("/officer-changes/K1/validate", headers=H)
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["reason"] == "date_ahead" and detail["opens_on"] == "2027-01-28"
+    assert "28 Jan 2027" in detail["message"]
+    env.cr.assert_not_called()
+
+
+def test_record_filing_refuses_a_form_dated_ahead(env):
+    env.case = {**CASE, "manual_signed_document_id": "D1", "manual_receipt_document_id": "R1"}
+    with patch.object(ocf.svc, "filing_opens_on_for", return_value=AHEAD):
+        resp = client.post("/officer-changes/K1/record-filing", headers=H, json={
+            "receipt": {"caseNo": "1", "transactionDate": "01/10/2026"}, "confirm": True})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "date_ahead"
+
+
+def test_a_signed_copy_can_be_uploaded_ahead_of_the_date(env):
+    """The client may sign early; only going to CR waits."""
+    env.case = {**CASE, "data_checked_at": "2026-10-01T00:00:00Z"}
+    gate = MagicMock(return_value=AHEAD)
+    with patch.object(ocf.svc, "filing_opens_on_for", gate):
+        resp = client.post("/officer-changes/K1/signed-form", headers=H,
+                           files={"file": ("signed.pdf", b"%PDF-1", "application/pdf")})
+    assert resp.json().get("detail", {}) != {"reason": "date_ahead"}
+    gate.assert_not_called()
 
 
 def test_mark_checked_esign_keeps_the_route(env):

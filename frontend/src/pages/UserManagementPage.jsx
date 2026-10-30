@@ -66,7 +66,7 @@ function AddUserModal({ roles, onClose, onCreated }) {
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay">
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <span className="modal-title">Add User</span>
@@ -142,7 +142,7 @@ function EditUserModal({ user, roles, onClose, onSaved }) {
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay">
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <span className="modal-title">Edit User</span>
@@ -207,7 +207,7 @@ function ResetPasswordModal({ user, isSelf, onClose, onReset }) {
   const failed = result && result.reset_email_sent === false
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay">
       <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <span className="modal-title">Reset Password</span>
@@ -333,7 +333,7 @@ function DeactivateModal({ user, onClose, onDeactivated }) {
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay">
       <div className="modal" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <span className="modal-title">Deactivate User</span>
@@ -400,7 +400,7 @@ function ReactivateModal({ user, onClose, onReactivated }) {
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay">
       <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <span className="modal-title">Reactivate User</span>

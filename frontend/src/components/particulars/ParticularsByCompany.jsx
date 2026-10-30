@@ -81,7 +81,7 @@ function CompanyChips({ ids, companies, empty }) {
 
 function Modal({ title, onClose, children, footer }) {
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="overlay">
       <div className="modal" role="dialog" aria-label={title}>
         <div className="modal-hdr">
           <div className="modal-title">{title}</div>

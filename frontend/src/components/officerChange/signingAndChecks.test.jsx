@@ -147,6 +147,43 @@ describe('EffectiveDatesPanel (A1)', () => {
   })
 })
 
+describe('A form dated ahead of today (Levi 2026-10-30)', () => {
+  const AHEAD = { filing_opens_on: '2027-01-28' }
+
+  it('Data Verification moves on to Signing without asking CR', () => {
+    const ready = CHECKS.map(c => ({ ...c, ok: true }))
+    wrap(<StageDataVerification data={{ ...BASE, ...AHEAD, signing_method: 'esign', manual_checks: ready }}
+                                reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Validate with CR Portal' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue to Signing' })).toBeEnabled()
+    expect(screen.getByText(/can be filed from 28 Jan 2027/)).toBeInTheDocument()
+  })
+
+  it('e-Sign: Validate waits for the date, and says which', () => {
+    wrap(<StageSigning data={{ ...BASE, ...AHEAD, signing_method: 'esign', data_checked_at: 'x' }}
+                       reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Validate with CR' })).toBeDisabled()
+    expect(screen.getByText(/can be filed from 28 Jan 2027/)).toBeInTheDocument()
+  })
+
+  it('paper: the signed copy can still be uploaded', async () => {
+    const user = userEvent.setup()
+    wrap(<StageSigning data={{ ...BASE, ...AHEAD, signing_method: 'manual', data_checked_at: 'x' }}
+                       reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    await user.upload(screen.getByLabelText('Signed form (PDF)'), new File(['x'], 's.pdf', { type: 'application/pdf' }))
+    expect(screen.getByRole('button', { name: 'Upload signed form' })).toBeEnabled()
+    expect(screen.getByText(/can be filed from 28 Jan 2027/)).toBeInTheDocument()
+  })
+
+  it('paper: Record filing waits for the date', async () => {
+    wrap(<StageSubmission data={{ ...BASE, ...AHEAD, signing_method: 'manual', data_checked_at: 'x',
+      manual_signed_document_id: 'd1', manual_receipt_document_id: 'r1' }}
+                          reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Record filing' })).toBeDisabled()
+    expect(screen.getByText(/can be filed from 28 Jan 2027/)).toBeInTheDocument()
+  })
+})
+
 describe('Signing with deferred dates (A1) and a stale e-Registry account (N1)', () => {
   it('paper: upload waits for the dates', () => {
     wrap(<StageSigning data={{ ...BASE, signing_method: 'manual', data_checked_at: 'x',

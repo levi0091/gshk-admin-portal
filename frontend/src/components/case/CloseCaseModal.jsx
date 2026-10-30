@@ -67,7 +67,7 @@ export default function CloseCaseModal({
   }
 
   return (
-    <div className="overlay" onClick={busy ? undefined : onClose}>
+    <div className="overlay">
       <div className="modal modal-sm" onClick={e => e.stopPropagation()}
            role="alertdialog" aria-label="Close case">
         <div className="modal-hdr">

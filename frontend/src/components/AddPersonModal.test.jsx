@@ -52,17 +52,25 @@ beforeEach(() => {
 describe('AddPersonModal — discard guard (UAT F-1)', () => {
   it('closes straight away when nothing has been entered', async () => {
     const user = userEvent.setup()
-    const { container } = renderModal()
-    await user.click(container.querySelector('.overlay'))
+    renderModal()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onClose).toHaveBeenCalled()
     expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
   })
 
-  it('asks before discarding a filled form dismissed by backdrop click', async () => {
+  it('stays open when the backdrop is clicked, entries or not', async () => {
     const user = userEvent.setup()
     const { container } = renderModal()
-    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
     await user.click(container.querySelector('.overlay'))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument()
+  })
+
+  it('asks before discarding a filled form dismissed by Cancel', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(await screen.findByText('Discard changes?')).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -170,11 +178,11 @@ describe('AddPersonModal — hide email on forms', () => {
 
   it('does not treat a ticked-then-unticked box as something worth protecting', async () => {
     const user = userEvent.setup()
-    const { container } = renderModal()
+    renderModal()
     const box = screen.getByLabelText(/Do not print this email on forms/)
     await user.click(box)
     await user.click(box)
-    await user.click(container.querySelector('.overlay'))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onClose).toHaveBeenCalled()
   })
 })

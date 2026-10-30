@@ -82,7 +82,7 @@ export default function NewCaseModal({ entity, onClose, onCreated, initialForm }
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay">
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <div className="modal-title">Open a case</div>

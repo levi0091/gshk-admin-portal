@@ -16,7 +16,7 @@ export default function ConfirmDialog({
   busy = false, onConfirm, onCancel,
 }) {
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onCancel() }}>
+    <div className="overlay">
       <div className="modal modal-sm" role="alertdialog" aria-label={title}>
         <div className="modal-hdr">
           <div className="modal-title">{title}</div>

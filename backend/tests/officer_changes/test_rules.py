@@ -116,9 +116,31 @@ def test_a_body_corporate_secretary_needs_a_hong_kong_office():
     assert check(result, "secretary_hong_kong")["ok"] is False
 
 
-def test_future_dates_block():
+def test_a_future_date_reminds_but_does_not_stop_the_send():
+    """Levi 2026-10-30: the form and resolution go to the client early on
+    purpose. The reminder names the day it can be filed."""
     result = run([appoint(person="P9", when="2026-10-05")])
-    assert check(result, "no_future_dates")["ok"] is False and result["blocking"]
+    c = check(result, "no_future_dates")
+    assert c["ok"] is False and c["level"] == "reminder" and result["blocking"] is False
+    assert "05 Oct 2026" in c["text"]
+
+
+def test_filing_opens_on_the_latest_future_date():
+    entries = [{"kind": "cessation", "effective_date": "2026-10-05"},
+               {"kind": "appointment", "effective_date": "2026-11-01"}]
+    assert rules.filing_opens_on(entries, TODAY) == date(2026, 11, 1)
+
+
+def test_filing_is_open_when_nothing_is_ahead():
+    entries = [{"kind": "cessation", "effective_date": TODAY.isoformat()},
+               {"kind": "appointment", "effective_date": None}]
+    assert rules.filing_opens_on(entries, TODAY) is None
+
+
+def test_an_omitted_nd2b_line_does_not_hold_up_the_filing():
+    items = [{"key": "a", "effective_date": "2030-01-01", "omitted": True},
+             {"key": "b", "effective_date": "2026-11-01"}]
+    assert rules.filing_opens_on([{"kind": "change", "items": items}], TODAY) == date(2026, 11, 1)
 
 
 def test_a_missing_date_no_longer_blocks_sending():

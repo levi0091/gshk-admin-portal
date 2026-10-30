@@ -147,7 +147,7 @@ export default function ParticularsChangeAlert({ kind, id, caps, refreshKey }) {
       {(startError || error) && <div className="ep-error" role="alert">{startError || error}</div>}
 
       {confirmingOne && (
-        <div className="overlay" onClick={e => { if (e.target === e.currentTarget) setConfirmingOne(null) }}>
+        <div className="overlay">
           <div className="modal modal-sm" role="alertdialog" aria-label="Dismiss for this company">
             <div className="modal-hdr">
               <div className="modal-title">Not for {confirmingOne.company_name || 'this company'}?</div>
@@ -175,7 +175,7 @@ export default function ParticularsChangeAlert({ kind, id, caps, refreshKey }) {
       )}
 
       {confirming && (
-        <div className="overlay" onClick={e => { if (e.target === e.currentTarget) setConfirming(false) }}>
+        <div className="overlay">
           <div className="modal modal-sm" role="alertdialog" aria-label="Dismiss these changes">
             <div className="modal-hdr">
               <div className="modal-title">Dismiss these changes?</div>
