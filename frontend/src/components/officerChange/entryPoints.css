@@ -40,7 +40,7 @@
 .ep-menu-item:hover, .ep-menu-item:focus-visible { background: var(--indigo-5); outline: none; }
 .ep-menu-item:focus-visible { box-shadow: inset 0 0 0 2px var(--indigo-20); }
 .ep-menu-code {
-  flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: .02em;
   padding: 2px 6px; border-radius: var(--r-xs, 4px);
   background: var(--indigo-10); color: var(--indigo);
 }
@@ -50,11 +50,10 @@
 .ep-chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 2px 9px 2px 7px; border-radius: 999px;
-  background: var(--carrot-10); color: #8A3B12;
-  font-size: 11.5px; font-weight: 600; text-decoration: none; white-space: nowrap;
+  background: var(--carrot-10); color: var(--carrot-ink);
+  font-size: 11px; font-weight: 600; text-decoration: none; white-space: nowrap;
 }
 .ep-chip:hover { background: #FDE2D6; }
-.ep-chip:focus-visible { outline: 2px solid var(--carrot); outline-offset: 2px; }
 .ep-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--carrot); }
 .ep-chip-no { font-weight: 500; color: #A0532E; padding-left: 6px; border-left: 1px solid var(--carrot-20, #FBD3C2); }
 
@@ -66,7 +65,7 @@
 }
 .ep-alert-hd { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; }
 .ep-alert-title { font-size: 14px; font-weight: 700; color: var(--t-head); }
-.ep-alert-sub { font-size: 12.5px; color: var(--t-body); margin-top: 3px; max-width: 68ch; line-height: 1.5; }
+.ep-alert-sub { font-size: 12px; color: var(--t-body); margin-top: 3px; max-width: 68ch; line-height: 1.5; }
 .ep-alert-rows { list-style: none; margin: 12px 0 0; padding: 0; }
 .ep-alert-row {
   display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
@@ -96,7 +95,7 @@
 .ep-cred-form { display: grid; gap: 12px; max-width: 460px; }
 .ep-cred-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .ep-state {
-  display: inline-block; font-size: 11.5px; font-weight: 600;
+  display: inline-block; font-size: 11px; font-weight: 600;
   padding: 2px 8px; border-radius: var(--r-sm);
 }
 .ep-state.on { background: var(--bang-10); color: var(--bang); }
@@ -105,9 +104,9 @@
 /* -- shared messages ------------------------------------------------------------- */
 .ep-error {
   margin-top: 10px; padding: 8px 10px; border-radius: var(--r-sm);
-  background: #FEF2F2; color: #991B1B; font-size: 12.5px;
+  background: #FEF2F2; color: var(--danger-hover); font-size: 12px;
 }
-.ep-saved { margin-top: 10px; font-size: 12.5px; color: var(--bang); font-weight: 600; }
+.ep-saved { margin-top: 10px; font-size: 12px; color: var(--bang); font-weight: 600; }
 
 /* -- Dashboard: File by ------------------------------------------------------------ */
 .td-deadline { display: inline-flex; flex-direction: column; gap: 1px; line-height: 1.3; }

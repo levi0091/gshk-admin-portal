@@ -388,7 +388,7 @@ export default function PersonProfilePage() {
   }
   if (error) {
     return (
-      <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+      <div className="alert al-danger" role="alert">
         Failed to load person: {error}
       </div>
     )
@@ -653,7 +653,7 @@ export default function PersonProfilePage() {
                   <div className="card-sub">Sections could not be loaded</div>
                 </div>
               </div>
-              <div className="reveal-note" style={{ color: '#B91C1C', background: '#FEE2E2' }}>
+              <div className="reveal-note reveal-note-danger">
                 {sectionsError} — this person’s identity documents are not shown
                 below because the section list is unavailable, not because there
                 are none. Reload the page.

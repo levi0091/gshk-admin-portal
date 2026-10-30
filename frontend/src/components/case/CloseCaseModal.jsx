@@ -81,22 +81,9 @@ export default function CloseCaseModal({
         </div>
 
         <div className="modal-body">
-          {error && (
-            <div className="alert al-danger" role="alert"
-                 style={{ marginBottom: 14 }}>
-              <span className="al-icon">⚠</span>
-              <div className="al-body">
-                <b>{error.message}</b>
-                {error.hint && (
-                  <div style={{ marginTop: 4 }}>{error.hint}</div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* The consequence first, in the operator's own terms, and stated as
               what will be true afterwards rather than as a warning label. */}
-          <div className="alert al-warn" role="status"
+          <div className="alert al-danger" role="status"
                style={{ marginBottom: 16 }}>
             <span className="al-icon">⚠</span>
             <div className="al-body">
@@ -141,6 +128,21 @@ export default function CloseCaseModal({
               <span className="f-hint">
                 So the case being closed is the one you meant.
               </span>
+            </div>
+          )}
+
+          {/* Last, beside the button that caused it: above the warning it pushed
+              the form down the moment the operator pressed Close. */}
+          {error && (
+            <div className="alert al-danger" role="alert"
+                 style={{ marginTop: 14, marginBottom: 0 }}>
+              <span className="al-icon">⚠</span>
+              <div className="al-body">
+                <b>{error.message}</b>
+                {error.hint && (
+                  <div style={{ marginTop: 4 }}>{error.hint}</div>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -133,7 +133,7 @@ export default function IdentityDocumentModal({
                 ))}
               </div>
               {problem && (
-                <div className="f-hint" style={{ color: '#C53030', marginBottom: 12 }}>
+                <div className="f-error" style={{ marginBottom: 12 }}>
                   {problem}
                 </div>
               )}

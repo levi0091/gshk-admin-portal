@@ -232,6 +232,20 @@ The `frontend-design` skill is available in Claude Code and must be used when ge
 --bang-10:  #E6F1ED;   /* Success tint */
 ```
 
+### The visual standard (Levi 2026-10-30)
+
+> **Eight font sizes and no others:** 10 uppercase labels, 11 hints and badges, 12 secondary text, 13 body and buttons, 14 emphasis, 16 modal titles, 20 page titles, 26 big numbers. No half-pixels.
+>
+> **One error red, `--danger` (`#B91C1C`).** `#C53030` was also in use and fails AA on its own tint (4.48:1). Reds and carrot-as-text come from `--danger*` and `--carrot-ink`, never a hex in JSX. `--carrot` stays a fill, the same reasoning as `--peridot-ink`.
+>
+> **An alert is `.alert.al-{info,success,warn,danger}`**, and `.alert::before` draws the tone's icon, so `.al-icon` glyphs are not shown. A load failure or a refused action is `al-danger`, a modal's refusal is `.modal-error` (last in the body, beside the button that caused it), a field's is `.f-error` with `aria-invalid` on the control. `.card-note` stays the quieter note that belongs to its card. Do not hand-roll a box with inline styles.
+>
+> **Spacing under a block:** 12px under a control row (tabs, toolbars), 16px under an alert or note. **Buttons:** `btn-sm` 30, default 36, `btn-lg` 44. A control row's hint is centred on its buttons, with the buttons on the right.
+>
+> **Left at brand values on purpose:** `--t-muted` text (3.84:1 on white) and small carrot labels such as "IN PROGRESS" and the required asterisk (3.0:1) both miss AA. They are verbatim brand tokens, so changing them is Levi's call.
+>
+> **ND2's single send offers Send again, as NAR1 does:** it mails the frozen `verification_xml` under the same revision and leaves the CR filing alone; a correction goes through Restart verification.
+
 ### Profile-screen conventions (the 2026-09-04 pass)
 
 > **Detail lives in `notes/profile-screens.md`** — read it before changing the company/person profile screens, document sections, party pickers. What it holds, by headline:

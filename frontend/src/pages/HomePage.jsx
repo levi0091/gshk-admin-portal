@@ -62,7 +62,7 @@ export default function HomePage() {
                   </div>
                 </div>
               </div>
-              <div className="reveal-note" style={{ color: '#B91C1C', background: '#FEE2E2' }}>
+              <div className="reveal-note reveal-note-danger">
                 {profileError} — the menu is empty because the portal does not
                 know what you may open, not because your role is empty. Reload
                 the page; if it keeps happening the API may be down.

@@ -180,7 +180,7 @@ export default function CaseWorkflowPage() {
   }
   if (loadError) {
     return (
-      <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+      <div className="alert al-danger" role="alert">
         Failed to load this case: {loadError}
       </div>
     )
@@ -286,6 +286,15 @@ export default function CaseWorkflowPage() {
               modules, held independently, which is why the stages below refuse
               separately. */}
           <span className="perm-tag">Modules: <b>nar1</b>, <b>tpsi</b></span>
+          <button className="btn btn-outline" onClick={() => navigate('/dashboard')}>
+            Back to cases
+          </button>
+          {c.entity_id && (
+            <button className="btn btn-outline"
+                    onClick={() => navigate(`/companies/${c.entity_id}`)}>
+              Company profile
+            </button>
+          )}
           {/* In the HEADER, not inside stage 1 (v11). Restart is what you reach
               for when something is wrong at Client Verification or Signing —
               which is exactly where the button used to be unreachable, because
@@ -333,15 +342,6 @@ export default function CaseWorkflowPage() {
               button: it teaches an operator that their edits are unsaved until
               they press it, which is false, and one day they will leave a
               screen believing they had not committed something they had. */}
-          <button className="btn btn-outline" onClick={() => navigate('/dashboard')}>
-            Back to cases
-          </button>
-          {c.entity_id && (
-            <button className="btn btn-outline"
-                    onClick={() => navigate(`/companies/${c.entity_id}`)}>
-              Company profile
-            </button>
-          )}
         </div>
       </div>
 

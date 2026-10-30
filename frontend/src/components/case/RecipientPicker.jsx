@@ -195,7 +195,7 @@ export default function RecipientPicker({
         </div>
       )}
       {addError && (
-        <div className="f-hint" role="alert" style={{ color: '#C53030', marginTop: 6 }}>
+        <div className="f-error" role="alert" style={{ marginTop: 6 }}>
           {addError}
         </div>
       )}

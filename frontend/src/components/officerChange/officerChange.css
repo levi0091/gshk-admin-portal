@@ -28,15 +28,15 @@
 .oc-lane-mark {
   width: 22px; height: 22px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 15px; line-height: 1; font-weight: 700; color: #fff;
+  font-size: 14px; line-height: 1; font-weight: 700; color: #fff;
   background: var(--indigo-60);
 }
 .oc-lane-join .oc-lane-mark { background: var(--bang); }
 .oc-lane-count { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--t-muted); }
-.oc-lane-empty { font-size: 12.5px; color: var(--t-muted); padding: 6px 2px; }
+.oc-lane-empty { font-size: 12px; color: var(--t-muted); padding: 6px 2px; }
 .oc-arrow {
   display: flex; align-items: center; justify-content: center;
-  color: var(--indigo-20); font-size: 22px; user-select: none;
+  color: var(--indigo-20); font-size: 20px; user-select: none;
 }
 
 .oc-officer {
@@ -48,7 +48,7 @@
 .oc-officer-meta { font-size: 12px; color: var(--t-muted); grid-column: 1 / 2; }
 .oc-officer-acts { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 6px; align-items: start; }
 .oc-officer-warn {
-  grid-column: 1 / -1; font-size: 12px; color: #8A3B12;
+  grid-column: 1 / -1; font-size: 12px; color: var(--carrot-ink);
   background: var(--carrot-10); border-radius: var(--r-sm); padding: 6px 8px;
 }
 .oc-officer-warn a { color: inherit; font-weight: 600; }
@@ -70,7 +70,7 @@
 .oc-rule { display: flex; gap: 8px; font-size: 13px; color: var(--t-body); align-items: baseline; }
 .oc-rule-mark { width: 16px; flex: none; font-weight: 700; text-align: center; }
 .oc-rule.ok .oc-rule-mark { color: var(--bang); }
-.oc-rule.bad .oc-rule-mark { color: #B91C1C; }
+.oc-rule.bad .oc-rule-mark { color: var(--danger); }
 .oc-rule.notice .oc-rule-mark { color: var(--peridot-ink); }
 .oc-rule.bad { color: #7F1D1D; font-weight: 600; }
 
@@ -81,7 +81,7 @@
 .oc-pc-name { font-weight: 600; color: var(--t-head); font-size: 14px; }
 .oc-pc-items { width: 100%; border-collapse: collapse; font-size: 13px; }
 .oc-pc-items th {
-  text-align: left; font-size: 11.5px; font-weight: 600; color: var(--t-muted);
+  text-align: left; font-size: 11px; font-weight: 600; color: var(--t-muted);
   padding: 4px 8px 6px 0; border-bottom: 1px solid var(--border);
 }
 .oc-pc-items td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--indigo-10); vertical-align: top; }
@@ -104,18 +104,25 @@
   box-shadow: var(--sh-md); display: flex; flex-direction: column;
 }
 .oc-drawer-hd { padding: 18px 22px 12px; border-bottom: 1px solid var(--border); }
-.oc-drawer-title { font-size: 17px; font-weight: 700; color: var(--t-head); }
-.oc-drawer-sub { font-size: 12.5px; color: var(--t-muted); margin-top: 2px; }
+.oc-drawer-title { font-size: 16px; font-weight: 700; color: var(--t-head); }
+.oc-drawer-sub { font-size: 12px; color: var(--t-muted); margin-top: 2px; }
 .oc-drawer-body { padding: 16px 22px; overflow-y: auto; flex: 1; display: grid; gap: 14px; align-content: start; }
 .oc-drawer-ft {
   padding: 12px 22px; border-top: 1px solid var(--border);
   display: flex; justify-content: flex-end; gap: 8px;
 }
-.oc-seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
-.oc-seg button {
-  border: none; background: var(--bg-card); padding: 7px 14px; font: 600 13px var(--font);
-  color: var(--t-body); cursor: pointer;
+/* Inline-grid with equal tracks, and start-aligned: the drawer body is a grid,
+   which stretched an inline-flex one to 476px around 116 and 120px buttons, so
+   the second option appeared to own all the empty space (Levi 2026-10-30). */
+.oc-seg {
+  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr; justify-self: start;
+  border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden;
 }
+.oc-seg button {
+  border: none; background: var(--bg-card); padding: 7px 18px; font: 600 13px var(--font);
+  color: var(--t-body); cursor: pointer; white-space: nowrap;
+}
+.oc-seg button + button { border-left: 1px solid var(--border); }
 .oc-seg button[aria-pressed="true"] { background: var(--indigo); color: #fff; }
 .oc-results { border: 1px solid var(--border); border-radius: var(--r-sm); max-height: 220px; overflow-y: auto; }
 .oc-result {
@@ -131,11 +138,21 @@
 .oc-readonly dd { margin: 0; color: var(--t-head); overflow-wrap: anywhere; }
 
 /* -- page header extras ---------------------------------------------------------------- */
-.oc-deadline-over { color: #B91C1C; font-weight: 600; }
-.oc-send-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-top: 12px; }
-.oc-locked-note { font-size: 12.5px; color: var(--t-muted); margin-top: 8px; }
+.oc-deadline-over { color: var(--danger); font-weight: 600; }
+.oc-send-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 12px; }
+/* The button lines up with the date box beside it, not with the hint under the
+   box: 21.5px is the label's line plus its gap. */
+.oc-send-row > .btn { margin-top: 21.5px; }
+/* A question and its answers, on one line: the hint centred on the buttons, and
+   the buttons at the right as every other action bar in the portal has them. */
+.oc-answer-row {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 8px 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.oc-answer-row .f-hint { font-size: 12px; }
+.oc-answer-btns { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.oc-locked-note { font-size: 12px; color: var(--t-muted); margin-top: 8px; }
 
-.oc-page :focus-visible, .oc-drawer :focus-visible { outline: 2px solid var(--carrot); outline-offset: 2px; }
 
 /* -- the board in three lines (Jacqueline A6) ------------------------------------------- */
 .oc-board-lines {
@@ -193,7 +210,7 @@ label.oc-check-main { cursor: pointer; }
   display: inline-flex; align-items: center; justify-content: center; color: #fff;
 }
 .oc-check[data-ok="true"] .oc-check-mark { background: var(--bang); border-color: var(--bang); }
-.oc-check-sub { margin: 4px 0 0 28px; font-size: 12.5px; color: var(--t-muted); }
+.oc-check-sub { margin: 4px 0 0 28px; font-size: 12px; color: var(--t-muted); }
 .oc-check-sub b { color: var(--t-body); font-weight: 600; }
 .oc-check-file {
   margin-left: 6px; color: var(--indigo); font-weight: 600; text-decoration: underline;
@@ -210,7 +227,7 @@ label.oc-check-main { cursor: pointer; }
 
 /* Client Verification: the ND2A and its written resolution, one viewer
    (Levi 2026-10-05). The tabs sit on the viewer's top edge. */
-.oc-doc-tabs { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 14px 0 0; }
+.oc-doc-tabs { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 14px 0 12px; }
 .oc-doc-tabs .filter-tabs { margin: 0; }
 
 /* Signing: each director's consent and what CR said about it (Levi point 5). */
@@ -219,7 +236,7 @@ label.oc-check-main { cursor: pointer; }
 .oc-consent[data-consent="error"] { border-color: var(--carrot); background: var(--carrot-10); }
 .oc-consent-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .oc-consent-main .badge { margin-left: auto; }
-.oc-consent-error { margin-top: 6px; font-size: 12.5px; color: var(--t-head); overflow-wrap: anywhere; }
+.oc-consent-error { margin-top: 6px; font-size: 12px; color: var(--t-head); overflow-wrap: anywhere; }
 
 /* -- "Multiple directors must sign": one panel per signer (nd2-multi-signer) ------------------
  * Brand tokens only. Signed is --bang and a failed delivery is --carrot, the same
@@ -227,7 +244,7 @@ label.oc-check-main { cursor: pointer; }
 .oc-multi { margin-top: 12px; padding: 10px 12px; border-radius: var(--r); background: var(--indigo-5); }
 .oc-multi-opt {
   display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
-  font-size: 13.5px; font-weight: 600; color: var(--t-head);
+  font-size: 13px; font-weight: 600; color: var(--t-head);
 }
 .oc-multi-opt input { width: 16px; height: 16px; margin: 0; accent-color: var(--indigo); }
 .oc-multi-opt input:disabled { cursor: not-allowed; }
@@ -241,12 +258,12 @@ label.oc-check-main { cursor: pointer; }
 }
 .oc-signer[data-status="signed"] { border-color: #CFE3DA; background: var(--bang-10); }
 .oc-signer-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
-.oc-signer-name { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--t-head); overflow-wrap: anywhere; }
+.oc-signer-name { margin: 0; font-size: 14px; font-weight: 600; color: var(--t-head); overflow-wrap: anywhere; }
 .oc-signer-status { font-size: 13px; color: var(--t-body); }
 .oc-signer-status.is-signed { color: var(--bang); font-weight: 600; }
 .oc-signer-status.is-bad { color: var(--carrot); font-weight: 600; }
-.oc-signer-meta { margin-top: 4px; font-size: 12.5px; color: var(--t-muted); overflow-wrap: anywhere; }
-.oc-signer-meta-warn { color: #8A3B12; }
+.oc-signer-meta { margin-top: 4px; font-size: 12px; color: var(--t-muted); overflow-wrap: anywhere; }
+.oc-signer-meta-warn { color: var(--carrot-ink); }
 .oc-signer-act { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
 .oc-signers-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
@@ -254,3 +271,7 @@ label.oc-check-main { cursor: pointer; }
   border: 1px dashed var(--indigo-20); font-size: 13px; font-weight: 600; color: var(--t-head);
 }
 .oc-signers-foot.is-done { border-style: solid; border-color: #CFE3DA; background: var(--bang-10); color: var(--bang); }
+
+/* Drawer radios: one line, and the dot centred on it. */
+.oc-drawer .check-row { align-items: center; padding: 9px 12px; margin-bottom: 8px; }
+.oc-drawer .check-row > input { flex: none; }

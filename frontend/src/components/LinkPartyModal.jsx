@@ -286,7 +286,7 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
 
         <div className="modal-body">
           {error && (
-            <div style={{ marginBottom: 14, padding: 10, background: '#FEE2E2', borderRadius: 6, color: '#B91C1C', fontSize: 12 }}>
+            <div className="modal-error" role="alert">
               {error}
             </div>
           )}
