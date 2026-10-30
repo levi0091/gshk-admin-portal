@@ -614,26 +614,53 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
         raise HTTPException(409, {"message": "Nothing was sent: " + " ".join(failing),
                                   "reason": "rules_blocking"})
     entries = svc.list_entries(case_id)
-    try:
-        xml = await prepare.build_form_xml(case, entries)
-    except prepare.MappingError as exc:
-        raise _problems(exc)
-
-    filing = nar1_cases.current_filing(case_id)
-    superseded = 0
-    if filing is not None and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
-        # A re-send after CR validated (or signed) the form. That filing froze
-        # the XML CR checked; mailing a freshly built form and leaving it live
-        # would have the client approve one document while the old one is
-        # signed and filed. The re-send starts the CR steps again instead.
-        superseded = tpsi_filings.supersede_all_for_case(case_id)
-        filing = None
-    if filing is None:
-        filing = tpsi_filings.create_filing(entity_id=case["entity_id"],
-                                            form_code=case["form_code"], form_xml=xml,
-                                            user_id=user["id"], nar1_case_id=case_id)
+    # SEND AGAIN RE-SENDS THE FROZEN COPY, as on NAR1 (Levi 2026-10-30: "after i
+    # sent the email to client i cannot trigger send again"; the rule is his of
+    # 2026-10-03). A case already sent and not restarted mails `verification_xml`
+    # -- the form the client holds and this screen shows -- under the SAME
+    # revision, and leaves the CR filing alone. A correction goes out only through
+    # Restart verification, which clears the copy so the next send builds afresh.
+    resend = bool(case.get("verification_sent_at"))
+    if resend and not case.get("verification_xml"):
+        raise HTTPException(409, {
+            "message": "Nothing was sent: this form was sent before the portal kept a "
+                       "copy of what was mailed, so it cannot be sent again unchanged. "
+                       "Restart verification to send a fresh one.",
+            "reason": "no_frozen_copy"})
+    if resend and svc.dates_filled_since_send(entries):
+        # The frozen form has the date blank while the letter and the written
+        # resolution are written from the live changes, so one email would state
+        # the date in two documents and omit it from the form. Unlike NAR1, a sent
+        # ND2 can move: Jacqueline's A1 lets a deferred date be filled in later.
+        raise HTTPException(409, {
+            "message": "Nothing was sent: a date has been filled in since this form was "
+                       "sent, so the copy the client holds no longer matches. Restart "
+                       "verification to send them the form with that date.",
+            "reason": "dates_filled_since_send"})
+    if resend:
+        xml = case["verification_xml"]
+        filing, superseded = nar1_cases.current_filing(case_id), 0
     else:
-        filing = tpsi_filings.rebuild_draft(filing["id"], xml) or filing
+        try:
+            xml = await prepare.build_form_xml(case, entries)
+        except prepare.MappingError as exc:
+            raise _problems(exc)
+
+        filing = nar1_cases.current_filing(case_id)
+        superseded = 0
+        if filing is not None and filing.get("stage") not in tpsi_filings.REBUILDABLE_STAGES:
+            # A re-send after CR validated (or signed) the form. That filing froze
+            # the XML CR checked; mailing a freshly built form and leaving it live
+            # would have the client approve one document while the old one is
+            # signed and filed. The re-send starts the CR steps again instead.
+            superseded = tpsi_filings.supersede_all_for_case(case_id)
+            filing = None
+        if filing is None:
+            filing = tpsi_filings.create_filing(entity_id=case["entity_id"],
+                                                form_code=case["form_code"], form_xml=xml,
+                                                user_id=user["id"], nar1_case_id=case_id)
+        else:
+            filing = tpsi_filings.rebuild_draft(filing["id"], xml) or filing
 
     deadline_at = nar1_router._deadline_from(body.respond_by)
     addresses, failures = _addresses(body, case, entries)
@@ -653,8 +680,10 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
     # Which verification email this is (Levi 2026-10-02, migration 051): the
     # client sees "[Rev. 2]" and up from the second send, exactly as on NAR1.
     # Stored only once something has gone out (the patch below), so a send
-    # that reached nobody does not use a number up.
-    revision = nar1_approvals.next_revision(case)
+    # that reached nobody does not use a number up. A send again repeats the
+    # revision the client already holds.
+    revision = (nar1_approvals.current_revision(case) if resend
+                else nar1_approvals.next_revision(case))
     attachment = (f"{case['form_code'].upper()}-{case.get('case_no') or case_id}"
                   f"{f'-Rev{revision}' if revision >= 2 else ''}.pdf")
     # Everything that goes with the letter, gathered BEFORE any link is issued
@@ -691,7 +720,8 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
             # Confirm button dies here — and stamps this revision on the new
             # ones, the second lock (nar1_approvals.is_stale).
             targets = nar1_approvals.issue(case_id=case_id, recipients=targets,
-                                           expires_at=deadline_at, revision=revision)
+                                           expires_at=deadline_at, revision=revision,
+                                           new_revision=not resend)
         except Exception as exc:  # noqa: BLE001 — links are a convenience; the reply path remains
             print(f"[officer_changes] approval tokens not issued for {case_id}: {exc}",
                   file=sys.stderr)
@@ -734,12 +764,14 @@ async def send_verification(case_id: str, body: SendIn, request: Request,
                      client_approval_name=None)
     nar1_cases.update_case(case_id, patch)
     # Every undated change is now DEFERRED to Signing; every dated one is a
-    # date the client has seen (Jacqueline A1).
-    try:
-        svc.mark_deferred(case_id)
-    except Exception as exc:  # noqa: BLE001 — the mail is out; say so on stderr
-        print(f"[officer_changes] mark_deferred failed for {case_id}: {exc!r}",
-              file=sys.stderr)
+    # date the client has seen (Jacqueline A1). A send again shows them nothing
+    # new, so it says nothing new about what they have seen.
+    if not resend:
+        try:
+            svc.mark_deferred(case_id)
+        except Exception as exc:  # noqa: BLE001 — the mail is out; say so on stderr
+            print(f"[officer_changes] mark_deferred failed for {case_id}: {exc!r}",
+                  file=sys.stderr)
 
     def across(key):
         out = []

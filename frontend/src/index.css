@@ -1041,7 +1041,7 @@ tbody tr.clickable { cursor: pointer; }
 }
 /* THE ICON IS THE TONE'S, DRAWN HERE (Levi 2026-10-30). The markup carried text
    glyphs -- a serif "i", an emoji padlock, a warning sign that changes shape per
-   OS -- and about a third of the alerts had none at all. `.al-icon` stays in the
+   OS -- and many alerts had none at all. `.al-icon` stays in the
    markup for its text alternative, and is no longer shown. */
 .alert::before {
   content: ''; flex: none; width: 16px; height: 16px; margin-top: 2px;

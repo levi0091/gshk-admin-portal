@@ -39,6 +39,14 @@ export function isFiled(c) {
     || FILED_STAGES.has(c?.filing?.stage))
 }
 
+// A deferred date with a value: filled in after the form was mailed, so it is not
+// in the frozen copy. Mirrors `cases.dates_filled_since_send`.
+export function datesFilledSinceSend(entries) {
+  return (entries || []).some(e => (e.kind === 'change'
+    ? (e.items || []).some(i => i.deferred && i.effective_date && !i.omitted)
+    : e.date_deferred && e.effective_date))
+}
+
 export function isClosed(c) {
   return Boolean(c?.closed_at)
 }
