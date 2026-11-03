@@ -59,7 +59,7 @@ const COLUMNS = [
 
 export default function PersonsRegistryPage() {
   const navigate = useNavigate()
-  const { hasPermission } = useAuth()
+  const { hasPermission, isSuperAdmin } = useAuth()
   const caps = personsRegistryCaps(hasPermission)
   const canWrite = caps.addPerson
   // The Deleted tab (migration 049) -- see CompanyRegistryPage.
@@ -178,9 +178,12 @@ export default function PersonsRegistryPage() {
             onClick={() => { setShowDeleted(false); setRole(tab.key) }}
           >
             {tab.label}
-            <span className="filter-count">
-              {formatNumber(counts[tab.count] ?? 0)}
-            </span>
+            {/* Totals are super_admin only (Levi 2026-11-03). UI-only: the API still sends them. */}
+            {isSuperAdmin && (
+              <span className="filter-count">
+                {formatNumber(counts[tab.count] ?? 0)}
+              </span>
+            )}
           </button>
         ))}
         {caps.viewDeleted && (
@@ -273,7 +276,7 @@ export default function PersonsRegistryPage() {
           {!loading && total > 0 && (
             <div className="pager">
               <span>
-                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
+                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)}{isSuperAdmin ? ` of ${total}` : ''}
               </span>
               <div className="pager-btns">
                 <button className="btn btn-outline btn-sm" disabled={page <= 1}
