@@ -309,3 +309,41 @@ describe('PersonsRegistryPage — the Deleted tab (migration 049)', () => {
     expect(screen.queryByText('John Smith')).not.toBeInTheDocument()
   })
 })
+
+// Levi 2026-11-03: the register's totals are sensitive business numbers, so
+// only a super_admin sees them. UI only — the API still returns them.
+describe('PersonsRegistryPage totals are super_admin only', () => {
+  const asRegularUser = () => {
+    auth = {
+      hasPermission: () => true, isSuperAdmin: false, profileLoading: false,
+      profile: { id: 'u-2', display_name: 'Case Worker', role_name: 'case_worker' },
+    }
+  }
+
+  it('shows no count badge on any role tab and no "of N" for a regular user', async () => {
+    asRegularUser()
+    const { container } = renderPage()
+    await screen.findByText('John Smith')
+    expect(container.querySelectorAll('.filter-count')).toHaveLength(0)
+    expect(screen.getByText('1–2')).toBeInTheDocument()
+    expect(screen.queryByText(/ of \d/)).not.toBeInTheDocument()
+  })
+
+  it('still pages for a regular user', async () => {
+    asRegularUser()
+    api.get.mockResolvedValue({ ...PAYLOAD, total: 120 })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('John Smith')
+    expect(screen.getByText('1–50')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(screen.getByText('51–100')).toBeInTheDocument())
+  })
+
+  it('keeps badges and "of N" for a super_admin', async () => {
+    const { container } = renderPage()
+    await screen.findByText('John Smith')
+    expect(container.querySelectorAll('.filter-count').length).toBeGreaterThan(0)
+    expect(screen.getByText(/1–2 of 2/)).toBeInTheDocument()
+  })
+})

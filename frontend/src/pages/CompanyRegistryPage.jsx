@@ -88,7 +88,7 @@ const COLUMNS = [
 
 export default function CompanyRegistryPage() {
   const navigate = useNavigate()
-  const { hasPermission } = useAuth()
+  const { hasPermission, isSuperAdmin } = useAuth()
   const caps = companyRegistryCaps(hasPermission)
   const canWrite = caps.addCompany
   // The Deleted tab (migration 049). Not a flag like the others: it swaps the
@@ -215,9 +215,12 @@ export default function CompanyRegistryPage() {
             onClick={() => { setShowDeleted(false); setFlag(tab.key) }}
           >
             {tab.label}
-            <span className="filter-count">
-              {formatNumber(flagCounts[tab.count] ?? 0)}
-            </span>
+            {/* Totals are super_admin only (Levi 2026-11-03). UI-only: the API still sends them. */}
+            {isSuperAdmin && (
+              <span className="filter-count">
+                {formatNumber(flagCounts[tab.count] ?? 0)}
+              </span>
+            )}
           </button>
         ))}
         {caps.viewDeleted && (
@@ -306,7 +309,7 @@ export default function CompanyRegistryPage() {
           {!loading && total > 0 && (
             <div className="pager">
               <span>
-                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
+                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)}{isSuperAdmin ? ` of ${total}` : ''}
               </span>
               <div className="pager-btns">
                 <button className="btn btn-outline btn-sm" disabled={page <= 1}
