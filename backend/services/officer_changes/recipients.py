@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from db.supabase import get_supabase
 from services import nar1_cases
+from services.officer_changes import capacities
 
 _NO_EMAIL = "no email address is on record for this officer"
 _CORPORATE = ("a body corporate has no address on record here; add the person "
@@ -72,7 +73,7 @@ def default_recipients(case: dict, entries: list[dict]) -> list[dict]:
         out = [{**r, "role": "director"}
                for r in nar1_cases.default_recipients(case["entity_id"])]
         incoming = [e for e in entries
-                    if e.get("kind") == "appointment" and e.get("capacity") == "director"]
+                    if e.get("kind") == "appointment" and e.get("capacity") in capacities.DIRECTORS]
         out += _rows_for(incoming, "incoming director")
     seen, unique = set(), []
     for row in out:

@@ -27,7 +27,11 @@ from datetime import date
 from services.officer_changes.deadlines import _as_date, hk_today
 from services.tpsi.forms.cr_vocabularies import to_alpha2
 
-_ROLES = ("director", "company_secretary")
+#: Alternate directors are on the board (they appear on the form and in the
+#: summary) but they are NOT directors for any minimum below: `directors` is
+#: always `role == "director"`. Jacqueline, 2026-11-04 (PBI-70).
+_ROLES = ("director", "company_secretary", "alternate_director")
+_ALTERNATE = "alternate_director"
 
 
 def _key(row: dict):
@@ -58,7 +62,10 @@ def board_after(officers_now: list[dict], entries: list[dict]) -> list[dict]:
                    if e.get("kind") == "cessation"}
     board = [
         {"role": o["role"], "key": _key(o), "party_type": o.get("party_type"),
-         "name": o.get("name") or "", "new": False}
+         "name": o.get("name") or "", "new": False,
+         "officer_id": o.get("officer_id"),
+         "alternate_to_officer_id": o.get("alternate_to_officer_id"),
+         "alternate_to_name": o.get("alternate_to_name")}
         for o in officers_now
         if o.get("role") in _ROLES
         and o.get("officer_id") not in ceased_ids
@@ -68,8 +75,29 @@ def board_after(officers_now: list[dict], entries: list[dict]) -> list[dict]:
         if e.get("kind") == "appointment":
             board.append({"role": e.get("capacity"), "key": _key(e),
                           "party_type": e.get("party_type"),
-                          "name": (e.get("party") or {}).get("name") or "", "new": True})
+                          "name": (e.get("party") or {}).get("name") or "", "new": True,
+                          "officer_id": None,
+                          "alternate_to_officer_id": e.get("alternate_to_officer_id"),
+                          "alternate_to_name": e.get("alternate_to_name")})
     return board
+
+
+def orphaned_alternates(board: list[dict], entries: list[dict]) -> list[str]:
+    """One sentence per alternate who would remain while the director they act
+    for ceases on this form. An alternate has no standing without their
+    director, so the form must cease both -- or neither."""
+    ceasing = {e["officer_id"]: (e.get("party") or {}).get("name")
+               for e in entries
+               if e.get("kind") == "cessation" and e.get("capacity") == "director"
+               and e.get("officer_id")}
+    out = []
+    for b in board:
+        director = b.get("alternate_to_officer_id")
+        if b["role"] == _ALTERNATE and director in ceasing:
+            who = b.get("alternate_to_name") or ceasing[director] or "their director"
+            out.append(f"{b['name'] or 'An alternate director'} is alternate to {who}, "
+                       "who ceases on this form; cease the alternate too")
+    return out
 
 
 def _join(names: list[str]) -> str:
@@ -161,6 +189,7 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
     directors = [b for b in board if b["role"] == "director"]
     natural = [b for b in directors if b["party_type"] == "individual"]
     secretaries = [b for b in board if b["role"] == "company_secretary"]
+    alternates = [b for b in board if b["role"] == _ALTERNATE]
     private = (company.get("company_type") or "P") == "P"
     if nd2b:
         # An ND2B changes nobody's appointment, so the board cannot breach a
@@ -185,6 +214,12 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
             "The company keeps at least two directors." if len(directors) >= 2 else
             "A public company or a company limited by guarantee must have at least "
             "two directors."))
+    if alternates and not nd2b:
+        orphans = orphaned_alternates(board, entries)
+        checks.append(_check(
+            "alternate_orphaned", not orphans,
+            "Every alternate director keeps the director they act for." if not orphans
+            else "; ".join(orphans) + "."))
     if not nd2b:
         checks.append(_check(
             "has_secretary", bool(secretaries),
@@ -198,7 +233,7 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
         party = e.get("party") or {}
         name = party.get("name") or "the appointee"
         individual = e.get("party_type") == "individual"
-        if individual and e.get("capacity") == "director":
+        if individual and e.get("capacity") in ("director", _ALTERNATE):
             born = _as_date(party.get("date_of_birth"))
             on = _as_date(e.get("effective_date")) or today
             if born is None:
@@ -262,6 +297,10 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
     # Jacqueline A6: the three lines the team reads; the checks sit behind them.
     directors_line = (f"Directors: {_join([d['name'] for d in directors])}." if directors
                       else "No director would remain.")
+    alternates_line = (
+        "Alternate directors: " + _join([
+            f"{a['name']} (alternate to {a.get('alternate_to_name') or 'a director'})"
+            for a in alternates]) + "." if alternates else None)
     if not secretaries:
         secretary_line = "No company secretary would remain."
     elif any(s_["new"] for s_ in secretaries):
@@ -271,9 +310,13 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
         secretary_line = (f"A company secretary remains — "
                           f"{_join([s_['name'] for s_ in secretaries])}.")
     return {"summary": summary, "checks": checks,
-            "lines": [summary, directors_line, secretary_line],
+            "lines": [summary, directors_line,
+                      *([alternates_line] if alternates_line else []), secretary_line],
             "board": {"directors": [{"name": d["name"], "party_type": d["party_type"]}
                                     for d in directors],
+                      "alternates": [{"name": a["name"], "new": a["new"],
+                                      "alternate_to_name": a.get("alternate_to_name")}
+                                     for a in alternates],
                       "secretaries": [{"name": s_["name"], "new": s_["new"]}
                                       for s_ in secretaries]},
             "blocking": any(not c["ok"] and c["level"] == "rule" for c in checks)}

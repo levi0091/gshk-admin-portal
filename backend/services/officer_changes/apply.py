@@ -35,7 +35,8 @@ from db.supabase import get_supabase
 from services.officer_changes import particulars
 from services.officer_changes.deadlines import _as_date
 
-_CAPACITY = {"director": "director", "company_secretary": "company secretary"}
+_CAPACITY = {"director": "director", "company_secretary": "company secretary",
+             "alternate_director": "alternate director"}
 _REASON = {"R": "Resignation / Others", "D": "Deceased"}
 _OFFICER_COLS = ("is_current", "resigned_date", "resignation_reason")
 
@@ -59,6 +60,10 @@ def _day(value) -> str:
     return f"{when.day} {when:%b %Y}" if when else "date not set"
 
 
+def _article(noun: str) -> str:
+    return "an" if noun[:1] in "aeiou" else "a"
+
+
 def plan(case: dict, entries: list[dict]) -> list[dict]:
     """The `profile_changes` rows of C-4: what filing will write, and where."""
     company = {"kind": "company", "id": case.get("entity_id"),
@@ -79,7 +84,7 @@ def plan(case: dict, entries: list[dict]) -> list[dict]:
                                      f"{_day(e['date_of_death'])}, on the profile"})
         elif e.get("kind") == "appointment":
             rows.append({"entry_id": e["id"], "target": company,
-                         "text": f"Add {_name(e)} as a {capacity} from "
+                         "text": f"Add {_name(e)} as {_article(capacity)} {capacity} from "
                                  f"{_day(e.get('effective_date'))}"})
         elif e.get("kind") == "change":
             filed = [i.get("label") or i["key"] for i in e.get("items") or []
@@ -173,7 +178,7 @@ def _apply_appointment(sb, case, entry, user) -> dict:
                    ("line1", "line2", "line3", "city", "state_region", "postal_code",
                     "country")}
         correspondence_id = sb.table("addresses").insert(address).execute().data[0]["id"]
-    row = sb.table("entity_officers").insert({
+    new_officer = {
         "entity_id": case["entity_id"],
         "person_id": None if corporate else entry.get("person_id"),
         "corporate_entity_id": entry.get("corporate_entity_id") if corporate else None,
@@ -181,7 +186,12 @@ def _apply_appointment(sb, case, entry, user) -> dict:
         "corporate_name": _name(entry) if corporate else None,
         "role": entry["capacity"], "appointed_date": entry.get("effective_date"),
         "is_current": True, "correspondence_address_id": correspondence_id,
-    }).execute().data[0]
+    }
+    if entry["capacity"] == "alternate_director":
+        # The director this alternate acts for, as the form named them. Only an
+        # alternate has one, so a director's row is written exactly as before.
+        new_officer["alternate_to_officer_id"] = entry.get("alternate_to_officer_id")
+    row = sb.table("entity_officers").insert(new_officer).execute().data[0]
     record = {"officer_id": row["id"], "baseline_before": before}
     # Recorded the moment the row exists, before anything else can fail: an
     # inserted officer with no `applied` record is one Undo cannot find, and a

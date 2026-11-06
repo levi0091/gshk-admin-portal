@@ -12,7 +12,9 @@ every e-Registry account the filing needs must then be present. Anything else
 from __future__ import annotations
 
 from db.supabase import get_supabase
-from services.officer_changes import eservice, form_xml, nd2a_mapper, nd2b_mapper, source
+from services.officer_changes import (
+    capacities, eservice, form_xml, nd2a_mapper, nd2b_mapper, source,
+)
 from services.tpsi.forms import nar1_mapper
 from services.tpsi.forms.cr_vocabularies import (
     HKG, default_capacity, display_country, resolve_country,
@@ -71,7 +73,7 @@ async def consent_plan(case: dict, entries: list[dict]) -> list[dict]:
     if case.get("form_code") != "Nd2a":
         return []
     directors = [e for e in entries
-                 if e.get("kind") == "appointment" and e.get("capacity") == "director"]
+                 if e.get("kind") == "appointment" and e.get("capacity") in capacities.DIRECTORS]
     if not directors:
         return []
     signers = [e.get("consent_person_id") or e.get("person_id") for e in directors]

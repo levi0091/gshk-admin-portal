@@ -85,8 +85,19 @@ def _partial_passport(number: str) -> str:
     return nar1_mapper._partial_passport(number)
 
 
+def _consent_strike(values: dict, block: dict, cpty: str, strike: str) -> None:
+    """The consent reads "I consent to act as director / alternate director":
+    strike the word that does not apply. A director strikes "alternate
+    director"; an alternate director strikes "director", keeping the other."""
+    if cpty == "D":
+        values[block["consent_strike_alternate"]] = strike
+    elif cpty == "AD":
+        values[block["consent_strike_director"]] = strike
+
+
 def cessation_values(block: dict, bean: dict) -> dict:
     values = {**_capacity(block, _get(bean, "cpty")),
+              block["alternate_to"]: _get(bean, "altTo"),
               **kit.date_parts(block, _get(bean, "dtResign"))}
     if _get(bean, "corpEngName") or _get(bean, "corpChiName"):
         values.update({block["corp_name_en"]: _get(bean, "corpEngName"),
@@ -126,6 +137,7 @@ def natural_values(block: dict, bean: dict, strike: str) -> dict:
     corr = address(_node(bean, "indvCorrAddr"))
     values = {
         **_capacity(block, _get(bean, "cpty")),
+        block["alternate_to"]: _get(bean, "altTo"),
         block["name_zh"]: _get(bean, "indvChiName"),
         block["surname_en"]: _get(bean, "indvEngSname"),
         block["other_names_en"]: _get(bean, "indvEngOname"),
@@ -145,8 +157,7 @@ def natural_values(block: dict, bean: dict, strike: str) -> dict:
     }
     _tcsp(values, block, bean, "indv")
     _already(values, block, bean)
-    if _get(bean, "cpty") == "D":
-        values[block["consent_strike_alternate"]] = strike
+    _consent_strike(values, block, _get(bean, "cpty"), strike)
     _dash(values, block, ("name_zh", "prev_name_zh", "prev_name_en", "alias_zh",
                           "alias_en", "addr_flat", "addr_building", "hkid_partial",
                           "passport_country", "passport_partial", "alternate_to"))
@@ -168,6 +179,7 @@ def corporate_values(block: dict, bean: dict, strike: str) -> dict:
     office = address(_node(bean, "corpAddr"))
     values = {
         **_capacity(block, _get(bean, "cpty")),
+        block["alternate_to"]: _get(bean, "altTo"),
         block["name_zh"]: _get(bean, "corpChiName"),
         block["name_en"]: _get(bean, "corpEngName") or _get(bean, "selectPersonName"),
         block["addr_flat"]: office["flat"], block["addr_building"]: office["building"],
@@ -179,8 +191,8 @@ def corporate_values(block: dict, bean: dict, strike: str) -> dict:
     }
     _tcsp(values, block, bean, "corp")
     _already(values, block, bean)
-    if _get(bean, "cpty") == "D":
-        values[block["consent_strike_alternate"]] = strike
+    if _get(bean, "cpty") in ("D", "AD"):
+        _consent_strike(values, block, _get(bean, "cpty"), strike)
         values[block["consent_signer_name"]] = _get(bean, "associatedPersonName")
         values.update(_signer_strikes(block, _get(bean, "associatedCapacityDesc"), strike))
     _dash(values, block, ("name_zh", "addr_flat", "addr_building", "alternate_to"))

@@ -1419,7 +1419,8 @@ async def put_correspondence_address(person_id: str, officer_id: str, request: R
     officer = rows[0] if rows else None
     if (not officer or officer.get("person_id") != person_id
             or officer.get("is_current") is False
-            or officer.get("role") not in ("director", "company_secretary")):
+            or officer.get("role") not in ("director", "company_secretary",
+                                     "alternate_director")):
         raise HTTPException(404, "That is not a current appointment of this person")
     before = None
     if officer.get("correspondence_address_id"):

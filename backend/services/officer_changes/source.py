@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 from db.supabase import get_supabase
-from services.officer_changes import eservice
+from services.officer_changes import capacities, eservice
 from services.tpsi.forms import nar1_source
 
 
@@ -59,7 +59,7 @@ async def load_graph(entity_id: str, entries: list[dict]) -> dict:
             addresses[row["id"]] = row
 
     signers = [e.get("consent_person_id") or e.get("person_id") for e in entries
-               if e.get("kind") == "appointment" and e.get("capacity") == "director"]
+               if e.get("kind") == "appointment" and e.get("capacity") in capacities.DIRECTORS]
     graph["eservice"] = await q(lambda: eservice.metadata_for([s for s in signers if s]))
 
     # What CR holds about each officer LEAVING: the ND2B baseline for this

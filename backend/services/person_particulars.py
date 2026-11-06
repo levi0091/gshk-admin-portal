@@ -32,7 +32,7 @@ from db.supabase import get_supabase
 from services import address_service
 from services.officer_changes import particulars
 
-ROLES = ("director", "company_secretary")
+ROLES = ("director", "company_secretary", "alternate_director")
 KINDS = ("residential", "correspondence")
 _ADDRESS_KEYS = ("line1", "line2", "line3", "city", "state_region", "postal_code", "country")
 _LINK = {"residential": "residential_address_id", "correspondence": "correspondence_address_id"}
