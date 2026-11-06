@@ -1248,6 +1248,18 @@ _RECEIPT_FORMS = {
 }
 
 
+#: The declaration the receipt records as accepted, word for word from GSHK's
+#: `Approval receipt` template (Levi 2026-11-06). One text for all three forms,
+#: as the template has one. (The ND2A and ND2B VERIFICATION letters word their
+#: own declarations slightly differently; see `officer_changes.emails`.)
+RECEIPT_DECLARATION = (
+    "“I confirm that I am authorised to approve this document on behalf of the "
+    "company. I have reviewed and confirmed that the information in the document is "
+    "correct and complete to the best of my knowledge. I approve this version and "
+    "authorise Get Started HK Limited to submit it to the Companies Registry on "
+    "behalf of the company.”")
+
+
 def _hk_moment(value) -> tuple[str, str]:
     """("17 October 2026", "15:31") in Hong Kong time, or ("", "") for a value
     that cannot be read — a receipt with no date is still a receipt, and a
@@ -1307,20 +1319,28 @@ def approval_receipt_email(case: dict, entity: dict, *, form_code: str,
     names = [str(n) for n in (attachments or []) if n]
     esc = _html.escape
 
+    # GSHK's own subject (Levi 2026-11-06, `Approval receipt` template). The
+    # company is in CAPITALS in the sample only because its test company was.
     subject = with_revision(
-        f"{code} Confirmation Received - {company}" if company
-        else f"{code} Confirmation Received", revision)
+        f"Approval Receipt - Form {code} | {company}" if company
+        else f"Approval Receipt - Form {code}", revision)
 
     # The revision rides on the form line rather than a row of its own: it is
     # already in the subject, the masthead and the reference line.
     form_line = (f"Form {code}, {what}" + (f" {year}" if year else "")
                  + (f" ({rev})" if rev else ""))
     # The moment is the stamp's to state; said here as well it was said twice.
-    opening = (f"Thank you. We have recorded your confirmation of the draft "
-               f"Form {esc(code)}" + (f" for {esc(company)}" if company else "") + ".")
+    opening = ("This email acknowledges and records the approval received through "
+               "our system for the document identified below, together with "
+               "authorisation for Get Started HK Limited to submit it to the "
+               "Companies Registry on behalf of "
+               + (f"<strong>{esc(company)}</strong>" if company else "the company")
+               + ".")
 
     para = (f'font-family:{_FONT};font-size:15px;line-height:1.65;'
             f'color:{_T_BODY}')
+    heading = (f'font-family:{_FONT};font-size:15px;font-weight:600;'
+               f'color:{_T_HEAD};line-height:1.4')
     label = f"font-family:{_FONT};font-size:13px;color:{_T_MUTED}"
     value = (f"font-family:{_FONT};font-size:15px;font-weight:600;"
              f"color:{_T_HEAD};line-height:1.4")
@@ -1392,7 +1412,7 @@ def approval_receipt_email(case: dict, entity: dict, *, form_code: str,
         f'padding-top:16px">{esc(" · ".join(reference_bits))}</div>'
         if reference_bits else "")
 
-    eyebrow = f"Form {esc(code)} &middot; Confirmation received"
+    eyebrow = f"Form {esc(code)} &middot; Approval receipt"
     body = (
         f'<table role="presentation" width="100%" cellpadding="0" '
         f'cellspacing="0" border="0" bgcolor="{_GROUND}" '
@@ -1415,14 +1435,28 @@ def approval_receipt_email(case: dict, entity: dict, *, form_code: str,
 
         f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
         f'<div style="{para};padding-bottom:16px">Dear Client,</div>'
-        f'<div style="{para}">{opening}</div>'
+        f'<div style="{heading}">Approval and Submission Authorisation Receipt</div>'
+        f'<div style="{para};padding-top:10px">{opening}</div>'
         f"{stamp}"
-        f'<div style="{para};padding-top:22px">{copies}</div>'
+        f'<div style="{heading};padding-top:26px">Instruction recorded</div>'
+        f'<div style="{para};padding-top:10px">At the time of approval, the following '
+        f"declaration was accepted:</div>"
+        # A table, not padding on a div: Outlook's Word engine drops the latter.
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'border="0" style="margin:10px 0 0"><tr><td width="28" style="width:28px">'
+        f'&nbsp;</td><td style="{para}">{esc(RECEIPT_DECLARATION)}</td></tr></table>'
+        f'<div style="{heading};padding-top:26px">Approved document</div>'
+        f'<div style="{para};padding-top:6px">{copies}</div>'
         f"{attached}"
-        f'<div style="{para};padding-top:18px">We will now arrange for the form to be '
-        f"filed with the Companies Registry. There is nothing more you need to do.</div>"
-        f'<div style="{para};padding-top:14px">If you did not confirm this form, or '
-        f"something in it is wrong, email {mailbox} straight away.</div>"
+        f'<div style="{heading};padding-top:26px">What happens next?</div>'
+        f'<div style="{para};padding-top:10px">We will proceed with submission based on '
+        f"this approval. This receipt records your approval and authorisation only; "
+        f"There is nothing more you need to do.</div>"
+        f'<div style="{heading};padding-top:26px">If you do not recognise this approval '
+        f"or identify an error</div>"
+        f'<div style="{para};padding-top:10px">Please contact {mailbox} immediately. If '
+        f"submission has already taken place, changes may require a separate "
+        f"correction or further filing.</div>"
         f'<div style="{para};padding-top:26px">Kind regards,</div>'
         f'<div style="font-family:{_FONT};font-size:15px;font-weight:600;'
         f'color:{_T_HEAD};padding-top:4px">Get Started HK Limited</div>'

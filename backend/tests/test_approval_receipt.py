@@ -249,7 +249,7 @@ async def test_it_goes_to_the_director_who_pressed_copied_to_renewals():
     assert kwargs["cc"] == [email_service.CLIENT_CC]
     assert kwargs["reply_to"] == email_service.CLIENT_CC
     assert kwargs["attachments"] == [("NAR1-x.pdf", b"%PDF")]
-    assert kwargs["subject"] == "[Rev. 2] NAR1 Confirmation Received - Kanenas Holding Limited"
+    assert kwargs["subject"] == "[Rev. 2] Approval Receipt - Form NAR1 | Kanenas Holding Limited"
     assert "NAR1-x.pdf" in kwargs["html"]
 
 
