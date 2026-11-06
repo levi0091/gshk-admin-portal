@@ -30,9 +30,9 @@ def _text(html: str) -> str:
 
 
 @pytest.mark.parametrize("form_code, expected", [
-    ("Nar1", "NAR1 Confirmation Received - Kanenas Holding Limited"),
-    ("Nd2a", "ND2A Confirmation Received - Kanenas Holding Limited"),
-    ("Nd2b", "ND2B Confirmation Received - Kanenas Holding Limited"),
+    ("Nar1", "Approval Receipt - Form NAR1 | Kanenas Holding Limited"),
+    ("Nd2a", "Approval Receipt - Form ND2A | Kanenas Holding Limited"),
+    ("Nd2b", "Approval Receipt - Form ND2B | Kanenas Holding Limited"),
 ])
 def test_the_subject_names_the_form_and_the_company(form_code, expected):
     subject, _ = _receipt(form_code=form_code)
@@ -41,7 +41,7 @@ def test_the_subject_names_the_form_and_the_company(form_code, expected):
 
 def test_a_revised_draft_says_which_revision_was_confirmed():
     subject, html = _receipt(revision=2)
-    assert subject == "[Rev. 2] NAR1 Confirmation Received - Kanenas Holding Limited"
+    assert subject == "[Rev. 2] Approval Receipt - Form NAR1 | Kanenas Holding Limited"
     assert "Form NAR1, Annual Return 2026 (Rev. 2)" in _text(html)
 
 
@@ -90,10 +90,67 @@ def test_an_annual_return_names_its_year():
 
 def test_it_tells_the_reader_what_to_do_if_it_was_not_them():
     text = _text(_receipt()[1])
-    assert "If you did not confirm this form" in text
-    assert "renewal@getstarted.hk" in text
-    assert "nothing more you need to do" in text.lower() or \
-        "do not need to do anything" in text.lower()
+    assert ("If you do not recognise this approval or identify an error Please contact "
+            "renewal@getstarted.hk immediately. If submission has already taken place, "
+            "changes may require a separate correction or further filing.") in text
+
+
+# --- GSHK's `Approval receipt` template, verbatim (Levi 2026-11-06) ----------
+
+def test_the_body_follows_the_template_in_order():
+    # `_text` puts a space where a tag was, so "<strong>X</strong>." reads "X .".
+    text = re.sub(r"\s+([.,;])", r"\1", _text(_receipt()[1]))
+    in_order = [
+        "Dear Client,",
+        "Approval and Submission Authorisation Receipt",
+        "This email acknowledges and records the approval received through our system "
+        "for the document identified below, together with authorisation for Get Started "
+        "HK Limited to submit it to the Companies Registry on behalf of "
+        "Kanenas Holding Limited.",
+        "Confirmation recorded",
+        "Instruction recorded",
+        "At the time of approval, the following declaration was accepted:",
+        "Approved document",
+        "What happens next?",
+        "If you do not recognise this approval or identify an error",
+        "Kind regards, Get Started HK Limited",
+    ]
+    at = -1
+    for piece in in_order:
+        found = text.find(piece, at + 1)
+        assert found > at, f"{piece!r} missing or out of order"
+        at = found
+
+
+def test_the_declaration_is_the_templates_own_words():
+    text = _text(_receipt()[1])
+    assert ("“I confirm that I am authorised to approve this document on behalf of "
+            "the company. I have reviewed and confirmed that the information in the "
+            "document is correct and complete to the best of my knowledge. I approve "
+            "this version and authorise Get Started HK Limited to submit it to the "
+            "Companies Registry on behalf of the company.”") in text
+
+
+def test_what_happens_next_is_the_templates_own_sentence():
+    assert ("We will proceed with submission based on this approval. This receipt "
+            "records your approval and authorisation only; There is nothing more you "
+            "need to do.") in _text(_receipt()[1])
+
+
+def test_the_company_is_bold_in_the_acknowledgement():
+    assert "<strong>Kanenas Holding Limited</strong>" in _receipt()[1]
+
+
+def test_the_stamp_date_has_a_two_digit_day():
+    text = _text(_receipt(confirmed_at="2026-11-01T15:24:00+00:00")[1])
+    assert "01 November 2026" in text and "23:24 Hong Kong time" in text
+
+
+def test_the_old_wording_is_gone():
+    text = _text(_receipt()[1])
+    assert "Thank you. We have recorded your confirmation" not in text
+    assert "If you did not confirm this form" not in text
+    assert "straight away" not in text
 
 
 def test_it_carries_the_gshk_footer_and_the_company_signs_it():

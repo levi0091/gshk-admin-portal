@@ -1,22 +1,31 @@
 """The client-verification email for an officer change (ND2A / ND2B).
 
-A DRAFT in the NAR1 letter's structure (spec B-14, PRD Q14 still open): the
-same masthead, the same "Dear Client" / "Kind regards, Get Started HK Limited",
-the same unmonitored-reply notice and `renewal@getstarted.hk` for changes, the
-same bulletproof Confirm button. It reuses `email_service`'s tokens and helpers
-rather than copying them, so the two letters cannot drift apart in look or in
-the rules about where a client writes.
+GSHK's own templates, VERBATIM (Levi 2026-11-06: `ND2A Notification` and
+`ND2B Notification`). This replaces the earlier draft in the NAR1 letter's
+structure, whose body listed the changes, carried a protected-information
+paragraph, a respond-by date and, for an ND2B, "we will proceed with filing".
+The template has a place for none of those, and the wording is GSHK's to set:
+"Dear Client," / "Your Form ND2A is now available." / what to check / the
+approval declaration the Confirm button makes / what happens after / where an
+error goes / "Kind regards, Get Started HK Limited" / the button.
 
-What it deliberately does NOT carry:
-  * any full identity number or any home address IN THE BODY — the summary
-    says an address or an ID "changed". The ATTACHED draft is CR's full form,
-    PI sheets included (Jacqueline A8/B2: "the PI page must also be sent to the
-    client for checking"), and the letter says so;
-  * the NAR1 line "... deemed confirmed". Nothing is approved on silence; an
-    ND2B says GSHK will proceed with the filing by the date (Jacqueline BQ1:
-    "we usually submit the ND2B even if the client has not confirmed"), and an
-    ND2A is never filed without a confirmation;
-  * NAR1's HK$1,000 amendment fee, which is a NAR1 rule.
+What carries over from the NAR1 letter, because the templates do not contradict
+it and other features depend on it: the masthead, the GSHK footer, the revision
+notice and `[Rev. N]` subject (`email_service.revision_notice` / `with_revision`,
+so the three forms word a resend identically), the list of attached files, the
+note on an incoming director's e-Registry consent, and the no-approval-link
+fallback.
+
+THE FALLBACK. With no approval link there is no button, so "click the Confirm
+button" and the declaration made by clicking it would describe something that is
+not there. That path asks for a reply through `email_service._confirm_instruction`
+(the same sentence the NAR1 letter uses), drops the declaration and the promise
+of a receipt (a receipt is only sent when a link is pressed), and withholds the
+"replies are not monitored" line, which would contradict the request.
+
+What it deliberately does NOT carry: any identity number or home address in the
+body (the ATTACHED draft is CR's full form, PI sheets included), and any claim
+that silence is consent. Nothing is approved on silence.
 
 Outlook renders mail through Word: tables and inline styles only, every
 interpolated value escaped.
@@ -24,7 +33,6 @@ interpolated value escaped.
 from __future__ import annotations
 
 import html as _html
-from datetime import date
 
 from services import email_service as es
 from services.officer_changes.deadlines import _as_date
@@ -35,7 +43,8 @@ _FORM = {
     "Nd2b": ("ND2B", "Change of particulars of company officers",
              "ND2B Review & Confirmation"),
 }
-_CAPACITY = {"director": "Director", "company_secretary": "Company Secretary"}
+_CAPACITY = {"director": "Director", "company_secretary": "Company Secretary",
+             "alternate_director": "Alternate Director"}
 #: How each ND2B item reads in a letter that may be forwarded: names are shown,
 #: an email address is shown (it is a contact, not an identifier), and nothing
 #: that would let a stranger find a home or impersonate an identity document.
@@ -112,13 +121,6 @@ def _button(approval_url: str | None, label: str, *, colour: str | None = None) 
     )
 
 
-#: The PI paragraph (Jacqueline A8/B2): the draft now carries the PI sheets.
-PI_NOTICE = ("The attached draft includes the protected-information sheet(s) — full "
-             "identity numbers and residential addresses — for you to check. They are "
-             "filed with the Companies Registry but are not open to public inspection; "
-             "please keep this email private.")
-
-
 def _consent_paragraph(consent: dict | None) -> str:
     """For the incoming director's own letter (Jacqueline A5)."""
     mode = (consent or {}).get("mode")
@@ -138,11 +140,101 @@ def _attachments_line(names) -> str:
             f"</span> {' &middot; '.join(_html.escape(n) for n in names)}</div>")
 
 
+#: What each form's letter says, word for word from GSHK's templates. The two
+#: differ in small places that are GSHK's to settle, not ours: ND2B's
+#: declaration reads "the information in document" (no "the"), its first
+#: sentence says "If the information" where ND2A says "If all information", and
+#: the two error paragraphs open "When you identify" / "If you identify" and
+#: close "If the form" / "When the form". Each is copied exactly rather than
+#: normalised, so a re-read against the PDF finds no drift.
+#:
+#: `bullets` is `(line, sub-lines)`: ND2B's Page 2 bullet carries three
+#: indented "(if applicable)" lines beneath it.
+_WORDING = {
+    "Nd2a": {
+        "bullets": [("Director’s name", []), ("Director's Details", [])],
+        "approve_lead": "If all information is correct, please ",
+        "declaration": (
+            "“I confirm that I am authorised to approve this document on behalf of "
+            "the company. I have reviewed the document and confirm that the information "
+            "in it is correct and complete to the best of my knowledge. I approve this "
+            "version and authorise Get Started HK Limited to submit it to the Companies "
+            "Registry on behalf of the company.”"),
+        "error_lead": "When you identify any error, do not approve the document. Contact ",
+        "error_tail": "If the form has already been submitted, changes may also require "
+                      "a separate correction or further filing.",
+    },
+    "Nd2b": {
+        "bullets": [
+            ("Page 2:", ["Correspondence Address (if applicable)",
+                         "Partial Number of Hong Kong Identity Card (if applicable)",
+                         "Partial Number of Passport (if applicable)"]),
+            ("PI-ND2B: Director’s Residential Address and/or Passport Details", []),
+        ],
+        "approve_lead": "If the information is correct, please ",
+        "declaration": (
+            "“I confirm that I am authorised to approve this document on behalf of "
+            "the company. I have reviewed and confirmed that the information in document "
+            "is correct and complete to the best of my knowledge. I approve this version "
+            "and authorise Get Started HK Limited to submit it to the Companies Registry "
+            "on behalf of the company.”"),
+        "error_lead": "If you identify any error, do not approve the document. Contact ",
+        "error_tail": "When the form has already been submitted, changes may also require "
+                      "a separate correction or further filing.",
+    },
+}
+
+
+def _heading(text: str) -> str:
+    return (f'<div style="font-family:{es._FONT};font-size:15px;font-weight:600;'
+            f'color:{es._T_HEAD};padding-top:26px">{_html.escape(text)}</div>')
+
+
+def _bullets(items) -> str:
+    """The "particular attention" list, as table rows Outlook can be trusted with.
+
+    A bullet's sub-lines sit in the same cell under it, unmarked, as the ND2B
+    template sets Page 2's three "(if applicable)" lines.
+    """
+    rows = []
+    for line, subs in items:
+        text = _html.escape(line) + "".join(
+            f"<br>{_html.escape(sub)}" for sub in subs)
+        rows.append(
+            f'<tr><td width="22" valign="top" style="width:22px;padding:4px 0 0;'
+            f'font-family:{es._FONT};font-size:15px;line-height:1.6;'
+            f'color:{es._T_BODY}">&bull;</td>'
+            f'<td style="padding:4px 0;font-family:{es._FONT};font-size:15px;'
+            f'line-height:1.6;color:{es._T_BODY}">{text}</td></tr>')
+    return ('<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:6px 0 0 18px">{"".join(rows)}</table>')
+
+
+def _quote(text: str) -> str:
+    """The declaration, indented as the template sets it."""
+    return ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            'border="0" style="margin:12px 0 0"><tr><td width="28" '
+            'style="width:28px">&nbsp;</td>'
+            f'<td style="font-family:{es._FONT};font-size:15px;line-height:1.65;'
+            f'color:{es._T_BODY}">{_html.escape(text)}</td></tr></table>')
+
+
+def _mailbox() -> str:
+    mailbox = _html.escape(es.RENEWAL_MAILBOX)
+    return (f'<a href="mailto:{mailbox}" style="color:{es._INDIGO};font-weight:600;'
+            f'text-decoration:underline">{mailbox}</a>')
+
+
 def officer_change_email(case: dict, entity: dict, entries: list[dict], *,
-                         approval_url: str | None, respond_by,
+                         approval_url: str | None, respond_by=None,
                          revision=None, attachments=(),
                          consent: dict | None = None) -> tuple[str, str]:
     """`(subject, html)`.
+
+    `entries` and `respond_by` are accepted and no longer printed: the template
+    names what to check by form rather than listing each change, and has no
+    deadline sentence. They stay in the signature so the callers, which still
+    hold both, need no change.
 
     `attachments` names every file attached, listed under "Attached:".
     `consent` is set only on an incoming director's own letter, and only when
@@ -158,34 +250,35 @@ def officer_change_email(case: dict, entity: dict, entries: list[dict], *,
     the three forms cannot word it differently. The first is unchanged.
     """
     code, title, subject_title = _FORM.get(case.get("form_code"), _FORM["Nd2a"])
+    wording = _WORDING["Nd2b" if code == "ND2B" else "Nd2a"]
     company = (entity.get("company_name") or "").strip()
     rev = es.revision_label(revision)
     subject = es.with_revision(
         f"[Action Required] {subject_title} - {company}" if company
         else f"[Action Required] {subject_title}",
         revision)
-    when = _as_date(respond_by) if not isinstance(respond_by, date) else respond_by
-
-    bullets = "".join(
-        f'<tr><td width="14" valign="top" style="width:14px;padding:4px 0 0;'
-        f'font-family:{es._FONT};font-size:15px;line-height:1.6;'
-        f'color:{es._T_MUTED}">&bull;</td>'
-        f'<td style="padding:4px 0;font-family:{es._FONT};font-size:15px;'
-        f'line-height:1.6;color:{es._T_BODY}">{_html.escape(line)}</td></tr>'
-        for line in changes_summary(entries)
-    )
-    by_when = (f"Please let us know by <strong>{when:%d %B %Y}</strong>. "
-               if when else "Please let us know as soon as possible. ")
-    # Jacqueline BQ1: an ND2B is usually filed even unconfirmed, so its letter
-    # says so; an ND2A is never filed without the client's confirmation.
-    proceed = (f"If we do not hear from you by <strong>{when:%d %B %Y}</strong>, we will "
-               "proceed with filing so that the Companies Registry receives this notice "
-               "within the 15-day period." if when and case.get("form_code") == "Nd2b"
-               else "")
     reference = " · ".join(b for b in (
         entity.get("br_number") and f"BR {entity['br_number']}",
         case.get("case_no") and f"Ref {case['case_no']}",
         rev) if b)
+
+    if approval_url:
+        # The template's paragraph, with the Confirm button named by its label.
+        approval = (
+            _para(f"{_html.escape(wording['approve_lead'])}<strong>click the "
+                  f"“Confirm {code}” button</strong>. By clicking this, you make "
+                  "the following declaration:", top=10)
+            + _quote(wording["declaration"])
+            + _para("We can proceed with submission only after receiving your approval. "
+                    "Our system will record your approval and send you a Submission "
+                    "Authorisation Receipt.", top=18))
+    else:
+        # No button: nothing to click, no declaration to make by clicking, and no
+        # receipt (it is sent when a link is pressed). See the module docstring.
+        approval = (
+            _para(es._confirm_instruction(None), top=10)
+            + _para("We can proceed with submission only after receiving your approval.",
+                    top=14))
 
     body = (
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
@@ -206,23 +299,17 @@ def officer_change_email(case: dict, entity: dict, entries: list[dict], *,
         # Empty on the first email; on a revision, the first thing read.
         + es.revision_notice(revision)
         + _para("Dear Client,", top=0)
-        + _para(f"A draft Form {code} for {_html.escape(company) or 'your company'} "
-                "is ready for your review. It reports the following changes to "
-                "the company's officers:")
-        + f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
-          f'style="margin:10px 0 0">{bullets}</table>'
-        + _para("Please review the attached draft carefully. " + PI_NOTICE, top=20)
-        + _para(es._confirm_instruction(approval_url), top=14)
+        + _para(f"Your Form {code} is now available.")
+        + _para("Please review the attached Form carefully, with particular attention:")
+        + _bullets(wording["bullets"])
         + _consent_paragraph(consent)
-        + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-          f'border="0" style="margin:20px 0 0"><tr><td width="3" '
-          f'bgcolor="{es._CARROT}" style="width:3px;background:{es._CARROT};'
-          f'border-radius:2px">&nbsp;</td><td style="padding:2px 0 2px 18px">'
-        + _para(f"{by_when}The Companies Registry must receive this form within "
-                "15 days of the change.", top=0)
-        + (_para(proceed, top=12) if proceed else "")
-        + _para(es._change_instruction(approval_url), top=12)
-        + "</td></tr></table>"
+        + _heading("Approval and authorisation")
+        + approval
+        + _heading("Errors or changes")
+        + _para(f"{_html.escape(wording['error_lead'])}{_mailbox()} immediately. Any "
+                f"changes you request after approval will be subject to a "
+                f"{_html.escape(es.AMENDMENT_FEE)} service fee. "
+                f"{_html.escape(wording['error_tail'])}", top=10)
         + es._unmonitored_notice(approval_url)
         + _para("Kind regards,", top=26)
         + f'<div style="font-family:{es._FONT};font-size:15px;font-weight:600;'

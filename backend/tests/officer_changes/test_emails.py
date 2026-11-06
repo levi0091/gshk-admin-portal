@@ -1,4 +1,6 @@
 """The officer-change client email (spec B-14): what it says, and what it never says."""
+import html as htmllib
+import re
 from datetime import date
 
 from services import email_service
@@ -65,7 +67,6 @@ def test_letter_has_the_nar1_shape_and_a_confirm_button():
     assert "Get Started HK Limited" in body
     assert email_service.RENEWAL_MAILBOX in body
     assert "Confirm ND2A" in body
-    assert "10 October 2026" in body
     assert "Replies to this email are not monitored" in body
     assert "Kanenas Holding Limited &lt;b&gt;" in body and "<b>" not in body.split("Kanenas")[1][:5]
     assert "https://x.test/a?t=1&amp;u=2" in body
@@ -76,7 +77,7 @@ def test_letter_never_claims_silence_is_consent():
                                           approval_url="https://x.test/a",
                                           respond_by=date(2026, 10, 10))
     assert "deemed confirmed" not in body
-    assert "HK$1,000" not in body
+    assert "we will proceed with filing" not in body
 
 
 def test_without_a_link_it_asks_for_a_reply_and_drops_the_unmonitored_line():
@@ -85,7 +86,12 @@ def test_without_a_link_it_asks_for_a_reply_and_drops_the_unmonitored_line():
     assert "reply to this email" in body
     assert "not monitored" not in body
     assert "Confirm ND2A" not in body
-    assert "as soon as possible" in body
+    # No button, so no declaration made by pressing it and no receipt to promise.
+    assert "make the following declaration" not in body
+    assert "Submission Authorisation Receipt" not in body
+    # What the template still says either way.
+    assert "We can proceed with submission only after receiving your approval." in body
+    assert "renewal@getstarted.hk" in body
 
 
 def test_nd2b_letter_is_titled_for_nd2b_and_carries_no_identity_number():
@@ -151,11 +157,16 @@ def test_undated_change_reads_to_be_confirmed():
         "confirmed when we file this notice.")
 
 
-def test_pi_paragraph_replaces_the_old_privacy_line():
-    body = _body()
-    assert "protected-information sheet" in body
-    assert "please keep this email private" in body
-    assert "not shown in this email or in the draft" not in body
+def test_the_old_draft_paragraphs_are_gone():
+    """GSHK's template has no place for the PI paragraph, the change list, the
+    respond-by date or the "15 days" sentence (Levi 2026-11-06)."""
+    for body in (_body(), _body(_nd2b_entries(), case={**CASE, "form_code": "Nd2b"})):
+        text = _text(body)
+        assert "protected-information" not in text
+        assert "please keep this email private" not in text
+        assert "ceases to act as" not in text and "is appointed" not in text
+        assert "10 October 2026" not in text
+        assert "15 days" not in text and "Please let us know" not in text
 
 
 def test_attachments_are_listed():
@@ -184,12 +195,129 @@ def test_no_consent_paragraph_for_other_recipients():
     assert "Sign consent to act" not in body and "No signature is needed from you" not in body
 
 
-def test_nd2b_says_we_will_proceed():
-    body = _body(_nd2b_entries(), case={**CASE, "form_code": "Nd2b"})
-    assert ("If we do not hear from you by <strong>10 October 2026</strong>, we will "
-            "proceed with filing so that the Companies Registry receives this notice "
-            "within the 15-day period.") in body
-
-
-def test_nd2a_never_says_we_will_proceed():
+def test_no_letter_says_we_will_proceed_without_approval():
     assert "we will proceed with filing" not in _body()
+    assert "we will proceed with filing" not in _body(
+        _nd2b_entries(), case={**CASE, "form_code": "Nd2b"})
+
+
+# -- GSHK's ND2A / ND2B templates, verbatim (Levi 2026-11-06) ------------------
+
+def _text(html: str) -> str:
+    """Visible text, with a tag boundary read as a space and no space before
+    punctuation, so a sentence split by <strong> still reads as one."""
+    flat = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
+    return htmllib.unescape(re.sub(r"\s+([.,;])", r"\1", flat))
+
+
+def _in_order(text: str, pieces: list[str]):
+    at = -1
+    for piece in pieces:
+        found = text.find(piece, at + 1)
+        assert found > at, f"{piece!r} missing or out of order"
+        at = found
+
+
+ND2A_DECLARATION = (
+    "\u201cI confirm that I am authorised to approve this document on behalf of the "
+    "company. I have reviewed the document and confirm that the information in it is "
+    "correct and complete to the best of my knowledge. I approve this version and "
+    "authorise Get Started HK Limited to submit it to the Companies Registry on behalf "
+    "of the company.\u201d")
+ND2B_DECLARATION = (
+    "\u201cI confirm that I am authorised to approve this document on behalf of the "
+    "company. I have reviewed and confirmed that the information in document is correct "
+    "and complete to the best of my knowledge. I approve this version and authorise Get "
+    "Started HK Limited to submit it to the Companies Registry on behalf of the "
+    "company.\u201d")
+RECEIPT_SENTENCE = ("We can proceed with submission only after receiving your approval. "
+                    "Our system will record your approval and send you a Submission "
+                    "Authorisation Receipt.")
+
+
+def test_the_nd2a_letter_is_the_templates_text_in_the_templates_order():
+    text = _text(_body())
+    _in_order(text, [
+        "Dear Client,",
+        "Your Form ND2A is now available.",
+        "Please review the attached Form carefully, with particular attention:",
+        "\u2022 Director\u2019s name",
+        "\u2022 Director's Details",
+        "Approval and authorisation",
+        "If all information is correct, please click the \u201cConfirm ND2A\u201d button. "
+        "By clicking this, you make the following declaration:",
+        ND2A_DECLARATION,
+        RECEIPT_SENTENCE,
+        "Errors or changes",
+        "When you identify any error, do not approve the document. Contact "
+        "renewal@getstarted.hk immediately. Any changes you request after approval will "
+        "be subject to a HK$1,000 service fee. If the form has already been submitted, "
+        "changes may also require a separate correction or further filing.",
+        "This is an automatically generated email. Replies to this email are not "
+        "monitored.",
+        "Kind regards, Get Started HK Limited",
+        "Confirm ND2A",
+    ])
+
+
+def test_the_nd2b_letter_is_the_templates_text_in_the_templates_order():
+    text = _text(_body(_nd2b_entries(), case={**CASE, "form_code": "Nd2b"}))
+    _in_order(text, [
+        "Dear Client,",
+        "Your Form ND2B is now available.",
+        "Please review the attached Form carefully, with particular attention:",
+        "\u2022 Page 2:",
+        "Correspondence Address (if applicable)",
+        "Partial Number of Hong Kong Identity Card (if applicable)",
+        "Partial Number of Passport (if applicable)",
+        "\u2022 PI-ND2B: Director\u2019s Residential Address and/or Passport Details",
+        "Approval and authorisation",
+        "If the information is correct, please click the \u201cConfirm ND2B\u201d button. "
+        "By clicking this, you make the following declaration:",
+        ND2B_DECLARATION,
+        RECEIPT_SENTENCE,
+        "Errors or changes",
+        "If you identify any error, do not approve the document. Contact "
+        "renewal@getstarted.hk immediately. Any changes you request after approval will "
+        "be subject to a HK$1,000 service fee. When the form has already been submitted, "
+        "changes may also require a separate correction or further filing.",
+        "This is an automatically generated email. Replies to this email are not "
+        "monitored.",
+        "Kind regards, Get Started HK Limited",
+        "Confirm ND2B",
+    ])
+
+
+def test_the_two_letters_differ_where_the_templates_do():
+    a = _text(_body())
+    b = _text(_body(_nd2b_entries(), case={**CASE, "form_code": "Nd2b"}))
+    assert ND2A_DECLARATION in a and ND2B_DECLARATION not in a
+    assert ND2B_DECLARATION in b and ND2A_DECLARATION not in b
+    assert "Director's Details" in a and "Correspondence Address" not in a
+    assert "Correspondence Address" in b and "Director's Details" not in b
+    assert "When you identify any error" in a and "If you identify any error" in b
+
+
+def test_the_subject_is_still_the_templates():
+    assert emails.officer_change_email(
+        CASE, ENTITY, _entries(), approval_url=None, respond_by=None)[0] == (
+        "[Action Required] ND2A Review & Confirmation - Kanenas Holding Limited <b>")
+
+
+def test_renewals_is_a_mailto_link_in_the_errors_paragraph():
+    assert 'href="mailto:renewal@getstarted.hk"' in _body()
+
+
+def test_a_revised_nd2b_keeps_the_template_text_under_the_notice():
+    _, body = _letter(case={**CASE, "form_code": "Nd2b"}, entries=_nd2b_entries(),
+                      revision=2)
+    assert email_service.revision_notice(2) in body
+    assert ND2B_DECLARATION in _text(body)
+    assert body.index("Revised draft") < body.index("Dear Client")
+
+
+def test_an_alternate_director_is_labelled_as_one():
+    entries = [{"kind": "appointment", "capacity": "alternate_director",
+                "effective_date": "2026-09-29", "party": {"name": "LEE Ka Ho"}}]
+    assert emails.changes_summary(entries) == [
+        "LEE Ka Ho is appointed Alternate Director on 29 September 2026."]
