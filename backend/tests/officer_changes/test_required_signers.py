@@ -81,13 +81,15 @@ def test_an_incoming_director_and_a_continuing_director_are_two_signers(db):
     _assert_parity(_case())
 
 
-def test_incoming_one_stays_one_leaves_gives_the_consent_and_the_resolution_line(db):
+def test_incoming_one_stays_one_leaves_everyone_gets_a_resolution_line(db):
+    """Levi 2026-11-06: the resolution lists every director in office BEFORE the
+    changes, the one leaving included, plus the one appointed."""
     _entry(db, "appointment", capacity="director", person_id="P3",
            party_type="individual")
     _entry(db, "cessation", officer_id="O2", person_id="P2", party_type="individual")
     signers = _by_person(_case())
-    assert set(signers) == {"P1", "P3"}
-    assert "P2" not in signers
+    assert set(signers) == {"P1", "P2", "P3"}
+    assert signers["P2"]["roles"] == ["resolution"], "leaving: no consent, only the line"
     _assert_parity(_case())
 
 
@@ -125,10 +127,10 @@ def test_an_incoming_secretary_is_not_a_signer(db):
     _assert_parity(_case())
 
 
-def test_a_director_who_leaves_and_a_former_director_are_not_signers(db):
+def test_a_director_who_leaves_still_signs_but_a_former_director_does_not(db):
     _entry(db, "cessation", officer_id="O2", person_id="P2", party_type="individual")
     ids = set(_by_person(_case()))
-    assert "P2" not in ids and "P9" not in ids
+    assert "P2" in ids and "P9" not in ids
 
 
 def test_when_every_director_leaves_the_directors_before_sign(db):
