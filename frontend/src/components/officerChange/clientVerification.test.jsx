@@ -180,6 +180,16 @@ describe('Consent line on the change list (A5, Levi 2026-10-05)', () => {
     expect(screen.getByText(/Consent: manual route — given on the CR portal/)).toBeInTheDocument()
     expect(screen.queryByText(/G-FlowDesk from their email/)).not.toBeInTheDocument()
   })
+
+  it('gives an alternate director the same consent line as a director (PBI-70)', () => {
+    const entries = [
+      { id: 'n1', kind: 'appointment', capacity: 'alternate_director', party: { name: 'WONG Alt' },
+        summary: 'Alternate Director (alternate to CHAN Tai Man)', consent_mode: 'esign' },
+    ]
+    wrap(<ChangesCard data={{ ...BASE, entries }} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText('Alternate Director (alternate to CHAN Tai Man)')).toBeInTheDocument()
+    expect(screen.getByText(/Consent: e-Sign — PIN-signed from the e-Registry account on file/)).toBeInTheDocument()
+  })
 })
 
 describe('ND2B card (B1, B3)', () => {

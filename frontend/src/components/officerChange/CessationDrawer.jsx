@@ -2,8 +2,7 @@ import { useState } from 'react'
 import Drawer from './Drawer.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
-
-const ROLE = { director: 'Director', company_secretary: 'Company Secretary' }
+import { capacityWithPrincipal } from './capacity.js'
 
 /**
  * One key per current officer, whichever register holds them. A secretary on
@@ -28,7 +27,14 @@ function todayIso() {
  * Add or edit a cessation (spec §2): the officer, CR's reason — for a natural
  * person only, pre-set to Deceased when the profile carries a date of death —
  * and the date. Nothing else: the officer's particulars come from their
- * profile, and alternate directors are out of scope.
+ * profile.
+ *
+ * AN ALTERNATE DIRECTOR IS CEASED LIKE ANY OTHER OFFICER (Jacqueline
+ * 2026-11-04, PBI-70 — alternates are in scope after all). It is listed as
+ * "Alternate Director (alternate to <name>)" so two alternates, or an alternate
+ * and the director they act for, cannot be mistaken for one another. The
+ * principal is not asked for: the officer row already holds it. Ceasing a
+ * DIRECTOR whose alternate stays is refused by the rules panel, not here.
  *
  * A DEATH ASKS FOR ITS DATE (Levi 2026-10-18). Deceased used to be pre-set only
  * for people whose imported record already carried a date of death, and there
@@ -105,14 +111,14 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
       <div className="f-group">
         <label className="f-label" htmlFor="oc-officer">Officer <span className="f-req">*</span></label>
         {editing ? (
-          <div className="f-static">{entry.party?.name} · {ROLE[entry.capacity]}</div>
+          <div className="f-static">{entry.party?.name} · {capacityWithPrincipal(entry)}</div>
         ) : (
           <select id="oc-officer" className="f-select" value={officerId}
                   onChange={e => choose(e.target.value)}>
             <option value="">Choose a current officer…</option>
             {officers.map(o => (
               <option key={officerRef(o)} value={officerRef(o)} disabled={o.pending}>
-                {o.name} — {ROLE[o.role]}{o.pending ? ' (already on this form)' : ''}
+                {o.name} — {capacityWithPrincipal(o)}{o.pending ? ' (already on this form)' : ''}
               </option>
             ))}
           </select>

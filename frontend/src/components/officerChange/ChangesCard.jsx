@@ -13,7 +13,8 @@ import { errorOf } from './workflow.js'
  * consent signature IS the consent, so there is no third, in-portal way.
  */
 function consentLine(entry) {
-  if (entry.kind !== 'appointment' || entry.capacity !== 'director' || !entry.consent_mode) return null
+  if (entry.kind !== 'appointment' || !['director', 'alternate_director'].includes(entry.capacity)
+    || !entry.consent_mode) return null
   return entry.consent_mode === 'esign'
     ? 'Consent: e-Sign — PIN-signed from the e-Registry account on file'
     : 'Consent: manual route — given on the CR portal'
