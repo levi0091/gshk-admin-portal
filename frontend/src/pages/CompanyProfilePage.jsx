@@ -625,6 +625,9 @@ export default function CompanyProfilePage() {
           // request would be a second answer that can disagree with the tile
           // rendered right behind the modal.
           shareClasses={company.share_classes}
+          // "Alternate to" is a picker of THIS company's current directors, for
+          // the same reason: the tile behind the modal already holds them.
+          officers={company.officers}
           onClose={() => setLinkModal(null)}
           onSaved={() => { setLinkModal(null); load() }}
         />
@@ -900,10 +903,12 @@ export default function CompanyProfilePage() {
                          canWrite={canWrite}
                          aside={o => (
                            <OfficerAside
-                             current={o.is_current !== false && o.role === 'director'}
+                             current={o.is_current !== false
+                               && (o.role === 'director' || o.role === 'alternate_director')}
                              pending={pendingFor(pendingCases, {
                                officerId: o.id, personId: o.person_id,
-                               corporateEntityId: o.corporate_entity_id, capacity: 'director' })}
+                               corporateEntityId: o.corporate_entity_id,
+                               capacity: o.role === 'alternate_director' ? 'alternate_director' : 'director' })}
                              canStart={caps.startOfficerChange}
                              busy={officerStart.busy}
                              onCease={() => officerStart.start('Nd2a', { cease: o.id })}
@@ -916,6 +921,12 @@ export default function CompanyProfilePage() {
                          render={o => (
                            <>
                              <Kv label="Role">{(o.role || '').replace(/_/g, ' ')}</Kv>
+                             {/* An alternate director acts for ONE director
+                                 (PBI-70, Jacqueline 2026-11-04); without the
+                                 name the row reads as a second director. */}
+                             {o.role === 'alternate_director' && (
+                               <Kv label="Alternate to">{o.alternate_to_name}</Kv>
+                             )}
                              {/* POSITION AND RESIGNATION REASON ARE SHOWN
                                  (Levi 2026-09-04). Both were editable in the
                                  modal and printed nowhere, so typing one and

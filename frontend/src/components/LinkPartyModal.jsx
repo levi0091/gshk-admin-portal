@@ -15,9 +15,13 @@ import { useLookups, optionsFor } from '../lib/lookups.js'
  *   { options: [...] }        a fixed <select> of {value,label}
  *   { lookup: 'name' }        a <select> filled from /lookups
  *   { source: 'shareClasses' } a <select> of THIS company's classes of shares
+ *   { source: 'directors' }   a <select> of THIS company's current directors
  *   { type: 'boolean' }       a two-value <select> that sends a real boolean
  *
- * and may carry `{ required: true }` (a `*`, and refused empty on save) and
+ * and may carry `{ showWhen: attrs => bool }` (the field exists only while that
+ * holds — it is required whenever it is shown, and sent as an explicit null on
+ * an edit that hides it, so the stored value is cleared rather than kept
+ * invisibly), `{ required: true }` (a `*`, and refused empty on save) and
  * `{ default: 'x' }` (pre-filled when ADDING, never when editing — an edit
  * shows what is stored, and a default that overwrote a deliberately blank
  * stored value would be a silent edit nobody asked for).
@@ -48,8 +52,16 @@ export const RELATION_META = {
       // another one further down the page — which reads as a save that deleted
       // the record. A secretary is added from the Company Secretary tile.
       { key: 'role', label: 'Role', options: [
-        'director', 'reserve_director', 'authorised_rep',
+        'director', 'alternate_director', 'reserve_director', 'authorised_rep',
       ].map(v => ({ value: v, label: v.replace(/_/g, ' ') })) },
+      // AN ALTERNATE IS ALTERNATE TO ONE DIRECTOR (Jacqueline 2026-11-04,
+      // PBI-70: "Alternate directors are not out of scope"). The director is
+      // chosen from this company's own current directors — a party picker is
+      // never a free-text id — and the API refuses one that belongs to another
+      // company. Only meaningful for that one role, so it appears with it.
+      { key: 'alternate_to_officer_id', label: 'Alternate to', source: 'directors',
+        required: true, showWhen: a => a.role === 'alternate_director',
+        empty: 'This company has no current director to be alternate to.' },
       { key: 'position', label: 'Position' },
       { key: 'appointed_date', label: 'Appointed', type: 'date' },
       { key: 'resigned_date', label: 'Resigned', type: 'date' },
@@ -169,6 +181,11 @@ function isBlank(v) {
  * until they had invented a paid-up amount. What is still refused is CLEARING
  * one — a value that was there and is now blank is this edit's doing.
  */
+/** The fields on screen for these answers: a `showWhen` field only while it holds. */
+function visibleFields(fields, attrs) {
+  return fields.filter(f => !f.showWhen || f.showWhen(attrs))
+}
+
 function requiredBlanks(fields, attrs, opened, isEdit) {
   return fields.filter(f => {
     if (!f.required || !isBlank(attrs[f.key])) return false
@@ -176,7 +193,12 @@ function requiredBlanks(fields, attrs, opened, isEdit) {
   })
 }
 
-export default function LinkPartyModal({ companyId, relation, link, shareClasses,
+/** A link's party, for a label: the person, else the body corporate. */
+function linkName(row) {
+  return row.persons?.full_name || row.corporate_entity?.company_name || row.corporate_name || '—'
+}
+
+export default function LinkPartyModal({ companyId, relation, link, shareClasses, officers,
                                          onClose, onSaved }) {
   const meta = RELATION_META[relation]
   const isEdit = !!link
@@ -224,6 +246,13 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
         label: [c.class_name, c.currency].filter(Boolean).join(' · '),
       }))
     }
+    if (f.source === 'directors') {
+      // Current directors of THIS company, not the row being edited: an
+      // alternate cannot be alternate to itself, nor to another alternate.
+      return (officers || [])
+        .filter(o => o.role === 'director' && o.is_current !== false && o.id !== link?.id)
+        .map(o => ({ value: o.id, label: linkName(o) }))
+    }
     if (f.lookup) {
       return optionsFor(lookups?.[f.lookup], attrs[f.key] || null)
         .map(o => ({ value: o.code, label: o.label }))
@@ -241,7 +270,8 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
     // the shareholder form are now required; naming them one per press is four
     // round trips through a save that was never going to succeed, and the
     // operator cannot see how much is left to do.
-    const blanks = requiredBlanks(meta.fields, attrs, opened, isEdit)
+    const shown = visibleFields(meta.fields, attrs)
+    const blanks = requiredBlanks(shown, attrs, opened, isEdit)
     setMissing(blanks.map(f => f.key))
     if (blanks.length) {
       return setError(blanks.length === 1
@@ -251,6 +281,12 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
 
     const body = {}
     for (const f of meta.fields) {
+      // A dependent field that is now hidden but was stored (an alternate edited
+      // into a director) is cleared on the wire; one never stored is not sent.
+      if (!shown.includes(f)) {
+        if (isEdit && !isBlank(opened[f.key])) body[f.key] = null
+        continue
+      }
       const raw = attrs[f.key]
       if (raw === '' || raw == null) continue
       // A boolean has to arrive as one: `is_current: "false"` is a non-empty
@@ -337,7 +373,7 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
           )}
 
           <div className="form-grid">
-            {meta.fields.map(f => {
+            {visibleFields(meta.fields, attrs).map(f => {
               const options = optionsOf(f)
               const noOptions = options && options.length === 0 && f.empty
               // The banner names the fields; this marks them, so on a form
