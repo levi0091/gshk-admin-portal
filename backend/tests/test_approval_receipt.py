@@ -30,6 +30,16 @@ SENT = {"id": "m1", "to": ["jane@client.example"], "intended_to": ["jane@client.
         "redirected": False}
 
 
+@pytest.fixture(autouse=True)
+def stored():
+    """No test here reaches Supabase Storage: `send` files the receipt on the
+    company through `document_service.upload_document`, stubbed for the module.
+    Take it by name to look at what was filed."""
+    with patch("services.approval_receipt.document_service.upload_document",
+               new_callable=AsyncMock, return_value={"id": "doc1"}) as upload:
+        yield upload
+
+
 def _renderers(nar1=b"%PDF-nar1", form=b"%PDF-form", resolution=b"%PDF-res"):
     return [
         patch("services.approval_receipt.nar1_form_fill.render", return_value=nar1),
@@ -331,3 +341,83 @@ async def test_a_nar1_receipt_names_the_return_and_its_year():
         await receipt.send("c1", APPROVAL)
     assert f"{NAR1_TITLE} (Rev. 2)" in send.call_args.kwargs["html"]
     assert log.await_args.kwargs["metadata"]["documents"] == [f"{NAR1_TITLE} (Rev. 2)"]
+
+
+# --------------------------------------------------------------------------- #
+#  Filing it on the company (Levi 2026-11-06, ticket 04 / R10)
+# --------------------------------------------------------------------------- #
+
+def _filed(upload):
+    """The .eml that was handed to `upload_document`, parsed back."""
+    from email import message_from_bytes
+    from email.policy import default
+    return message_from_bytes(upload.await_args.kwargs["content"], policy=default)
+
+
+async def test_the_receipt_is_filed_on_the_company_as_an_eml(stored):
+    with _Stack(_world()) as (*_, log):
+        await receipt.send("c1", APPROVAL)
+    kwargs = stored.await_args.kwargs
+    assert kwargs["owner_kind"] == "entity" and kwargs["owner_id"] == "e1"
+    assert kwargs["document_type_code"] == "approval_receipt"
+    assert kwargs["mime_type"] == "message/rfc822"
+    assert kwargs["file_name"] == "Approval-Receipt-NAR-2026-0042-Rev2.eml"
+    assert kwargs["title"] == "NAR-2026-0042 — approval receipt (NAR1)"
+    # The automatic actor, with no user id: both columns it feeds are nullable.
+    assert kwargs["user"] == {"id": None, "display_name": "G-FlowDesk (automatic)"}
+    assert log.await_args.kwargs["metadata"]["stored_document_id"] == "doc1"
+
+
+async def test_the_first_revision_has_no_rev_suffix(stored):
+    with _Stack(_world(case={**NAR1, "verification_revision": 1})):
+        await receipt.send("c1", {**APPROVAL, "revision": 1})
+    assert stored.await_args.kwargs["file_name"] == "Approval-Receipt-NAR-2026-0042.eml"
+
+
+async def test_an_nd2_receipt_is_titled_for_its_form(stored):
+    with _Stack(_world(case=ND2A)):
+        await receipt.send("k1", {**APPROVAL, "revision": 1})
+    assert stored.await_args.kwargs["title"] == "ND2A-2026-0001 — approval receipt (ND2A)"
+
+
+async def test_the_eml_is_exactly_what_was_sent(stored):
+    files = (("NAR1-x.pdf", b"%PDF-1"), ("Other.pdf", b"%PDF-2"))
+    with _Stack(_world(files=files)) as (_c, _e, _d, send, _log):
+        await receipt.send("c1", APPROVAL)
+    sent_kwargs = send.call_args.kwargs
+    msg = _filed(stored)
+    assert msg["Subject"] == sent_kwargs["subject"]
+    assert msg["To"] == "jane@client.example"
+    assert msg["Cc"] == "renewal@getstarted.hk"
+    assert msg["Reply-To"] == "renewal@getstarted.hk"
+    assert msg["From"] and msg["Date"]
+    body = msg.get_body(preferencelist=("html",)).get_content()
+    assert body.strip() == sent_kwargs["html"].strip()
+    attached = {part.get_filename(): part.get_content()
+                for part in msg.iter_attachments()}
+    assert attached == {"NAR1-x.pdf": b"%PDF-1", "Other.pdf": b"%PDF-2"}
+
+
+async def test_a_redirected_send_is_filed_with_the_recipients_it_really_had(stored):
+    redirected = {**SENT, "to": ["levi@zenexflow.com"], "cc": [], "redirected": True}
+    with _Stack(_world(sent=redirected)):
+        await receipt.send("c1", APPROVAL)
+    msg = _filed(stored)
+    assert msg["To"] == "levi@zenexflow.com" and msg["Cc"] is None
+
+
+async def test_a_storage_failure_neither_raises_nor_stops_the_audit(stored, capsys):
+    stored.side_effect = RuntimeError("storage down")
+    with _Stack(_world()) as (_c, _e, _d, send, log):
+        await receipt.send("c1", APPROVAL)       # must not raise
+    send.assert_called_once()                    # the email had already gone
+    meta = log.await_args.kwargs["metadata"]
+    assert "stored_document_id" not in meta
+    assert meta["template"] == "approval_receipt"
+    assert "not filed on the company" in capsys.readouterr().err
+
+
+async def test_nothing_is_filed_when_the_email_was_not_sent(stored):
+    with _Stack(_world(send_effect=email_service.EmailError("rejected"))):
+        await receipt.send("c1", APPROVAL)
+    stored.assert_not_awaited()

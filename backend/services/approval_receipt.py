@@ -30,6 +30,17 @@ the director never waits on a PDF render or on Resend. It NEVER raises —
 everything is caught and printed to stderr, because by the time it runs the
 approval is recorded and there is nobody left to show an error to.
 
+FILED ON THE COMPANY (Levi 2026-11-06: "double check that the receipt email is
+stored in body corporate profile document upload section" -- it was not stored
+anywhere). After a successful send the receipt is kept as an `.eml` against the
+COMPANY, document type `approval_receipt` (the profile's Government Forms
+section, beside the form it confirms): the sent headers, the HTML body and the
+same PDFs, which is the record of exactly what the client received. It versions
+in place on (company, type), so every receipt is a new version of one "Approval
+receipt" document and Document History lists each. Storing NEVER raises and
+never blocks or undoes the email; the audit row carries `stored_document_id`
+only when it worked.
+
 THE TRAIL. One `EMAIL_SENT` row, the code CLAUDE.md mandates for every workflow
 email, tagged `metadata.template = "approval_receipt"`. The delivery check
 (`GET …/verification/delivery`) reads the newest EMAIL_SENT row on a case and
@@ -39,9 +50,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import format_datetime
 
 from services import audit_events as ev
-from services import audit_subject, email_service, nar1_cases
+from services import audit_subject, document_service, email_service, nar1_cases
 from services.audit_service import log_event
 from services.nar1_form import fill as nar1_form_fill
 from services.officer_change_form import render as render_officer_form
@@ -50,6 +64,11 @@ from services.officer_changes import resolution, signatures, signed_copies
 
 TEMPLATE = "approval_receipt"
 ACTOR = "G-FlowDesk (automatic)"
+#: `documents.uploaded_by` and `document_versions.created_by` are nullable, so
+#: the automatic actor is a name and no user id -- as the audit row already has it.
+STORED_BY = {"id": None, "display_name": ACTOR}
+DOCUMENT_TYPE = "approval_receipt"   # seeded by migration 061
+EML_MIME = "message/rfc822"
 
 _PREFIX = {"Nar1": "NAR1", "Nd2a": "ND2A", "Nd2b": "ND2B"}
 
@@ -148,6 +167,63 @@ async def documents(case: dict, entity: dict, approval: dict) -> tuple[list, lis
     return files, failures
 
 
+def eml_file_name(case: dict, revision: int) -> str:
+    """`Approval-Receipt-<case no>[-RevN].eml`, named as the PDFs are."""
+    return (f"Approval-Receipt-{case.get('case_no') or case['id']}"
+            f"{f'-Rev{revision}' if revision >= 2 else ''}.eml")
+
+
+def _sender() -> str:
+    try:
+        return email_service.get_email_config().sender
+    except Exception:  # noqa: BLE001 -- no key configured; the header is only a record
+        return email_service.DEFAULT_FROM
+
+
+def build_eml(*, subject: str, html: str, sent: dict, recipient: str,
+              files: list[tuple[str, bytes]]) -> bytes:
+    """The receipt as an RFC 822 message: what Resend was handed, as a file.
+
+    The headers are the ones the send ACTUALLY used (`sent`), so outside
+    production the stored copy shows the test recipients and not the director --
+    the same honesty as the audit row's `to` / `intended_to`.
+    """
+    msg = EmailMessage()
+    msg["From"] = _sender()
+    msg["To"] = ", ".join(sent.get("to") or [recipient])
+    if sent.get("cc"):
+        msg["Cc"] = ", ".join(sent["cc"])
+    if sent.get("reply_to"):
+        msg["Reply-To"] = ", ".join(sent["reply_to"])
+    msg["Subject"] = subject
+    msg["Date"] = format_datetime(datetime.now(timezone.utc))
+    msg.set_content(html, subtype="html")
+    for name, data in files:
+        msg.add_attachment(data, maintype="application", subtype="pdf", filename=name)
+    return msg.as_bytes()
+
+
+async def store(case: dict, *, subject: str, html: str, sent: dict, recipient: str,
+                files: list[tuple[str, bytes]], revision: int) -> str | None:
+    """File the receipt on the company. The document id, or None. NEVER raises."""
+    try:
+        form = _PREFIX.get(case.get("form_code") or "Nar1", "NAR1")
+        document = await document_service.upload_document(
+            owner_kind="entity", owner_id=case["entity_id"],
+            document_type_code=DOCUMENT_TYPE,
+            file_name=eml_file_name(case, revision),
+            content=build_eml(subject=subject, html=html, sent=sent,
+                              recipient=recipient, files=files),
+            mime_type=EML_MIME,
+            title=f"{case.get('case_no') or case['id']} — approval receipt ({form})",
+            user=STORED_BY)
+        return (document or {}).get("id")
+    except Exception as exc:  # noqa: BLE001 -- the email is sent; this is the filing copy
+        print(f"[approval_receipt] receipt for case {case.get('id')} not filed on the "
+              f"company: {exc!r}", file=sys.stderr)
+        return None
+
+
 async def send(case_id: str, approval: dict) -> None:
     """Mail the receipt for one claimed approval. Never raises."""
     try:
@@ -179,6 +255,10 @@ async def send(case_id: str, approval: dict) -> None:
               file=sys.stderr)
         return
 
+    stored_id = await store(case, subject=subject, html=html, sent=sent,
+                            recipient=recipient, files=files,
+                            revision=_revision(case, approval))
+
     try:
         await log_event(
             user_id=None, user_display_name=ACTOR,
@@ -201,6 +281,9 @@ async def send(case_id: str, approval: dict) -> None:
                 "documents": titles,
                 "attachments": names,
                 "attachment_failures": failures,
+                # Only when it was filed: the receipt is a version of the
+                # company's "Approval receipt" document.
+                **({"stored_document_id": stored_id} if stored_id else {}),
             })
     except Exception as exc:  # noqa: BLE001 — audit never blocks (PBI-11)
         print(f"[approval_receipt] audit for case {case_id} failed: {exc!r}",
