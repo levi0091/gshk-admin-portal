@@ -489,8 +489,11 @@ def render(case: dict, entity: dict, entries: list[dict], officers: list[dict],
     page.blank()
     for heading, texts in paragraphs(entries):
         page.line(heading, latin=BOLD, underline=True)
-        for text in texts:
-            page.blank()
+        # The 2026-11-06 template sets the first sentence directly under its
+        # heading; a second sentence of the same kind is set off by a blank line.
+        for n, text in enumerate(texts):
+            if n:
+                page.blank()
             page.paragraph(text)
         page.blank()
         page.blank()

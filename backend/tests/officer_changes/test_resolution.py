@@ -93,18 +93,21 @@ def test_header_lines_are_bold_centred_at_the_sample_baselines(sample_page):
 
 
 def test_body_flows_at_the_sample_baselines(sample_page):
+    # The 2026-11-06 template sets each sentence directly under its heading,
+    # one 13.8pt line higher than the first sample did — so everything after
+    # the first heading sits 13.8pt (after the second, 27.6pt) higher.
     for starts, y in (("Resignation of Director", 206.1),
-                      ("IT IS RESOLVED that PIK YI REBECCA LAW", 234.0),
-                      ("Appointment of Director", 291.4),
-                      ("IT IS RESOLVED that the company shall appoint Aldo KRIEL", 319.4),
-                      ("Dated:", 376.7),
-                      ("____", 445.7), ("Name: PIK YI REBECCA LAW", 459.8),
-                      ("Director", 475.8)):
+                      ("IT IS RESOLVED that PIK YI REBECCA LAW", 220.2),
+                      ("Appointment of Director", 277.6),
+                      ("IT IS RESOLVED that the company shall appoint Aldo KRIEL", 291.8),
+                      ("Dated:", 349.1),
+                      ("____", 418.1), ("Name: PIK YI REBECCA LAW", 432.2),
+                      ("Director", 448.2)):
         line = _line(sample_page, starts)
         assert abs(line["y"] - y) < TOL, (starts, line["y"], y)
     # Second lines of the two-line paragraphs (Word's taller line after Chinese).
     ys = [r["y"] for r in _lines(sample_page)]
-    for y in (250.0, 335.2):
+    for y in (236.2, 307.6):
         assert any(abs(v - y) < TOL for v in ys), y
 
 
@@ -131,7 +134,7 @@ def test_chinese_names_print_in_noto_sans_tc(sample_page):
 def test_signature_blocks_sit_in_the_templates_two_columns(sample_page):
     """The first director (the one resigning) is the left block, the one
     appointed the right: rows of two, left x 72, right x 360."""
-    rows = [r for r in _lines(sample_page) if r["y"] > 440]
+    rows = [r for r in _lines(sample_page) if r["y"] > 410]
     left = [r for r in rows if r["x0"] < 200]
     right = [r for r in rows if r["x0"] > 300]
     assert [r["text"][:4] for r in left] == ["____", "Name", "Dire"]
