@@ -10,11 +10,16 @@
  */
 export const HK_TZ = 'Asia/Hong_Kong'
 
-/** "20 May 2024" — the Hong Kong calendar date. */
+/**
+ * "01 Nov 2026" — the Hong Kong calendar date, day first, the day ALWAYS two
+ * digits (Jacqueline 2026-11-04: "The date format should always be DDMMYYYY").
+ * It printed "1 Nov 2026" beside forms and letters that print "01 11 2026" and
+ * "01 November 2026"; `formatDateTime` below was already two-digit.
+ */
 export function formatDate(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleDateString('en-HK', {
-    day: 'numeric', month: 'short', year: 'numeric', timeZone: HK_TZ,
+    day: '2-digit', month: 'short', year: 'numeric', timeZone: HK_TZ,
   })
 }
 

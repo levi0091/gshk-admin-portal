@@ -213,10 +213,86 @@ def test_dates_missing_lists_undated_changes():
     assert rules.dates_missing(entries) == ["LEE Ka Ho", "CHAN Tai Man — Email address"]
 
 
-def test_an_officer_with_no_identity_document_is_a_warning():
-    result = run([appoint(person="P9", hkid="", passport=None)])
+def test_an_officer_with_no_identity_document_blocks_the_send():
+    # Jacqueline 2026-11-04: "Address and ID number must be included in the
+    # form before it is sent out ... 'not all met'".
+    result = run([appoint(person="P9", name="JACJAC Test", hkid="", passport=None)])
     c = check(result, "identity_document")
-    assert c["ok"] is False and c["level"] == "notice" and result["blocking"] is False
+    assert c["ok"] is False and c["level"] == "rule" and result["blocking"] is True
+    assert "JACJAC Test" in c["text"] and "NIL" in c["text"]
+
+
+def test_a_passport_alone_is_an_identity_document():
+    result = run([appoint(person="P9", hkid="", passport={"number": "P123", "issuing_country": "AU"})])
+    assert check(result, "identity_document")["ok"] is True
+    assert result["blocking"] is False
+
+
+def test_a_body_corporate_needs_no_identity_document():
+    result = run([appoint(corp="C9", capacity="company_secretary", hkid="")])
+    assert check(result, "identity_document")["ok"] is True
+
+
+def test_an_officer_with_no_residential_address_blocks_the_send():
+    result = run([appoint(person="P9", name="LEE Ka Ho", residential_address=None)])
+    c = check(result, "address_present")
+    assert c["ok"] is False and c["level"] == "rule" and result["blocking"] is True
+    assert "LEE Ka Ho" in c["text"]
+
+
+def test_an_address_needs_a_first_line_and_a_country():
+    result = run([appoint(person="P9", residential_address={"line1": "", "country": "HK"})])
+    assert check(result, "address_present")["ok"] is False
+
+
+def test_a_separate_correspondence_address_must_be_given():
+    entry = appoint(person="P9")
+    entry["correspondence_same_as_residential"] = False
+    entry["correspondence_address"] = None
+    assert check(run([entry]), "address_present")["ok"] is False
+    entry["correspondence_address"] = HK_HOME
+    assert check(run([entry]), "address_present")["ok"] is True
+
+
+def test_a_body_corporate_with_no_address_blocks_the_send():
+    result = run([appoint(corp="C9", capacity="director", address=None)])
+    assert check(result, "address_present")["ok"] is False
+    assert result["blocking"] is True
+
+
+def _nd2b(*items):
+    return {"kind": "change", "capacity": "director", "party_type": "individual",
+            "person_id": "P1", "party": {"name": "Jacqueline Koh"},
+            "items": [{"effective_date": "2026-09-20", "omitted": False, **i}
+                      for i in items]}
+
+
+def test_nd2b_passport_changed_to_nothing_blocks_the_send():
+    # ND2B-2026-0013 on DEV: (h) Passport 12345678 (BD) -> nothing, and CR's
+    # form printed "-" in both boxes.
+    result = run([_nd2b({"key": "passport", "label": "Passport", "new": None,
+                         "old": {"number": "12345678", "issuing_country": "BD"}})])
+    c = check(result, "change_values_present")
+    assert c["ok"] is False and c["level"] == "rule" and result["blocking"] is True
+    assert "passport" in c["text"] and "Jacqueline Koh" in c["text"]
+
+
+def test_nd2b_empty_hkid_or_address_blocks_but_an_omitted_line_does_not():
+    assert run([_nd2b({"key": "hkid", "label": "HKID", "new": ""})])["blocking"] is True
+    assert run([_nd2b({"key": "residential_address", "label": "Residential address",
+                       "new": None})])["blocking"] is True
+    omitted = _nd2b({"key": "passport", "label": "Passport", "new": None})
+    omitted["items"][0]["omitted"] = True
+    omitted["items"].append({"key": "email", "effective_date": "2026-09-20",
+                             "omitted": False, "new": "a@b.com"})
+    assert check(run([omitted]), "change_values_present")["ok"] is True
+
+
+def test_nd2b_with_a_real_new_passport_passes():
+    result = run([_nd2b({"key": "passport", "label": "Passport",
+                         "new": {"number": "P7751249A", "issuing_country": "AU"}})])
+    assert check(result, "change_values_present")["ok"] is True
+    assert result["blocking"] is False
 
 
 def test_an_overdue_case_is_a_notice_not_a_block():

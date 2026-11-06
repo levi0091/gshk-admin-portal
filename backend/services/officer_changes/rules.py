@@ -8,9 +8,11 @@ a `level`:
     fails makes the case `blocking`: it cannot be sent to the client, because
     asking a client to approve a form that cannot be filed wastes their time
     and ours. The reason prints beside the disabled button (S-08b).
-  * `notice` — worth saying, never in the way: no date of birth on record, no
-    identity document, a deadline already passed (late filing is an offence
-    but carries no fee, so the case stays fileable — PRD E-13).
+  * `notice` — worth saying, never in the way: no date of birth on record, a
+    deadline already passed (late filing is an offence but carries no fee, so
+    the case stays fileable — PRD E-13). A missing identity document or address
+    was a notice too until 2026-11-06 and is now a rule (Jacqueline's UAT note:
+    "Address and ID number must be included in the form before it is sent out").
   * `reminder` — a notice the operator must not miss, so the screen always
     lists it. A change dated after today is the one case (Levi 2026-10-30: "we
     purposefully wanted to prepare and send the form and written resolution to
@@ -43,6 +45,26 @@ def _check(code: str, ok: bool, text: str, level: str = "rule") -> dict:
 def _is_hk(address: dict | None) -> bool:
     country = (address or {}).get("country")
     return bool(country) and (to_alpha2(country) or str(country).upper()) == "HK"
+
+
+def _has_address(address: dict | None) -> bool:
+    """An address the form can print: at least a first line and a country."""
+    return bool(address) and bool(str(address.get("line1") or "").strip()) \
+        and bool(str(address.get("country") or "").strip())
+
+
+#: ND2B items whose new value must exist: an identity document or an address
+#: changed to nothing is not a change CR can register (CR prints "-").
+_MUST_HAVE_A_NEW_VALUE = {"hkid", "passport", "residential_address",
+                          "correspondence_address", "address"}
+
+
+def _has_value(key: str, value) -> bool:
+    if key == "hkid":
+        return bool(str(value or "").strip())
+    if key == "passport":
+        return bool(value) and bool(str(value.get("number") or "").strip())
+    return _has_address(value)
 
 
 def _age_on(born: date, on: date) -> int:
@@ -193,7 +215,7 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
             "replacement to this form."))
 
     # -- each appointment ----------------------------------------------------------
-    underage, no_dob, not_hk, no_section5, no_id = [], [], [], [], []
+    underage, no_dob, not_hk, no_section5, no_id, no_address = [], [], [], [], [], []
     for e in (e for e in entries if e.get("kind") == "appointment"):
         party = e.get("party") or {}
         name = party.get("name") or "the appointee"
@@ -218,6 +240,24 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
                 not_hk.append(name)
         if individual and not party.get("hkid") and not (party.get("passport") or {}).get("number"):
             no_id.append(name)
+        if individual:
+            missing = not _has_address(party.get("residential_address")) or (
+                e.get("correspondence_same_as_residential") is False
+                and not _has_address(e.get("correspondence_address")))
+        else:
+            missing = not _has_address(party.get("address"))
+        if missing:
+            no_address.append(name)
+
+    empty_changes = []
+    for e in (e for e in entries if e.get("kind") == "change"):
+        name = (e.get("party") or {}).get("name") or "the officer"
+        for item in e.get("items") or []:
+            if item.get("omitted") or item.get("key") not in _MUST_HAVE_A_NEW_VALUE:
+                continue
+            if not _has_value(item.get("key"), item.get("new")):
+                label = (item.get("label") or item.get("key")).lower()
+                empty_changes.append(f"The new {label} for {name} is empty")
 
     if underage:
         checks.append(_check("director_age", False,
@@ -242,11 +282,33 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
         "Every new company secretary meets the Hong Kong requirements." if not problems
         else "; ".join(problems).capitalize() + "."))
 
-    checks.append(_check(
-        "identity_document", not no_id,
-        "Every new officer has an identity document." if not no_id else
-        f"No HKID or passport on record for {', '.join(no_id)}; the form will "
-        "carry NIL.", level="notice"))
+    # A RULE since Jacqueline's UAT note of 2026-11-04: "Address and ID number
+    # must be included in the form before it is sent out. The rules check
+    # should therefore be changed to 'not all met' so that colleagues remember
+    # to add them." It used to be a notice ("the form will carry NIL"), and the
+    # panel read "All rules met" over a form that went to the client with NIL
+    # in both identity boxes.
+    if not nd2b:
+        checks.append(_check(
+            "identity_document", not no_id,
+            "Every new officer has an identity document." if not no_id else
+            f"No HKID or passport on record for {_join(no_id)}. Add one to their "
+            "profile before sending — the form cannot go out with NIL."))
+        checks.append(_check(
+            "address_present", not no_address,
+            "Every new officer has the address the form carries." if not no_address else
+            f"No address on record for {_join(no_address)}. Add it to their profile "
+            "before sending."))
+    else:
+        # The ND2B half of the same note ("ND2B form can still be sent even no
+        # identification number", ND2B-2026-0013): a line that changes an
+        # identity document or an address TO NOTHING prints "-" in CR's boxes,
+        # and is not a change CR can register.
+        checks.append(_check(
+            "change_values_present", not empty_changes,
+            "Every change on this form has its new value." if not empty_changes else
+            f"{'; '.join(empty_changes)}. Add the new value to the profile, or omit "
+            "the line, before sending."))
 
     overdue = deadline is not None and deadline < today
     checks.append(_check(

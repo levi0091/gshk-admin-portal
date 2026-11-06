@@ -17,7 +17,9 @@ from services.officer_changes import cases, signatures, signers
 from tests.officer_changes.fakes import FakeSupabase
 
 NOW = datetime(2026, 10, 29, 9, 0, tzinfo=timezone.utc)
-FUTURE = NOW + timedelta(days=5)
+# A fixed far-future expiry, not NOW + 5 days: `signers` compares expiry with
+# the REAL clock, so a relative one turned these tests red on 2026-11-03.
+FUTURE = datetime(2099, 1, 1, tzinfo=timezone.utc)
 
 KOH = {"person_id": "P1", "name": "Jacqueline Koh", "roles": ["resolution"]}
 BRIAN = {"person_id": "P2", "name": "Testing Brian", "roles": ["consent", "resolution"]}

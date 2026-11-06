@@ -5,7 +5,10 @@ import { errorOf } from './workflow.js'
 import { useStartOfficerChange } from './ReportChangeMenu.jsx'
 import './entryPoints.css'
 
-const CAPACITY = { director: 'Director', company_secretary: 'Company Secretary' }
+const CAPACITY = {
+  director: 'Director', company_secretary: 'Company Secretary',
+  alternate_director: 'Alternate Director',
+}
 
 /**
  * "Changed here — the Companies Registry has not been told" (answers 14, 16).
@@ -35,6 +38,13 @@ export default function ParticularsChangeAlert({ kind, id, caps, refreshKey }) {
   const [dismissing, setDismissing] = useState(false)
   const [error, setError] = useState(null)
   const { start, busy, error: startError } = useStartOfficerChange(null)
+  // WHICH row is opening. `busy` alone is one flag for the whole list, so
+  // pressing Start ND2B on one company relabelled every row "Opening…" and
+  // read as if an ND2B were being opened for each (Jacqueline 2026-11-04). Only
+  // the pressed row's case is ever created; now only that row says so. The
+  // others stay disabled while it runs, so a second press cannot race it.
+  const [opening, setOpening] = useState(null)
+  const rowKey = row => `${row.entity_id}-${row.capacity}`
 
   const load = useCallback(() => {
     if (!caps?.view) return
@@ -80,7 +90,8 @@ export default function ParticularsChangeAlert({ kind, id, caps, refreshKey }) {
     const entry = row.officer_id
       ? { kind: 'change', officer_id: row.officer_id }
       : { kind: 'change', secretary_id: row.secretary_id }
-    start('Nd2b', { company: row.entity_id, entry })
+    setOpening(rowKey(row))
+    start('Nd2b', { company: row.entity_id, entry }).finally(() => setOpening(null))
   }
 
   const companies = rows.length
@@ -137,7 +148,7 @@ export default function ParticularsChangeAlert({ kind, id, caps, refreshKey }) {
               ) : caps.start && (
                 <button type="button" className="btn btn-action btn-sm" disabled={busy}
                         onClick={() => startNd2b(row)}>
-                  {busy ? 'Opening…' : 'Start ND2B'}
+                  {busy && opening === rowKey(row) ? 'Opening…' : 'Start ND2B'}
                 </button>
               )}
             </div>

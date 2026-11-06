@@ -76,6 +76,29 @@ describe('ParticularsChangeAlert', () => {
       { kind: 'change', officer_id: 'o1' })
   })
 
+  it('says Opening… only on the row pressed, and opens one case for that company alone', async () => {
+    // Jacqueline 2026-11-04: pressing Start ND2B on the first company made
+    // every row read "Opening…", as if an ND2B were opening for each.
+    const three = [
+      ROWS[0],
+      { ...ROWS[0], entity_id: 'e3', company_name: 'Third Co', officer_id: 'o3' },
+      { ...ROWS[0], entity_id: 'e4', company_name: 'Fourth Co', officer_id: 'o4' },
+    ]
+    get.mockResolvedValue({ changes: three })
+    let finish
+    post.mockImplementationOnce(() => new Promise(r => { finish = r }))
+    const user = userEvent.setup()
+    wrap(<ParticularsChangeAlert kind="person" id="p1" caps={ALL} />)
+    const [first] = await screen.findAllByRole('button', { name: 'Start ND2B' })
+    await user.click(first)
+    expect(screen.getAllByRole('button', { name: 'Opening…' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Start ND2B' })).toHaveLength(2)
+    finish({ case: { id: 'k9' } })
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/officer-changes/k9'))
+    expect(post.mock.calls.filter(([url]) => url === '/officer-changes')).toEqual(
+      [['/officer-changes', { entity_id: 'e1', form_code: 'Nd2b' }]])
+  })
+
   it('opens the ND2B already carrying the officer rather than starting another', async () => {
     wrap(<ParticularsChangeAlert kind="person" id="p1" caps={ALL} />)
     const open = await screen.findByRole('link', { name: 'Open ND2B-2026-0005' })

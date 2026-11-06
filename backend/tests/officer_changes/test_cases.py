@@ -670,6 +670,13 @@ def test_composite_lists_missing_dates(db, nd2a, monkeypatch):
 
 
 def test_composite_says_when_a_form_dated_ahead_can_be_filed(db, nd2a):
+    # An appointee the form can be SENT for: since 2026-11-06 a missing address
+    # or identity document is a rule, and this test is about the date alone.
+    ho = next(p for p in db.tables["persons"] if p["id"] == "P9")
+    ho["residential_address_id"] = "A1"
+    db.tables["person_identity_documents"].append(
+        {"id": "D9", "person_id": "P9", "id_type": "hkid", "id_number": "B1234567",
+         "is_primary": True})
     cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
                            "person_id": "P9", "capacity": "director",
                            "effective_date": "2099-01-28"}, user_id="U1")
