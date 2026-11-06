@@ -202,16 +202,17 @@ def test_a_director_who_stays_signs_the_resolution(db):
     assert signatures.must_sign(_case(), "P1") is True
 
 
-def test_a_director_who_is_leaving_has_no_box_and_no_pad(db):
-    """Review B6: the written resolution is signed by the board AFTER the changes,
-    so a pad for the leaver would collect a signature that prints nowhere."""
+def test_a_director_who_is_leaving_still_signs_the_resolution(db):
+    """Levi 2026-11-06 (GSHK's new template): the resolution lists every director
+    in office before the changes, so the leaver has a line, and therefore a pad.
+    This reverses review B6, which kept them off while only the board AFTER the
+    changes signed."""
     _entry(db, "cessation", officer_id="O2", person_id="P2", party_type="individual")
-    assert signatures.must_sign(_case(), "P2") is False
+    assert signatures.must_sign(_case(), "P2") is True
 
 
 def test_when_every_director_leaves_the_board_before_signs(db):
-    """Mirrors `resolution.signatories`: with nobody left it falls back to the
-    directors in office before, so those people do have a line to sign."""
+    """The board before the changes signs, whoever is leaving."""
     _entry(db, "cessation", officer_id="O1", person_id="P1", party_type="individual")
     _entry(db, "cessation", officer_id="O2", person_id="P2", party_type="individual")
     assert signatures.must_sign(_case(), "P1") is True

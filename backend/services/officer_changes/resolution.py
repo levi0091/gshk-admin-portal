@@ -1,32 +1,52 @@
-"""The written resolution an ND2A goes with — GSHK's own sample, exactly.
+"""The written resolution an ND2A goes with, to GSHK's current template.
 
 Levi 2026-10-05: "I attached the sample written resolution for change of
 director please build exactly to this written resolution sample ... in font
-size, wordings and everything." The sample is a Word document (US Letter); its
-measurements, taken with PyMuPDF, are the constants below and are asserted by
-`tests/officer_changes/test_resolution.py`. The sample itself is not committed:
-it names a real company and real directors.
+size, wordings and everything." The first sample is a Word document (US Letter);
+its measurements, taken with PyMuPDF, are the constants below and are asserted by
+`tests/officer_changes/test_resolution.py`. Neither it nor the template that
+replaced it is committed: they name real companies and real directors.
 
-WHAT IS THE SAMPLE'S, VERBATIM. The header between two heavy rules; the
-underlined headings "Resignation of Director" / "Appointment of Director"; "IT
-IS RESOLVED that ... as its new director effective from the date hereof."; the
-closing "Both changes shall also be filed and submitted to Companies Registry
-via its electronic services signed under director's capacity."; "Dated:"; one
-signature line per director with "Name:" and "Director" beneath.
+2026-11-06 (Jacqueline Koh's UAT comments, relayed by Levi): GSHK sent a NEW
+template, `Template - Written Resolutions.pdf`, and it is now the authority. It
+supersedes the 2026-10-05 sample wherever the two differ, and four differences
+are decisions rather than restyling:
 
-WHAT IS DECIDED HERE (spec 2026-10-05 §9, R-1 and R-2):
+  * THE SENTENCES. "IT IS RESOLVED that **<name>** shall resign as <role> from
+    the company effective from the date hereof." replaces the R-1 wording ("of
+    the company"), which was this module's own repair of a slip in the first
+    sample; the client's template now says it its own way. The appointment
+    sentence is the same words with the name in bold.
+  * NO CLOSING SENTENCE. "Both changes shall also be filed and submitted to
+    Companies Registry ..." is not in the new template, so `closing()` is gone.
+  * THE BOARD THAT SIGNS IS THE BOARD BEFORE, PLUS THE NEW. Every director in
+    office before the changes, including those ceasing, then every director
+    appointed on this form. The old rule ("the board AFTER the changes", because
+    the first sample's only signatory was the incoming director) is withdrawn:
+    a director who is leaving is still a director when the resolution is
+    passed, and the client asked for them by name. A director who has DIED is
+    the one exception, since a line nobody can sign is not a signature line.
+    Alternate directors are not signatories.
+  * THE HEADER. Company name in English, then in Chinese on its own line when
+    there is one, then "(Business License No. <BR number>)" (the template's
+    wording, not "Business Registration No."), then "(the "Company")".
 
-  * The sample's resignation sentence reads "shall resign as director effective
-    from the company effective from the date hereof" — an evident slip. This
-    prints "... as director of the company effective from the date hereof."
-    (`RESIGN`, one constant.)
-  * A company secretary takes the same sentences with "company secretary". A
-    death is NOTED, not resolved. Two or more of one kind share one heading,
-    in the plural. The closing sentence says "This change" / "Both changes" /
-    "All changes". `Dated:` prints the effective date when every change shares
-    one, and a line to fill in otherwise. Every director in office AFTER the
-    changes signs — the sample's signatory is the incoming director, the only
-    one left.
+WHAT STAYS THE FIRST SAMPLE'S. The two heavy rules, the underlined headings
+"Resignation of Director" / "Appointment of Director" (and now "... of
+Alternate Director"), "Dated:" and the rule / "Name:" / "Director" blocks, now
+two to a row at the template's own x positions. A body corporate director
+prints "Name:" blank, "For and on behalf of", its name, "Director": the
+individual who signs for it is not known to the portal. The type size and line
+pitch are still the first sample's (12 pt, Word's 13.8), not the template's
+11 pt; the brief was the words, the header and the signature block, and
+re-pitching every baseline is a separate decision.
+
+WHAT ELSE IS DECIDED HERE: a company secretary takes the same sentences with
+"company secretary". An alternate director takes "... as alternate director to
+<director> ...". A death is NOTED, not resolved. Two or more of one kind share
+one heading, in the plural. `Dated:` prints the effective date when every
+change shares one (two-digit day, `04 November 2026`: Levi 2026-11-06, "the date
+format should always be DDMMYYYY"), and a line to fill in otherwise.
 
 TYPE. Times New Roman 12 is Tinos 12, metric-identical (see
 `nar1_form/fonts/README.md`). The sample sets Chinese names in DengXian, which
@@ -40,6 +60,7 @@ ascent and descent) — which is why the sample's second lines are at +16.0.
 from __future__ import annotations
 
 import io
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -64,8 +85,14 @@ HEADER_FIRST, HEADER_PITCH = 112.9, 15.87
 RULE2_AFTER_HEADER = 179.54 - 160.5      # last header baseline -> second rule
 FIRST_FLOW_AFTER_RULE2 = 192.3 - 179.54  # second rule -> first (blank) body line
 UNDERLINE_BELOW, UNDERLINE_THICK = 1.28, 1.2
-SIGNATURE_X = 77.4
-SIGNATURE_RULE = "_" * 36
+#: The template's two signature columns: the left block starts at the margin
+#: and the right one at x 360 (read off `Template - Written Resolutions.pdf`).
+SIGNATURE_COLUMNS = (LEFT, 360.0)
+#: How wide a name may run before it wraps: up to the next column, and up to the
+#: right margin.
+_COLUMN_WIDTH = (SIGNATURE_COLUMNS[1] - LEFT - 12.0, RIGHT - SIGNATURE_COLUMNS[1])
+#: The template's rule is 29 underscores.
+SIGNATURE_RULE = "_" * 29
 #: A drawn signature sits on its rule: at most this tall (the three blank lines
 #: above a rule leave about 38pt), this far above the underscores.
 SIGN_HEIGHT, SIGN_LIFT = 36.0, 1.5
@@ -75,20 +102,25 @@ TOP_MARGIN, BOTTOM_MARGIN = 72.0, 72.0
 _TIMES = (11.0, 2.8)
 _CJK = (11.3, 5.0)
 
-# -- the sample's words -------------------------------------------------------------
+# -- the template's words -----------------------------------------------------------
+# `**` marks the bold run: the template sets the officer's name in bold.
 
-RESIGN = "IT IS RESOLVED that {name} shall resign as {role} of the company effective " \
-         "from the date hereof."
-APPOINT = "IT IS RESOLVED that the company shall appoint {name} as its new {role} " \
+RESIGN = "IT IS RESOLVED that **{name}** shall resign as {role} from the company " \
+         "effective from the date hereof."
+APPOINT = "IT IS RESOLVED that the company shall appoint **{name}** as its new {role} " \
           "effective from the date hereof."
-DEATH = "IT IS NOTED that {name} ceased to be {article} {role} of the company by " \
+RESIGN_ALTERNATE = "IT IS RESOLVED that **{name}** shall resign as alternate director to " \
+                   "{principal} from the company effective from the date hereof."
+APPOINT_ALTERNATE = "IT IS RESOLVED that the company shall appoint **{name}** as alternate " \
+                    "director to {principal} effective from the date hereof."
+DEATH = "IT IS NOTED that **{name}** ceased to be {article} {role} of the company by " \
         "reason of death."
-CLOSING = "{count} shall also be filed and submitted to Companies Registry via its " \
-          "electronic services signed under director’s capacity."
-_COUNT = {1: "This change", 2: "Both changes"}
-_ROLE = {"director": "director", "company_secretary": "company secretary"}
+_ROLE = {"director": "director", "company_secretary": "company secretary",
+         "alternate_director": "alternate director"}
 _ROLE_TITLE = {"director": ("Director", "Directors"),
-               "company_secretary": ("Company Secretary", "Company Secretaries")}
+               "company_secretary": ("Company Secretary", "Company Secretaries"),
+               "alternate_director": ("Alternate Director", "Alternate Directors")}
+_ARTICLE = {"director": "a", "company_secretary": "the", "alternate_director": "an"}
 
 # -- fonts ----------------------------------------------------------------------------
 
@@ -155,6 +187,50 @@ def _wrap(text: str, latin: str, width: float) -> list[str]:
     return lines or [""]
 
 
+# -- rich text: a sentence with one bold run ---------------------------------------
+
+Segment = tuple[str, str]   # (text, latin face)
+
+
+def _segments(text: str) -> list[Segment]:
+    """`'a **b** c'` -> `[('a ', REGULAR), ('b', BOLD), (' c', REGULAR)]`."""
+    out: list[Segment] = []
+    for n, part in enumerate(text.split("**")):
+        if part:
+            out.append((part, BOLD if n % 2 else REGULAR))
+    return out
+
+
+def _rich_wrap(text: str, width: float) -> list[list[Segment]]:
+    """Wrap a `**`-marked sentence word by word, keeping each word's weight. A
+    line is a list of segments; the space after a word travels with it."""
+    words: list[tuple[str, str]] = []
+    for part, face in _segments(text):
+        for token in re.findall(r"\S+|\s+", part):
+            if token.isspace():
+                words.append((" ", face))
+            else:
+                words.append((token, face))
+    lines: list[list[Segment]] = [[]]
+    used = 0.0
+    pending = ""   # a space waiting to be printed before the next word
+    for token, face in words:
+        if token == " ":
+            pending = " "
+            continue
+        w_token = _width(token, face)
+        w_space = _width(pending, REGULAR) if pending else 0.0
+        if lines[-1] and used + w_space + w_token > width:
+            lines.append([])
+            used, pending, w_space = 0.0, "", 0.0
+        if lines[-1] and pending:
+            lines[-1].append((pending, REGULAR))
+        lines[-1].append((token, face))
+        used += w_space + w_token
+        pending = ""
+    return lines
+
+
 # -- content ------------------------------------------------------------------------
 
 def file_name(case: dict) -> str:
@@ -163,6 +239,7 @@ def file_name(case: dict) -> str:
 
 def _display(name, name_zh) -> str:
     name, zh = str(name or "").strip(), str(name_zh or "").strip()
+    name, zh = name.replace("**", ""), zh.replace("**", "")
     if zh and zh != name:
         return f"{name} {zh}".strip()
     return name or zh
@@ -173,13 +250,35 @@ def _party(entry: dict) -> str:
     return _display(party.get("name"), party.get("name_zh")) or "the officer"
 
 
+def _principal(entry: dict) -> str:
+    """The director an alternate stands in for. Carried on the entry as
+    `alternate_to_name` (ticket 03 resolves it); with none, a neutral phrase."""
+    return _display(entry.get("alternate_to_name"), "") or "a director of the company"
+
+
+def _sentence(entry: dict, capacity: str, death: bool) -> str:
+    name = _party(entry)
+    role = _ROLE[capacity]
+    if death:
+        text = DEATH.format(name=name, role=role, article=_ARTICLE[capacity])
+        if capacity == "alternate_director" and entry.get("alternate_to_name"):
+            text = text.replace(" of the company by", f" to {_principal(entry)} by")
+        return text
+    if capacity == "alternate_director":
+        template = APPOINT_ALTERNATE if entry["kind"] == "appointment" else RESIGN_ALTERNATE
+        return template.format(name=name, principal=_principal(entry))
+    template = APPOINT if entry["kind"] == "appointment" else RESIGN
+    return template.format(name=name, role=role)
+
+
 def paragraphs(entries: list[dict]) -> list[tuple[str, list[str]]]:
     """`[(heading, [resolution, ...])]`, cessations before appointments, as the
-    sample orders them; directors before secretaries."""
+    sample orders them; directors, then secretaries, then alternates. Each
+    resolution is a `**`-marked sentence (the officer's name is bold)."""
     groups: dict[tuple, list[str]] = {}
     order = []
     for kind in ("cessation", "appointment"):
-        for capacity in ("director", "company_secretary"):
+        for capacity in ("director", "company_secretary", "alternate_director"):
             for death in ((False, True) if kind == "cessation" else (False,)):
                 order.append((kind, capacity, death))
     for entry in entries:
@@ -187,15 +286,8 @@ def paragraphs(entries: list[dict]) -> list[tuple[str, list[str]]]:
         if capacity not in _ROLE or entry.get("kind") not in ("cessation", "appointment"):
             continue
         death = entry.get("kind") == "cessation" and entry.get("cessation_reason") == "D"
-        role = _ROLE[capacity]
-        if entry["kind"] == "appointment":
-            text = APPOINT.format(name=_party(entry), role=role)
-        elif death:
-            text = DEATH.format(name=_party(entry), role=role,
-                                article="a" if capacity == "director" else "the")
-        else:
-            text = RESIGN.format(name=_party(entry), role=role)
-        groups.setdefault((entry["kind"], capacity, death), []).append(text)
+        groups.setdefault((entry["kind"], capacity, death), []).append(
+            _sentence(entry, capacity, death))
     out = []
     for key in order:
         texts = groups.get(key)
@@ -209,65 +301,77 @@ def paragraphs(entries: list[dict]) -> list[tuple[str, list[str]]]:
     return out
 
 
-def closing(entries: list[dict]) -> str:
-    count = sum(len(texts) for _, texts in paragraphs(entries))
-    return CLOSING.format(count=_COUNT.get(count, "All changes"))
-
-
 def dated(entries: list[dict]) -> str | None:
-    """The one effective date every change shares, as the sample writes it."""
+    """The one effective date every change shares, as the template writes it:
+    two-digit day, day first (`04 November 2026`)."""
     days = {_as_date(e.get("effective_date")) for e in entries}
     if len(days) != 1:
         return None
     day = days.pop()
-    return f"{day.day} {day:%B %Y}" if isinstance(day, date) else None
+    return f"{day:%d %B %Y}" if isinstance(day, date) else None
 
 
-def _board_after(entries: list[dict], officers: list[dict]) -> list[tuple[str, str | None]]:
-    """`[(name, person_id)]` for every director in office AFTER the changes:
-    those staying, then those appointed; with nobody left, the directors in
-    office before. Not yet de-duplicated or filtered: this is the ONE statement
-    of who signs, and both views below read it."""
-    leaving = {e.get("officer_id") for e in entries
-               if e.get("kind") == "cessation" and e.get("officer_id")}
-    directors = [o for o in officers if o.get("role") == "director"]
-    rows = [(_display(o.get("name"), o.get("name_zh")), o.get("person_id"))
-            for o in directors if o.get("officer_id") not in leaving]
-    rows += [(_party(e), e.get("person_id")) for e in entries
-             if e.get("kind") == "appointment" and e.get("capacity") == "director"]
-    if not rows:
-        rows = [(_display(o.get("name"), o.get("name_zh")), o.get("person_id"))
-                for o in directors]
-    return rows
+def _signers(entries: list[dict], officers: list[dict]) -> list[dict]:
+    """Everyone who signs, in order, de-duplicated by party: every director in
+    office BEFORE the changes (those ceasing included), then every director
+    appointed on this form. `{name, person_id, corporate}` each.
+
+    This is the ONE statement of who signs, and the views below read it. A
+    director who has died is left off (nobody can sign for them); alternate
+    directors are never on it."""
+    dead = {e.get("officer_id") for e in entries
+            if e.get("kind") == "cessation" and e.get("cessation_reason") == "D"
+            and e.get("officer_id")}
+    rows: list[dict] = []
+    for o in officers:
+        if o.get("role") != "director" or o.get("officer_id") in dead or o.get("date_of_death"):
+            continue
+        rows.append({"name": _display(o.get("name"), o.get("name_zh")),
+                     "person_id": o.get("person_id"),
+                     "key": o.get("person_id") or o.get("corporate_entity_id"),
+                     "corporate": (o.get("party_type") == "corporate"
+                                   or (not o.get("person_id")
+                                       and bool(o.get("corporate_entity_id"))))})
+    for e in entries:
+        if e.get("kind") == "appointment" and e.get("capacity") == "director":
+            rows.append({"name": _party(e), "person_id": e.get("person_id"),
+                         "key": e.get("person_id") or e.get("corporate_entity_id"),
+                         "corporate": (e.get("party_type") == "corporate"
+                                       or (not e.get("person_id")
+                                           and bool(e.get("corporate_entity_id"))))})
+    seen, out = set(), []
+    for row in rows:
+        # A person is one line even when a raw entry (which carries no display
+        # name) stands in for them, so the identity is the party id when there
+        # is one, and the name otherwise.
+        key = row["key"] or row["name"]
+        if row["name"] and key not in seen:
+            seen.add(key)
+            out.append(row)
+    return out
 
 
 def signatories(entries: list[dict], officers: list[dict]) -> list[str]:
-    """Every director in office AFTER the changes: those staying, then those
-    appointed. With nobody left, the directors in office before."""
-    seen, out = set(), []
-    for name, _person_id in _board_after(entries, officers):
-        if name and name not in seen:
-            seen.add(name)
-            out.append(name)
-    return out
+    """The names on the signature lines, in order."""
+    return [row["name"] for row in _signers(entries, officers)]
 
 
 def signatory_people(entries: list[dict], officers: list[dict]) -> list[tuple[str, str | None]]:
     """`[(name, person_id)]`: the same signature lines as `signatories`, in the
     same order, each with the person it belongs to (None for a line the portal
-    cannot attribute). `signatories` keeps returning names alone because its
-    callers and tests expect `list[str]`.
+    cannot attribute, a body corporate included). `signatories` keeps returning
+    names alone because its callers and tests expect `list[str]`."""
+    return [(row["name"], row["person_id"]) for row in _signers(entries, officers)]
 
-    A person is one line even when a raw entry (which carries no display name)
-    stands in for them, so the identity is the person id when there is one, and
-    the name otherwise."""
-    seen, out = set(), []
-    for name, person_id in _board_after(entries, officers):
-        key = person_id or name
-        if name and key not in seen:
-            seen.add(key)
-            out.append((name, person_id))
-    return out
+
+def _block_lines(row: dict, width: float) -> list[str]:
+    """The text lines under one signature rule."""
+    if row["corporate"]:
+        lines = ["Name:", "For and on behalf of", *_wrap(row["name"], REGULAR, width),
+                 "Director"]
+    else:
+        lines = [*_wrap(f"Name: {row['name']}", REGULAR, width), "Director"]
+    return lines
 
 
 # -- layout ---------------------------------------------------------------------------
@@ -304,9 +408,21 @@ class _Page:
             self.pdf.rect(x, PAGE_H - (self.y + UNDERLINE_BELOW) - UNDERLINE_THICK, width,
                           UNDERLINE_THICK, stroke=0, fill=1)
 
-    def paragraph(self, text: str, *, latin: str = REGULAR) -> None:
-        for line in _wrap(text, latin, RIGHT - LEFT):
-            self.line(line, latin=latin)
+    def cells(self, items: list[tuple[str, float]]) -> None:
+        """One baseline, several columns: `[(text, x)]`."""
+        self._advance(_CJK if any(_is_cjk_line(t, REGULAR) for t, _ in items) else _TIMES)
+        self.fresh = False
+        for text, x in items:
+            _draw(self.pdf, text, x, self.y, REGULAR)
+
+    def paragraph(self, text: str) -> None:
+        for line in _rich_wrap(text, RIGHT - LEFT):
+            self._advance(_CJK if any(_is_cjk_line(t, f) for t, f in line) else _TIMES)
+            self.fresh = False
+            x = LEFT
+            for chunk, face in line:
+                _draw(self.pdf, chunk, x, self.y, face)
+                x += _width(chunk, face)
 
     def room_for(self, lines: int) -> bool:
         return self.y + self.descent + lines * sum(_CJK) <= PAGE_H - BOTTOM_MARGIN
@@ -322,6 +438,23 @@ def _draw(pdf: canvas.Canvas, text: str, x: float, baseline: float, latin: str) 
 def _rule(pdf: canvas.Canvas, top: float) -> None:
     pdf.rect(RULE_X0, PAGE_H - top - RULE_THICK, RULE_X1 - RULE_X0, RULE_THICK,
              stroke=0, fill=1)
+
+
+def _header(entity: dict) -> list[str]:
+    """The template's header lines, bold and centred between the heavy rules."""
+    english = str(entity.get("company_name") or "").strip()
+    chinese = str(entity.get("company_name_zh") or "").strip()
+    lines = ["WRITTEN RESOLUTIONS OF"]
+    if english:
+        lines += _wrap(english, BOLD, RIGHT - LEFT)
+    if chinese and chinese != english:
+        lines += _wrap(chinese, BOLD, RIGHT - LEFT)
+    if not english and not chinese:
+        lines.append("The Company")
+    if str(entity.get("br_number") or "").strip():
+        lines.append(f"(Business License No. {str(entity['br_number']).strip()})")
+    lines.append("(the “Company”)")
+    return lines
 
 
 def render(case: dict, entity: dict, entries: list[dict], officers: list[dict],
@@ -341,12 +474,9 @@ def render(case: dict, entity: dict, entries: list[dict], officers: list[dict],
     pdf.setTitle(f"Written Resolutions of {company}")
     pdf.setFillColorRGB(0, 0, 0)
 
-    header = ["WRITTEN RESOLUTIONS OF", *_wrap(company, BOLD, RIGHT - LEFT)]
-    if str(entity.get("br_number") or "").strip():
-        header.append(f"(Business Registration No. {str(entity['br_number']).strip()})")
-    header.append("(the “Company”)")
     _rule(pdf, RULE1_TOP)
     baseline = HEADER_FIRST
+    header = _header(entity)
     for text in header:
         _draw(pdf, text, CENTRE - _width(text, BOLD) / 2, baseline, BOLD)
         baseline += HEADER_PITCH
@@ -359,33 +489,39 @@ def render(case: dict, entity: dict, entries: list[dict], officers: list[dict],
     page.blank()
     for heading, texts in paragraphs(entries):
         page.line(heading, latin=BOLD, underline=True)
-        for n, text in enumerate(texts):
+        for text in texts:
             page.blank()
             page.paragraph(text)
         page.blank()
         page.blank()
-    page.paragraph(closing(entries))
-    for _ in range(5):
-        page.blank()
     page.line(f"Dated: {dated(entries) or '_' * 20}")
-    for n, (name, person_id) in enumerate(signatory_people(entries, officers)):
-        # A block is its spacing plus the rule, the name and 'Director' (review
-        # finding 4): 4 + 3 lines for the first, 3 + 3 after.
-        if not page.room_for(7 if n == 0 else 6):
+
+    signers = _signers(entries, officers)
+    for start in range(0, len(signers), 2):
+        row = signers[start:start + 2]
+        blocks = [_block_lines(s, _COLUMN_WIDTH[n]) for n, s in enumerate(row)]
+        height = 1 + max(len(b) for b in blocks)        # the rule, then the block
+        spacing = 4 if start == 0 else 3
+        # A row is its spacing plus its rule and lines, and is never split
+        # across pages (review finding 4).
+        if not page.room_for(spacing + height):
             pdf.showPage()
             page.y, page.descent, page.fresh = TOP_MARGIN, 0.0, True
-        for _ in range(4 if n == 0 else 3):
+        for _ in range(spacing):
             page.blank()
-        page.line(SIGNATURE_RULE, x=SIGNATURE_X)
-        if signatures and person_id in signatures:
-            _sign(pdf, signatures[person_id], page.y)
-        page.line(f"Name: {name}", x=SIGNATURE_X)
-        page.line("Director", x=SIGNATURE_X)
+        page.cells([(SIGNATURE_RULE, SIGNATURE_COLUMNS[n]) for n in range(len(row))])
+        rule_y = page.y
+        for n, s in enumerate(row):
+            if signatures and s["person_id"] and s["person_id"] in signatures:
+                _sign(pdf, signatures[s["person_id"]], rule_y, SIGNATURE_COLUMNS[n])
+        for i in range(height - 1):
+            page.cells([(b[i], SIGNATURE_COLUMNS[n]) for n, b in enumerate(blocks)
+                        if i < len(b)])
     pdf.save()
     return buffer.getvalue()
 
 
-def _sign(pdf: canvas.Canvas, png: bytes, rule_baseline: float) -> None:
+def _sign(pdf: canvas.Canvas, png: bytes, rule_baseline: float, x: float) -> None:
     """Draw one director's picture ON their rule: left edge at the rule's,
     bottom just above the underscores' baseline, scaled to fit the room the
     blank lines above the rule leave (never beyond 1 pixel : 1 point). A picture
@@ -393,7 +529,7 @@ def _sign(pdf: canvas.Canvas, png: bytes, rule_baseline: float) -> None:
     try:
         img = stamp.prepared(png)
         w, h = stamp.fit(img.width, img.height, _width(SIGNATURE_RULE, REGULAR), SIGN_HEIGHT)
-        pdf.drawImage(ImageReader(img), SIGNATURE_X, PAGE_H - rule_baseline + SIGN_LIFT,
+        pdf.drawImage(ImageReader(img), x, PAGE_H - rule_baseline + SIGN_LIFT,
                       width=w, height=h, mask="auto")
     except Exception as exc:  # noqa: BLE001
         print(f"[resolution] a signature could not be drawn: {exc}", file=sys.stderr)
