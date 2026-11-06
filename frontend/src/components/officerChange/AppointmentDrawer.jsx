@@ -7,6 +7,9 @@ import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 
 const CONSENT_CAPACITIES = ['Director', 'Company Secretary', 'Authorized Person']
+// Offered only where the consent is for an alternate director: the person
+// signing for a body corporate may themselves be its alternate director.
+const ALTERNATE_CONSENT_CAPACITIES = ['Director', 'Alternate Director', 'Company Secretary', 'Authorized Person']
 const BLANK_ADDRESS = { line1: '', line2: '', line3: '', city: '', country: '' }
 
 /**
@@ -96,6 +99,13 @@ function PartyPicker({ kind, selected, onSelect, label, first = null }) {
  * whether the correspondence address is the residential one, the Section 5
  * confirmation for a natural-person secretary, and who signs a body corporate
  * director's consent.
+ *
+ * AN ALTERNATE DIRECTOR (Jacqueline 2026-11-04, PBI-70, reversing ND2 PRD
+ * answer 5) is a third capacity. It is an alternate TO one director of this
+ * company, so it asks "Alternate to" — a picker of the company's current
+ * directors, never a typed id — and refuses to save without it. A body
+ * corporate alternate needs a consent signer exactly as a body corporate
+ * director does: CR's consent wording covers "director / alternate director".
  */
 export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   const editing = Boolean(entry)
@@ -104,6 +114,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   const [party, setParty] = useState(entry ? { id: entry.person_id || entry.corporate_entity_id,
     full_name: entry.party?.name } : null)
   const [capacity, setCapacity] = useState(entry?.capacity || 'director')
+  const [alternateTo, setAlternateTo] = useState(entry?.alternate_to_officer_id || '')
   const [date, setDate] = useState(entry?.effective_date || '')
   const [sameAddress, setSameAddress] = useState(entry ? entry.correspondence_same_as_residential !== false : true)
   const [address, setAddress] = useState({ ...BLANK_ADDRESS, ...(entry?.correspondence_address || {}) })
@@ -115,12 +126,29 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
 
   const natural = kind === 'person'
-  const corporateDirector = !natural && capacity === 'director'
+  const alternate = capacity === 'alternate_director'
+  // A body corporate that joins as a director OR an alternate needs somebody to
+  // sign its consent to act.
+  const corporateDirector = !natural && (capacity === 'director' || alternate)
+  // The directors an alternate can act for: current, and not already leaving on
+  // this form (an alternate to a director who ceases is refused as an orphan).
+  const principals = (data.officers || []).filter(o => o.role === 'director' && o.officer_id)
   const naturalSecretary = natural && capacity === 'company_secretary'
   const gshk = useGshk(!editing && !natural && capacity === 'company_secretary')
 
+  function chooseCapacity(next) {
+    setCapacity(next)
+    // The extra signer capacity exists only for an alternate; do not leave it
+    // selected once the appointment stops being one.
+    if (next !== 'alternate_director' && signerCapacity === 'Alternate Director') setSignerCapacity('Director')
+  }
+
   function payload() {
     const body = { capacity, effective_date: date }
+    if (alternate) body.alternate_to_officer_id = alternateTo
+    // Editing an alternate into something else must clear the link, or the
+    // officer would keep an "alternate to" it no longer has.
+    else if (editing && entry.alternate_to_officer_id) body.alternate_to_officer_id = null
     if (natural) {
       body.correspondence_same_as_residential = sameAddress
       body.correspondence_address = sameAddress ? null : address
@@ -152,6 +180,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   // The date may wait until Signing (Jacqueline A1).
   const ready = party && (sameAddress || !natural || (address.line1 && address.country))
     && (!corporateDirector || signer) && (!naturalSecretary || section5)
+    && (!alternate || alternateTo)
 
   return (
     <Drawer title={editing ? 'Edit appointment' : 'Add appointment'}
@@ -165,10 +194,30 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
       <fieldset className="f-group" style={{ border: 0, padding: 0, margin: 0 }}>
         <legend className="f-label">Capacity <span className="f-req">*</span></legend>
         <label className="check-row"><input type="radio" name="oc-cap" checked={capacity === 'director'}
-          onChange={() => setCapacity('director')} /> Director</label>
+          onChange={() => chooseCapacity('director')} /> Director</label>
+        <label className="check-row"><input type="radio" name="oc-cap" checked={alternate}
+          onChange={() => chooseCapacity('alternate_director')} /> Alternate Director</label>
         <label className="check-row"><input type="radio" name="oc-cap" checked={capacity === 'company_secretary'}
-          onChange={() => setCapacity('company_secretary')} /> Company Secretary</label>
+          onChange={() => chooseCapacity('company_secretary')} /> Company Secretary</label>
       </fieldset>
+
+      {alternate && (
+        <div className="f-group">
+          <label className="f-label" htmlFor="oc-alt-to">Alternate to <span className="f-req">*</span></label>
+          <select id="oc-alt-to" className="f-select" value={alternateTo}
+                  onChange={e => setAlternateTo(e.target.value)}>
+            <option value="">Choose a current director…</option>
+            {principals.map(o => (
+              <option key={o.officer_id} value={o.officer_id} disabled={o.pending}>
+                {o.name}{o.pending ? ' (already on this form)' : ''}
+              </option>
+            ))}
+          </select>
+          {principals.length === 0 && (
+            <div className="f-hint">This company has no current director to be alternate to.</div>
+          )}
+        </div>
+      )}
 
       {!editing && (
         <div className="oc-seg" role="group" aria-label="Who is appointed">
@@ -230,7 +279,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
             <label className="f-label" htmlFor="oc-signer-cap">Their capacity in the body corporate</label>
             <select id="oc-signer-cap" className="f-select" value={signerCapacity}
                     onChange={e => setSignerCapacity(e.target.value)}>
-              {CONSENT_CAPACITIES.map(c => <option key={c} value={c}>{c}</option>)}
+              {(alternate ? ALTERNATE_CONSENT_CAPACITIES : CONSENT_CAPACITIES).map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         </>

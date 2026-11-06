@@ -4,6 +4,7 @@ import { CR_ADDRESS_LABELS, crAddressLines } from '../../lib/crAddress.js'
 import { fieldWarning } from '../../lib/formContract.js'
 import AddressBlock from '../AddressBlock.jsx'
 import ConfirmDialog from '../ConfirmDialog.jsx'
+import { capacityLabel } from '../officerChange/capacity.js'
 import './particulars.css'
 
 /**
@@ -38,7 +39,6 @@ import './particulars.css'
  */
 
 const CO_COLOURS = 6
-const ROLE = { director: 'Director', company_secretary: 'Company Secretary' }
 const ID_TYPE = { hkid: 'Hong Kong Identity Card', passport: 'Passport',
   china_id: 'Mainland China Identity Card', other: 'Other Identity Document' }
 const ADDRESS_KEYS = ['line1', 'line2', 'line3', 'city', 'state_region', 'postal_code', 'country']
@@ -131,7 +131,7 @@ function CompanyPicker({ title, companies, initial, locked = [], lockedNote, not
               <span>
                 <span className="pb-pick-name">{c.company_name || 'A company'}</span>
                 <span className="pb-pick-role">
-                  {(c.roles || []).map(r => ROLE[r] || r).join(' and ')}
+                  {(c.roles || []).map(r => capacityLabel(r)).join(' and ')}
                 </span>
               </span>
             </label>

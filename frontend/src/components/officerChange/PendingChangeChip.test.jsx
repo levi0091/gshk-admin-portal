@@ -26,6 +26,13 @@ describe('pendingFor', () => {
       .toBe('n2')
   })
 
+  it('finds an alternate director by its own capacity, and does not mistake it for a director', () => {
+    const cases = [{ id: 'k3', case_no: 'ND2A-2026-0003', case_type: 'ND2A', entries: [
+      { id: 'n9', kind: 'cessation', capacity: 'alternate_director', officer_id: null, person_id: 'p5' }] }]
+    expect(pendingFor(cases, { personId: 'p5', capacity: 'alternate_director' })?.entry.id).toBe('n9')
+    expect(pendingFor(cases, { personId: 'p5', capacity: 'director' })).toBeNull()
+  })
+
   it('does not cross capacities, and answers null for nobody', () => {
     expect(pendingFor(CASES, { personId: 'p1', capacity: 'company_secretary' })).toBeNull()
     expect(pendingFor(CASES, { officerId: 'zz', capacity: 'director' })).toBeNull()

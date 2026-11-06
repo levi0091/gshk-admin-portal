@@ -156,7 +156,125 @@ describe('AppointmentDrawer', () => {
     wrap(<AppointmentDrawer data={BASE} entry={corp} onClose={() => {}} onSaved={() => {}} />)
     expect(screen.getByLabelText(/Consent signed by/)).toBeInTheDocument()
     expect(screen.queryByLabelText(/Correspondence address/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/Alternate/)).not.toBeInTheDocument()
+  })
+
+  // PBI-70 revived (Jacqueline 2026-11-04): alternate directors are in scope.
+  describe('alternate director', () => {
+    const personHit = { persons: [{ id: 'p5', full_name: 'WONG Alt' }] }
+
+    async function pickPerson() {
+      get.mockImplementation(url => Promise.resolve(url.startsWith('/persons') ? personHit : {}))
+      await userEvent.type(screen.getByLabelText(/^Person/), 'wong')
+      await userEvent.click(await screen.findByText('WONG Alt'))
+    }
+
+    it('offers Alternate Director as a capacity', () => {
+      wrap(<AppointmentDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+      expect(screen.getByLabelText('Alternate Director')).toBeInTheDocument()
+      expect(screen.queryByLabelText(/Alternate to/)).not.toBeInTheDocument()
+    })
+
+    it('asks whom the alternate acts for, from the current directors only, and requires it', async () => {
+      post.mockResolvedValue({ id: 'k1' })
+      const saved = vi.fn()
+      wrap(<AppointmentDrawer data={BASE} onClose={() => {}} onSaved={saved} />)
+      await userEvent.click(screen.getByLabelText('Alternate Director'))
+      const select = screen.getByLabelText(/Alternate to/)
+      expect(within(select).getAllByRole('option').map(o => o.textContent)).toEqual(
+        ['Choose a current director…', 'CHAN Tai Man', 'LEE Dead'])
+      await pickPerson()
+      expect(screen.getByRole('button', { name: 'Add appointment' })).toBeDisabled()
+      await userEvent.selectOptions(select, 'o1')
+      await userEvent.click(screen.getByRole('button', { name: 'Add appointment' }))
+      await waitFor(() => expect(post).toHaveBeenCalled())
+      const [path, body] = post.mock.calls[0]
+      expect(path).toBe('/officer-changes/k1/entries')
+      expect(body).toMatchObject({ kind: 'appointment', person_id: 'p5',
+        capacity: 'alternate_director', alternate_to_officer_id: 'o1' })
+      expect(saved).toHaveBeenCalled()
+    })
+
+    it('will not offer a director who already ceases on this form', async () => {
+      const data = { ...BASE, officers: [{ ...BASE.officers[0], pending: true }, BASE.officers[1],
+        BASE.officers[2]] }
+      wrap(<AppointmentDrawer data={data} onClose={() => {}} onSaved={() => {}} />)
+      await userEvent.click(screen.getByLabelText('Alternate Director'))
+      expect(screen.getByRole('option', { name: /CHAN Tai Man/ })).toBeDisabled()
+    })
+
+    it('sends no alternate_to_officer_id for a director, even after one was chosen', async () => {
+      post.mockResolvedValue({ id: 'k1' })
+      wrap(<AppointmentDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+      await pickPerson()
+      await userEvent.click(screen.getByLabelText('Alternate Director'))
+      await userEvent.selectOptions(screen.getByLabelText(/Alternate to/), 'o1')
+      await userEvent.click(screen.getByLabelText('Director'))
+      await userEvent.click(screen.getByRole('button', { name: 'Add appointment' }))
+      await waitFor(() => expect(post).toHaveBeenCalled())
+      expect(post.mock.calls[0][1]).not.toHaveProperty('alternate_to_officer_id')
+    })
+
+    it('opens an existing alternate on its principal, and clears the link when it stops being one', async () => {
+      patch.mockResolvedValue({ id: 'k1' })
+      const alt = { ...entry, capacity: 'alternate_director', alternate_to_officer_id: 'o2',
+        alternate_to_name: 'LEE Dead' }
+      wrap(<AppointmentDrawer data={BASE} entry={alt} onClose={() => {}} onSaved={() => {}} />)
+      expect(screen.getByLabelText(/Alternate to/)).toHaveValue('o2')
+      await userEvent.click(screen.getByLabelText('Director'))
+      await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      await waitFor(() => expect(patch).toHaveBeenCalled())
+      expect(patch.mock.calls[0][1]).toMatchObject({ capacity: 'director', alternate_to_officer_id: null })
+    })
+
+    it('treats a body corporate alternate like a body corporate director: a consent signer', async () => {
+      const corp = { ...entry, party_type: 'corporate', corporate_entity_id: 'c9', person_id: null,
+        party: { name: 'Corp Ltd' }, capacity: 'director' }
+      wrap(<AppointmentDrawer data={BASE} entry={corp} onClose={() => {}} onSaved={() => {}} />)
+      const caps = () => within(screen.getByLabelText(/Their capacity in the body corporate/))
+        .getAllByRole('option').map(o => o.textContent)
+      expect(caps()).toEqual(['Director', 'Company Secretary', 'Authorized Person'])
+      await userEvent.click(screen.getByLabelText('Alternate Director'))
+      expect(screen.getByLabelText(/Consent signed by/)).toBeInTheDocument()
+      expect(caps()).toEqual(['Director', 'Alternate Director', 'Company Secretary', 'Authorized Person'])
+    })
+
+    it('does not leave the signer as an alternate once the appointment stops being one', async () => {
+      const corp = { ...entry, party_type: 'corporate', corporate_entity_id: 'c9', person_id: null,
+        party: { name: 'Corp Ltd' }, capacity: 'alternate_director', alternate_to_officer_id: 'o1',
+        consent_person_id: 'p3', consent_person_name: 'SIGN Er', consent_capacity: 'Alternate Director' }
+      wrap(<AppointmentDrawer data={BASE} entry={corp} onClose={() => {}} onSaved={() => {}} />)
+      expect(screen.getByLabelText(/Their capacity in the body corporate/)).toHaveValue('Alternate Director')
+      await userEvent.click(screen.getByLabelText('Director'))
+      expect(screen.getByLabelText(/Their capacity in the body corporate/)).toHaveValue('Director')
+    })
+  })
+})
+
+describe('CessationDrawer — alternate directors', () => {
+  const data = { ...BASE, officers: [...BASE.officers, {
+    officer_id: 'o9', role: 'alternate_director', party_type: 'individual', name: 'WONG Alt',
+    alternate_to_officer_id: 'o1', alternate_to_name: 'CHAN Tai Man', pending: false }] }
+
+  it('lists a current alternate as "Alternate Director (alternate to <name>)" and ceases it by officer id', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    wrap(<CessationDrawer data={data} onClose={() => {}} onSaved={() => {}} />)
+    expect(screen.getByRole('option', { name: 'WONG Alt — Alternate Director (alternate to CHAN Tai Man)' }))
+      .toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o9')
+    expect(screen.getByLabelText('Resignation / Others')).toBeChecked()
+    await userEvent.type(screen.getByLabelText(/Date of cessation/), '2026-09-28')
+    await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries',
+      { kind: 'cessation', officer_id: 'o9', effective_date: '2026-09-28', cessation_reason: 'R',
+        date_of_death: null }))
+  })
+
+  it('names the capacity and principal of an alternate being edited', () => {
+    const entry = { id: 'n4', kind: 'cessation', officer_id: 'o9', party_type: 'individual',
+      capacity: 'alternate_director', alternate_to_name: 'CHAN Tai Man', party: { name: 'WONG Alt' },
+      cessation_reason: 'R' }
+    wrap(<CessationDrawer data={data} entry={entry} onClose={() => {}} onSaved={() => {}} />)
+    expect(screen.getByText('WONG Alt · Alternate Director (alternate to CHAN Tai Man)')).toBeInTheDocument()
   })
 })
 
@@ -174,6 +292,31 @@ describe('ParticularsChangeCard', () => {
     await userEvent.click(screen.getAllByRole('button', { name: 'Omit' }).at(-1))
     expect(patch).toHaveBeenCalledWith('/officer-changes/k1/entries/n3',
       { items: [{ key: 'email', omitted: true }] })
+  })
+})
+
+describe('ParticularsChangeCard — alternate directors (PBI-70)', () => {
+  it('lists an alternate to add, and labels its change entry, with whom it acts for', () => {
+    const data = { ...BASE, form_code: 'Nd2b', officers: [...BASE.officers, {
+      officer_id: 'o9', role: 'alternate_director', party_type: 'individual', name: 'WONG Alt',
+      alternate_to_name: 'CHAN Tai Man', pending: false }],
+    entries: [{ id: 'n3', kind: 'change', officer_id: 'o9', capacity: 'alternate_director',
+      alternate_to_name: 'CHAN Tai Man', party: { name: 'WONG Alt' }, items: [] }] }
+    wrap(<ParticularsChangeCard data={data} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText('Alternate Director (alternate to CHAN Tai Man)')).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'LEE Dead — Director' })).toBeInTheDocument()
+  })
+})
+
+describe('Signing capacity (PBI-70)', () => {
+  it('offers Alternate Director when the server lists it', () => {
+    const data = { ...BASE, signatory: { name: 'WONG Alt', default_capacity: 'Alternate Director',
+      capacities: ['Director', 'Alternate Director'] } }
+    wrap(<StageDataVerification data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    const select = screen.getByLabelText('WONG Alt signs as')
+    expect(within(select).getAllByRole('option').map(o => o.textContent))
+      .toEqual(['Director', 'Alternate Director'])
+    expect(select).toHaveValue('Alternate Director')
   })
 })
 

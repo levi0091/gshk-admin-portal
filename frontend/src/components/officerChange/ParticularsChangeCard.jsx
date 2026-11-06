@@ -6,8 +6,8 @@ import { officerRef } from './CessationDrawer.jsx'
 import { formatDate } from '../../lib/format.js'
 import { crAddressLines } from '../../lib/crAddress.js'
 import { useLookups } from '../../lib/lookups.js'
+import { capacityWithPrincipal } from './capacity.js'
 
-const ROLE = { director: 'Director', company_secretary: 'Company Secretary' }
 const ADDRESS_KEYS = new Set(['residential_address', 'correspondence_address', 'address'])
 
 /**
@@ -85,7 +85,7 @@ export default function ParticularsChangeCard({ data, reload, can }) {
                     onChange={e => setAdding(e.target.value)}>
               <option value="">Add an officer…</option>
               {available.map(o => (
-                <option key={officerRef(o)} value={officerRef(o)}>{o.name} — {ROLE[o.role]}</option>
+                <option key={officerRef(o)} value={officerRef(o)}>{o.name} — {capacityWithPrincipal(o)}</option>
               ))}
             </select>
             <button className="btn btn-primary" disabled={!adding}
@@ -122,7 +122,7 @@ export default function ParticularsChangeCard({ data, reload, can }) {
         <div className="oc-pc" key={entry.id} data-testid={`entry-${entry.id}`}>
           <div className="oc-pc-hd">
             <span className="oc-pc-name">{entry.party?.name}</span>
-            <span className="td-muted">{ROLE[entry.capacity]}</span>
+            <span className="td-muted">{capacityWithPrincipal(entry)}</span>
             {entry.party?.profile_path && <Link to={entry.party.profile_path}>Open profile</Link>}
             {editable && (
               <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }}
