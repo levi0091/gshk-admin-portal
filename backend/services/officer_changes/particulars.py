@@ -46,7 +46,9 @@ TRACKED_ENTITY_FIELDS = frozenset({
 })
 
 _TABLE = "officer_cr_particulars"
-_ROLES = ("director", "company_secretary")
+#: Alternate directors report changes of particulars exactly as directors do
+#: (Jacqueline, 2026-11-04, PBI-70); CR's ND2B names them `cpty` = `AD`.
+_ROLES = ("director", "company_secretary", "alternate_director")
 _ADDRESS_KEYS = ("line1", "line2", "line3", "city", "state_region",
                  "postal_code", "country")
 
@@ -280,7 +282,10 @@ def diff(baseline: dict, current: dict, *, capacity: str) -> list[dict]:
     corporate = baseline.get("party_type") == "corporate"
     out = []
     for key, cr_item, label, only_for in (_CORPORATE_ITEMS if corporate else _PERSON_ITEMS):
-        if only_for and only_for != capacity:
+        # "director" items (the residential address) apply to an alternate too:
+        # CR holds one for "Director / Alternate Director" (indvNewResAddr).
+        if only_for and only_for != ("director" if capacity == "alternate_director"
+                                     else capacity):
             continue
         if key == "email" and not corporate and current.get("hide_email"):
             # Levi 2026-10-29: "not printed on any forms NAR1, ND2A or ND2B", so

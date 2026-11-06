@@ -24,7 +24,7 @@ from __future__ import annotations
 import sys
 
 from services.officer_change_form import stamp
-from services.officer_changes import cases, nd2a_mapper, signatures
+from services.officer_changes import capacities, cases, nd2a_mapper, signatures
 
 
 def for_form(case: dict) -> stamp.Signatures | None:
@@ -39,7 +39,7 @@ def for_form(case: dict) -> stamp.Signatures | None:
             # see the one who did not sign, or a signer's image would match that
             # person's box too and print there.
             incoming = [e["person_id"] for e in cases.list_entries(case["id"])
-                        if e.get("kind") == "appointment" and e.get("capacity") == "director"
+                        if e.get("kind") == "appointment" and e.get("capacity") in capacities.DIRECTORS
                         and e.get("person_id")]
             seen: dict = {}
             for person_id, person in cases._by_id("persons", incoming).items():

@@ -31,7 +31,7 @@ from PIL import Image, ImageChops
 
 from db.supabase import get_supabase
 from services import nar1_approvals
-from services.officer_changes import cases, resolution
+from services.officer_changes import capacities, cases, resolution
 
 _TABLE = "officer_change_signatures"
 
@@ -145,7 +145,7 @@ def must_sign(case: dict, person_id) -> bool:
         if case.get("form_code") != "Nd2a":
             return False
         entries = cases.list_entries(case["id"])
-        if any(e.get("kind") == "appointment" and e.get("capacity") == "director"
+        if any(e.get("kind") == "appointment" and e.get("capacity") in capacities.DIRECTORS
                and e.get("person_id") == person_id for e in entries):
             return True
         return _signs_resolution(entity_id, entries, person_id)
@@ -184,7 +184,7 @@ def required_signers_strict(case: dict) -> list[dict]:
     if case.get("form_code") == "Nd2a":
         entries = cases.list_entries(case["id"])
         for entry in entries:
-            if entry.get("kind") == "appointment" and entry.get("capacity") == "director":
+            if entry.get("kind") == "appointment" and entry.get("capacity") in capacities.DIRECTORS:
                 add(entry.get("person_id"), "consent")
         officers = cases._current_officers(entity_id, entries)
         officer_names = {o.get("person_id"): o.get("name") for o in officers

@@ -12,13 +12,16 @@ blank on the client's draft (Jacqueline A1/B1).
 """
 from __future__ import annotations
 
+from services.officer_changes import capacities
 from services.officer_changes.nd2a_mapper import (
     MappingError, _alnum, _s, cr_address, cr_date, partial_ids, signatory, split_hkid,
     tcsp,
 )
 from services.tpsi.forms.cr_vocabularies import resolve_country
 
-_CPTY = {"director": "D", "company_secretary": "S"}
+#: `AD` since Jacqueline's 2026-11-04 ruling on PBI-70. ND2B has no `altTo`: the
+#: officer is identified by name and partial number, as a director is.
+_CPTY = capacities.CPTY
 
 
 def _who(registered: dict) -> str:

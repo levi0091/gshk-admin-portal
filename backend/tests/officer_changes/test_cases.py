@@ -137,7 +137,9 @@ def test_a_cessation_takes_its_party_from_the_officer_row(db, nd2a):
       "capacity": "director", "effective_date": "2026-09-28",
       "correspondence_same_as_residential": False}, "correspondence"),
     ({"kind": "appointment", "party_type": "individual", "person_id": "P9",
-      "capacity": "alternate_director", "effective_date": "2026-09-28"}, "capacity"),
+      "capacity": "alternate_director", "effective_date": "2026-09-28"}, "acts for"),
+    ({"kind": "appointment", "party_type": "individual", "person_id": "P9",
+      "capacity": "reserve_director", "effective_date": "2026-09-28"}, "capacity must be"),
     ({"kind": "change", "officer_id": "O1"}, "ND2B"),
 ])
 def test_nd2a_entry_validation(db, nd2a, payload, message):

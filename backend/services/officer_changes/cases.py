@@ -25,7 +25,8 @@ from datetime import date, datetime, timezone
 from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
-    apply, checks, deadlines, documents, eservice, particulars, prepare, rules,
+    apply, capacities, checks, deadlines, documents, eservice, particulars, prepare,
+    rules,
 )
 from services.tpsi import fees
 from services.tpsi import filings as tpsi_filings
@@ -36,8 +37,11 @@ from services.tpsi.forms.cr_vocabularies import (
 FORM_CODES = ("Nd2a", "Nd2b")
 _NAR1_TYPE = {"Nd2a": "appointment_and_resignation", "Nd2b": "change_of_particulars"}
 _PREFIX = {"Nd2a": "ND2A", "Nd2b": "ND2B"}
-_CAPACITIES = ("director", "company_secretary")
-_CAPACITY_LABEL = {"director": "Director", "company_secretary": "Company Secretary"}
+#: Director, company secretary -- and, since Jacqueline's 2026-11-04 ruling on
+#: PBI-70 ("Alternate directors are not out of scope"), alternate director. The
+#: ND2 PRD's answer 5 said the opposite and no longer stands.
+_CAPACITIES = capacities.ALL
+_CAPACITY_LABEL = capacities.LABEL
 _REASON_LABEL = {"R": "Resignation / Others", "D": "Deceased"}
 _ADDRESS_KEYS = ("line1", "line2", "line3", "city", "state_region", "postal_code",
                  "country")
@@ -49,7 +53,7 @@ _WRITABLE = {
     "cessation": {"effective_date", "cessation_reason", "date_of_death"},
     "appointment": {"capacity", "effective_date", "correspondence_same_as_residential",
                     "correspondence_address", "section5_confirmed",
-                    "consent_person_id", "consent_capacity"},
+                    "consent_person_id", "consent_capacity", "alternate_to_officer_id"},
     "change": set(),
 }
 
@@ -271,10 +275,15 @@ def _party_of(officer: dict) -> dict:
     # person would let it satisfy "a natural-person director remains".
     corporate = not officer.get("person_id") and (
         officer.get("party_type") == "corporate" or bool(officer.get("corporate_entity_id")))
-    return {"party_type": "corporate" if corporate else "individual",
-            "person_id": officer.get("person_id"),
-            "corporate_entity_id": officer.get("corporate_entity_id") if corporate else None,
-            "capacity": officer["role"], "officer_id": officer["id"]}
+    party = {"party_type": "corporate" if corporate else "individual",
+             "person_id": officer.get("person_id"),
+             "corporate_entity_id": officer.get("corporate_entity_id") if corporate else None,
+             "capacity": officer["role"], "officer_id": officer["id"]}
+    if officer["role"] == capacities.ALTERNATE:
+        # Which director this alternate acts for. Carried onto the entry so the
+        # form prints it and the rules can see a cessation that orphans one.
+        party["alternate_to_officer_id"] = officer.get("alternate_to_officer_id")
+    return party
 
 
 def _check_address(address) -> dict:
@@ -286,13 +295,40 @@ def _check_address(address) -> dict:
             for k in _ADDRESS_KEYS}
 
 
+def _check_alternate_to(case: dict, row: dict) -> None:
+    """An alternate director acts for ONE director of this company, and the form
+    must say which (CR's `altTo`). The director must be a CURRENT officer row of
+    this company with the role `director` -- not a secretary, not another
+    alternate, not a director of some other company whose id was pasted in."""
+    director_id = row.get("alternate_to_officer_id")
+    if not director_id:
+        raise ValueError("Choose the director this alternate director acts for")
+    found = (get_supabase().table("entity_officers").select("*").eq("id", director_id)
+             .execute().data) or []
+    director = found[0] if found else None
+    if (not director or director.get("entity_id") != case["entity_id"]
+            or director.get("is_current") is False
+            or director.get("role") != capacities.DIRECTOR):
+        raise ValueError("An alternate director must act for a current director of "
+                         "this company")
+    if (row.get("person_id") and director.get("person_id") == row["person_id"]) or (
+            row.get("corporate_entity_id")
+            and director.get("corporate_entity_id") == row["corporate_entity_id"]):
+        raise ValueError("A director cannot be their own alternate")
+
+
 def _check_appointment(case: dict, row: dict, entries: list[dict],
                        exclude_id: str | None = None) -> None:
     if row.get("capacity") not in _CAPACITIES:
-        raise ValueError("The capacity must be Director or Company Secretary "
-                         "(alternate directors are not offered)")
+        raise ValueError("The capacity must be Director, Alternate Director or "
+                         "Company Secretary")
+    if row.get("capacity") == capacities.ALTERNATE:
+        _check_alternate_to(case, row)
+    elif row.get("alternate_to_officer_id"):
+        # Only an alternate has one; a capacity edited away from it drops the link.
+        row["alternate_to_officer_id"] = None
     if row.get("party_type") == "corporate":
-        if row.get("capacity") == "director" and not (
+        if capacities.acts_as_director(row.get("capacity")) and not (
                 row.get("consent_person_id") and str(row.get("consent_capacity") or "").strip()):
             raise ValueError("A body corporate director needs the person who signs its "
                              "consent and their capacity")
@@ -458,6 +494,10 @@ def update_entry(case: dict, entry_id: str, patch: dict, *, user_id) -> tuple[di
         _check_appointment(case, merged, others, exclude_id=entry_id)
         if "correspondence_address" in merged:
             changes["correspondence_address"] = merged["correspondence_address"]
+        if merged.get("alternate_to_officer_id") != before.get("alternate_to_officer_id"):
+            # Also covers a capacity edited away from alternate, which the check
+            # cleared on `merged`.
+            changes["alternate_to_officer_id"] = merged.get("alternate_to_officer_id")
     after = (get_supabase().table("officer_change_entries")
              .update({**changes, "updated_at": _now()}).eq("id", entry_id)
              .execute().data[0])
@@ -816,7 +856,15 @@ def _current_officers(entity_id: str, entries: list[dict]) -> list[dict]:
             # pressed on the profile's Secretary tile (which reads the register)
             # finds this officer.
             "secretary_ids": twins.get(r["id"], []),
+            # The director an alternate acts for (None for everyone else); the
+            # name is filled below, once every row is named.
+            "alternate_to_officer_id": r.get("alternate_to_officer_id"),
+            "alternate_to_name": None,
         })
+    names = {o["officer_id"]: o["name"] for o in out}
+    for o in out:
+        if o["alternate_to_officer_id"]:
+            o["alternate_to_name"] = names.get(o["alternate_to_officer_id"])
     reg_people = _by_id("persons", [r.get("person_id") for r in register])
     for r in register:
         person = reg_people.get(r.get("person_id") or "") or {}
@@ -836,6 +884,28 @@ def _current_officers(entity_id: str, entries: list[dict]) -> list[dict]:
         })
     out.sort(key=lambda o: (o["role"], (o["name"] or "").lower()))
     return out
+
+
+def _alternate_names(entries: list[dict], officers: list[dict]) -> dict[str, str]:
+    """`{officer_id: name}` of the directors the entries' alternates act for.
+
+    The current-officers list answers almost every time. An entry can outlive
+    its director's row being current (filed, then the director ceased), so the
+    ids it does not hold are read from `entity_officers` directly."""
+    wanted = {e["alternate_to_officer_id"] for e in entries
+              if e.get("alternate_to_officer_id")}
+    names = {o["officer_id"]: o["name"] for o in officers
+             if o.get("officer_id") in wanted}
+    missing = wanted - set(names)
+    if missing:
+        rows = _by_id("entity_officers", missing)
+        people = _by_id("persons", [r.get("person_id") for r in rows.values()])
+        corps = _by_id("entities", [r.get("corporate_entity_id") for r in rows.values()])
+        for oid, r in rows.items():
+            names[oid] = ((people.get(r.get("person_id") or "") or {}).get("full_name")
+                          or (corps.get(r.get("corporate_entity_id") or "") or {})
+                          .get("company_name") or r.get("corporate_name") or "(unnamed)")
+    return names
 
 
 def _parties(entries: list[dict]) -> dict:
@@ -1019,13 +1089,18 @@ async def composite(case_id: str, *, user: dict) -> dict:
     docs = _soft(problems, "Supporting documents",
                  lambda: documents.list_for_case(case_id, entries), [])
 
+    alternate_names = _alternate_names(entries, officers)
     view = []
     for entry in entries:
         consent = ctx["people"].get(entry.get("consent_person_id") or "") or {}
         signer = entry.get("consent_person_id") or entry.get("person_id")
-        needs_consent = entry.get("kind") == "appointment" and entry.get("capacity") == "director"
+        # An alternate director consents to act as a director does: CR's
+        # consent wording reads "director / alternate director".
+        needs_consent = (entry.get("kind") == "appointment"
+                         and capacities.acts_as_director(entry.get("capacity")))
         view.append({
             **entry,
+            "alternate_to_name": alternate_names.get(entry.get("alternate_to_officer_id")),
             "party": _party_view(entry, ctx),
             "consent_person_name": consent.get("full_name"),
             "summary": _summary(entry),
@@ -1052,7 +1127,8 @@ async def composite(case_id: str, *, user: dict) -> dict:
     # on CR's portal (the manual route). There is no third way.
     by_entry = {c.get("entry_id"): c for c in consents}
     for item in view:
-        if item.get("kind") != "appointment" or item.get("capacity") != "director":
+        if item.get("kind") != "appointment" \
+                or not capacities.acts_as_director(item.get("capacity")):
             continue
         row = by_entry.get(item["id"]) or {}
         # e-Sign only when the whole CASE can go e-Sign (review finding 4).

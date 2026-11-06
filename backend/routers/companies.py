@@ -179,8 +179,11 @@ _SECRETARY_ROLE = "company_secretary"
 _RELATIONS = {
     "officers": {
         "table": "entity_officers",
+        # `alternate_to_officer_id`: the director an alternate director acts for
+        # (migration 061, PBI-70). Only meaningful for role='alternate_director';
+        # `_validate_link_attributes` requires it there and clears it otherwise.
         "fields": {"role", "position", "appointed_date", "resigned_date",
-                   "resignation_reason", "is_current"},
+                   "resignation_reason", "is_current", "alternate_to_officer_id"},
     },
     "secretaries": {
         "table": "entity_officers",
@@ -409,6 +412,7 @@ class LinkPartyRequest(BaseModel):
     corporate_entity_id: Optional[str] = None
     corporate_name: Optional[str] = None
     role: Optional[str] = None
+    alternate_to_officer_id: Optional[str] = None
     position: Optional[str] = None
     appointed_date: Optional[str] = None
     resigned_date: Optional[str] = None
@@ -765,6 +769,18 @@ async def get_company(
         cid = r.get("corporate_entity_id")
         if cid:
             r["corporate_entity"] = corp_names.get(cid)
+
+    # An alternate director is shown with the director it acts for (migration
+    # 061). Named from the rows already read: a director is in `officers`.
+    director_names = {
+        r["id"]: ((r.get("persons") or {}).get("full_name")
+                  or (r.get("corporate_entity") or {}).get("company_name")
+                  or r.get("corporate_name"))
+        for r in officers
+    }
+    for r in officers:
+        if r.get("alternate_to_officer_id"):
+            r["alternate_to_name"] = director_names.get(r["alternate_to_officer_id"])
 
     # Every address the profile shows, in ONE query.
     #
@@ -1650,6 +1666,48 @@ def _resolve_party_type(person_id: Optional[str], corporate_entity_id: Optional[
     return "individual" if person_id else "corporate"
 
 
+def _validate_alternate(sb, out: dict, current: Optional[dict]) -> None:
+    """An alternate director acts for ONE current director of this company, and
+    only an alternate has that link (migration 061, PBI-70 -- Jacqueline
+    2026-11-04). Mutates `out`: a role changed away from alternate drops the link.
+
+    Same refusals as `cases._check_alternate_to` on an ND2A appointment, so the
+    profile and the form cannot disagree about what a valid alternate is."""
+    held = current or {}
+    if "role" not in out and "alternate_to_officer_id" not in out:
+        # Grandfathered, like company_type and owner_type: an edit that touches
+        # neither field must not be refused because the director has since left.
+        return
+    role = out.get("role") or held.get("role")
+    link = out["alternate_to_officer_id"] if "alternate_to_officer_id" in out \
+        else held.get("alternate_to_officer_id")
+    if role != "alternate_director":
+        if held.get("alternate_to_officer_id") or out.get("alternate_to_officer_id"):
+            out["alternate_to_officer_id"] = None
+        return
+    if not link:
+        raise HTTPException(
+            status_code=422,
+            detail="An alternate director must be alternate to a director — choose "
+                   "which one.")
+    entity_id = held.get("entity_id") or out.get("entity_id")
+    rows = (sb.table("entity_officers").select("*").eq("id", str(link)).execute().data) or []
+    director = rows[0] if rows else None
+    if (not director or director.get("entity_id") != entity_id
+            or director.get("is_current") is False
+            or director.get("role") != "director"):
+        raise HTTPException(
+            status_code=422,
+            detail="An alternate director must be alternate to a current director "
+                   "of this company.")
+    person_id = out.get("person_id") or held.get("person_id")
+    corp_id = out.get("corporate_entity_id") or held.get("corporate_entity_id")
+    if (person_id and director.get("person_id") == person_id) or (
+            corp_id and director.get("corporate_entity_id") == corp_id):
+        raise HTTPException(
+            status_code=422, detail="A director cannot be their own alternate.")
+
+
 def _validate_link_attributes(sb, relation: str, values: dict,
                               current: Optional[dict] = None) -> dict:
     """Refuse here what the DATABASE would refuse, with a sentence about the field.
@@ -1689,6 +1747,9 @@ def _validate_link_attributes(sb, relation: str, values: dict,
                         "It has no share capital recorded yet — add a class "
                         "under Share Capital first.")),
             )
+
+    if relation == "officers":
+        _validate_alternate(sb, out, current)
 
     for field in ("owner_type", "nature_of_control"):
         if field in out:

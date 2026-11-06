@@ -9,14 +9,17 @@ codes and the body-corporate signing scheme CR's live register verified on
 
   * Cessation: PARTIAL identity numbers (`indvHkidPartial`, `indvPptNoPartial`),
     CR's reason (`rsnCes`) for a natural person, and `dirAfterCesInd` = N for a
-    director — alternate directors are out of scope (answer 5), so nobody stays
-    on as one.
+    director or an alternate director (an alternate who stays on as a director is
+    a different appointment, not this cessation). Alternate directors were out of
+    scope under the ND2 PRD's answer 5; Jacqueline reversed that on 2026-11-04
+    (PBI-70). An alternate is `cpty` = `AD`, and carries `altTo` -- the director
+    it acts for, by name -- right after it, on a cessation and an appointment.
   * Appointment: the FULL HKID with the check digit split out, and/or the full
     passport with its issuing country; HKID "NIL" beside a passport when the
     person holds no HKID (Jacqueline A9), and "NIL" in both when they hold
     neither, as CR's remark says. `dirBeforeApptInd` = N for a director, absent
     for a secretary — the examples carry it on directors only.
-  * Every new DIRECTOR's bean carries `id="S<n>"`, which its consent signature
+  * Every new DIRECTOR's (or ALTERNATE director's) bean carries `id="S<n>"`, which its consent signature
     points at. A natural person consents with their own e-Registry account
     (`selectPersonId` / `selectPersonName`); a body corporate through the person
     signing for it (`associatedPerson*`, `selectAssoBrNo`).
@@ -29,12 +32,15 @@ from __future__ import annotations
 
 import re
 
+from services.officer_changes import capacities
 from services.tpsi.forms import nar1_mapper as nm
 from services.tpsi.forms.cr_vocabularies import resolve_country
 
 MappingError = nm.MappingError
 
-_CPTY = {"director": "D", "company_secretary": "S"}
+_CPTY = capacities.CPTY
+#: CR's `altTo` on ND2A is String(15) (worksheet, 2026-11); NAR1's is 72.
+_ALT_TO_MAX = 15
 _FULL_HKID = re.compile(r"^([A-Z]{1,2}[0-9]{6})([0-9A])$")
 
 
@@ -140,6 +146,41 @@ def full_ids(graph: dict, person_id: str, problems: list[str], where: str,
     return out
 
 
+def alt_to(graph: dict, entry: dict, problems: list[str], where: str) -> dict:
+    """`{"altTo": <the director's name>}` for an alternate director, else `{}`.
+
+    CR's element is the NAME of the director the alternate acts for, printed in
+    the "Alternate to" box. It is read from the officer ROW the entry points at
+    (`alternate_to_officer_id`), through the graph NAR1 already loads, so a
+    director whose profile was edited since the entry was made is named as they
+    are now. Both a missing director and a name over CR's length are problems
+    rather than a silent truncation: a half-spelt name on a statutory form is
+    worse than a form that will not build."""
+    officer = next((o for o in graph.get("officers") or []
+                    if o.get("id") == entry.get("alternate_to_officer_id")), None)
+    if officer is None:
+        problems.append(f"{where}: the director this alternate acts for is not on the "
+                        "company's officer list")
+        return {}
+    if officer.get("person_id"):
+        person = (graph.get("persons") or {}).get(officer["person_id"]) or {}
+        surname, given = english_name(person)
+        name = " ".join(p for p in (surname, given) if p)
+    else:
+        corp = (graph.get("entities") or {}).get(officer.get("corporate_entity_id")) or {}
+        name = _s(corp.get("company_name") or officer.get("corporate_name"))
+    if not name:
+        problems.append(f"{where}: the director this alternate acts for has no English "
+                        "name on record")
+        return {}
+    if len(name) > _ALT_TO_MAX:
+        problems.append(f"{where}: CR allows {_ALT_TO_MAX} characters for \"Alternate to\" "
+                        f"and \"{name}\" is {len(name)} — CR's worksheet gives no "
+                        "shorter form, so this cannot be filed as it stands")
+        return {}
+    return {"altTo": name}
+
+
 def tcsp(prefix: str, licence: str, reason: str, problems: list[str], where: str) -> dict:
     if _s(licence):
         return {f"{prefix}TcspNo": _s(licence)}
@@ -190,7 +231,9 @@ def _cessation(graph: dict, entry: dict, problems: list[str],
             problems.append(f"{where}: the body corporate has no name on record")
     bean["dtResign"] = cr_date(entry.get("effective_date"), problems, f"{where}: date",
                                required=require_dates)
-    if entry["capacity"] == "director":
+    if entry["capacity"] == capacities.ALTERNATE:
+        bean.update(alt_to(graph, entry, problems, where))
+    if capacities.acts_as_director(entry["capacity"]):
         bean["dirAfterCesInd"] = "N"
     return bean
 
@@ -213,7 +256,9 @@ def _natural_appointment(graph, entry, bean_id, problems, for_esign,
     })
     if not surname:
         problems.append(f"{where}: no English name on record")
-    home = (graph.get("addresses") or {}).get(person.get("residential_address_id"))
+    if entry["capacity"] == capacities.ALTERNATE:
+        bean.update(alt_to(graph, entry, problems, where))
+    home =(graph.get("addresses") or {}).get(person.get("residential_address_id"))
     correspondence = (entry.get("correspondence_address")
                       if entry.get("correspondence_same_as_residential") is False else home)
     bean["indvCorrAddr"] = cr_address(correspondence, problems,
@@ -261,6 +306,8 @@ def _corporate_appointment(graph, entry, bean_id, problems, for_esign,
     })
     if not bean["corpEngName"]:
         problems.append(f"{where}: the body corporate has no name on record")
+    if entry["capacity"] == capacities.ALTERNATE:
+        bean.update(alt_to(graph, entry, problems, where))
     if secretary:
         bean.update(tcsp("corp", corp.get("tcsp_licence_no"),
                          corp.get("tcsp_exemption_reason"), problems, where))
@@ -322,7 +369,7 @@ def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None
             ceased.append(_cessation(graph, entry, problems, require_dates))
         elif kind == "appointment":
             bean_id = None
-            if entry.get("capacity") == "director":
+            if capacities.acts_as_director(entry.get("capacity")):
                 seq += 1
                 bean_id = f"S{seq}"
             if entry.get("person_id"):

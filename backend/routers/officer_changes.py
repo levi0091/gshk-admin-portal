@@ -273,6 +273,8 @@ def _entry_metadata(entry: dict) -> dict:
             "corporate_entity_id": entry.get("corporate_entity_id"),
             "effective_date": entry.get("effective_date"),
             "items": [i.get("key") for i in entry.get("items") or []]}
+    if entry.get("alternate_to_officer_id"):
+        meta["alternate_to_officer_id"] = entry["alternate_to_officer_id"]
     if entry.get("promoted_from_register"):
         # Ceasing a register-only secretary wrote an officer row mirroring it
         # (cases._promote_register_secretary). A profile write, so it is named.
