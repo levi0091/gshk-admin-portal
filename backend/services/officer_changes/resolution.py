@@ -332,6 +332,21 @@ def _signers(entries: list[dict], officers: list[dict]) -> list[dict]:
                      "corporate": (o.get("party_type") == "corporate"
                                    or (not o.get("person_id")
                                        and bool(o.get("corporate_entity_id"))))})
+    # Once the changes are written to the profile (`apply`), a director who
+    # ceased is no longer among `officers`; their line comes from the cessation
+    # entry instead, so a filed case re-renders the resolution they signed
+    # (review S4) rather than one without them.
+    listed = {o.get("officer_id") for o in officers}
+    for e in entries:
+        if (e.get("kind") == "cessation" and e.get("capacity") == "director"
+                and e.get("cessation_reason") != "D"
+                and e.get("officer_id") not in listed
+                and (e.get("party") or {}).get("name")):
+            rows.append({"name": _party(e), "person_id": e.get("person_id"),
+                         "key": e.get("person_id") or e.get("corporate_entity_id"),
+                         "corporate": (e.get("party_type") == "corporate"
+                                       or (not e.get("person_id")
+                                           and bool(e.get("corporate_entity_id"))))})
     for e in entries:
         if e.get("kind") == "appointment" and e.get("capacity") == "director":
             rows.append({"name": _party(e), "person_id": e.get("person_id"),

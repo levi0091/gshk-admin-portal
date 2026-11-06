@@ -104,6 +104,28 @@ def test_the_endpoint_refuses_an_alternate_with_no_director():
         audit.assert_not_awaited()
 
 
+def test_a_director_with_a_current_alternate_cannot_be_ended_on_the_profile(sb):
+    # Review S5: the ND2A refuses this (`alternate_orphaned`); so does the profile.
+    sb.tables["entity_officers"].append(
+        {"id": "OA", "entity_id": "E1", "person_id": "P9", "role": "alternate_director",
+         "alternate_to_officer_id": "O1", "is_current": True})
+    director = sb.tables["entity_officers"][0]
+    for change in ({"is_current": False}, {"role": "company_secretary"}):
+        with pytest.raises(HTTPException) as caught:
+            companies._refuse_orphaning_alternates(sb, dict(change), director)
+        assert caught.value.status_code == 422 and "alternate" in caught.value.detail
+    # An edit that does not end the directorship is not refused.
+    companies._refuse_orphaning_alternates(sb, {"position": "Chair"}, director)
+
+
+def test_a_director_whose_alternate_has_left_can_be_ended(sb):
+    sb.tables["entity_officers"].append(
+        {"id": "OA", "entity_id": "E1", "person_id": "P9", "role": "alternate_director",
+         "alternate_to_officer_id": "O1", "is_current": False})
+    companies._refuse_orphaning_alternates(sb, {"is_current": False},
+                                           sb.tables["entity_officers"][0])
+
+
 def test_the_link_is_a_writable_officer_field():
     assert "alternate_to_officer_id" in companies._RELATIONS["officers"]["fields"]
     assert "alternate_to_officer_id" not in companies._RELATIONS["secretaries"]["fields"]

@@ -240,8 +240,10 @@ def test_an_officer_with_no_residential_address_blocks_the_send():
     assert "LEE Ka Ho" in c["text"]
 
 
-def test_an_address_needs_a_first_line_and_a_country():
+def test_an_address_needs_a_line_and_a_country():
     result = run([appoint(person="P9", residential_address={"line1": "", "country": "HK"})])
+    assert check(result, "address_present")["ok"] is False
+    result = run([appoint(person="P9", residential_address={"line1": "Flat A", "country": ""})])
     assert check(result, "address_present")["ok"] is False
 
 
@@ -260,32 +262,69 @@ def test_a_body_corporate_with_no_address_blocks_the_send():
     assert result["blocking"] is True
 
 
-def _nd2b(*items):
+def _nd2b(*items, registered=None):
     return {"kind": "change", "capacity": "director", "party_type": "individual",
             "person_id": "P1", "party": {"name": "Jacqueline Koh"},
+            "registered": registered or {"hkid": "", "passport": None},
             "items": [{"effective_date": "2026-09-20", "omitted": False, **i}
                       for i in items]}
 
 
 def test_nd2b_passport_changed_to_nothing_blocks_the_send():
-    # ND2B-2026-0013 on DEV: (h) Passport 12345678 (BD) -> nothing, and CR's
-    # form printed "-" in both boxes.
+    # ND2B-2026-0013 on DEV: (h) Passport 12345678 (BD) -> nothing, no HKID,
+    # and CR's form printed "-" in both boxes.
     result = run([_nd2b({"key": "passport", "label": "Passport", "new": None,
-                         "old": {"number": "12345678", "issuing_country": "BD"}})])
+                         "old": {"number": "12345678", "issuing_country": "BD"}},
+                        registered={"hkid": "",
+                                    "passport": {"number": "12345678", "issuing_country": "BD"}})])
     c = check(result, "change_values_present")
     assert c["ok"] is False and c["level"] == "rule" and result["blocking"] is True
-    assert "passport" in c["text"] and "Jacqueline Koh" in c["text"]
+    assert "Jacqueline Koh" in c["text"] and "no HKID or passport" in c["text"]
+
+
+def test_nd2b_hkid_given_up_for_a_passport_is_fileable():
+    # Review B1: the mapper files the cleared HKID as NIL, which CR accepts.
+    result = run([_nd2b({"key": "hkid", "label": "HKID", "new": ""},
+                        {"key": "passport", "label": "Passport",
+                         "new": {"number": "X123", "issuing_country": "GB"}},
+                        registered={"hkid": "A1234563", "passport": None})])
+    assert check(result, "change_values_present")["ok"] is True
+    assert result["blocking"] is False
+
+
+def test_nd2b_clearing_one_number_while_cr_holds_the_other_is_fileable():
+    result = run([_nd2b({"key": "passport", "label": "Passport", "new": None},
+                        registered={"hkid": "A1234563",
+                                    "passport": {"number": "P1", "issuing_country": "AU"}})])
+    assert check(result, "change_values_present")["ok"] is True
 
 
 def test_nd2b_empty_hkid_or_address_blocks_but_an_omitted_line_does_not():
-    assert run([_nd2b({"key": "hkid", "label": "HKID", "new": ""})])["blocking"] is True
+    assert run([_nd2b({"key": "hkid", "label": "HKID", "new": ""},
+                      registered={"hkid": "A1234563", "passport": None})])["blocking"] is True
     assert run([_nd2b({"key": "residential_address", "label": "Residential address",
                        "new": None})])["blocking"] is True
-    omitted = _nd2b({"key": "passport", "label": "Passport", "new": None})
+    omitted = _nd2b({"key": "passport", "label": "Passport", "new": None},
+                    registered={"hkid": "", "passport": {"number": "P1"}})
     omitted["items"][0]["omitted"] = True
     omitted["items"].append({"key": "email", "effective_date": "2026-09-20",
                              "omitted": False, "new": "a@b.com"})
     assert check(run([omitted]), "change_values_present")["ok"] is True
+
+
+def test_an_address_of_building_and_street_with_a_country_is_enough():
+    # Review S1: CR makes only the country mandatory in its address blocks.
+    result = run([appoint(person="P9", residential_address={
+        "line1": "", "line2": "World Trust Tower", "line3": "50 Stanley Street",
+        "country": "HK"})])
+    assert check(result, "address_present")["ok"] is True
+
+
+def test_a_secretary_with_a_separate_correspondence_address_needs_no_residential():
+    entry = appoint(person="P9", capacity="company_secretary", residential_address=None)
+    entry["correspondence_same_as_residential"] = False
+    entry["correspondence_address"] = HK_HOME
+    assert check(run([entry]), "address_present")["ok"] is True
 
 
 def test_nd2b_with_a_real_new_passport_passes():
@@ -327,3 +366,16 @@ def test_nd2b_with_every_line_omitted_has_nothing_to_file():
              "person_id": "P1",
              "items": [{"key": "email", "effective_date": "2026-09-20", "omitted": True}]}
     assert check(run([entry]), "has_changes")["ok"] is False
+
+
+def test_an_alternate_to_name_longer_than_cr_allows_blocks_the_send():
+    # Review S2: CR's ND2A `altTo` is String(15); the mapper refuses a longer
+    # name, so the rules panel must say so before the client is asked.
+    entry = appoint(person="P9", capacity="alternate_director")
+    entry["alternate_to_officer_id"] = "O1"
+    entry["alternate_to_name"] = "LEE Chi Wai David"
+    result = run([entry])
+    c = check(result, "alternate_to_length")
+    assert c["ok"] is False and c["level"] == "rule" and result["blocking"] is True
+    entry["alternate_to_name"] = "CHAN Tai Man"
+    assert not any(c["code"] == "alternate_to_length" for c in run([entry])["checks"])

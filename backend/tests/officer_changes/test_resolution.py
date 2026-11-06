@@ -311,6 +311,17 @@ def test_signatories_are_the_board_before_plus_the_appointed():
                                                          "Aldo KRIEL 歐立德"]
 
 
+def test_a_filed_case_still_lists_the_director_who_ceased():
+    """Review S4: after `apply`, the ceasing director is no longer a current
+    officer; the cessation entry keeps their signature line."""
+    ceasing = [e for e in SAMPLE if e.get("kind") == "cessation"]
+    assert ceasing, "SAMPLE must carry a cessation"
+    gone = {e.get("officer_id") for e in ceasing}
+    after_apply = [o for o in OFFICERS if o.get("officer_id") not in gone]
+    assert resolution.signatories(SAMPLE, after_apply) == \
+        resolution.signatories(SAMPLE, OFFICERS)
+
+
 def test_file_name():
     assert resolution.file_name(CASE) == "Written-Resolution-ND2A-2026-0007.pdf"
 

@@ -146,6 +146,24 @@ def test_the_warning_is_on_the_page_BEFORE_anything_can_be_pressed(client):
     assert text.index("further confirmation") < text.index("<button")
 
 
+def test_the_page_shows_the_declaration_the_receipt_says_was_accepted(client):
+    """Review B2 (2026-11-06): the approval receipt quotes
+    `RECEIPT_DECLARATION` as "the following declaration was accepted", so the
+    page the client presses must show exactly those words, before the button."""
+    import html as _html
+    from services.email_service import RECEIPT_DECLARATION, approval_receipt_email
+    with _Stack(*_world(approval=row())):
+        text = client.get(PATH).text
+    shown = _html.escape(RECEIPT_DECLARATION)
+    assert "you make the following declaration:" in text
+    assert shown in text and text.index(shown) < text.index("<button")
+    _subject, receipt = approval_receipt_email(
+        {"case_no": "NAR-1"}, {"company_name": "ACME LIMITED"}, form_code="Nar1",
+        confirmed_by=None, confirmed_email="a@example.com",
+        confirmed_at="2026-11-06T02:00:00+00:00")
+    assert shown in receipt
+
+
 def test_a_GET_writes_nothing_at_all(client):
     """The load-bearing assertion in this file. Outlook SafeLinks, Gmail and
     every other mail gateway fetch this URL before a human does."""

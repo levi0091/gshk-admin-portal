@@ -125,8 +125,10 @@ def _consent_paragraph(consent: dict | None) -> str:
     """For the incoming director's own letter (Jacqueline A5)."""
     mode = (consent or {}).get("mode")
     if mode == "esign":
+        role = ("an alternate director" if (consent or {}).get("capacity") == "alternate_director"
+                else "a director")
         return _para("<strong>No signature is needed from you.</strong> We will apply your "
-                     "consent to act as a director through the e-Registry account we set "
+                     f"consent to act as {role} through the e-Registry account we set "
                      "up with you.", top=14)
     return ""
 

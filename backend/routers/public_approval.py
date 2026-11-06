@@ -66,7 +66,7 @@ from services.audit_service import log_event
 # replies are not monitored and to write to this mailbox instead; a page that
 # named a different one — or that still said "reply to the email" — would send
 # a client somewhere nobody is reading.
-from services.email_service import RENEWAL_MAILBOX
+from services.email_service import RECEIPT_DECLARATION, RENEWAL_MAILBOX
 # The same "Rev. N" the email printed, from the same function, so the page and
 # the inbox cannot spell a revision differently.
 from services.email_service import revision_label
@@ -321,6 +321,19 @@ def _confirmed(company: str) -> HTMLResponse:
     )
 
 
+#: The declaration pressing Confirm & File makes (review B2, 2026-11-06). The
+#: approval receipt says "At the time of approval, the following declaration was
+#: accepted" and quotes `RECEIPT_DECLARATION`; GSHK's ND2A / ND2B letters say
+#: "By clicking this, you make the following declaration". Both are only true
+#: if the page the client presses shows those exact words, so it does — the
+#: same constant, never retyped. The approved Warning sentence above it stays.
+_DECLARATION_HTML = (
+    '<p class="warn-t" style="margin-top:10px">By clicking <strong>Confirm &amp; '
+    'File</strong>, you make the following declaration:</p>'
+    f'<p class="warn-t decl" style="margin:6px 0 0 14px;font-style:italic">'
+    f'{html.escape(RECEIPT_DECLARATION)}</p>')
+
+
 #: The warning triangle from the approved mock, drawn rather than fetched. An
 #: <img> would be a second request from a client's mail-restricted browser, and
 #: the one that fails silently leaves the panel looking unfinished.
@@ -391,7 +404,7 @@ def _ask(*, company: str, br_number: str, period: str, case_no: str,
         '<p class="warn-t">By clicking <strong>Confirm &amp; File</strong>, '
         'you confirm that you have reviewed the draft and that the information '
         'is correct. The NAR1 will then be arranged for submission without '
-        'further confirmation.</p></div></div>'
+        'further confirmation.</p>' + _DECLARATION_HTML + '</div></div>'
         '<div class="warn-foot">'
         '<button type="submit">Confirm &amp; File</button>'
         "</div></div></form>"
@@ -663,7 +676,8 @@ def _ask_officer_change(*, company: str, br_number: str, form_code: str, case_no
         '<p class="warn-t">By clicking <strong>Confirm &amp; File</strong>, you '
         f"confirm that you have reviewed the draft Form {code} and that the changes "
         "it reports are correct. It will then be arranged for submission to the "
-        "Companies Registry without further confirmation.</p></div></div>"
+        "Companies Registry without further confirmation.</p>"
+        + _DECLARATION_HTML + "</div></div>"
         # Disabled until something is drawn; with no script it stays disabled,
         # which the <noscript> note above says.
         '<div class="warn-foot"><button type="submit"'

@@ -1708,6 +1708,28 @@ def _validate_alternate(sb, out: dict, current: Optional[dict]) -> None:
             status_code=422, detail="A director cannot be their own alternate.")
 
 
+def _refuse_orphaning_alternates(sb, out: dict, current: Optional[dict]) -> None:
+    """A director cannot stop being a current director while an alternate still
+    acts for them (review S5) — the ND2A refuses the same thing as
+    `rules.alternate_orphaned`, and the profile must not be the way around it.
+    Only an edit that ends the directorship is checked: `is_current` going false,
+    or the role changing away from director."""
+    held = current or {}
+    if held.get("role") != "director" or held.get("is_current") is False or not held.get("id"):
+        return
+    ending = out.get("is_current") is False or ("role" in out and out["role"] != "director")
+    if not ending:
+        return
+    alternates = (sb.table("entity_officers").select("id")
+                  .eq("alternate_to_officer_id", str(held["id"]))
+                  .eq("is_current", True).execute().data) or []
+    if alternates:
+        raise HTTPException(
+            status_code=422,
+            detail="This director still has a current alternate director. End the "
+                   "alternate first, or make them alternate to another director.")
+
+
 def _validate_link_attributes(sb, relation: str, values: dict,
                               current: Optional[dict] = None) -> dict:
     """Refuse here what the DATABASE would refuse, with a sentence about the field.
@@ -1750,6 +1772,7 @@ def _validate_link_attributes(sb, relation: str, values: dict,
 
     if relation == "officers":
         _validate_alternate(sb, out, current)
+        _refuse_orphaning_alternates(sb, out, current)
 
     for field in ("owner_type", "nature_of_control"):
         if field in out:

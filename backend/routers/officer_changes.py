@@ -1001,7 +1001,8 @@ async def _consent_wording(case: dict, entries: list[dict]) -> dict[str, dict]:
         entry = natural.get(row.get("entry_id"))
         if entry:
             out[entry["person_id"]] = {"mode": "esign", "url": None,
-                                       "name": row.get("signer_name")}
+                                       "name": row.get("signer_name"),
+                                       "capacity": entry.get("capacity")}
     return out
 
 

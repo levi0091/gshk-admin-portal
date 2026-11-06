@@ -34,6 +34,9 @@ from services.tpsi.forms.cr_vocabularies import to_alpha2
 #: always `role == "director"`. Jacqueline, 2026-11-04 (PBI-70).
 _ROLES = ("director", "company_secretary", "alternate_director")
 _ALTERNATE = "alternate_director"
+#: CR's `altTo` max length on ND2A (schema/nd2a_schema.json); the mapper's
+#: `_ALT_TO_MAX` is the same number from the same schema.
+ALT_TO_MAX = 15
 
 
 def _key(row: dict):
@@ -52,23 +55,40 @@ def _is_hk(address: dict | None) -> bool:
 
 
 def _has_address(address: dict | None) -> bool:
-    """An address the form can print: at least a first line and a country."""
-    return bool(address) and bool(str(address.get("line1") or "").strip()) \
-        and bool(str(address.get("country") or "").strip())
+    """An address the form can print: a country and at least one of its lines.
+    CR's address blocks make only `ctryRegion` mandatory, so a building and a
+    street with no flat line is a real address (review S1)."""
+    if not address or not str(address.get("country") or "").strip():
+        return False
+    return any(str(address.get(k) or "").strip() for k in ("line1", "line2", "line3"))
 
 
-#: ND2B items whose new value must exist: an identity document or an address
-#: changed to nothing is not a change CR can register (CR prints "-").
-_MUST_HAVE_A_NEW_VALUE = {"hkid", "passport", "residential_address",
-                          "correspondence_address", "address"}
+#: ND2B address items whose new value must exist: an address changed to
+#: nothing is not a change CR can register (CR prints "-").
+_ADDRESS_ITEMS = {"residential_address", "correspondence_address", "address"}
 
 
-def _has_value(key: str, value) -> bool:
-    if key == "hkid":
-        return bool(str(value or "").strip())
-    if key == "passport":
-        return bool(value) and bool(str(value.get("number") or "").strip())
-    return _has_address(value)
+def _hkid_of(value) -> str:
+    return str(value or "").strip()
+
+
+def _passport_of(value) -> str:
+    return str((value or {}).get("number") or "").strip() if isinstance(value, dict) else ""
+
+
+def _identity_after(entry: dict) -> tuple[str, str]:
+    """(HKID, passport number) the officer holds once this ND2B is filed: a
+    filed line's NEW value, else what CR was last told (`registered`)."""
+    registered = entry.get("registered") or {}
+    hkid, passport = _hkid_of(registered.get("hkid")), _passport_of(registered.get("passport"))
+    for item in entry.get("items") or []:
+        if item.get("omitted"):
+            continue
+        if item.get("key") == "hkid":
+            hkid = _hkid_of(item.get("new"))
+        elif item.get("key") == "passport":
+            passport = _passport_of(item.get("new"))
+    return hkid, passport
 
 
 def _age_on(born: date, on: date) -> int:
@@ -242,6 +262,19 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
             "alternate_orphaned", not orphans,
             "Every alternate director keeps the director they act for." if not orphans
             else "; ".join(orphans) + "."))
+    # CR's ND2A gives "Alternate to" (`altTo`) 15 characters and no shorter
+    # form; `nd2a_mapper.alt_to` refuses a longer name rather than truncating
+    # it. Said HERE too (review S2), so the case cannot read "All rules met",
+    # go to the client, and only then fail to build.
+    too_long = sorted({e["alternate_to_name"] for e in entries
+                       if e.get("capacity") == _ALTERNATE and e.get("kind") != "change"
+                       and len(str(e.get("alternate_to_name") or "")) > ALT_TO_MAX})
+    if too_long:
+        checks.append(_check(
+            "alternate_to_length", False,
+            f"CR's ND2A allows {ALT_TO_MAX} characters for \"Alternate to\", and "
+            f"{_join(too_long)} is longer. This form cannot be e-filed as it stands; "
+            "file it on paper or confirm with CR how to name the director."))
     if not nd2b:
         checks.append(_check(
             "has_secretary", bool(secretaries),
@@ -276,9 +309,16 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
         if individual and not party.get("hkid") and not (party.get("passport") or {}).get("number"):
             no_id.append(name)
         if individual:
-            missing = not _has_address(party.get("residential_address")) or (
-                e.get("correspondence_same_as_residential") is False
-                and not _has_address(e.get("correspondence_address")))
+            separate = e.get("correspondence_same_as_residential") is False
+            if separate and not _has_address(e.get("correspondence_address")):
+                missing = True
+            elif separate and e.get("capacity") == "company_secretary":
+                # CR's form holds only a natural-person secretary's
+                # correspondence address (`indvResAddr` is a director's), so a
+                # separate one is all the form needs (review S1).
+                missing = False
+            else:
+                missing = not _has_address(party.get("residential_address"))
         else:
             missing = not _has_address(party.get("address"))
         if missing:
@@ -287,12 +327,19 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
     empty_changes = []
     for e in (e for e in entries if e.get("kind") == "change"):
         name = (e.get("party") or {}).get("name") or "the officer"
-        for item in e.get("items") or []:
-            if item.get("omitted") or item.get("key") not in _MUST_HAVE_A_NEW_VALUE:
-                continue
-            if not _has_value(item.get("key"), item.get("new")):
+        filed = [i for i in e.get("items") or [] if not i.get("omitted")]
+        for item in filed:
+            if item.get("key") in _ADDRESS_ITEMS and not _has_address(item.get("new")):
                 label = (item.get("label") or item.get("key")).lower()
                 empty_changes.append(f"The new {label} for {name} is empty")
+        # One identity line may clear a number when another supplies one (an
+        # HKID given up for a passport files the HKID as NIL, which CR takes —
+        # review B1). What CR cannot take is an officer left with NEITHER,
+        # which is ND2B-2026-0013: passport -> nothing, and no HKID.
+        if (e.get("party_type") != "corporate"
+                and any(i.get("key") in ("hkid", "passport") for i in filed)
+                and not any(_identity_after(e))):
+            empty_changes.append(f"{name} would be left with no HKID or passport number")
 
     if underage:
         checks.append(_check("director_age", False,
