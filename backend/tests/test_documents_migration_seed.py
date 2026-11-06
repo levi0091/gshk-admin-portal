@@ -34,6 +34,9 @@ EXPECTED_TYPES = {
     "nd2a", "nd2b",
     "resignation_letter", "board_resolution", "consent_to_act",
     "officer_change_support",
+    # Migration 061. The client's approval receipt, filed on the company in
+    # its Government Forms section (Levi 2026-11-06).
+    "approval_receipt",
 }
 
 
