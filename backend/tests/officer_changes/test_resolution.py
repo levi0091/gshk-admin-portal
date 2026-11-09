@@ -256,6 +256,27 @@ def test_a_body_corporate_director_signs_for_and_on_behalf_of():
                      "Director"]
 
 
+def test_an_appointed_body_corporate_prints_who_signs_its_consent():
+    """UAT 2026-11-08 (PBI-52): the person named as "Consent signed by" on the
+    appointment signs the resolution for the body corporate too. An EXISTING
+    corporate director has nobody on record and keeps a blank "Name:"."""
+    existing = {"officer_id": "O5", "role": "director", "name": "Axelius Distribution AB",
+                "party_type": "corporate", "corporate_entity_id": "C5"}
+    joining = {"id": "N7", "kind": "appointment", "capacity": "director",
+               "effective_date": "2026-11-09", "corporate_entity_id": "C7",
+               "consent_person_id": "P7", "consent_person_name": "Testing Brian",
+               "party": {"name": "CGAHCHBAABBG DIRECTOR COMPANY LIMITED"}}
+    page = _pages(resolution.render(CASE, ENTITY, [joining], [existing]))[0]
+    dated_y = _line(page, "Dated:")["y"]
+    left = [r["text"] for r in _lines(page) if r["x0"] < 200 and r["y"] > dated_y]
+    right = [r["text"] for r in _lines(page) if r["x0"] > 300 and r["y"] > dated_y]
+    assert left[1:3] == ["Name:", "For and on behalf of"]
+    assert right[1:3] == ["Name: Testing Brian", "For and on behalf of"]
+    # Printing the name routes nothing: no person id on the line, so no e-signature.
+    assert resolution.signatory_people([joining], [existing]) == [
+        ("Axelius Distribution AB", None), ("CGAHCHBAABBG DIRECTOR COMPANY LIMITED", None)]
+
+
 def test_a_director_is_one_line_even_when_listed_twice():
     officers = OFFICERS + [{"officer_id": "O9", "role": "director", "name": "PIK YI REBECCA LAW",
                             "person_id": "P1"}]
