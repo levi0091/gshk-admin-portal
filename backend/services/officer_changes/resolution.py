@@ -41,8 +41,9 @@ WHAT STAYS THE FIRST SAMPLE'S. The two heavy rules, the underlined headings
 "Resignation of Director" / "Appointment of Director" (and now "... of
 Alternate Director"), "Dated:" and the rule / "Name:" / "Director" blocks, now
 two to a row at the template's own x positions. A body corporate director
-prints "Name:" blank, "For and on behalf of", its name, "Director": the
-individual who signs for it is not known to the portal. The type size and line
+prints "Name:", "For and on behalf of", its name, "Director". "Name:" carries
+the individual who signs its consent when the body corporate is being APPOINTED
+on this form; for an existing one nobody is on record and it stays blank. The type size and line
 pitch are still the first sample's (12 pt, Word's 13.8), not the template's
 11 pt; the brief was the words, the header and the signature block, and
 re-pitching every baseline is a separate decision.
@@ -362,9 +363,17 @@ def _signers(entries: list[dict], officers: list[dict]) -> list[dict]:
                          "corporate": _corporate(e), "deceased": deceased})
     for e in entries:
         if e.get("kind") == "appointment" and e.get("capacity") == "director":
+            corporate = _corporate(e)
+            # A body corporate being appointed names, on its appointment, the
+            # individual who signs its consent ("Consent signed by"); that is
+            # who signs for it here too, so the name is printed rather than
+            # left blank (UAT 2026-11-08, PBI-52). An existing corporate
+            # director has nobody on record, and keeps a blank "Name:".
             rows.append({"name": _party(e), "person_id": e.get("person_id"),
                          "key": e.get("person_id") or e.get("corporate_entity_id"),
-                         "corporate": _corporate(e), "deceased": False})
+                         "corporate": corporate, "deceased": False,
+                         "signs_for": (str(e.get("consent_person_name") or "").strip()
+                                       if corporate else "")})
     seen, out = set(), []
     for row in rows:
         # A person is one line even when a raw entry (which carries no display
@@ -408,8 +417,9 @@ def _block_lines(row: dict, width: float) -> list[str]:
                  *_wrap(f"{row['name']} (deceased)", REGULAR, width),
                  "Administrator / Executor"]
     elif row["corporate"]:
-        lines = ["Name:", "For and on behalf of", *_wrap(row["name"], REGULAR, width),
-                 "Director"]
+        signer = row.get("signs_for")
+        lines = [*(_wrap(f"Name: {signer}", REGULAR, width) if signer else ["Name:"]),
+                 "For and on behalf of", *_wrap(row["name"], REGULAR, width), "Director"]
     else:
         lines = [*_wrap(f"Name: {row['name']}", REGULAR, width), "Director"]
     return lines
