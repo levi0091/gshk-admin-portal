@@ -32,6 +32,29 @@ def _dated(block: dict, prefix: str, value: str) -> dict:
             block[f"{prefix}_yyyy"]: yyyy}
 
 
+def _changed(bean: dict, date_key: str, *value_keys: str) -> bool:
+    """Is this item one of the changes, so Part B prints it?
+
+    The effective date used to be the only test, because CR's XML has no other
+    marker for "this item changed". But a date may now wait until Signing
+    (Jacqueline A1, 2026-10-17), and an undated change then vanished from the
+    form the client is sent to approve: they confirmed a Part B with nothing in
+    it (UAT 2026-11-03, PBI-61: "If no effective date is clicked, the ND2B form
+    will be blank"). So the new value counts as well, and an undated change
+    prints with its date boxes empty. The one thing that still cannot show
+    undated is CLEARING a value: an empty new value leaves no trace in the XML.
+    """
+    if _get(bean, date_key):
+        return True
+    for key in value_keys:
+        value = bean.get(key)
+        if isinstance(value, dict) and any(str(v or "").strip() for v in value.values()):
+            return True
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
 def part_a(block: dict, bean: dict) -> dict:
     values = {**_capacity(block, _get(bean, "cpty")),
               block["name_zh"]: _get(bean, "indvChiName"),
@@ -45,20 +68,20 @@ def part_a(block: dict, bean: dict) -> dict:
 
 def part_b(block: dict, bean: dict) -> dict:
     values: dict = {}
-    if _get(bean, "indvNewChiNameEffDt"):
+    if _changed(bean, "indvNewChiNameEffDt", "indvNewChiName"):
         values[block["new_name_zh"]] = _get(bean, "indvNewChiName") or _DASH
         values.update(_dated(block, "name_zh_date", _get(bean, "indvNewChiNameEffDt")))
-    if _get(bean, "indvNewEngNameEffDt"):
+    if _changed(bean, "indvNewEngNameEffDt", "indvNewEngSname", "indvNewEngOname"):
         values[block["new_surname_en"]] = _get(bean, "indvNewEngSname")
         values[block["new_other_names_en"]] = _get(bean, "indvNewEngOname")
         values.update(_dated(block, "name_en_date", _get(bean, "indvNewEngNameEffDt")))
-    if _get(bean, "indvNewAlsNameEffDt"):
+    if _changed(bean, "indvNewAlsNameEffDt", "indvNewAlsChiName", "indvNewAlsEngName"):
         values[block["new_alias_zh"]] = _get(bean, "indvNewAlsChiName") or _DASH
         values[block["new_alias_en"]] = _get(bean, "indvNewAlsEngName") or _DASH
         values.update(_dated(block, "alias_date", _get(bean, "indvNewAlsNameEffDt")))
-    if _get(bean, "indvNewResAddrEffDt"):
+    if _changed(bean, "indvNewResAddrEffDt", "indvNewResAddr"):
         values.update(_dated(block, "res_date", _get(bean, "indvNewResAddrEffDt")))
-    if _get(bean, "indvNewAddrEffDt"):
+    if _changed(bean, "indvNewAddrEffDt", "indvNewAddr"):
         corr = address(_node(bean, "indvNewAddr"))
         values.update({block["corr_flat"]: corr["flat"] or _DASH,
                        block["corr_building"]: corr["building"] or _DASH,
@@ -66,19 +89,19 @@ def part_b(block: dict, bean: dict) -> dict:
                        block["corr_district"]: corr["district"],
                        block["corr_country"]: corr["country"]})
         values.update(_dated(block, "corr_date", _get(bean, "indvNewAddrEffDt")))
-    if _get(bean, "indvNewEmailAddrEffDt"):
+    if _changed(bean, "indvNewEmailAddrEffDt", "indvNewEmailAddr"):
         values[block["new_email"]] = _get(bean, "indvNewEmailAddr") or _DASH
         values.update(_dated(block, "email_date", _get(bean, "indvNewEmailAddrEffDt")))
-    if _get(bean, "indvNewHkidNoEffDt"):
+    if _changed(bean, "indvNewHkidNoEffDt", "indvNewHkidNo"):
         values[block["new_hkid_partial"]] = _partial_hkid(_get(bean, "indvNewHkidNo")) or _DASH
         values.update(_dated(block, "hkid_date", _get(bean, "indvNewHkidNoEffDt")))
-    if _get(bean, "indvNewPptNoEffDt"):
+    if _changed(bean, "indvNewPptNoEffDt", "indvNewPptNo"):
         country = _get(bean, "indvNewPptIssCtry")
         values[block["new_passport_country"]] = display_country(country) if country else _DASH
         values[block["new_passport_partial"]] = (_partial_passport(_get(bean, "indvNewPptNo"))
                                                  or _DASH)
         values.update(_dated(block, "passport_date", _get(bean, "indvNewPptNoEffDt")))
-    if _get(bean, "indvNewTcspNoEffDt"):
+    if _changed(bean, "indvNewTcspNoEffDt", "indvNewTcspNo", "indvNewTcspLicNotReq"):
         values[block["new_tcsp_licence"]] = _get(bean, "indvNewTcspNo")
         if _get(bean, "indvNewTcspLicNotReq").upper() == "Y":
             values[block["new_tcsp_not_required"]] = _ON
@@ -93,11 +116,11 @@ def corporate_values(block: dict, bean: dict) -> dict:
               block["name_en"]: _get(bean, "corpEngName"),
               block["own_br_number"]: _get(bean, "corpBrNo")}
     _dash(values, block, ("name_zh",))
-    if _get(bean, "corpNewNameEffDt"):
+    if _changed(bean, "corpNewNameEffDt", "corpNewChiName", "corpNewEngName"):
         values[block["new_name_zh"]] = _get(bean, "corpNewChiName") or _DASH
         values[block["new_name_en"]] = _get(bean, "corpNewEngName")
         values.update(_dated(block, "name_date", _get(bean, "corpNewNameEffDt")))
-    if _get(bean, "corpNewAddrEffDt"):
+    if _changed(bean, "corpNewAddrEffDt", "corpNewAddr"):
         office = address(_node(bean, "corpNewAddr"))
         values.update({block["addr_flat"]: office["flat"] or _DASH,
                        block["addr_building"]: office["building"] or _DASH,
@@ -105,10 +128,10 @@ def corporate_values(block: dict, bean: dict) -> dict:
                        block["addr_district"]: office["district"],
                        block["addr_country"]: office["country"]})
         values.update(_dated(block, "addr_date", _get(bean, "corpNewAddrEffDt")))
-    if _get(bean, "corpNewEmailAddrEffDt"):
+    if _changed(bean, "corpNewEmailAddrEffDt", "corpNewEmailAddr"):
         values[block["new_email"]] = _get(bean, "corpNewEmailAddr") or _DASH
         values.update(_dated(block, "email_date", _get(bean, "corpNewEmailAddrEffDt")))
-    if _get(bean, "corpNewTcspNoEffDt"):
+    if _changed(bean, "corpNewTcspNoEffDt", "corpNewTcspNo", "corpNewTcspLicNotReq"):
         values[block["new_tcsp_licence"]] = _get(bean, "corpNewTcspNo")
         if _get(bean, "corpNewTcspLicNotReq").upper() == "Y":
             values[block["new_tcsp_not_required"]] = _ON
@@ -118,8 +141,9 @@ def corporate_values(block: dict, bean: dict) -> dict:
 
 
 def needs_pi(bean: dict) -> bool:
-    return any(_get(bean, k) for k in ("indvNewHkidNoEffDt", "indvNewPptNoEffDt",
-                                       "indvNewResAddrEffDt"))
+    return (_changed(bean, "indvNewHkidNoEffDt", "indvNewHkidNo")
+            or _changed(bean, "indvNewPptNoEffDt", "indvNewPptNo")
+            or _changed(bean, "indvNewResAddrEffDt", "indvNewResAddr"))
 
 
 def pi_values(br: str, bean: dict) -> dict:
@@ -127,17 +151,17 @@ def pi_values(br: str, bean: dict) -> dict:
               m.PI["name_zh"]: _get(bean, "indvChiName") or _DASH,
               m.PI["surname_en"]: _get(bean, "indvEngSname"),
               m.PI["other_names_en"]: _get(bean, "indvEngOname")}
-    if _get(bean, "indvNewHkidNoEffDt"):
+    if _changed(bean, "indvNewHkidNoEffDt", "indvNewHkidNo"):
         number = "".join(c for c in _get(bean, "indvNewHkidNo") if c.isalnum()).upper()
         # NIL as CR files it (Jacqueline A9); a dash only when nothing came.
         values[m.PI["hkid_full"]] = number or _DASH
         if number not in ("", "NIL"):
             values[m.PI["hkid_check_digit"]] = _get(bean, "indvNewHkidChkDgt")
-    if _get(bean, "indvNewPptNoEffDt"):
+    if _changed(bean, "indvNewPptNoEffDt", "indvNewPptNo"):
         country = _get(bean, "indvNewPptIssCtry")
         values[m.PI["passport_country"]] = display_country(country) if country else _DASH
         values[m.PI["passport_full"]] = _get(bean, "indvNewPptNo") or _DASH
-    if _get(bean, "indvNewResAddrEffDt"):
+    if _changed(bean, "indvNewResAddrEffDt", "indvNewResAddr"):
         home = address(_node(bean, "indvNewResAddr"))
         values.update({m.PI["res_flat"]: home["flat"] or _DASH,
                        m.PI["res_building"]: home["building"] or _DASH,

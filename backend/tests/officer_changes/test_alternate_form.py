@@ -82,3 +82,15 @@ def test_an_nd2b_for_an_alternate_ticks_the_alternate_box():
     assert values[m2b.MAIN_1["cap_alternate"]] not in ("", "None", "/Off")
     assert values[m2b.MAIN_1["cap_director"]] in ("", "None", "/Off")
 
+
+
+def test_a_body_corporate_cessation_ticks_resignation_others_on_the_form():
+    """CR's XML has no reason for a body corporate, but the printed form must
+    not leave its Reason box empty: a company can only resign (UAT 2026-11-08)."""
+    for kind in ("Cease Corporate Secretary", "Cease Corporate Director"):
+        graph, entries = _world(kind)
+        xml = form_xml.build("Nd2a", nd2a_mapper.map_case(graph, entries))
+        assert "rsnCes" not in xml  # the XML still follows CR's example
+        values = _values(render_fields("Nd2a", xml, company_name=COMPANY), 0)
+        assert values[m2a.MAIN_1["reason_resign"]] not in ("", "None", "/Off"), kind
+        assert values[m2a.MAIN_1["reason_deceased"]] in ("", "None", "/Off"), kind
