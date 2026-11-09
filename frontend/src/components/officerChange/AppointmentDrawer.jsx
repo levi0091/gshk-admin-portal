@@ -5,6 +5,7 @@ import AddressBlock from '../AddressBlock.jsx'
 import Drawer from './Drawer.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
+import DateInput from '../DateInput.jsx'
 
 const CONSENT_CAPACITIES = ['Director', 'Company Secretary', 'Authorized Person']
 // Offered only where the consent is for an alternate director: the person
@@ -238,7 +239,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
 
       <div className="f-group">
         <label className="f-label" htmlFor="oc-app-date">Date of appointment</label>
-        <input id="oc-app-date" type="date" className="f-input" value={date}
+        <DateInput id="oc-app-date" className="f-input" value={date}
                onChange={e => setDate(e.target.value)} />
         <div className="f-hint">
           Optional. Leave blank to fill in the most recent date at Signing — the

@@ -1,4 +1,5 @@
 import { optionsFor } from '../lib/lookups.js'
+import DateInput from './DateInput.jsx'
 
 /**
  * One editable field. Renders a <select> when the field descriptor names a
@@ -44,6 +45,9 @@ export default function FormField({ field, value, lookups, onChange }) {
         <option key={o.code} value={o.code}>{o.label}</option>
       ))}
     </select>
+  ) : type === 'date' ? (
+    // Always dd/mm/yyyy, whatever the browser's locale (UAT 2026-11-09).
+    <DateInput id={id} value={value ?? ''} onChange={e => onChange(key, e.target.value)} />
   ) : (
     <input
       id={id}

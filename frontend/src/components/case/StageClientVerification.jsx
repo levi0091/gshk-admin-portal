@@ -11,6 +11,7 @@ import ReturnYearCard from './ReturnYearCard.jsx'
 import VerificationDeliveryModal from './VerificationDeliveryModal.jsx'
 import { describeError, verificationBlock, isSubmitted, isValidated } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
+import DateInput from '../DateInput.jsx'
 
 /**
  * The address copied on every client verification email (Levi 2026-09-08).
@@ -570,9 +571,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <label className="f-label" htmlFor="respond-by">
             Client must reply by<span className="f-req"> *</span>
           </label>
-          <input
+          <DateInput
             id="respond-by"
-            type="date"
             className="f-input"
             style={{ maxWidth: 220 }}
             value={respondBy}

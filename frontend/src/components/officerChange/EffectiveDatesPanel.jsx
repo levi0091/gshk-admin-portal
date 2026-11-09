@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
+import DateInput from '../DateInput.jsx'
 
 /** Every change whose date was left blank when the client was sent the form. */
 export function deferredChanges(data) {
@@ -76,7 +77,7 @@ export default function EffectiveDatesPanel({ data, reload, can }) {
           <div className="oc-date-row" key={row.key}>
             <label htmlFor={`oc-date-${row.key}`}>Effective date — {row.label}</label>
             {can.write ? (
-              <input id={`oc-date-${row.key}`} type="date" className="f-input"
+              <DateInput id={`oc-date-${row.key}`} className="f-input"
                      max={hongKongTodayISO()} value={draft[row.key] || ''}
                      onChange={e => setDraft(d => ({ ...d, [row.key]: e.target.value }))} />
             ) : (

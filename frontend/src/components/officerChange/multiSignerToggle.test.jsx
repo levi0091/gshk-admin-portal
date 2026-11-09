@@ -198,7 +198,7 @@ describe('option on', () => {
     await screen.findAllByRole('group')
     const fields = screen.getAllByLabelText(/Reply by/)
     expect(fields).toHaveLength(1)
-    expect(fields[0]).toHaveValue('2026-11-03')
+    expect(fields[0]).toHaveValue('03/11/2026')
   })
 
   it('Send is disabled until there is an address and a Reply-by date', async () => {

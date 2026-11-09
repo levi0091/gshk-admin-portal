@@ -5,6 +5,7 @@ import CrRefusal from './CrRefusal.jsx'
 import OtherOpenCases from '../case/OtherOpenCases.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf, isFiled, isManual, filingOpensNote } from './workflow.js'
+import DateInput from '../DateInput.jsx'
 
 /**
  * Stage 4 (spec §5, answers 11 and 12). First what filing will change — the
@@ -96,7 +97,7 @@ export default function StageSubmission({ data, reload, can, goTo }) {
                 </div>
                 <div className="f-group">
                   <label className="f-label" htmlFor="oc-r-date">Transaction date <span className="f-req">*</span></label>
-                  <input id="oc-r-date" type="date" className="f-input" value={receipt.transactionDate}
+                  <DateInput id="oc-r-date" className="f-input" value={receipt.transactionDate}
                          onChange={e => setReceipt(r => ({ ...r, transactionDate: e.target.value }))} />
                 </div>
                 <div className="f-group">

@@ -1868,7 +1868,7 @@ describe('Submission — manual', () => {
   it('takes the date and time from pickers, and sends them as CR prints them', async () => {
     const user = userEvent.setup()
     renderIt()
-    expect(screen.getByLabelText('Transaction date')).toHaveAttribute('type', 'date')
+    expect(screen.getByLabelText('Transaction date')).toHaveAttribute('placeholder', 'dd/mm/yyyy')
     expect(screen.getByLabelText('Transaction time')).toHaveAttribute('type', 'time')
     await fillRequired(user)
     fireEvent.change(screen.getByLabelText('Transaction time'), { target: { value: '13:36' } })
