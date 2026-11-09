@@ -324,8 +324,11 @@ export default function PersonProfilePage() {
 
   async function saveEdit() {
     setBusy(true)
+    // A box emptied on purpose is sent as '' and CLEARS the field (the API
+    // stores NULL), as on the company profile. It used to be dropped here, so
+    // deleting a TCSP licence number and pressing Save silently kept it.
     const changed = Object.fromEntries(
-      EDITABLE.filter(f => stored(f, person) !== draft[f.key] && draft[f.key] !== '')
+      EDITABLE.filter(f => stored(f, person) !== draft[f.key])
         .map(f => [f.key, draft[f.key]])
     )
     try {
