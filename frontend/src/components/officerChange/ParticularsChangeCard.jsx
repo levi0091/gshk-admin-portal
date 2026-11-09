@@ -7,6 +7,7 @@ import { formatDate } from '../../lib/format.js'
 import { crAddressLines } from '../../lib/crAddress.js'
 import { useLookups } from '../../lib/lookups.js'
 import { capacityWithPrincipal } from './capacity.js'
+import DateInput from '../DateInput.jsx'
 
 const ADDRESS_KEYS = new Set(['residential_address', 'correspondence_address', 'address'])
 
@@ -146,7 +147,7 @@ export default function ParticularsChangeCard({ data, reload, can }) {
                     <td>
                       {/* A role that may not edit sees the date, not a dead input. */}
                       {editable ? (
-                        <input type="date" className="f-input" aria-label={`Effective date — ${item.label}`}
+                        <DateInput className="f-input" aria-label={`Effective date — ${item.label}`}
                                value={item.effective_date || ''} disabled={item.omitted}
                                onChange={e => setItem(entry, item.key, { effective_date: e.target.value })} />
                       ) : (

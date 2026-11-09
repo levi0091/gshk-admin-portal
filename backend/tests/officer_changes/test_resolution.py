@@ -262,9 +262,50 @@ def test_a_director_is_one_line_even_when_listed_twice():
     assert resolution.signatories([], officers) == ["PIK YI REBECCA LAW 羅碧儀"]
 
 
-def test_a_director_who_has_died_has_no_line():
+def test_a_director_who_has_died_keeps_a_line_for_the_estate():
+    """Jacqueline, UAT 2026-11-08: the administrator or executor signs for the
+    deceased, so the line is reserved -- but it carries no person, so nobody is
+    sent a link for it and no drawn signature can print on it."""
     dead = {**RESIGN, "cessation_reason": "D"}
-    assert resolution.signatories([dead, APPOINT], OFFICERS) == ["Aldo KRIEL 歐立德"]
+    assert resolution.signatory_people([dead, APPOINT], OFFICERS) == [
+        ("PIK YI REBECCA LAW 羅碧儀", None), ("Aldo KRIEL 歐立德", None)]
+    page = _pages(resolution.render(CASE, ENTITY, [dead, APPOINT], OFFICERS))[0]
+    dated_y = _line(page, "Dated:")["y"]
+    left = [r["text"] for r in _lines(page) if r["x0"] < 200 and r["y"] > dated_y]
+    assert left[1:] == ["Name:", "For and on behalf of the estate of",
+                        "PIK YI REBECCA LAW 羅碧儀 (deceased)", "Administrator / Executor"]
+    # A drawn picture keyed to the deceased's person id is never printed.
+    pdf = resolution.render(CASE, ENTITY, [dead, APPOINT], OFFICERS,
+                            signatures={"P1": b"not drawn"})
+    assert pdf
+
+
+def test_the_rule_reaches_the_end_of_a_long_name():
+    """Jacqueline, UAT 2026-11-09: "Can we make the line the same length as the
+    name?" A short name keeps the template's 29 underscores."""
+    officers = [{"officer_id": "O1", "role": "director", "person_id": "P1",
+                 "name": "ABARINTOS Wendy Lyn Lacson", "name_zh": "陳答問"}]
+    page = _pages(resolution.render(CASE, ENTITY, [], officers))[0]
+    name = _line(page, "Name: ABARINTOS")
+    rule = [r for r in _lines(page) if set(r["text"]) == {"_"} and r["x0"] < 200][-1]
+    assert rule["x1"] >= name["x1"] - 1
+    assert rule["x1"] < resolution.SIGNATURE_COLUMNS[1]
+    short = _pages(resolution.render(CASE, ENTITY, [], [{**officers[0], "name": "LEE",
+                                                          "name_zh": ""}]))[0]
+    assert [r["text"] for r in _lines(short) if set(r["text"]) == {"_"}][-1] == "_" * 29
+
+
+def test_a_director_recorded_as_deceased_on_the_profile_keeps_a_line_too():
+    officers = [{**OFFICERS[0], "date_of_death": "2026-10-01"}, OFFICERS[1]]
+    assert resolution.signatory_people([APPOINT], officers) == [
+        ("PIK YI REBECCA LAW 羅碧儀", None), ("Aldo KRIEL 歐立德", None)]
+
+
+def test_a_filed_case_keeps_the_deceased_line_after_the_profile_is_updated():
+    dead = {**RESIGN, "cessation_reason": "D", "person_id": "P1"}
+    after_apply = [o for o in OFFICERS if o["officer_id"] != "O1"]
+    assert resolution.signatory_people([dead, APPOINT], after_apply) == [
+        ("PIK YI REBECCA LAW 羅碧儀", None), ("Aldo KRIEL 歐立德", None)]
 
 
 def test_alternate_directors_are_worded_and_do_not_sign():

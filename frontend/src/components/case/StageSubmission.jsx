@@ -7,6 +7,7 @@ import OtherOpenCases from './OtherOpenCases.jsx'
 import { formatMoney as money, HK_TZ } from '../../lib/format.js'
 import { hongKongTodayISO } from '../../lib/anniversary.js'
 import { describeError } from './workflow.js'
+import DateInput from '../DateInput.jsx'
 
 /**
  * The receipt fields the portal FILLS, shown rather than asked for (Levi
@@ -682,7 +683,7 @@ function ReceiptInputs({ draft, prefill, caseRow, busy, spaced }) {
         {/* Pickers, not text (Levi 2026-09-14). A receipt is never dated in
             the future, so the calendar stops at today in Hong Kong. */}
         <Field id="rc-transactionDate" label="Transaction date">
-          <input id="rc-transactionDate" className="f-input" type="date"
+          <DateInput id="rc-transactionDate" className="f-input"
                  max={hongKongTodayISO()} value={fields.transactionDate}
                  disabled={busy}
                  onChange={e => setField('transactionDate', e.target.value)} />

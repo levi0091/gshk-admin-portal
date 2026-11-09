@@ -102,6 +102,13 @@ def cessation_values(block: dict, bean: dict) -> dict:
     if _get(bean, "corpEngName") or _get(bean, "corpChiName"):
         values.update({block["corp_name_en"]: _get(bean, "corpEngName"),
                        block["corp_name_zh"]: _get(bean, "corpChiName")})
+        # CR's XML carries no `rsnCes` for a body corporate (its own "Cease
+        # Corporate Secretary/Director" examples omit it: "Deceased" is for a
+        # natural person only), but the printed form has one Reason box for
+        # both kinds of officer. A company cannot die, so "Resignation/Others"
+        # is the only true answer and the box is ticked rather than left for
+        # the reader to wonder about (Jacqueline, UAT 2026-11-08).
+        values[block["reason_resign"]] = _ON
         _dash(values, block, ("corp_name_zh", "alternate_to"))
     else:
         values.update({block["name_zh"]: _get(bean, "indvChiName"),

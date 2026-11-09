@@ -11,6 +11,7 @@ import SignerPanels from './SignerPanels.jsx'
 import CloseCaseModal from '../case/CloseCaseModal.jsx'
 import { officerChangeApi } from './api.js'
 import { crMayHold, datesFilledSinceSend, errorOf, isClosed, isFiled } from './workflow.js'
+import DateInput from '../DateInput.jsx'
 
 /** Jacqueline A7: the reason a case is closed when no director would remain. */
 export const NO_DIRECTOR_REASON = 'Pending further instructions — no director would remain after ' +
@@ -164,7 +165,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
   const replyByField = (
     <div className="f-group">
       <label className="f-label" htmlFor="oc-reply-by">Reply by <span className="f-req">*</span></label>
-      <input id="oc-reply-by" type="date" className="f-input" value={respondBy}
+      <DateInput id="oc-reply-by" className="f-input" value={respondBy}
              onChange={e => { setRespondByTouched(true); setRespondBy(e.target.value) }} />
       {data.deadline?.date && (
         <div className="f-hint">CR's deadline is {formatDate(data.deadline.date)}.</div>

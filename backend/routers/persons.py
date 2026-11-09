@@ -548,6 +548,16 @@ async def update_person(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    # EMPTY STRING MEANS CLEAR THE FIELD, and is stored as NULL -- the rule
+    # PATCH /companies/{id} has had since 2026-09-04. The profile used to drop a
+    # blanked box before sending, so deleting a TCSP licence number and pressing
+    # Save did nothing and the old value came back (Jacqueline, UAT 2026-11-09).
+    # `None` still means "not mentioned"; "" is how "clear it" is spelt.
+    updates = {k: (None if isinstance(v, str) and not v.strip() else v)
+               for k, v in updates.items()}
+    if "full_name" in updates and updates["full_name"] is None:
+        raise HTTPException(status_code=422, detail="A person must keep a full name")
+
     sb = get_supabase()
     current = (
         sb.table("persons").select("*").eq("id", person_id).single().execute()

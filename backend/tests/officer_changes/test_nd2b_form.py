@@ -85,6 +85,30 @@ def test_unchanged_items_stay_empty_and_each_change_carries_its_date():
     assert values[m.MAIN_2["new_name_zh"]] == "" and values[m.MAIN_2["corr_flat"]] == ""
 
 
+def test_an_undated_change_still_prints_its_new_value_with_the_date_boxes_empty():
+    """UAT 2026-11-03 (PBI-61): an effective date deferred to Signing made the
+    change vanish from the ND2B the client was sent to approve."""
+    path = next(p for p in fx.files("ND2B") if "Individual Director" in p.name)
+
+    def undated(graph, entries):
+        for item in entries[0]["items"]:
+            item["effective_date"] = None
+
+    xml = _xml(path, mutate=undated)
+    assert "EffDt" not in xml  # nothing undated reaches the XML as a date
+    values = _values(xml, 1)
+    assert values[m.MAIN_2["new_email"]] == "test@cr.gov.hk"
+    assert (values[m.MAIN_2["email_date_dd"]], values[m.MAIN_2["email_date_mm"]],
+            values[m.MAIN_2["email_date_yyyy"]]) == ("", "", "")
+    # The new identity numbers still earn their PI sheet.
+    assert "PI" in [p["sheet"] for p in page_plan("Nd2b", xml)]
+    corp = next(p for p in fx.files("ND2B") if "Corporate Director" in p.name)
+    corp_xml = _xml(corp, mutate=undated)
+    corp_values = _values(corp_xml, 2)
+    assert any(v not in ("", "None", "/Off") for k, v in corp_values.items()
+               if k == m.MAIN_3["new_email"])
+
+
 def test_the_new_hkid_is_partial_in_public_and_full_on_the_pi_sheet():
     path = next(p for p in fx.files("ND2B") if "Individual Director" in p.name)
     pages = _text(render("Nd2b", _xml(path), company_name=COMPANY))

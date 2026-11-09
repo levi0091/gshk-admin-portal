@@ -135,6 +135,22 @@ a { text-decoration: none; color: inherit; }
 .f-input[aria-invalid="true"]:focus, .f-select[aria-invalid="true"]:focus {
   border-color: var(--danger); box-shadow: 0 0 0 3px rgba(197,48,48,.10);
 }
+/* `DateInput`: a dd/mm/yyyy text box with a calendar button inside its right
+   edge. The native date input beneath the button is only there to open the
+   browser's picker; it is invisible and takes no clicks of its own. */
+.date-input { position: relative; display: block; width: 100%; min-width: 0; }
+.date-input > input:first-child { padding-right: 34px; }
+.date-input-cal {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 26px; border: 0; background: transparent; cursor: pointer;
+  color: var(--t-muted); display: grid; place-items: center; border-radius: var(--r-sm);
+}
+.date-input-cal:hover:not(:disabled) { color: var(--indigo); background: var(--bg-page); }
+.date-input-cal:disabled { cursor: default; opacity: .5; }
+.date-input > .date-input-native {
+  position: absolute; right: 4px; bottom: 0; width: 28px; height: 1px; min-width: 0;
+  opacity: 0; pointer-events: none; border: 0; padding: 0;
+}
 /* The same field, allowed to be more than one line. `.f-input` pins height to
    36px, which flattens a <textarea> to a single squashed row; this restores the
    vertical padding that height was standing in for and lets `rows` decide. */

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api.js'
 import { useLookups, optionsFor } from '../lib/lookups.js'
+import DateInput from './DateInput.jsx'
 
 /**
  * Link an EXISTING person or corporate party to a company — never creates a
@@ -401,6 +402,10 @@ export default function LinkPartyModal({ companyId, relation, link, shareClasses
                         <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
+                  ) : f.type === 'date' ? (
+                    <DateInput id={f.key} value={attrs[f.key] ?? ''}
+                               aria-invalid={invalid || undefined}
+                               onChange={e => set(e.target.value)} />
                   ) : (
                     <input id={f.key} className="f-input" type={f.type || 'text'}
                            value={attrs[f.key] ?? ''}

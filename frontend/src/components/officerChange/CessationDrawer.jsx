@@ -3,6 +3,7 @@ import Drawer from './Drawer.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
 import { capacityWithPrincipal } from './capacity.js'
+import DateInput from '../DateInput.jsx'
 
 /**
  * One key per current officer, whichever register holds them. A secretary on
@@ -148,7 +149,7 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
       {individual && reason === 'D' && (
         <div className="f-group">
           <label className="f-label" htmlFor="oc-died">Date of death <span className="f-req">*</span></label>
-          <input id="oc-died" type="date" className="f-input" value={died} max={todayIso()}
+          <DateInput id="oc-died" className="f-input" value={died} max={todayIso()}
                  onChange={e => changeDied(e.target.value)} />
           <div className="f-hint">
             Not on CR&apos;s form. It is saved to {name || 'the person'}&apos;s profile once the form is filed.
@@ -158,7 +159,7 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
 
       <div className="f-group">
         <label className="f-label" htmlFor="oc-ces-date">Date of cessation</label>
-        <input id="oc-ces-date" type="date" className="f-input" value={date}
+        <DateInput id="oc-ces-date" className="f-input" value={date}
                onChange={e => setDate(e.target.value)} />
         <div className="f-hint">
           Optional. Leave blank to fill in the most recent date at Signing — the

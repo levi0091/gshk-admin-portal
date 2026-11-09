@@ -359,6 +359,36 @@ def test_a_vip_flag_must_be_a_boolean():
     assert resp.status_code == 422
 
 
+def test_an_empty_string_clears_a_field_and_is_audited():
+    """Jacqueline, UAT 2026-11-09: deleting a TCSP licence number and pressing
+    Save kept it. "" now clears the column (NULL), as on PATCH /companies."""
+    current = {"id": "p1", "full_name": "Lee", "tcsp_licence_no": "TC000807",
+               "tcsp_exemption_reason": "not for business"}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.particulars.capture_before_edit"), \
+         patch("routers.persons.audit_subject.primary_id_number", return_value=None), \
+         patch("routers.persons.log_events", new=AsyncMock()) as audit:
+        sb = msb.return_value
+        sb.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = current
+        sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+            {**current, "tcsp_licence_no": None}]
+        resp = client.patch("/persons/p1", json={"tcsp_licence_no": ""}, headers=H)
+    assert resp.status_code == 200
+    assert sb.table.return_value.update.call_args.args[0] == {"tcsp_licence_no": None}
+    (event,) = audit.await_args.args[0]
+    assert event["before_state"] == {"field": "tcsp_licence_no", "old": "TC000807"}
+    assert event["after_state"] == {"field": "tcsp_licence_no", "new": None}
+
+
+def test_a_person_cannot_be_left_without_a_full_name():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb:
+        resp = client.patch("/persons/p1", json={"full_name": "  "}, headers=H)
+    assert resp.status_code == 422
+    msb.return_value.table.return_value.update.assert_not_called()
+
+
 def test_update_person_no_fields_400():
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.persons.get_supabase"):

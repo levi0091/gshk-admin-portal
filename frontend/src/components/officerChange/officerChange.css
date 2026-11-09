@@ -92,7 +92,7 @@
 .oc-pc-items tr.omitted .oc-new { text-decoration: line-through; }
 .oc-old { color: var(--t-muted); overflow-wrap: anywhere; }
 .oc-new { color: var(--t-head); font-weight: 600; overflow-wrap: anywhere; }
-.oc-pc-items input[type="date"] { height: 32px; font-size: 13px; }
+.oc-pc-items .date-input > input:first-child { height: 32px; font-size: 13px; }
 
 /* -- the side drawer (add / edit an entry) ------------------------------------------ */
 .oc-drawer-wrap {

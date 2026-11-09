@@ -5,6 +5,7 @@ import {
   draftFromFilters, filtersFromDraft, opsFor,
 } from '../lib/tableFilters.js'
 import { formatNumber } from '../lib/format.js'
+import DateInput from './DateInput.jsx'
 
 /**
  * The funnel in a column header, and the popover it opens.
@@ -280,12 +281,12 @@ function DateEditor({ draft, setDraft }) {
     <div className="colf-pair colf-pair-stack">
       <label className="colf-field">
         <span>From</span>
-        <input type="date" aria-label="From date" value={draft.min}
+        <DateInput className="" aria-label="From date" value={draft.min}
                onChange={e => setDraft({ ...draft, min: e.target.value })} />
       </label>
       <label className="colf-field">
         <span>To</span>
-        <input type="date" aria-label="To date" value={draft.max}
+        <DateInput className="" aria-label="To date" value={draft.max}
                onChange={e => setDraft({ ...draft, max: e.target.value })} />
       </label>
     </div>

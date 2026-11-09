@@ -701,9 +701,9 @@ describe('CessationDrawer — the date of death', () => {
     post.mockResolvedValue({ id: 'k1' })
     wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
     await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o2')
-    expect(screen.getByLabelText(/Date of death/)).toHaveValue('2026-09-20')
+    expect(screen.getByLabelText(/Date of death/)).toHaveValue('20/09/2026')
     // A person ceases on the day they die, so the cessation date follows.
-    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('2026-09-20')
+    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('20/09/2026')
     expect(screen.getByText(/saved to LEE Dead's profile once the form is filed/)).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries', {
@@ -719,7 +719,7 @@ describe('CessationDrawer — the date of death', () => {
     const add = screen.getByRole('button', { name: 'Add cessation' })
     expect(add).toBeDisabled()
     await userEvent.type(screen.getByLabelText(/Date of death/), '2026-09-18')
-    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('2026-09-18')
+    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('18/09/2026')
     expect(add).toBeEnabled()
   })
 
@@ -729,7 +729,7 @@ describe('CessationDrawer — the date of death', () => {
     await userEvent.type(screen.getByLabelText(/Date of cessation/), '2026-09-25')
     await userEvent.click(screen.getByLabelText('Deceased'))
     await userEvent.type(screen.getByLabelText(/Date of death/), '2026-09-18')
-    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('2026-09-25')
+    expect(screen.getByLabelText(/Date of cessation/)).toHaveValue('25/09/2026')
   })
 
   it('sends no date of death for a resignation', async () => {
@@ -748,7 +748,7 @@ describe('CessationDrawer — the date of death', () => {
       capacity: 'director', cessation_reason: 'D', date_of_death: '2026-09-17',
       effective_date: '2026-09-17', party: { name: 'CHAN Tai Man' } }
     wrap(<CessationDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
-    expect(screen.getByLabelText(/Date of death/)).toHaveValue('2026-09-17')
+    expect(screen.getByLabelText(/Date of death/)).toHaveValue('17/09/2026')
   })
 })
 
