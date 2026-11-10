@@ -92,6 +92,17 @@ def _refuse_if_closed(case: dict, action: str) -> None:
     way the submit gate's does, so the screen can recognise this refusal
     without matching on prose.
     """
+    # AN OFFICER CHANGE IS NOT AN ANNUAL RETURN (migration 050). ND2A/ND2B
+    # cases live in this table too, and every NAR1 write route calls this
+    # guard first — so this one check keeps a NAR1 action (a NAR1 PDF, a NAR1
+    # receipt, the NAR1 approval page) off a case filing a different form.
+    if (case.get("form_code") or "Nar1") != "Nar1":
+        raise HTTPException(409, {
+            "message": (f"case {case.get('case_no') or case.get('id')} files form "
+                        f"{case.get('form_code')}, not an annual return — "
+                        f"{action} belongs on its own officer-change page"),
+            "reason": "wrong_form",
+        })
     if not case.get("closed_at"):
         return
     raise HTTPException(409, {
@@ -2421,6 +2432,10 @@ async def verification_delivery(
         .eq("entity_id", case_id)
         .eq("entity_type", "nar1_case")
         .eq("action_type", ev.EMAIL_SENT)
+        # NOT the confirmation receipt (Levi 2026-10-17): it is an EMAIL_SENT
+        # row on the same case, tagged with a template, and read as "the
+        # newest send" it would replace the board's report with one line.
+        .is_("metadata->>template", "null")
         .order("created_at", desc=True)
         .limit(1)
         .execute()

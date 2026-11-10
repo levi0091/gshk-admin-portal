@@ -102,7 +102,7 @@ export default function LoginPage() {
 
         <div style={{ height: 1, background: 'var(--border)', margin: '0 0 22px' }} />
 
-        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t-head)', textAlign: 'center', marginBottom: 4 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--t-head)', textAlign: 'center', marginBottom: 4 }}>
           G-FlowDesk Admin Portal
         </div>
         <div style={{ fontSize: 12, color: 'var(--t-muted)', textAlign: 'center', marginBottom: 22 }}>
@@ -154,11 +154,7 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <div style={{
-              background: '#FEE2E2', border: '1px solid #FCA5A5',
-              borderRadius: 'var(--r-sm)', padding: '10px 14px',
-              fontSize: 13, color: '#B91C1C',
-            }}>
+            <div className="alert al-danger" role="alert" style={{ marginBottom: 0 }}>
               {error}
             </div>
           )}

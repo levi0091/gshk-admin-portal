@@ -139,13 +139,12 @@ def test_the_downgrade_restores_043s_view_exactly():
         _normalise(m43._case_view_sql(cr_status=True))
 
 
-def test_the_migrations_stage_lists_match_the_services():
-    """The view's `live` and `filed` lists are copied constants. One that drifts
-    silently reclassifies every case it covers."""
-    from services import nar1_cases
-
+def test_the_migrations_stage_lists_are_the_ones_046_shipped():
+    """The view's `live` and `filed` lists are copied constants. History now:
+    054 dropped `registered`, and test_migration_054 holds the head to the
+    services."""
     m46 = _migration(M046)
-    assert tuple(m46.CR_FILED_STAGES) == tuple(nar1_cases.CR_FILED_STAGES)
+    assert tuple(m46.CR_FILED_STAGES) == ("submitted", "registered", "edrive")
     assert m46.FILING_WINDOW_DAYS == ncs.FILING_WINDOW_DAYS
 
 

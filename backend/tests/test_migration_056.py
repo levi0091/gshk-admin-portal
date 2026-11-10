@@ -56,7 +56,10 @@ def test_it_revises_master_head_and_reuses_no_number_dev_holds():
 
 def test_the_check_constraint_allows_exactly_the_stages_the_code_writes():
     m = _migration()
-    assert set(m.STAGES) == set(filings.FORM_STATUSES) | {filings.STAGE_EDRIVE}
+    # 056's own CHECK still holds `registered` (018's list): 054 removes it, and
+    # restates the list WITH 056's two stages -- tests/test_migration_054.py.
+    assert set(m.STAGES) == (
+        set(filings.FORM_STATUSES) | {filings.STAGE_EDRIVE, filings.LEGACY_REGISTERED})
     assert set(m.NEW_STAGES) == {filings.STAGE_SUBMITTING,
                                  filings.STAGE_SUBMISSION_UNKNOWN}
 
@@ -86,7 +89,7 @@ def test_the_views_branches_agree_with_the_python_for_every_stage(stage):
             "client_approved": True}
     code = nar1_case_status.derive(case, {"stage": stage})["code"]
     if stage in ("submitted", "registered", "edrive"):
-        assert code in nar1_case_status.CR_STATUS_CODES
+        assert code == nar1_case_status.FILED
     elif stage not in m.LIVE_STAGES:
         assert code == "data_verification"
     elif stage in m.SUBMISSION_STAGES:
@@ -226,7 +229,8 @@ def test_the_check_still_refuses_a_stage_nobody_writes(conn):
     ("submitting", "submitted"),
     ("submission_unknown", "submitting"),
     ("submitted", "submission_unknown"),
-    ("registered", "submitted"),
+    # ("registered", ...) is no longer writable: 054 removed that stage, and this
+    # runs at head. The index still names it for the chain between 056 and 054.
 ])
 def test_the_index_refuses_a_second_filing_cr_may_hold_on_one_case(conn, first,
                                                                     second):

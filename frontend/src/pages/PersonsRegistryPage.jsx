@@ -214,7 +214,7 @@ export default function PersonsRegistryPage() {
       />
 
       {error ? (
-        <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+        <div className="alert al-danger" role="alert">
           Failed to load persons: {error}
         </div>
       ) : (
@@ -253,6 +253,12 @@ export default function PersonsRegistryPage() {
                           ? `${(p.primary_id_type || '').toUpperCase()} · ${p.primary_id_number}`
                           : '—'}
                       </span>
+                      {/* A client may hold two passports, each given to a
+                          different company (Levi 2026-10-05); the profile
+                          shows which company files which. */}
+                      {p.id_count > 1 && (
+                        <span className="td-muted reg-more-ids">+{p.id_count - 1} more ID</span>
+                      )}
                     </td>
                     <td data-label="Nationality">
                       <span className="td-muted">{p.nationality || '—'}</span>

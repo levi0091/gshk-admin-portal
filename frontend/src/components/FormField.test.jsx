@@ -54,7 +54,40 @@ describe('FormField', () => {
   })
 })
 
+describe('FormField — checkbox (nd2-change-requests, review B4)', () => {
+  const HIDE = { key: 'hide_email_on_forms', type: 'checkbox',
+                 label: 'Do not print this email on forms (NAR1, ND2A, ND2B)' }
+
+  it('renders a checkbox, labelled, ticked from a true value', () => {
+    render(<FormField field={HIDE} value={true} lookups={LOOKUPS} onChange={() => {}} />)
+    const box = screen.getByLabelText(/Do not print this email on forms/)
+    expect(box).toHaveAttribute('type', 'checkbox')
+    expect(box).toBeChecked()
+  })
+
+  it('treats an unset value as unticked, not as an uncontrolled input', () => {
+    render(<FormField field={HIDE} value={undefined} lookups={LOOKUPS} onChange={() => {}} />)
+    expect(screen.getByLabelText(/Do not print this email/)).not.toBeChecked()
+  })
+
+  it('reports a real boolean, never the string "true"', async () => {
+    const onChange = vi.fn()
+    render(<FormField field={HIDE} value={false} lookups={LOOKUPS} onChange={onChange} />)
+    await userEvent.click(screen.getByLabelText(/Do not print this email/))
+    expect(onChange).toHaveBeenCalledWith('hide_email_on_forms', true)
+  })
+})
+
 describe('displayValue', () => {
+  it('renders words for a ticked checkbox, since React prints true as nothing', () => {
+    expect(displayValue({ type: 'checkbox' }, true, LOOKUPS)).toBe('Yes')
+  })
+
+  it('renders nothing for an unticked or unset checkbox', () => {
+    expect(displayValue({ type: 'checkbox' }, false, LOOKUPS)).toBeNull()
+    expect(displayValue({ type: 'checkbox' }, undefined, LOOKUPS)).toBeNull()
+  })
+
   it('shows the label, not the stored code — "M" is not an answer to "Gender"', () => {
     expect(displayValue({ lookup: 'gender' }, 'M', LOOKUPS)).toBe('Male')
   })

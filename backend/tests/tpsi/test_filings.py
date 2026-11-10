@@ -320,7 +320,9 @@ def test_declared_signatory_id_reads_the_named_person():
                           "<cr:selectPersonId></cr:selectPersonId>"),  # empty
     VALIDATED_XML.replace("<cr:formCode>NAR1</cr:formCode>",
                           "<cr:selectPersonId>   </cr:selectPersonId>"),
-])
+# Explicit ids: VALIDATED_XML embeds a certificate generated at import, so ids
+# derived from the value differ per process and pytest-xdist refuses to run.
+], ids=["none", "empty", "no_tag", "empty_tag", "blank_tag"])
 def test_declared_signatory_id_is_none_when_no_person_is_named(xml):
     """An absent OR empty tag both mean "signed by a body corporate", which is
     the normal GSHK case — neither may be read as a signatory called "" that
@@ -439,11 +441,12 @@ def test_sign_failure_records_signing_failed_not_a_generic_failure(monkeypatch):
     assert saved["stage"] != filings.STAGE_VALIDATION_FAILED
 
 
-def test_form_statuses_are_the_eleven_the_ui_reports():
+def test_form_statuses_are_the_ten_the_ui_reports():
     # edrive is a valid stored value but is not offered in the UI, so it must
-    # not appear in the reported vocabulary. Eleven since migration 056 added
+    # not appear in the reported vocabulary. Eight since `registered` went with
+    # the CR status poll (2026-10-17); ten since migration 056 added
     # `submitting` and `submission_unknown`.
-    assert len(filings.FORM_STATUSES) == 11
+    assert len(filings.FORM_STATUSES) == 10
     assert filings.STAGE_SUBMITTING in filings.FORM_STATUSES
     assert filings.STAGE_SUBMISSION_UNKNOWN in filings.FORM_STATUSES
     assert filings.STAGE_EDRIVE not in filings.FORM_STATUSES
@@ -636,3 +639,22 @@ def test_a_validated_filing_is_not_rebuildable():
     assert set(filings.REBUILDABLE_STAGES) == {
         filings.STAGE_DRAFT, filings.STAGE_VALIDATION_FAILED,
     }
+
+
+def test_there_is_no_registered_stage():
+    """`registered` was written only by the CR status poll (removed Levi
+    2026-10-17; migration 054 turned its rows back into `submitted`)."""
+    assert "registered" not in filings.FORM_STATUS_LABELS
+    assert "registered" not in filings.FORM_STATUSES
+    assert not hasattr(filings, "STAGE_REGISTERED")
+    assert not hasattr(filings, "mark_registered")
+
+
+def test_a_legacy_registered_filing_is_still_one_cr_holds():
+    """THE DEPLOY WINDOW (review, 2026-10-17). The code deploys before migration
+    054 turns `registered` rows into `submitted`. In those minutes a registered
+    filing must still be terminal — or `supersede_all_for_case` could retire a
+    return CR holds, 054's UPDATE would then skip it, and the case would read
+    unfiled for good, one press from a second chargeable filing."""
+    assert filings.LEGACY_REGISTERED == "registered"
+    assert filings.LEGACY_REGISTERED in filings.TERMINAL_STAGES

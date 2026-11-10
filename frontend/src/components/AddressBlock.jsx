@@ -1,5 +1,6 @@
 import { optionsFor } from '../lib/lookups.js'
 import { formatNumber } from '../lib/format.js'
+import { CR_ADDRESS_LABELS, countryName } from '../lib/crAddress.js'
 import FieldWarning from './FieldWarning.jsx'
 
 /**
@@ -18,11 +19,13 @@ import FieldWarning from './FieldWarning.jsx'
  * that mapping is the whole point — a single free-text box is what let the data
  * go wrong. `nar1_mapper._address` is the other half of this contract:
  *
- *     line1  -> flatFlrBlk         Flat / Floor / Block
- *     line2  -> bldg               Building
- *     line3  -> stEstLotVlg        Street / Estate / Lot / Village
- *     city   -> dstCtyStatePostal  District
- *     country-> ctryRegion         Country
+ *     line1  -> flatFlrBlk         Flat/Floor/Block etc.
+ *     line2  -> bldg               Building (Name)
+ *     line3  -> stEstLotVlg        Street/Estate/Lot/Village etc.
+ *     city   -> dstCtyStatePostal  District/City/Province/State/Postal Code etc.
+ *     country-> ctryRegion         Country/Region
+ *
+ * The labels are CR's own wording (lib/crAddress.js), since Jacqueline's B3.
  *
  * THE COUNTER IS NOT DECORATION. CR caps each line at 60 characters and
  * refuses the whole filing over one long line. Showing the count where the
@@ -34,9 +37,9 @@ import FieldWarning from './FieldWarning.jsx'
 export const LIMIT = 60
 
 const LINES = [
-  ['line1', 'Flat / Floor / Block'],
-  ['line2', 'Building'],
-  ['line3', 'Street / Estate / Lot / Village'],
+  ['line1', CR_ADDRESS_LABELS[0]],
+  ['line2', CR_ADDRESS_LABELS[1]],
+  ['line3', CR_ADDRESS_LABELS[2]],
 ]
 
 const HK = 'HK'
@@ -64,16 +67,17 @@ export default function AddressBlock({ value, lookups, onChange, readOnly = fals
           </div>
         ))}
         <div className="kv-row">
-          <span className="kv-key">District</span>
+          <span className="kv-key">{CR_ADDRESS_LABELS[3]}</span>
           <span className="kv-val">
-            {a.city || <span className="td-muted">—</span>}
+            {[a.city, a.state_region, a.postal_code].filter(Boolean).join(' ')
+              || <span className="td-muted">—</span>}
             <FieldWarning warning={warn('city')} />
           </span>
         </div>
         <div className="kv-row">
-          <span className="kv-key">Country</span>
+          <span className="kv-key">{CR_ADDRESS_LABELS[4]}</span>
           <span className="kv-val">
-            {a.country || <span className="td-muted">—</span>}
+            {countryName(a.country, lookups) || <span className="td-muted">—</span>}
             <FieldWarning warning={warn('country')} />
           </span>
         </div>
@@ -95,7 +99,7 @@ export default function AddressBlock({ value, lookups, onChange, readOnly = fals
       ))}
 
       <div className="f-group">
-        <label className="f-label" htmlFor="addr_city">District</label>
+        <label className="f-label" htmlFor="addr_city">{CR_ADDRESS_LABELS[3]}</label>
         {isHK ? (
           // For a Hong Kong address CR reads District as a CONTROLLED CODE,
           // not free text: "WAN CHAI" was refused live while "WANCHAI" passed.
@@ -127,7 +131,7 @@ export default function AddressBlock({ value, lookups, onChange, readOnly = fals
       </div>
 
       <div className="f-group">
-        <label className="f-label" htmlFor="addr_country">Country</label>
+        <label className="f-label" htmlFor="addr_country">{CR_ADDRESS_LABELS[4]}</label>
         <select
           id="addr_country"
           className="f-select"

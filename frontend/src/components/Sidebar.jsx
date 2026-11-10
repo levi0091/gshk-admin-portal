@@ -110,7 +110,7 @@ export default function Sidebar({ isOpen, collapsed, onClose }) {
   }
 
   const sectionLbl = {
-    fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase',
+    fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase',
     color: 'var(--t-muted)', padding: '10px 8px 4px',
   }
 
@@ -145,7 +145,7 @@ export default function Sidebar({ isOpen, collapsed, onClose }) {
         {profileError && mainItems.length === 0 && (
           <div style={{
             padding: '8px 10px', fontSize: 11, lineHeight: 1.5,
-            color: '#B91C1C',
+            color: 'var(--danger)',
           }}>
             Menu unavailable — your permissions could not be loaded. Reload the
             page.

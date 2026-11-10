@@ -166,7 +166,7 @@ def test_a_case_the_registry_already_holds_cannot_be_closed(client):
         ({**OPEN_CASE, "manual_submitted_at": "2026-08-18"}, None),
         ({**OPEN_CASE, "manual_receipt": {"caseNo": "1"}}, None),
         (OPEN_CASE, {"id": "f1", "stage": "submitted"}),
-        (OPEN_CASE, {"id": "f1", "stage": "registered"}),
+        (OPEN_CASE, {"id": "f1", "stage": "edrive"}),
     ):
         stack, _ = _closing(case=case, filing=filing)
         entered = _enter(stack)

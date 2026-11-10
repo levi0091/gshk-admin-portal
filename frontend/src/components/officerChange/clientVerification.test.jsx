@@ -1,0 +1,418 @@
+// Client Verification after Jacqueline's feedback of 1 Oct 2026 (A1, A3, A6,
+// A7, A8, B1, B3, BQ1).
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+import RulesPanel from './RulesPanel.jsx'
+import AttachmentsCard from './AttachmentsCard.jsx'
+import ChangesCard from './ChangesCard.jsx'
+import ParticularsChangeCard from './ParticularsChangeCard.jsx'
+import CessationDrawer from './CessationDrawer.jsx'
+import StageClientVerification from './StageClientVerification.jsx'
+
+const get = vi.fn(); const post = vi.fn(); const patch = vi.fn(); const upload = vi.fn()
+const blob = vi.fn(() => Promise.resolve(new Blob(['%PDF'])))
+vi.mock('../../lib/api.js', () => ({
+  api: {
+    get: (...a) => get(...a), post: (...a) => post(...a), patch: (...a) => patch(...a),
+    del: vi.fn(), upload: (...a) => upload(...a), blob: (...a) => blob(...a), put: vi.fn(),
+  },
+}))
+vi.mock('../case/PdfPreview.jsx', () => ({
+  default: ({ pills }) => <div data-testid="pdf">{(pills || []).map(p => p.label).join(' | ')}</div>,
+  usePdfBlob: () => ({ url: null, error: null }),
+}))
+
+const ALL = { write: true, tpsiWrite: true, tpsiSubmit: true, tpsiRead: true }
+const RULES = {
+  blocking: false,
+  lines: ['After these changes the company will have 2 directors (2 natural persons) and 1 secretary.',
+          'Directors: CHAN Tai Man and LEE Ka Ho.',
+          'A company secretary remains — Get Started HK Limited.'],
+  board: { directors: [{ name: 'CHAN Tai Man' }, { name: 'LEE Ka Ho' }], secretaries: [] },
+  checks: [
+    { code: 'has_changes', ok: true, level: 'rule', text: 'There are changes to file.' },
+    { code: 'dates_present', ok: false, level: 'notice', text: '1 change has no effective date yet.' },
+    { code: 'natural_director', ok: true, level: 'rule', text: 'At least one director is a natural person.' },
+  ],
+}
+const BASE = {
+  id: 'k1', case_no: 'ND2A-2026-0007', form_code: 'Nd2a', case_type: 'ND2A', editable: true,
+  officers: [{ officer_id: 'o1', role: 'director', party_type: 'individual', name: 'CHAN Tai Man' }],
+  entries: [], documents: [], rules: RULES, problems: [], reply_by_default: '2026-10-07',
+  route: { esign_available: true, reasons: [], consents: [] }, client_approved: null,
+}
+const wrap = ui => render(<MemoryRouter>{ui}</MemoryRouter>)
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  get.mockResolvedValue({ recipients: [], default_to: [] })
+})
+
+describe('RulesPanel — three lines (A6)', () => {
+  it('reads as three lines, with notices behind "Show all checks"', async () => {
+    const user = userEvent.setup()
+    render(<RulesPanel rules={RULES} />)
+    expect(screen.getByText('Directors: CHAN Tai Man and LEE Ka Ho.')).toBeInTheDocument()
+    expect(screen.getByText('A company secretary remains — Get Started HK Limited.')).toBeInTheDocument()
+    expect(screen.queryByText('There are changes to file.')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Show all checks (3)' }))
+    expect(screen.getByText('There are changes to file.')).toBeInTheDocument()
+  })
+
+  it('shows a future date as a reminder, not a breach', () => {
+    const text = 'A change is dated 28 Jan 2027, after today. The client can confirm the form now; it can be filed with CR from that date.'
+    render(<RulesPanel rules={{ ...RULES, blocking: false, checks: [...RULES.checks,
+      { code: 'no_future_dates', ok: false, level: 'reminder', text }] }} />)
+    const line = within(screen.getByRole('list', { name: 'Reminders' })).getByText(text).closest('li')
+    expect(line).toHaveClass('notice')
+    expect(screen.getByText('All rules met')).toBeInTheDocument()
+    expect(screen.queryByText(/Breach/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Rules breached' })).not.toBeInTheDocument()
+  })
+
+  it('always shows a breached rule', () => {
+    const breach = { ...RULES, blocking: true, checks: [...RULES.checks, {
+      code: 'has_secretary', ok: false, level: 'rule',
+      text: 'The company would be left without a company secretary.' }] }
+    render(<RulesPanel rules={breach} />)
+    expect(screen.getByText('The company would be left without a company secretary.')).toBeInTheDocument()
+  })
+})
+
+describe('No director would remain (A7)', () => {
+  it('offers to close the case pending further instructions, reason pre-filled', async () => {
+    const user = userEvent.setup()
+    const rules = { ...RULES, blocking: true,
+      lines: [RULES.lines[0], 'No director would remain.', RULES.lines[2]],
+      board: { directors: [], secretaries: [{ name: 'Get Started HK Limited' }] },
+      checks: [{ code: 'natural_director', ok: false, level: 'rule',
+                 text: 'A private company must keep at least one director who is a natural person.' }] }
+    wrap(<StageClientVerification data={{ ...BASE, rules, entries: [{ id: 'n1', kind: 'cessation',
+      party: { name: 'CHAN Tai Man' }, summary: 'Director' }] }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText(/does not file the director's resignation \(ND4\)/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Close case — pending further instructions' }))
+    expect(screen.getByLabelText(/Why is this case not proceeding/)).toHaveValue(
+      'Pending further instructions — no director would remain after these changes. ' +
+      'The client has been told they may file Form ND4 themselves.')
+  })
+})
+
+describe('AttachmentsCard (A3)', () => {
+  const DOCS = [{ id: 'd1', entry_id: null, file_name: 'resolution-signed.pdf', type_label: 'Board resolution',
+    send_with_email: false, source: 'upload' }]
+
+  it('uploads a dropped document for the whole form, ticked to go with the email', async () => {
+    upload.mockResolvedValue({ id: 'k1' })
+    render(<AttachmentsCard data={{ ...BASE, documents: [] }} reload={vi.fn()} can={ALL} />)
+    fireEvent.drop(screen.getByRole('button', { name: /Drag files here/ }),
+                   { dataTransfer: { files: [new File(['x'], 'memo.pdf')] } })
+    await waitFor(() => expect(upload).toHaveBeenCalled())
+    const [path, form] = upload.mock.calls[0]
+    expect(path).toBe('/officer-changes/k1/documents')
+    expect(form.get('send_with_email')).toBe('true')
+    // The written resolution is G-FlowDesk's own now (Levi 2026-10-05); an
+    // upload here is anything else the client should have.
+    expect(form.get('document_type_code')).toBe('officer_change_support')
+  })
+
+  it('uploads every file dropped, and names the one that was refused', async () => {
+    upload.mockReset()
+    upload.mockRejectedValueOnce(new Error('Too large')).mockResolvedValueOnce({ id: 'k1' })
+    const reload = vi.fn()
+    render(<AttachmentsCard data={{ ...BASE, documents: [] }} reload={reload} can={ALL} />)
+    fireEvent.drop(screen.getByRole('button', { name: /Drag files here/ }),
+                   { dataTransfer: { files: [new File(['x'], 'big.pdf'), new File(['x'], 'ok.pdf')] } })
+    expect(await screen.findByRole('alert')).toHaveTextContent('big.pdf: Too large')
+    expect(upload).toHaveBeenCalledTimes(2)
+    expect(reload).toHaveBeenCalledWith({ id: 'k1' })
+  })
+
+  it('ticks an uploaded document to go with the email', async () => {
+    patch.mockResolvedValue({ id: 'k1' })
+    const user = userEvent.setup()
+    render(<AttachmentsCard data={{ ...BASE, documents: DOCS }} reload={vi.fn()} can={ALL} />)
+    await user.click(screen.getByLabelText('Send resolution-signed.pdf with the email'))
+    expect(patch).toHaveBeenCalledWith('/officer-changes/k1/documents/d1', { send_with_email: true })
+  })
+
+  it('has no resolution toggle — the resolution always goes with an ND2A', () => {
+    render(<AttachmentsCard data={{ ...BASE, documents: [] }} reload={vi.fn()} can={ALL} />)
+    expect(screen.queryByText(/prepared by G-FlowDesk/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Preview resolution' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Document type')).not.toBeInTheDocument()
+    expect(screen.getByText(/written resolution are always attached/)).toBeInTheDocument()
+  })
+
+  it('is read-only without edit', () => {
+    render(<AttachmentsCard data={{ ...BASE, form_code: 'Nd2b', documents: DOCS }} reload={vi.fn()}
+                            can={{ ...ALL, write: false }} />)
+    expect(screen.queryByRole('button', { name: /Drag files here/ })).not.toBeInTheDocument()
+    expect(screen.getByText('resolution-signed.pdf')).toBeInTheDocument()
+  })
+})
+
+describe('Effective date is optional at send (A1)', () => {
+  it('saves a cessation with no date and says when it will be asked for', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    const user = userEvent.setup()
+    wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await user.selectOptions(screen.getByLabelText(/Officer/), 'o1')
+    expect(screen.getByText(/Leave blank to fill in the most recent date at Signing/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add cessation' }))
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post.mock.calls[0][1].effective_date).toBe('')
+  })
+})
+
+describe('Consent line on the change list (A5, Levi 2026-10-05)', () => {
+  it('says e-Sign or the manual route, and never offers an in-portal consent', () => {
+    const entries = [
+      { id: 'n1', kind: 'appointment', capacity: 'director', party: { name: 'LEE Ka Ho' },
+        summary: 'Director', consent_mode: 'esign' },
+      { id: 'n2', kind: 'appointment', capacity: 'director', party: { name: 'HO New' },
+        summary: 'Director', consent_mode: 'manual' },
+    ]
+    wrap(<ChangesCard data={{ ...BASE, entries }} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText(/Consent: e-Sign — PIN-signed from the e-Registry account on file/)).toBeInTheDocument()
+    expect(screen.getByText(/Consent: manual route — given on the CR portal/)).toBeInTheDocument()
+    expect(screen.queryByText(/G-FlowDesk from their email/)).not.toBeInTheDocument()
+  })
+
+  it('gives an alternate director the same consent line as a director (PBI-70)', () => {
+    const entries = [
+      { id: 'n1', kind: 'appointment', capacity: 'alternate_director', party: { name: 'WONG Alt' },
+        summary: 'Alternate Director (alternate to CHAN Tai Man)', consent_mode: 'esign' },
+    ]
+    wrap(<ChangesCard data={{ ...BASE, entries }} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText('Alternate Director (alternate to CHAN Tai Man)')).toBeInTheDocument()
+    expect(screen.getByText(/Consent: e-Sign — PIN-signed from the e-Registry account on file/)).toBeInTheDocument()
+  })
+})
+
+describe('ND2B card (B1, B3)', () => {
+  const OLD = { line1: '', line2: 'Harbour Vista', line3: '9 Model Road', city: 'NORTHPOINT', country: 'HK' }
+  const NEW = { line1: 'Flat 20A', line2: 'Harbour Vista', line3: '9 Model Road', city: 'NORTHPOINT', country: 'HK' }
+  const ND2B = { ...BASE, form_code: 'Nd2b', case_type: 'ND2B', anniversary_default: '2026-03-12',
+    entries: [{ id: 'n1', kind: 'change', capacity: 'director', officer_id: 'o1',
+      party: { name: 'CHAN Tai Man' }, items: [
+        { key: 'residential_address', cr_item: 'd', label: 'Residential address', old: OLD, new: NEW,
+          old_text: 'x', new_text: 'y', effective_date: '2026-03-12' }] }] }
+
+  it('shows an address change in CR\'s five lines, with (blank) for an empty line', () => {
+    wrap(<ParticularsChangeCard data={ND2B} reload={vi.fn()} can={ALL} />)
+    expect(screen.getAllByText('Flat/Floor/Block etc.').length).toBeGreaterThan(0)
+    expect(screen.getByText('(blank)')).toBeInTheDocument()
+    expect(screen.getByText('Flat 20A')).toBeInTheDocument()
+  })
+
+  it('says the lines are dated the anniversary, matching the NAR1', () => {
+    wrap(<ParticularsChangeCard data={ND2B} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText(/Dated the anniversary, 12 Mar 2026, so this ND2B matches the NAR1/))
+      .toBeInTheDocument()
+  })
+  it('says why a line is undated when the company has no open NAR1, and when it is filled', () => {
+    // Jacqueline 2026-10-17: "If there is no open NAR1, please keep it blank too.
+    // We can decide the effective date, as long as we can fill in the date
+    // before the submission."
+    const blank = { ...ND2B, anniversary_default: null, entries: [{ ...ND2B.entries[0],
+      items: [{ ...ND2B.entries[0].items[0], effective_date: null }] }] }
+    wrap(<ParticularsChangeCard data={blank} reload={vi.fn()} can={ALL} />)
+    expect(screen.getByText(/No open NAR1, so the effective date is left blank/))
+      .toBeInTheDocument()
+    expect(screen.getByText(/at Signing, before the form is filed/)).toBeInTheDocument()
+    expect(screen.queryByText(/Dated the anniversary/)).not.toBeInTheDocument()
+  })
+})
+
+describe('Recipients start empty, with the board as suggestion pills (Levi 2026-10-29)', () => {
+  const BOARD = {
+    recipients: [
+      { person_id: 'p1', name: 'CHAN Tai Man', email: 'chan@example.com', role: 'director' },
+      { person_id: 'p2', name: 'LEE Ka Ho', email: 'lee@example.com', role: 'director' },
+      { person_id: null, name: 'HOLDCO LIMITED', email: null, role: 'director',
+        reason: 'a corporate director has no address on record' },
+    ],
+    // The backend still sends it; the screen must not use it.
+    default_to: ['chan@example.com', 'lee@example.com'], reply_by_default: '2026-10-07',
+  }
+  const stage = (over = {}) => {
+    get.mockResolvedValue(BOARD)
+    return wrap(<StageClientVerification
+      data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' },
+        summary: 'Director' }], ...over }}
+      reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+  }
+
+  it('starts with no recipient chosen even though default_to is full', async () => {
+    stage()
+    await screen.findByRole('button', { name: 'Add CHAN Tai Man (chan@example.com)' })
+    expect(screen.queryByTestId('recipient-chips')).not.toBeInTheDocument()
+    expect(screen.getByText(/No recipients/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send to client' })).toBeDisabled()
+    expect(screen.getByText('Add at least one recipient.')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('does not say the email goes to the directors', async () => {
+    stage()
+    await screen.findByRole('button', { name: /Add CHAN Tai Man/ })
+    expect(screen.queryByText(/Every current director/i)).not.toBeInTheDocument()
+  })
+
+  it('a pill adds its address and disappears; removing the chip brings it back', async () => {
+    const user = userEvent.setup()
+    stage()
+    await user.click(await screen.findByRole('button', { name: 'Add CHAN Tai Man (chan@example.com)' }))
+    const chips = screen.getByTestId('recipient-chips')
+    expect(chips).toHaveTextContent('chan@example.com')
+    expect(screen.queryByRole('button', { name: /Add CHAN Tai Man/ })).not.toBeInTheDocument()
+    // The other director is still only a suggestion, and the one without an
+    // address is listed with its reason and offered nothing.
+    expect(screen.getByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' })).toBeInTheDocument()
+    expect(screen.getByText(/HOLDCO LIMITED — a corporate director has no address on record/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove chan@example.com' }))
+    expect(screen.getByRole('button', { name: 'Add CHAN Tai Man (chan@example.com)' })).toBeInTheDocument()
+    expect(screen.queryByTestId('recipient-chips')).not.toBeInTheDocument()
+  })
+
+  it('sends only the chosen address', async () => {
+    post.mockResolvedValue({ deliveries: [], failed: [] })
+    const user = userEvent.setup()
+    stage()
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send to client' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Send to client' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/verification/send',
+      { emails: ['lee@example.com'], respond_by: '2026-10-07' }))
+  })
+})
+
+describe('Send again after the first email, as on NAR1 (Levi 2026-10-30)', () => {
+  const SENT = { verification_sent_at: '2026-10-30T10:27:00Z', verification_revision: 1 }
+  const BOARD = {
+    recipients: [{ person_id: 'p2', name: 'LEE Ka Ho', email: 'lee@example.com', role: 'director' }],
+    default_to: ['lee@example.com'], reply_by_default: '2026-10-07',
+  }
+  const stage = (over = {}) => {
+    get.mockResolvedValue(BOARD)
+    return wrap(<StageClientVerification
+      data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' },
+        summary: 'Director' }], ...SENT, ...over }}
+      reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+  }
+
+  it('offers Send again and says it is the same frozen copy', async () => {
+    stage()
+    await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' })
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send to client' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Send again re-sends this same frozen copy/)).toBeInTheDocument()
+    expect(screen.queryByText(/goes out as Rev\./)).not.toBeInTheDocument()
+  })
+
+  it('posts the chosen address, and keeps the relayed-answer buttons', async () => {
+    post.mockResolvedValue({ deliveries: [], failed: [] })
+    const user = userEvent.setup()
+    stage()
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    expect(screen.getByRole('button', { name: 'Client approved' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Send again' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/verification/send',
+      { emails: ['lee@example.com'], respond_by: '2026-10-07' }))
+  })
+
+  it('a form that cannot be rebuilt now does not stop re-sending the frozen one', async () => {
+    const user = userEvent.setup()
+    stage({ problems: ['The registered office has no country.'] })
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeEnabled()
+  })
+
+  it('is withheld, with the way forward, once a date was filled in after the send', async () => {
+    const user = userEvent.setup()
+    stage({ entries: [{ id: 'n1', kind: 'appointment', party: { name: 'LEE Ka Ho' }, summary: 'Director',
+      date_deferred: true, effective_date: '2026-10-29' }] })
+    await user.click(await screen.findByRole('button', { name: 'Add LEE Ka Ho (lee@example.com)' }))
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeDisabled()
+    expect(screen.getByText(/A date has been filled in since this was sent/)).toBeInTheDocument()
+  })
+
+  it('warns that it clears a recorded answer', async () => {
+    stage({ client_approved: false })
+    await screen.findByRole('button', { name: 'Send again' })
+    expect(screen.getByText(/clears the answer recorded above/)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['filed', { changes_applied_at: '2026-10-30T11:00:00Z' }],
+    ['closed', { closed_at: '2026-10-30T11:00:00Z' }],
+    ['possibly at CR', { filing: { stage: 'submission_unknown' } }],
+  ])('is not offered once the case is %s', (_, over) => {
+    stage(over)
+    expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Send again re-sends/)).not.toBeInTheDocument()
+  })
+
+  it('without write permission there is nothing to press', () => {
+    get.mockResolvedValue(BOARD)
+    wrap(<StageClientVerification
+      data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation', party: { name: 'CHAN Tai Man' },
+        summary: 'Director' }], ...SENT }}
+      reload={vi.fn()} can={{ ...ALL, write: false }} goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Send again' })).not.toBeInTheDocument()
+  })
+})
+
+describe('Send card (A8) and the ND2B waiver (BQ1)', () => {
+  it('tells the operator the client gets the full form with the PI sheets', () => {
+    wrap(<StageClientVerification data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation',
+      party: { name: 'CHAN Tai Man' }, summary: 'Director' }] }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText(/including the protected-information sheets/)).toBeInTheDocument()
+    expect(screen.getByTestId('pdf')).toHaveTextContent('Client copy — full form incl. PI')
+  })
+
+  it('lets an ND2B proceed without the client, with a reason', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    const user = userEvent.setup()
+    wrap(<StageClientVerification data={{ ...BASE, form_code: 'Nd2b', case_type: 'ND2B',
+      verification_sent_at: '2026-10-01T02:00:00Z', entries: [] }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Proceed without confirmation' }))
+    const dialog = screen.getByRole('dialog', { name: /Proceed without the client/ })
+    expect(within(dialog).getByRole('button', { name: 'Proceed' })).toBeDisabled()
+    await user.type(within(dialog).getByLabelText(/Why/), 'Deadline on 21 Sept; client away')
+    await user.click(within(dialog).getByRole('button', { name: 'Proceed' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/verification/proceed',
+      { reason: 'Deadline on 21 Sept; client away' }))
+  })
+
+  it('previews the ND2A and its written resolution on two tabs, and sends both', async () => {
+    const user = userEvent.setup()
+    wrap(<StageClientVerification data={{ ...BASE, entries: [{ id: 'n1', kind: 'cessation',
+      party: { name: 'CHAN Tai Man' }, summary: 'Director' }] }} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    const tabs = screen.getByRole('tablist', { name: 'Documents sent to the client' })
+    const form = within(tabs).getByRole('tab', { name: 'ND2A' })
+    const res = within(tabs).getByRole('tab', { name: 'Written Resolution' })
+    expect(form).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('pdf')).toHaveTextContent('Client copy — full form incl. PI')
+    await user.click(res)
+    expect(res).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('pdf')).toHaveTextContent('For the directors to sign')
+    expect(screen.getByText(/Both are attached to the email/)).toBeInTheDocument()
+  })
+
+  it('an ND2B has the form only — no tabs', () => {
+    wrap(<StageClientVerification data={{ ...BASE, form_code: 'Nd2b', case_type: 'ND2B',
+      entries: [{ id: 'n1', kind: 'change', party: { name: 'CHAN Tai Man' }, items: [] }] }}
+                                  reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+  })
+
+  it('never offers the waiver on an ND2A', () => {
+    wrap(<StageClientVerification data={{ ...BASE, verification_sent_at: '2026-10-01T02:00:00Z' }}
+                                  reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Proceed without confirmation' })).not.toBeInTheDocument()
+  })
+})

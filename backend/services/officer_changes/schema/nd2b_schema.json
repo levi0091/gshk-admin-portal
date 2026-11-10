@@ -1,0 +1,786 @@
+{
+  "name": "submission",
+  "depth": 0,
+  "data_type": "",
+  "mandatory": false,
+  "max_length": null,
+  "remark": "",
+  "children": [
+    {
+      "name": "EForm",
+      "depth": 1,
+      "data_type": "",
+      "mandatory": false,
+      "max_length": null,
+      "remark": "",
+      "children": [
+        {
+          "name": "formModel",
+          "depth": 2,
+          "data_type": "",
+          "mandatory": false,
+          "max_length": null,
+          "remark": "",
+          "children": [
+            {
+              "name": "formCode",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 20,
+              "remark": "Form Code. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "language",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 1,
+              "remark": "Filing language: E - English, C - Chinese",
+              "children": []
+            },
+            {
+              "name": "brNo",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 20,
+              "remark": "Business Registration Number",
+              "children": []
+            },
+            {
+              "name": "compNameE",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 150,
+              "remark": "English company name. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "compNameC",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 150,
+              "remark": "Chinese company name. To be filled in by system after Web-Form validation (6.6)",
+              "children": []
+            },
+            {
+              "name": "npBeans",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Change in Particulars of Company Secretary／Director (Natural Person) List",
+              "children": [
+                {
+                  "name": "npBean",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Change in Particulars of Company Secretary／Director (Natural Person)",
+                  "children": [
+                    {
+                      "name": "cpty",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": true,
+                      "max_length": 2,
+                      "remark": "Current: Capacity: D - Director, AD - Alternate Director, S - Company Secretary",
+                      "children": []
+                    },
+                    {
+                      "name": "indvChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 90,
+                      "remark": "Current: Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngSname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Current: Name in English: Surname",
+                      "children": []
+                    },
+                    {
+                      "name": "indvEngOname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 110,
+                      "remark": "Current: Name in English: Other Names",
+                      "children": []
+                    },
+                    {
+                      "name": "indvHkidPartial",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 8,
+                      "remark": "Current: HK Identity Card No. (Partial Number)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvPptNoPartial",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 25,
+                      "remark": "Current: Passport No. (Partial Number)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 90,
+                      "remark": "Change: Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewChiNameEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Name in Chinese Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewEngSname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Change: Name in English (Surname)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewEngOname",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 110,
+                      "remark": "Change: Name in English (Other Names)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewEngNameEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Name in English Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewAlsChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Change: Alias in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewAlsEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Change: Alias in English",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewAlsNameEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Alias Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewAddr",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": false,
+                      "max_length": null,
+                      "remark": "Change: Correspondence Address",
+                      "children": [
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Country / Region. Refer to Country sheet for Country code",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "indvNewAddrEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Correspondence Address Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewEmailAddr",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Change: Email Address",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewEmailAddrEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Email Address Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewHkidNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 8,
+                      "remark": "Change: HK Identity Card No. (Full Number). Set as \"NIL\" if no HKID",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewHkidChkDgt",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Change: HK Identity Card Check Digit. Leave blank if no HKID",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewHkidNoEffDt",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Hong Kong Identity Card Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewPptNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 25,
+                      "remark": "Change: Passport No. (Full Number)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewPptIssCtry",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 4,
+                      "remark": "Change: Passport Issuing Country / Region. Refer to Country sheet for Country code",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewPptNoEffDt",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Passport Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewTcspNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 20,
+                      "remark": "Change: Trust of Company Service Provider Licence No. (Secretary)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewTcspLicNotReq",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Change: TCSP Not required to obtain a licence Indicator (Secretary): Y - Yes, N - No (Must be Y if indvNewTcspNo is empty, must be N if indvNewTcspNo is filled)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewTcspLicNotReqRsn",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 180,
+                      "remark": "Change: TCSP Not required to obtain a licence Reason (Secretary) (Required if indvNewTcspLicNotReq is Y)",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewTcspNoEffDt",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "TCSP Licence Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "indvNewResAddr",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": false,
+                      "max_length": null,
+                      "remark": "Change: Usual Residential Address of Director / Alternate Director",
+                      "children": [
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Country / Region. Refer to Country sheet for Country code",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "indvNewResAddrEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Usual Residential Address Effective Date",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "bcBeans",
+              "depth": 3,
+              "data_type": "",
+              "mandatory": false,
+              "max_length": null,
+              "remark": "Change in Particulars of Company Secretary／Director (Body Corporate) List",
+              "children": [
+                {
+                  "name": "bcBean",
+                  "depth": 4,
+                  "data_type": "",
+                  "mandatory": false,
+                  "max_length": null,
+                  "remark": "Change in Particulars of Company Secretary／Director (Body Corporate)",
+                  "children": [
+                    {
+                      "name": "cpty",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 2,
+                      "remark": "Current: Capacity: D - Director, AD - Alternate Director, S - Company Secretary",
+                      "children": []
+                    },
+                    {
+                      "name": "corpChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Current: Name in Chinese",
+                      "children": []
+                    },
+                    {
+                      "name": "corpEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Current: Name in English",
+                      "children": []
+                    },
+                    {
+                      "name": "corpBrNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 20,
+                      "remark": "Current: Business Registration Number",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewChiName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 50,
+                      "remark": "Change: Chinese Name",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewEngName",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 150,
+                      "remark": "Change: English Name",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewNameEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Name Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewAddr",
+                      "depth": 5,
+                      "data_type": "",
+                      "mandatory": false,
+                      "max_length": null,
+                      "remark": "Change: Address",
+                      "children": [
+                        {
+                          "name": "flatFlrBlk",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Flat / Floor / Block etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "bldg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Building",
+                          "children": []
+                        },
+                        {
+                          "name": "stEstLotVlg",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "Street / Estate / Lot / Village etc.",
+                          "children": []
+                        },
+                        {
+                          "name": "dstCtyStatePostal",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": false,
+                          "max_length": 60,
+                          "remark": "District / City / Province / State / Postal Code etc. Refer to District sheet for District code if region is HK",
+                          "children": []
+                        },
+                        {
+                          "name": "ctryRegion",
+                          "depth": 6,
+                          "data_type": "String",
+                          "mandatory": true,
+                          "max_length": 4,
+                          "remark": "Country / Region. Refer to Country sheet for Country code",
+                          "children": []
+                        }
+                      ]
+                    },
+                    {
+                      "name": "corpNewAddrEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Address Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewEmailAddr",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 60,
+                      "remark": "Change: Email Address",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewEmailAddrEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "Email Address Effective Date",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewTcspNo",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 20,
+                      "remark": "Change: Trust of Company Service Provider Licence No. (Secretary)",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewTcspLicNotReq",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 1,
+                      "remark": "Change: TCSP Not required to obtain a licence Indicator (Secretary): Y - Yes, N - No (Must be Y if corpNewTcspNo is empty, must be N if corpNewTcspNo is filled)",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewTcspLicNotReqRsn",
+                      "depth": 5,
+                      "data_type": "String",
+                      "mandatory": false,
+                      "max_length": 180,
+                      "remark": "Change: TCSP Not required to obtain a licence Reason (Secretary) (Required if corpNewTcspLicNotReq is Y)",
+                      "children": []
+                    },
+                    {
+                      "name": "corpNewTcspNoEffDt",
+                      "depth": 5,
+                      "data_type": "Date",
+                      "mandatory": false,
+                      "max_length": 10,
+                      "remark": "TCSP Effective Date",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "associatedPersonId",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 16,
+              "remark": "Individual User ID if sign by Body Corporate",
+              "children": []
+            },
+            {
+              "name": "associatedPersonName",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 150,
+              "remark": "Individual Name if sign by Body Corporate",
+              "children": []
+            },
+            {
+              "name": "associatedCapacityDesc",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 500,
+              "remark": "Individual Capacity Desciption if sign by Body Corporate. Refer to Capacity sheet for description",
+              "children": []
+            },
+            {
+              "name": "selectAssoBrNo",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 20,
+              "remark": "BR Number if sign by Body Corporate",
+              "children": []
+            },
+            {
+              "name": "selectPersonId",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 16,
+              "remark": "Signatory User ID (Empty if sign by Body Corporate)",
+              "children": []
+            },
+            {
+              "name": "selectPersonName",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 150,
+              "remark": "Signatory Name",
+              "children": []
+            },
+            {
+              "name": "selectCapacityDesc",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": true,
+              "max_length": 500,
+              "remark": "Signatory capacity description. Refer to Capacity sheet for description",
+              "children": []
+            },
+            {
+              "name": "signatoryDate",
+              "depth": 3,
+              "data_type": "Date",
+              "mandatory": true,
+              "max_length": 10,
+              "remark": "Signatory Sign Date",
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "EFormSignatures",
+      "depth": 1,
+      "data_type": "",
+      "mandatory": false,
+      "max_length": null,
+      "remark": "",
+      "children": [
+        {
+          "name": "Signature",
+          "depth": 2,
+          "data_type": "String",
+          "mandatory": false,
+          "max_length": 4000,
+          "remark": "CR XML Signature. To be filled in by system after Web-Form validation (6.6)",
+          "children": []
+        },
+        {
+          "name": "PinSign",
+          "depth": 2,
+          "data_type": "",
+          "mandatory": false,
+          "max_length": null,
+          "remark": "Overall Signature. Required when calling Web-Form Submission (6.2) and Web-Form Pin Signing (6.7)",
+          "children": [
+            {
+              "name": "UserCredentialHash",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 500,
+              "remark": "User ID and password",
+              "children": []
+            },
+            {
+              "name": "UserSignature",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 200,
+              "remark": "PIN signature",
+              "children": []
+            },
+            {
+              "name": "EncryptionKey",
+              "depth": 3,
+              "data_type": "String",
+              "mandatory": false,
+              "max_length": 500,
+              "remark": "Encryption key used in UserCredentialHash And UserSignature",
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

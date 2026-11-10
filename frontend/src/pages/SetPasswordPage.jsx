@@ -100,14 +100,14 @@ export default function SetPasswordPage() {
             </div>
           )}
 
-          <div className="action-bar" style={{ marginTop: 8 }}>
-            <div className="ab-note">
+          <div className="form-footer">
+            <div>
               <button type="button" className="btn btn-outline btn-sm"
                       onClick={signOut} disabled={busy}>
                 Sign out
               </button>
             </div>
-            <div className="ab-actions">
+            <div>
               <button type="submit" className="btn btn-action"
                       disabled={!ready || busy}>
                 {busy ? 'Saving…' : 'Save and continue'}

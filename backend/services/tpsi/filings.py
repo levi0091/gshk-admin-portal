@@ -34,7 +34,6 @@ STAGE_SIGNED = "signed"
 STAGE_SIGNING_FAILED = "signing_failed"
 STAGE_SUBMITTED = "submitted"
 STAGE_SUBMISSION_FAILED = "submission_failed"
-STAGE_REGISTERED = "registered"
 STAGE_SUPERSEDED = "superseded"
 STAGE_EDRIVE = "edrive"
 
@@ -52,7 +51,7 @@ STAGE_EDRIVE = "edrive"
 STAGE_SUBMITTING = "submitting"
 STAGE_SUBMISSION_UNKNOWN = "submission_unknown"
 
-#: The eleven the UI reports, in lifecycle order. `edrive` is a valid stored value
+#: The ten the UI reports, in lifecycle order. `edrive` is a valid stored value
 #: (upload_edrive() still works) but is not offered in the UI, so it is not here.
 FORM_STATUSES = (
     STAGE_DRAFT,
@@ -64,7 +63,6 @@ FORM_STATUSES = (
     STAGE_SUBMITTED,
     STAGE_SUBMISSION_FAILED,
     STAGE_SUBMISSION_UNKNOWN,
-    STAGE_REGISTERED,
     STAGE_SUPERSEDED,
 )
 
@@ -80,13 +78,21 @@ FORM_STATUS_LABELS = {
     STAGE_SUBMITTING: "Filing with CR…",
     STAGE_SUBMISSION_FAILED: "Rejected at submission",
     STAGE_SUBMISSION_UNKNOWN: "Outcome unknown — check CR",
-    STAGE_REGISTERED: "Registered by CR",
     STAGE_SUPERSEDED: "Superseded by a later attempt",
     STAGE_EDRIVE: "Sent to CR e-Drive",
 }
 
+#: `registered` was written only by the CR status poll (removed Levi
+#: 2026-10-17), and migration 054 turns every such row into `submitted` and
+#: forbids the value. NOT a stage anybody writes or the UI reports — it is
+#: here for the minutes between the deploy and 054, when a row the poll
+#: promoted must still be one CR holds: left out of TERMINAL_STAGES,
+#: `supersede_all_for_case` could retire a return CR has, 054's UPDATE would
+#: skip it, and the case would read unfiled for good.
+LEGACY_REGISTERED = "registered"
+
 #: Stages a filing can never move on from.
-TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE, STAGE_SUPERSEDED)
+TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_EDRIVE, STAGE_SUPERSEDED, LEGACY_REGISTERED)
 
 #: Stages in which CR HAS, OR MAY HAVE, this return. Nothing may re-validate,
 #: re-sign, supersede or submit a filing in one of these, and while one exists
@@ -100,7 +106,7 @@ TERMINAL_STAGES = (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE, STAGE_SUPERS
 #: badge's `terminal` flag and the return-year lock, which mean other things.
 LOCKED_STAGES = (
     STAGE_SUBMITTING, STAGE_SUBMISSION_UNKNOWN,
-    STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE,
+    STAGE_SUBMITTED, LEGACY_REGISTERED, STAGE_EDRIVE,
 )
 
 #: What `supersede` and `supersede_all_for_case` may never touch: the finished
@@ -217,39 +223,6 @@ def supersede(filing_id: str) -> bool:
         .update({"stage": STAGE_SUPERSEDED})
         .eq("id", filing_id)
         .not_.in_("stage", list(UNRETIRABLE_STAGES))
-        .execute()
-        .data
-    )
-    return bool(rows)
-
-
-def mark_registered(filing_id: str) -> bool:
-    """CR confirmed the filing is on the register. Returns whether a row moved.
-
-    THE SECOND STAGE NOTHING EVER WROTE. `STAGE_REGISTERED` has been in the
-    vocabulary since migration 018, whose own docstring defines it as "CR
-    confirmed the filing via docStatusEnquiry" — and until `nar1_cr_status`
-    there was nothing doing the enquiring. `StageConfirmation` carried a comment
-    saying so, and the Confirmation step sat permanently at IN PROGRESS because
-    `stageDone(5)` waited on a value no code path could produce.
-
-    Conditional on `stage = 'submitted'` INSIDE the update, not
-    read-then-written, and for a sharper reason than `supersede`'s: this runs
-    from a nightly job walking hundreds of cases, so the window between a read
-    and a write is as long as the rest of the run. The only row this can ever
-    move is one that is still `submitted` at the instant Postgres applies it.
-
-    Never `edrive` and never a manual filing: e-Drive is finished in CR's own
-    wizard and an off-portal filing has no submitted row at all. Both carry
-    their CR status on the CASE (`nar1_cases.cr_doc_status_code`), which is why
-    this promotion is a nicety for the FORM badge rather than the fact anything
-    depends on.
-    """
-    rows = (
-        get_supabase().table(_TABLE)
-        .update({"stage": STAGE_REGISTERED})
-        .eq("id", filing_id)
-        .eq("stage", STAGE_SUBMITTED)
         .execute()
         .data
     )
@@ -1407,7 +1380,7 @@ _OUTCOME_FROM = (STAGE_SUBMITTING, STAGE_SUBMISSION_UNKNOWN)
 #: (code review 01, B1.4).
 _RECEIPT_OVERWRITES = tuple(
     s for s in dict.fromkeys(FORM_STATUSES + (STAGE_EDRIVE,))
-    if s not in (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE,
+    if s not in (STAGE_SUBMITTED, LEGACY_REGISTERED, STAGE_EDRIVE,
                  STAGE_SUPERSEDED))
 
 #: How much of an unreadable CR reply is kept on the row, for the operator and
@@ -1441,7 +1414,7 @@ def _why_not_stored(filing_id: str) -> str:
         stage = get_filing(filing_id).get("stage")
     except Exception:  # noqa: BLE001
         stage = None
-    if stage in (STAGE_SUBMITTED, STAGE_REGISTERED, STAGE_EDRIVE):
+    if stage in (STAGE_SUBMITTED, LEGACY_REGISTERED, STAGE_EDRIVE):
         return ALREADY_RECORDED
     return "the row no longer holds this claim"
 

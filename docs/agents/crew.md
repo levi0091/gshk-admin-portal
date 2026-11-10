@@ -34,7 +34,7 @@ All commands need `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/v20.20
 
 ## Branches
 
-- **Base branch for crew work:** `master` for this hotfix (PROD runs `master`; `dev` carries unreleased `nd2a_nd2b` work). Normal feature work branches from `dev` (CLAUDE.md "Branch strategy").
+- **Base branch for crew work:** `dev` (CLAUDE.md "Branch strategy"); a PROD hotfix branches from `master`.
 - **Protected (crew never pushes or merges into these):** `master` ("main" in CLAUDE.md — this repo's production branch is `master`), `dev`. "`dev`: no force pushes" (CLAUDE.md, branch protection).
 - **Ship path:** "`dev` → auto-deploys to DEV (Cloudflare Pages + Railway DEV service)"; "`main` → auto-deploys to PROD"; "Never push directly to `main`. All changes go through `dev` first." (CLAUDE.md).
 
@@ -47,7 +47,7 @@ All commands need `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/v20.20
 - **Other repo rules:**
   - "Every API endpoint must be protected by the `require_permission(module, permission)` decorator."
   - "Every write operation must call `audit_service.log_event()` before returning a success response." New audit codes "must be seeded into `audit_event_types` by a migration, with `origin='g_flowdesk'` and `category` set explicitly."
-  - "All schema changes must go through Alembic." Migration numbering: `master` and PROD are at head `056` (the NAR1 duplicate-submission fix, applied on PROD 2026-10-27). The ND2A/ND2B migrations (050, 052–055) are NOT applied anywhere and 050 still revises 051 — re-landing them needs 050 re-parented onto 056 plus a final migration restating the case view with 056's stages. PROD migrations: `alembic upgrade` only, and BEFORE the code deploys when new code writes a value the old CHECK refuses.
+  - "All schema changes must go through Alembic." Migration numbering: PROD is at head `056` (the NAR1 duplicate-submission fix, applied 2026-10-27). `dev` carries the ND2A/ND2B work re-landed on top of it (2026-10-27): chain `049 → 051 → 056 → 050 → 052 → 053 → 054 → 055 → 057`, where 050 revises 056 and 057 restates the case view with 056's stages (050/052/054 rebuild it from 047's text). A new migration revises `057` on `dev`; PROD migrations: `alembic upgrade` only, and BEFORE the code deploys when new code writes a value the old CHECK refuses.
   - "`submitFormNar1` and `submitFormNnc1` are chargeable and irreversible." No test may call CR or Resend or resolve DNS for real.
   - "Tests must not hit the real Supabase DB."
   - Middleware order in `main.py` is load-bearing (CLAUDE.md).

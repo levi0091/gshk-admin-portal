@@ -4,15 +4,12 @@ This module owns the client facts and the off-portal facts. It never writes a CR
 fact: tpsi_filings owns those, and nar1_case_status.derive() reads both to
 produce the badge.
 
-ONE EXCEPTION, and it is a deliberate one: the CR DOCUMENT STATUS (migration
-043) is stored on `nar1_cases`, not on `tpsi_filings`. A return filed on paper
-has a CR case number and no submitted filing row at all — writing "CR registered
-it" onto a row whose own stage says it was never sent would be a record that
-contradicts itself. `services/nar1_cr_status.py` is its only writer; this module
-only reads it back. `manual_receipt` — CR's own receipt — is the precedent.
+(Migration 043 stored CR's document status here, as the one exception; it was
+removed with the CR status stage by migration 054, Levi 2026-10-17.)
 """
 import asyncio
 import re
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -21,7 +18,6 @@ from services import (
     nar1_approvals, nar1_case_status, nar1_return_year, nar1_verification,
     soft_delete, table_filters as tf,
 )
-from services.tpsi import doc_status
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.filings import form_status
 
@@ -394,8 +390,9 @@ def _format_problems(receipt: dict) -> list[str]:
 #: return, and nothing downstream could say which one CR actually has.
 CR_FILED_STAGES = (
     tpsi_filings.STAGE_SUBMITTED,
-    tpsi_filings.STAGE_REGISTERED,
     tpsi_filings.STAGE_EDRIVE,
+    # Until migration 054 runs — see filings.LEGACY_REGISTERED.
+    tpsi_filings.LEGACY_REGISTERED,
 )
 
 #: ALIAS of `filings.LOCKED_STAGES`, kept for the name -- at call sites "may
@@ -558,6 +555,11 @@ _SORTABLE = {
     # dashboard by a value nobody can read off the screen.
     "created_by_name",
     "closed_at",
+    # Migration 050. `case_type` sorts NAR1 / ND2A / ND2B together, and
+    # `filing_deadline` is what "what is due next" means for an officer change:
+    # NULL on an annual return, which `nullsfirst=False` below puts last.
+    "case_type",
+    "filing_deadline",
 }
 
 #: Columns the per-column header filters may narrow on (services/table_filters).
@@ -581,7 +583,11 @@ _FILTERABLE = {
     "company_name_zh": tf.text(),
     "br_number": tf.text(),
     "cr_number": tf.text(),
-    "case_type": tf.enum({"NAR1"}),
+    # The view derives this from `form_code` (migration 050): an officer-change
+    # case is a row in this same relation, and the dashboard's Case Type filter
+    # is how an operator separates the annual returns from them.
+    "case_type": tf.enum({"NAR1", "ND2A", "ND2B"}),
+    "filing_deadline": tf.date(),
     "case_status": tf.enum({
         "draft", "pending_aml", "pending_client", "to_verify",
         "revision_required", "ready_to_submit", "submitted", "approved", "rejected",
@@ -618,10 +624,10 @@ _LIST_COLS = (
     # Migration 047. A company catching up on missed years has one case per
     # year, and without this the dashboard lists them as identical rows.
     "ar_period_year, "
-    # CR's own words, for the one badge that cannot be labelled without them:
-    # `cr_unknown` renders what CR said, because that is the only informative
-    # thing there is about a status this portal does not recognise.
-    "cr_doc_status, cr_status_checked_at"
+    # Migration 050. The 15-day deadline of an officer-change case, and how far
+    # off it is — signed like days_to_anniversary, negative once it has passed.
+    # Both NULL on an annual return, whose deadline is the anniversary's.
+    "form_code, filing_deadline, days_to_deadline"
 )
 
 
@@ -805,6 +811,41 @@ def _company_deleted(entity_id) -> bool:
         return False
 
 
+_CASE_TYPE = {"Nar1": "NAR1", "Nd2a": "ND2A", "Nd2b": "ND2B"}
+
+
+def other_open_cases(entity_id: str | None, *, exclude: str) -> list[dict]:
+    """The company's OTHER cases that are neither closed nor filed.
+
+    Jacqueline, 1 Oct 2026 (AQ3): "Can you confirm again whether there will be
+    an alert when there is an open ND2A/NAR1 case pending as a reminder when we
+    submit anything to CR?" — and (BQ1) NAR1 and ND2B are usually filed
+    together. The Submission stage of every form names these.
+
+    Never raises: it decorates a case that has already been read."""
+    if not entity_id:
+        return []
+    try:
+        rows = (get_supabase().table(_TABLE).select("*").eq("entity_id", entity_id)
+                .execute().data) or []
+        out = []
+        for row in sorted(rows, key=lambda r: r.get("case_no") or ""):
+            if (row.get("id") == exclude or row.get("closed_at") or row.get("manual_receipt")
+                    or row.get("changes_applied_at")):
+                continue
+            filing = current_filing(row["id"])
+            if filing and filing.get("stage") in CR_FILED_STAGES:
+                continue
+            code = row.get("form_code") or "Nar1"
+            out.append({"id": row["id"], "case_no": row.get("case_no"), "form_code": code,
+                        "case_type": _CASE_TYPE.get(code, code.upper()),
+                        "workflow_status": nar1_case_status.derive(row, filing)})
+        return out
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        print(f"[nar1_cases] other_open_cases({entity_id}) failed: {exc!r}", file=sys.stderr)
+        return []
+
+
 def composite(case_id: str) -> dict:
     """The case plus BOTH statuses — the shape the v11 case header needs."""
     case = get_case(case_id)
@@ -845,15 +886,6 @@ def composite(case_id: str) -> dict:
         "client_approval": nar1_approvals.provenance(case),
         "workflow_status": nar1_case_status.derive(case, filing),
         "form_status": form_status(filing) if filing else None,
-        # THE THIRD VOCABULARY (Levi 2026-09-16), and it is not either of the
-        # other two: `workflow_status` is where the case is with GSHK,
-        # `form_status` is where the document got to in OUR chain, and this is
-        # what CR's own register says about a document it has already received.
-        # Stage 6 renders it; see services/tpsi/doc_status.
-        "cr_status": doc_status.describe(
-            case.get("cr_doc_status"), case.get("cr_doc_status_code")),
-        "cr_status_checked_at": case.get("cr_status_checked_at"),
-        "cr_document_ref_no": case.get("cr_document_ref_no"),
         "receipt": (filing or {}).get("receipt") or case.get("manual_receipt"),
         # HAS THE RETURN MOVED SINCE THE CLIENT APPROVED IT (migration 046)?
         #
@@ -881,6 +913,9 @@ def composite(case_id: str) -> dict:
         # the case, which never carried it, so the banner said "frozen" with no
         # time.
         "validated_at": (filing or {}).get("validated_at"),
+        # The company's other open filings (Jacqueline AQ3/BQ1), named on the
+        # Submission stage of every form.
+        "other_open_cases": other_open_cases(case.get("entity_id"), exclude=case_id),
         # When the live filing's submit was claimed (migration 056). The
         # Submission screen reads it on an unknown outcome to warn that CR can
         # take hours to list a return submitted today, before anyone declares

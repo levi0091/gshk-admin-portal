@@ -11,6 +11,7 @@ import ReturnYearCard from './ReturnYearCard.jsx'
 import VerificationDeliveryModal from './VerificationDeliveryModal.jsx'
 import { describeError, verificationBlock, isSubmitted, isValidated } from './workflow.js'
 import { ActionWithheld } from '../RequirePermission.jsx'
+import DateInput from '../DateInput.jsx'
 
 /**
  * The address copied on every client verification email (Levi 2026-09-08).
@@ -248,17 +249,19 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
     }
   }
 
-  // Who this goes to unless the operator says otherwise. `to` stays null until
-  // this lands, so an empty chip row cannot be mistaken for "the operator
-  // cleared every director" while the list is still loading — the send button
-  // is gated on that distinction.
+  // Who COULD be written to. `to` starts EMPTY once this lands (Levi
+  // 2026-10-29): `default_to` is deliberately not used, so nobody is mailed
+  // unless the operator chose them, by suggestion pill or by typing. `to` stays
+  // null until this lands, so an empty chip row cannot be mistaken for "the
+  // operator has not chosen anyone yet" while the list is still loading — the
+  // send button is gated on that distinction.
   useEffect(() => {
     let cancelled = false
     api.get(`/cases/${caseId}/verification/recipients`)
       .then(r => {
         if (cancelled) return
         setRecipients(r.recipients || [])
-        setTo(r.default_to || [])
+        setTo([])
         if (r.max_recipients) setMaxRecipients(r.max_recipients)
       })
       .catch(e => { if (!cancelled) onError(describeError(e)) })
@@ -568,9 +571,8 @@ export default function StageClientVerification({ caseRow, canWrite, onChanged, 
           <label className="f-label" htmlFor="respond-by">
             Client must reply by<span className="f-req"> *</span>
           </label>
-          <input
+          <DateInput
             id="respond-by"
-            type="date"
             className="f-input"
             style={{ maxWidth: 220 }}
             value={respondBy}

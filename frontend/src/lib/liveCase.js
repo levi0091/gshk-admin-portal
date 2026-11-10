@@ -48,7 +48,12 @@ function codeOf(status) {
  * through the warning.
  */
 export function liveCases(company) {
-  return (company?.cases?.nar1 || []).filter(c => FROZEN.has(codeOf(c.workflow_status)))
+  // ND2A / ND2B share the table (migration 050) and so arrive in `cases.nar1`,
+  // but they freeze no return of this company's data: an ND2B exists BECAUSE
+  // the profile was edited, and warning against the edit it reports would
+  // tell the operator to undo the very change being filed.
+  return (company?.cases?.nar1 || []).filter(c =>
+    (!c.form_code || c.form_code === 'Nar1') && FROZEN.has(codeOf(c.workflow_status)))
 }
 
 /** A sentence naming what is at stake, or null when nothing is. */

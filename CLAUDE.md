@@ -91,6 +91,9 @@ Agents are expensive here: every dispatched agent loads this file and re-reads t
 > - One message per recipient, not one message with several recipients.
 > - The confirmation names the account by EMAIL.
 > - `GET /auth/super-admins` is unauthenticated, and that is the point.
+> - Confirm & File mails the client a RECEIPT (ND2, Levi 2026-10-17)
+> - Three ND2 follow-ups (migration 055): a death asks for its date; secretary drawer lists GSHK first; e-Sign saves the signed form
+> - ND2A / ND2B after Jacqueline's feedback (migrations 052, 053): the chain is `049 → 051 → 056 → 050 → 052 → 053 → 054 → 055 → 057 → … → 062`; blank effective dates; CR's consent signature IS the consent; the resolution is GSHK's own sample; manual checks gate Data Verification; identification and addresses are per COMPANY; an ND2B filed for one company NO LONGER clears the same change at the others (Jacqueline 2026-11-10); a death may name its administrator / executor (062)
 
 | AI | Claude API | Called from Railway backend only — never from frontend |
 
@@ -206,11 +209,7 @@ Open and study the wireframe before building any screen. Do not invent layouts o
 > Screens 8 (NNC1 Cases list) and 9 (NAR1 Cases list) were removed from the wireframe on 2026-06-21.
 > Companies are now managed through their full lifecycle from a single Dashboard screen.
 
-> **The case workflow stepper has SIX stages, not v11's five** (Levi 2026-09-16). Stage 6, **CR Status**, is the only one that is not GSHK's: the first five end at "we handed it over" and this one begins there. `.stepper` is `repeat(6, 1fr)` at every width, with a tighter medallion below 720px.
->
-> **Its medallion is coloured by CR's answer, not by our progress** (`workflow.stageTone`, the `.step.tone-*` rules). Every other step says where WE got to; this one says what the register decided, so the verdict is readable off the progress bar without opening the stage. It is the only place data drives the chrome, and `cr_registered` gives the tick rather than a tone — a green medallion without a tick would make the finished case the one state with no tick anywhere.
->
-> **The badge family is `bc-*`, a third one.** `bw-*` is where the case is with GSHK, `bf-*` is where the document got to in our own CR chain, `bc-*` is what CR's register says. `--peridot-ink` (#7A5E00) was added to the palette for it: `--peridot` is a warning FILL and is illegible as type on its own tint, and shipping an unreadable badge to keep the token list at its original length would be the wrong economy.
+> **The case workflow stepper has FIVE stages again — CR Status is gone** (Levi 2026-10-17, reversing 2026-09-16). From September a sixth stage showed what CR's register said about a filed return, coloured its medallion by CR's answer (`stageTone`, `.step.tone-*`) and had a third badge family (`bc-*`). CR will not report a document's status after filing, so Confirmation — the receipt — is the last stage again for NAR1, ND2A and ND2B; a filed case opens on it with every stage ticked, and `.stepper` is `repeat(5, 1fr)`. Two badge families remain: `bw-*` (where the case is with GSHK; a filed case is `bw-filed`, green, label **Filed**) and `bf-*` (where the document got to in our own CR chain). `--peridot-ink` stays — the ND2 rules panel uses it.
 
 **When building UI — use the `frontend-design` skill in Claude Code:**
 The `frontend-design` skill is available in Claude Code and must be used when generating new screens or components for the Admin Portal. Reference the wireframe HTML as the design spec. All output must match the brand tokens below verbatim.
@@ -232,6 +231,20 @@ The `frontend-design` skill is available in Claude Code and must be used when ge
 --carrot-10:#FEF0EB;   /* Accent tint (hover states, badges) */
 --bang-10:  #E6F1ED;   /* Success tint */
 ```
+
+### The visual standard (Levi 2026-10-30)
+
+> **Eight font sizes and no others:** 10 uppercase labels, 11 hints and badges, 12 secondary text, 13 body and buttons, 14 emphasis, 16 modal titles, 20 page titles, 26 big numbers. No half-pixels.
+>
+> **One error red, `--danger` (`#B91C1C`).** `#C53030` was also in use and fails AA on its own tint (4.48:1). Reds and carrot-as-text come from `--danger*` and `--carrot-ink`, never a hex in JSX. `--carrot` stays a fill, the same reasoning as `--peridot-ink`.
+>
+> **An alert is `.alert.al-{info,success,warn,danger}`**, and `.alert::before` draws the tone's icon, so `.al-icon` glyphs are not shown. A load failure or a refused action is `al-danger`, a modal's refusal is `.modal-error` (last in the body, beside the button that caused it), a field's is `.f-error` with `aria-invalid` on the control. `.card-note` stays the quieter note that belongs to its card. Do not hand-roll a box with inline styles.
+>
+> **Spacing under a block:** 12px under a control row (tabs, toolbars), 16px under an alert or note. **Buttons:** `btn-sm` 30, default 36, `btn-lg` 44. A control row's hint is centred on its buttons, with the buttons on the right.
+>
+> **Left at brand values on purpose:** `--t-muted` text (3.84:1 on white) and small carrot labels such as "IN PROGRESS" and the required asterisk (3.0:1) both miss AA. They are verbatim brand tokens, so changing them is Levi's call.
+>
+> **ND2's single send offers Send again, as NAR1 does:** it mails the frozen `verification_xml` under the same revision and leaves the CR filing alone; a correction goes through Restart verification. **Unlike NAR1, a sent ND2 can move:** a deferred date may be filled in later, and then the frozen form no longer matches the letter and resolution written from live changes, so the send refuses (`dates_filled_since_send`) and points at Restart. It also refuses while CR may hold the form (`cr_may_hold`).
 
 ### Profile-screen conventions (the 2026-09-04 pass)
 
@@ -343,8 +356,8 @@ await log_event(
 | `NAR1_MANUAL_RECEIPT_ENTERED` | NAR1 | An off-portal CR receipt recorded on a case (migration 021) |
 | `NAR1_MANUAL_SUBMISSION_RECORDED` | NAR1 | A filing made off-portal declared complete (migration 021) |
 | `NAR1_CASE_CLOSED` | NAR1 | A case ended because the client is not proceeding (migration 039) |
-| `TPSI_DOC_STATUS_CHECKED` | TPSI | `docStatusEnquiry` asked about a filed return — **every** check (migration 043) |
-| `NAR1_CR_STATUS_CHANGED` | NAR1 | CR's answer about a filed return MOVED (migration 043) |
+| `TPSI_DOC_STATUS_CHECKED` | TPSI | `docStatusEnquiry` asked about a filed return (migration 043). **No longer written** since the CR status poll was removed (054); seeded and labelled because rows exist |
+| `NAR1_CR_STATUS_CHANGED` | NAR1 | CR's answer about a filed return moved (migration 043). **No longer written** (054); kept for the rows that exist |
 
 > **Detail lives in `notes/audit-trail-details.md`** — read it before changing audit codes, audit_subject, the CLOSED case status, CR status removal, audit search indexes. What it holds, by headline:
 > - A case can be CLOSED, and closing it is permanent
@@ -577,7 +590,14 @@ uv run pytest --cov=. --cov-report=term-missing
 
 # Run a specific file
 uv run pytest tests/test_audit_service.py
+
+# Parallel, as CI runs it (~5x faster; not for the RUN_DB_TESTS suite, which shares one DB)
+uv run pytest -q -n logical --dist worksteal
 ```
+
+> **A test id must not depend on a random value.** pytest-xdist collects the suite separately in every worker and refuses to run if the ids differ — `test_declared_signatory_id_is_none_when_no_person_is_named` was parametrized with XML embedding a certificate generated at import, so every worker named it differently. Give such a parametrize explicit `ids=`.
+>
+> **`tests/tpsi/conftest.py::tpsi_env` shares ONE RSA key per session.** Generating it per test cost ~50ms across ~800 tests — a third of the suite. A test that needs a distinct key uses `make_pem`, which still mints a fresh one per call.
 
 **Rules:**
 - Every new route handler gets at least: a happy-path test, a 401/403 test, and an edge-case test

@@ -1031,17 +1031,7 @@ def verification_email(case: dict, entity: dict,
         f"</td></tr>"
 
         # Footer — GSHK's own block, verbatim.
-        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};'
-        f'padding:18px 32px 22px;border-top:1px solid {_BORDER}">'
-        f'<div style="font-family:{_FONT};font-size:13px;font-weight:600;'
-        f'color:{_T_HEAD};padding-bottom:4px">GET STARTED HK LIMITED</div>'
-        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
-        f'color:{_T_MUTED}">'
-        f"Office: {_html.escape(GSHK_OFFICE_PHONE)} | Renewal whatsapp: "
-        f"{_html.escape(GSHK_RENEWAL_WHATSAPP)}<br>"
-        f"{_html.escape(GSHK_ADDRESS)}<br>"
-        f"{_html.escape(GSHK_SERVICES)}"
-        f"</div></td></tr>"
+        f"{_gshk_footer()}"
 
         f"</table></td></tr></table>"
     )
@@ -1206,6 +1196,276 @@ def _deadline_text(deadline) -> str:
         moment = moment.replace(tzinfo=_dt.timezone.utc)
     hkt = moment.astimezone(_dt.timezone(_dt.timedelta(hours=8)))
     return hkt.strftime("%d %B %Y")
+
+
+def _gshk_footer() -> str:
+    """GSHK's own block, verbatim — the last row of every client letter."""
+    return (
+        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};'
+        f'padding:18px 32px 22px;border-top:1px solid {_BORDER}">'
+        f'<div style="font-family:{_FONT};font-size:13px;font-weight:600;'
+        f'color:{_T_HEAD};padding-bottom:4px">GET STARTED HK LIMITED</div>'
+        f'<div style="font-family:{_FONT};font-size:12px;line-height:1.6;'
+        f'color:{_T_MUTED}">'
+        f"Office: {_html.escape(GSHK_OFFICE_PHONE)} | Renewal whatsapp: "
+        f"{_html.escape(GSHK_RENEWAL_WHATSAPP)}<br>"
+        f"{_html.escape(GSHK_ADDRESS)}<br>"
+        f"{_html.escape(GSHK_SERVICES)}"
+        f"</div></td></tr>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The confirmation receipt (Levi 2026-10-17)
+#
+# Sent the moment a director presses Confirm & File on the emailed link, for
+# NAR1, ND2A and ND2B alike, with the documents they confirmed attached and
+# renewal@ copied. The verification letter's family — same masthead, sheet and
+# footer, same tables and inline styles — with one element of its own: the
+# CONFIRMATION STAMP, a green-railed panel whose headline is the date. A
+# receipt exists to say when, so the date is set like a receiving stamp, and
+# green is the one accent spent (the letter spends carrot on its deadline; this
+# message has no deadline, it has a record).
+#
+# "Confirmed", not "signed": the button said Confirm & File, and the signature
+# CR receives is a separate act at PIN signing.
+#
+# The "if you did not confirm this" line is the receipt's second job. The
+# approval link is unauthenticated by design, so a forwarded email is the one
+# way a confirmation can be made by the wrong person — and the receipt landing
+# in the real director's inbox is how that gets noticed.
+# ---------------------------------------------------------------------------
+
+_BANG = "#027248"
+_BANG_TINT = "#E6F1ED"
+
+#: (form code as printed, what the form is). ND2A and ND2B in CR's own words,
+#: shortened to sentence case.
+_RECEIPT_FORMS = {
+    "Nar1": ("NAR1", "Annual Return"),
+    "Nd2a": ("ND2A", "Change of company secretary and director"),
+    "Nd2b": ("ND2B", "Change in particulars of company secretary and director"),
+}
+
+
+#: The declaration the receipt records as accepted, word for word from GSHK's
+#: `Approval receipt` template (Levi 2026-11-06). One text for all three forms,
+#: as the template has one. (The ND2A and ND2B VERIFICATION letters word their
+#: own declarations slightly differently; see `officer_changes.emails`.)
+RECEIPT_DECLARATION = (
+    "“I confirm that I am authorised to approve this document on behalf of the "
+    "company. I have reviewed and confirmed that the information in the document is "
+    "correct and complete to the best of my knowledge. I approve this version and "
+    "authorise Get Started HK Limited to submit it to the Companies Registry on "
+    "behalf of the company.”")
+
+
+def _hk_moment(value) -> tuple[str, str]:
+    """("17 October 2026", "15:31") in Hong Kong time, or ("", "") for a value
+    that cannot be read — a receipt with no date is still a receipt, and a
+    wrong date on one is worse than none."""
+    if not value:
+        return "", ""
+    moment = value
+    if not hasattr(moment, "astimezone"):
+        try:
+            moment = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return "", ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=_dt.timezone.utc)
+    hkt = moment.astimezone(_dt.timezone(_dt.timedelta(hours=8)))
+    # `%d` and not `%-d`, as public_approval._hkt: the no-pad flag is glibc-only.
+    return hkt.strftime("%d %B %Y"), hkt.strftime("%H:%M")
+
+
+def confirmed_form_title(form_code: str, year=None, revision=None) -> str:
+    """"Form NAR1 — Annual Return 2026 (Rev. 2)": what a client is told they are
+    confirming, on the Confirm & File page and in the receipt alike.
+
+    Built from `_RECEIPT_FORMS`, so the form's name has one owner. The year is
+    the NAR1's (an ND2 has none), and the revision rides as `revision_label`
+    renders it everywhere else, unmarked on the first send.
+    """
+    code, what = _RECEIPT_FORMS.get(form_code, _RECEIPT_FORMS["Nar1"])
+    rev = revision_label(revision)
+    return (f"Form {code} — {what}" + (f" {year}" if year else "")
+            + (f" ({rev})" if rev else ""))
+
+
+def approval_receipt_email(case: dict, entity: dict, *, form_code: str,
+                           confirmed_by: str | None, confirmed_email: str | None,
+                           confirmed_at, revision=None,
+                           attachments=(), documents=()) -> tuple[str, str]:
+    """The receipt for a client's own Confirm & File: subject and HTML body.
+
+    `confirmed_at` is the claim's `responded_at` (an ISO string or a datetime);
+    `attachments` names the files the caller attached, which this message lists
+    and counts — it must not promise a copy it does not carry.
+
+    `documents` is the TITLES of everything the client confirmed
+    (`approval_receipt.confirmed_documents`), listed in the stamp's ledger
+    whether or not each one could be attached: the confirmation is of the
+    documents, and a PDF that failed to render does not make it a confirmation
+    of fewer. The Attached box below is unchanged and still lists only files.
+    """
+    code, what = _RECEIPT_FORMS.get(form_code, _RECEIPT_FORMS["Nar1"])
+    company = (entity.get("company_name") or "").strip()
+    case_no = (case.get("case_no") or "").strip()
+    br_number = (entity.get("br_number") or "").strip()
+    year = case.get("ar_period_year") if form_code == "Nar1" else None
+    rev = revision_label(revision)
+    day, clock = _hk_moment(confirmed_at)
+    names = [str(n) for n in (attachments or []) if n]
+    esc = _html.escape
+
+    # GSHK's own subject (Levi 2026-11-06, `Approval receipt` template). The
+    # company is in CAPITALS in the sample only because its test company was.
+    subject = with_revision(
+        f"Approval Receipt - Form {code} | {company}" if company
+        else f"Approval Receipt - Form {code}", revision)
+
+    # The revision rides on the form line rather than a row of its own: it is
+    # already in the subject, the masthead and the reference line.
+    form_line = (f"Form {code}, {what}" + (f" {year}" if year else "")
+                 + (f" ({rev})" if rev else ""))
+    # The moment is the stamp's to state; said here as well it was said twice.
+    opening = ("This email acknowledges and records the approval received through "
+               "our system for the document identified below, together with "
+               "authorisation for Get Started HK Limited to submit it to the "
+               "Companies Registry on behalf of "
+               + (f"<strong>{esc(company)}</strong>" if company else "the company")
+               + ".")
+
+    para = (f'font-family:{_FONT};font-size:15px;line-height:1.65;'
+            f'color:{_T_BODY}')
+    heading = (f'font-family:{_FONT};font-size:15px;font-weight:600;'
+               f'color:{_T_HEAD};line-height:1.4')
+    label = f"font-family:{_FONT};font-size:13px;color:{_T_MUTED}"
+    value = (f"font-family:{_FONT};font-size:15px;font-weight:600;"
+             f"color:{_T_HEAD};line-height:1.4")
+    mailbox = (f'<a href="mailto:{esc(RENEWAL_MAILBOX)}" style="color:{_INDIGO};'
+               f'font-weight:600;text-decoration:underline">{esc(RENEWAL_MAILBOX)}</a>')
+
+    who = esc(confirmed_by or confirmed_email or "")
+    if confirmed_by and confirmed_email:
+        who += (f'<br><span style="font-weight:400;color:{_T_BODY}">'
+                f"{esc(confirmed_email)}</span>")
+    titles = [str(t) for t in (documents or []) if t]
+    rows = [("Confirmed by", who), ("Form", esc(form_line)),
+            # One title per line, in the same table cell as every other row:
+            # a <ul> is not something Outlook's Word engine can be trusted with.
+            ("Documents", "<br>".join(esc(t) for t in titles)),
+            ("Our reference", esc(case_no))]
+    ledger = "".join(
+        f'<tr><td valign="top" width="128" style="width:128px;padding:10px 14px 0 0;'
+        f'{label}">{name}</td>'
+        f'<td valign="top" style="padding:10px 0 0;{value}">{shown}</td></tr>'
+        for name, shown in rows if shown)
+
+    stamp_head = (
+        f'<div style="font-family:{_FONT};font-size:13px;font-weight:600;'
+        f'color:{_BANG};padding-bottom:6px">Confirmation recorded</div>'
+        + (f'<div style="font-family:{_FONT};font-size:26px;font-weight:600;'
+           f'color:{_T_HEAD};line-height:1.15;letter-spacing:-0.01em">{esc(day)}</div>'
+           f'<div style="font-family:{_FONT};font-size:15px;color:{_T_BODY};'
+           f'padding-top:4px">{esc(clock)} Hong Kong time</div>' if day else ""))
+    stamp = (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'border="0" style="margin:22px 0 0;border-collapse:separate;'
+        f'border:1px solid {_BORDER};border-radius:8px">'
+        f'<tr><td width="5" bgcolor="{_BANG}" style="width:5px;background:{_BANG};'
+        f'border-radius:8px 0 0 8px">&nbsp;</td>'
+        f'<td style="padding:0">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td bgcolor="{_BANG_TINT}" style="background:{_BANG_TINT};'
+        f'padding:18px 22px;border-radius:0 8px 0 0">{stamp_head}</td></tr>'
+        f'<tr><td style="padding:6px 22px 16px">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'border="0">{ledger}</table></td></tr>'
+        f"</table></td></tr></table>")
+
+    if len(names) == 1:
+        copies = "A copy of the form you confirmed is attached for your records."
+    elif names:
+        copies = "Copies of the documents you confirmed are attached for your records."
+    else:
+        copies = (f"We could not attach a copy of the form to this email. Write to "
+                  f"{mailbox} and we will send you one.")
+    attached = ""
+    if names:
+        attached = (
+            f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:12px 0 0"><tr>'
+            f'<td style="border:1px solid {_BORDER};border-radius:6px;padding:10px 14px;'
+            f'background:{_GROUND};font-family:{_FONT};font-size:13px;color:{_T_BODY}">'
+            f'<div style="{label};padding-bottom:3px">Attached</div>'
+            + "<br>".join(f'<span style="font-weight:600;color:{_T_HEAD}">{esc(n)}</span>'
+                          for n in names)
+            + "</td></tr></table>")
+
+    reference_bits = [b for b in (br_number and f"BR {br_number}",
+                                  year and f"Annual return {year}",
+                                  case_no and f"Ref {case_no}", rev) if b]
+    reference = (
+        f'<div style="font-family:{_FONT};font-size:12px;color:{_T_MUTED};'
+        f'padding-top:16px">{esc(" · ".join(reference_bits))}</div>'
+        if reference_bits else "")
+
+    eyebrow = f"Form {esc(code)} &middot; Approval receipt"
+    body = (
+        f'<table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" bgcolor="{_GROUND}" '
+        f'style="background:{_GROUND};margin:0;padding:0">'
+        f'<tr><td align="center" style="padding:28px 12px">'
+        # Fluid to 600: the attribute is what Outlook reads, the style is what
+        # a phone's mail app reads, so a narrow screen is not side-scrolled.
+        f'<table role="presentation" width="600" cellpadding="0" '
+        f'cellspacing="0" border="0" style="width:100%;max-width:600px;'
+        f'border-collapse:separate;border-radius:10px;overflow:hidden;'
+        f'border:1px solid {_BORDER}">'
+
+        f'<tr><td bgcolor="{_INDIGO}" style="background:{_INDIGO};padding:24px 32px">'
+        f'<div style="{_LABEL}color:{_ON_INDIGO};padding-bottom:7px">{eyebrow}'
+        f'{f" &middot; {esc(rev)}" if rev else ""}</div>'
+        f'<div style="font-family:{_FONT};font-size:20px;font-weight:600;'
+        f'color:#FFFFFF;line-height:1.25;letter-spacing:-0.01em">'
+        f'{esc(company) or esc(what)}</div>'
+        f"</td></tr>"
+
+        f'<tr><td bgcolor="{_SHEET}" style="background:{_SHEET};padding:32px">'
+        f'<div style="{para};padding-bottom:16px">Dear Client,</div>'
+        f'<div style="{heading}">Approval and Submission Authorisation Receipt</div>'
+        f'<div style="{para};padding-top:10px">{opening}</div>'
+        f"{stamp}"
+        f'<div style="{heading};padding-top:26px">Instruction recorded</div>'
+        f'<div style="{para};padding-top:10px">At the time of approval, the following '
+        f"declaration was accepted:</div>"
+        # A table, not padding on a div: Outlook's Word engine drops the latter.
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'border="0" style="margin:10px 0 0"><tr><td width="28" style="width:28px">'
+        f'&nbsp;</td><td style="{para}">{esc(RECEIPT_DECLARATION)}</td></tr></table>'
+        f'<div style="{heading};padding-top:26px">Approved document</div>'
+        f'<div style="{para};padding-top:6px">{copies}</div>'
+        f"{attached}"
+        f'<div style="{heading};padding-top:26px">What happens next?</div>'
+        f'<div style="{para};padding-top:10px">We will proceed with submission based on '
+        f"this approval. This receipt records your approval and authorisation only; "
+        f"There is nothing more you need to do.</div>"
+        f'<div style="{heading};padding-top:26px">If you do not recognise this approval '
+        f"or identify an error</div>"
+        f'<div style="{para};padding-top:10px">Please contact {mailbox} immediately. If '
+        f"submission has already taken place, changes may require a separate "
+        f"correction or further filing.</div>"
+        f'<div style="{para};padding-top:26px">Kind regards,</div>'
+        f'<div style="font-family:{_FONT};font-size:15px;font-weight:600;'
+        f'color:{_T_HEAD};padding-top:4px">Get Started HK Limited</div>'
+        f"{reference}"
+        f"</td></tr>"
+        f"{_gshk_footer()}"
+        f"</table></td></tr></table>"
+    )
+    return subject, body
 
 
 #: PROD and DEV, and nothing else. Derived from APP_ENV rather than hardcoded

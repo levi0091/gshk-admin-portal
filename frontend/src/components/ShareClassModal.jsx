@@ -92,7 +92,7 @@ export default function ShareClassModal({ row, busy, onClose, onSave }) {
   }
 
   return (
-    <div className="overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="overlay">
       <div className="modal" role="dialog"
            aria-label={isEdit ? 'Edit Class of Shares' : 'Add Class of Shares'}>
         <div className="modal-hdr">

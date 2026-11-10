@@ -358,3 +358,82 @@ describe('LinkPartyModal', () => {
     expect(onSaved).not.toHaveBeenCalled()
   })
 })
+
+// PBI-70 revived (Jacqueline 2026-11-04): an alternate director is an officer of
+// the company, alternate TO one of its directors.
+describe('LinkPartyModal — alternate directors', () => {
+  const OFFICERS = [
+    { id: 'o1', role: 'director', is_current: true, persons: { full_name: 'John Smith' } },
+    { id: 'o2', role: 'director', is_current: false, persons: { full_name: 'Former Fred' } },
+    { id: 'o3', role: 'alternate_director', is_current: true, persons: { full_name: 'Alt Al' },
+      alternate_to_officer_id: 'o1' },
+    { id: 'o4', role: 'company_secretary', is_current: true, corporate_name: 'GSHK Ltd' },
+    { id: 'o5', role: 'director', is_current: true, corporate_entity: { company_name: 'Corp Dir Ltd' } },
+  ]
+
+  it('offers Alternate Director as a role, with no "Alternate to" until it is chosen', async () => {
+    renderModal({ officers: OFFICERS })
+    const role = screen.getByLabelText('Role')
+    expect([...role.querySelectorAll('option')].map(o => o.value)).toContain('alternate_director')
+    expect(screen.queryByLabelText(/Alternate to/)).not.toBeInTheDocument()
+  })
+
+  it('lists this company\'s current directors only, requires one, and sends its id', async () => {
+    const user = userEvent.setup()
+    renderModal({ officers: OFFICERS })
+    await user.type(screen.getByLabelText('Search parties'), 'john')
+    await user.click(await screen.findByText('John Smith'))
+    await user.selectOptions(screen.getByLabelText('Role'), 'alternate_director')
+
+    const to = screen.getByLabelText(/Alternate to/)
+    expect(to.tagName).toBe('SELECT')
+    expect([...to.querySelectorAll('option')].map(o => o.textContent))
+      .toEqual(['Select…', 'John Smith', 'Corp Dir Ltd'])
+
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+    expect(await screen.findByText('Alternate to is required.')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+
+    await user.selectOptions(to, 'o1')
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    expect(api.post.mock.calls[0][1]).toMatchObject({
+      person_id: 'p1', role: 'alternate_director', alternate_to_officer_id: 'o1' })
+  })
+
+  it('does not ask for it, or send it, for an ordinary director', async () => {
+    const user = userEvent.setup()
+    renderModal({ officers: OFFICERS })
+    await user.type(screen.getByLabelText('Search parties'), 'john')
+    await user.click(await screen.findByText('John Smith'))
+    await user.selectOptions(screen.getByLabelText('Role'), 'alternate_director')
+    await user.selectOptions(screen.getByLabelText(/Alternate to/), 'o1')
+    await user.selectOptions(screen.getByLabelText('Role'), 'director')
+    expect(screen.queryByLabelText(/Alternate to/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Link Party' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    expect(api.post.mock.calls[0][1]).not.toHaveProperty('alternate_to_officer_id')
+  })
+
+  it('opens an existing alternate on its director, never offering the row itself', async () => {
+    renderModal({ officers: OFFICERS, link: OFFICERS[2] })
+    expect(await screen.findByLabelText(/Alternate to/)).toHaveValue('o1')
+  })
+
+  it('clears the link when an alternate is edited into a director', async () => {
+    const user = userEvent.setup()
+    renderModal({ officers: OFFICERS, link: OFFICERS[2] })
+    await user.selectOptions(await screen.findByLabelText('Role'), 'director')
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/companies/e1/officers/o3',
+      expect.objectContaining({ role: 'director', alternate_to_officer_id: null })))
+  })
+
+  it('says so when the company has no current director to be alternate to', async () => {
+    const user = userEvent.setup()
+    renderModal({ officers: [OFFICERS[1]] })
+    await user.selectOptions(screen.getByLabelText('Role'), 'alternate_director')
+    expect(screen.getByLabelText(/Alternate to/)).toBeDisabled()
+    expect(screen.getByText(/no current director/i)).toBeInTheDocument()
+  })
+})

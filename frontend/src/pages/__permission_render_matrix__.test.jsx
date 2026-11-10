@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 /**
  * THE SCREENS, RENDERED FOR EVERY ROLE, asserting what is on them.
  *
- * `screenCapabilities.test.js` proves the RULES are right across all 8192
+ * `screenCapabilities.test.js` proves the RULES are right across all 16384
  * permission combinations. This proves the SCREENS obey them — that a
  * capability being false actually removes a button from the DOM rather than
  * merely disabling it, which is the whole of Levi's 2026-09-04 correction:
@@ -291,6 +291,62 @@ describe('Person profile — controls present per role', () => {
       unmount()
       _resetLookups(); _resetFormContract(); _resetDocumentSections()
     }
+  })
+})
+
+describe('ND2A / ND2B entry points per role (migration 050)', () => {
+  // A client company with a current director — the shape that offers every
+  // officer-change control the profile has.
+  const CLIENT = { ...COMPANY, is_client: true }
+
+  it.each([
+    // role,                                        report, cease
+    ['companies:read only', ['companies:read'],                               false, false],
+    ['case worker (nar1 only)', ['companies:read', 'nar1:read', 'nar1:write'], false, false],
+    ['officer reader', ['companies:read', 'officer_changes:read'],            false, false],
+    ['officer clerk', ['companies:read', 'officer_changes:read', 'officer_changes:write'], true, true],
+  ])('company profile, %s', async (_name, perms, report, cease) => {
+    auth = authFor(perms)
+    mockApi(CLIENT, COMPANY_SECTIONS, COMPANY_LIST)
+    render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
+    await screen.findByText('Document History')
+    expect(has(/Report a change/), 'Report a change').toBe(report)
+    expect(has(/^Cease$/), 'Cease').toBe(cease)
+    expect(has(/^Change particulars$/), 'Change particulars').toBe(cease)
+  })
+
+  it('names a Secretary-tile row by its OFFICER id — those rows are entity_officers (#17)', async () => {
+    auth = authFor(['companies:read', 'officer_changes:read', 'officer_changes:write'])
+    mockApi({ ...CLIENT, secretaries: [{ id: 'sec-officer-1', role: 'company_secretary',
+      is_current: true, corporate_entity_id: 'g1',
+      corporate_entity: { company_name: 'Get Started HK Limited' } }] },
+    COMPANY_SECTIONS, COMPANY_LIST)
+    api.post.mockImplementation(url => Promise.resolve(
+      url === '/officer-changes' ? { case: { id: 'k1' } } : {}))
+    render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
+    await screen.findByText('Document History')
+    const buttons = screen.getAllByRole('button', { name: 'Change particulars' })
+    buttons[buttons.length - 1].click()
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      '/officer-changes/k1/entries', { kind: 'change', officer_id: 'sec-officer-1' }))
+    expect(navigate).toHaveBeenCalledWith('/officer-changes/k1')
+  })
+
+  it.each([
+    // role,                                              card, add account
+    ['no permissions at all', [],                                     false, false],
+    ['persons:read only', ['persons:read'],                           true,  false],
+    ['persons read+write', ['persons:read', 'persons:write'],         true,  true],
+    // officer_changes alone does not reach a person's e-Registry account:
+    // it is part of the person, like their passport.
+    ['officer clerk', ['persons:read', 'officer_changes:write'],      true,  false],
+  ])('person profile, %s', async (_name, perms, card, addAccount) => {
+    auth = authFor(perms)
+    mockApi(PERSON, PERSON_SECTIONS, PERSON_LIST)
+    render(<MemoryRouter><PersonProfilePage /></MemoryRouter>)
+    await screen.findByText('Document History')
+    expect(screen.queryAllByText('e-Registry account').length > 0, 'card').toBe(card)
+    expect(has(/Add account/), 'Add account').toBe(addAccount)
   })
 })
 

@@ -231,7 +231,7 @@ function Subject({ e, onOpen }) {
         </span>
       )}
       {subject.ref && (
-        <span className="td-muted" style={{ fontSize: 11.5 }}>({subject.ref})</span>
+        <span className="td-muted" style={{ fontSize: 11 }}>({subject.ref})</span>
       )}
     </span>
   )
@@ -324,7 +324,7 @@ export default function AuditLogPage() {
       />
 
       {error ? (
-        <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+        <div className="alert al-danger" role="alert">
           Failed to load audit log: {error}
         </div>
       ) : (
@@ -364,7 +364,7 @@ export default function AuditLogPage() {
                       )}
                     </td>
                     <td data-label="Action">
-                      <span className="td-primary" style={{ fontSize: 12.5 }}>{actionOf(e)}</span>
+                      <span className="td-primary" style={{ fontSize: 12 }}>{actionOf(e)}</span>
                       {e.event_code && <span className="filing-tag">{e.event_code}</span>}
                     </td>
                     <td data-label="Case / Company / Person">

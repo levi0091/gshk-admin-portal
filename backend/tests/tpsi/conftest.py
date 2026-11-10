@@ -17,8 +17,26 @@ def _clear_config_cache():
     getattr(_cfg.get_config, "cache_clear", lambda: None)()
 
 
+@pytest.fixture(scope="session")
+def _cr_public_pem() -> str:
+    """One RSA-2048 public key for the whole session, behind `tpsi_env`.
+
+    Generating it per test cost ~50ms each across ~800 TPSI tests — about a
+    third of the backend suite's wall time. Nothing can depend on this key
+    being fresh: only the public half is written out and the private half is
+    discarded, so no test can sign or decrypt against it, and every test that
+    cares which key is loaded builds its own with `make_pem`. Each test still
+    gets its own FILE, so one that rewrites or deletes it touches nobody else.
+    """
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+
 @pytest.fixture(autouse=True)
-def tpsi_env(monkeypatch, tmp_path_factory):
+def tpsi_env(monkeypatch, tmp_path_factory, _cr_public_pem):
     """Give every TPSI test a complete, fake, self-contained config.
 
     These tests used to read whatever the developer's backend/.env happened to
@@ -38,11 +56,7 @@ def tpsi_env(monkeypatch, tmp_path_factory):
     with monkeypatch.delenv — now the only thing missing is the thing under test.
     """
     key_file = tmp_path_factory.mktemp("tpsi") / "cr_public.pem"
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    key_file.write_text(private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode())
+    key_file.write_text(_cr_public_pem)
 
     # APP_ENV is deliberately left UNSET, not set to "dev": a fixture that
     # asserts a deployment would block every test that simulates prod. Tests

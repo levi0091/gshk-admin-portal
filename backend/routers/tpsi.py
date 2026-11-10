@@ -19,16 +19,12 @@ from pydantic import BaseModel, ConfigDict
 from middleware.auth import require_permission, require_super_admin
 from db.supabase import get_supabase
 from services import audit_events as ev
-from services import nar1_cases, nar1_cr_status, nar1_prepare, nar1_return_year
+from services import nar1_cases, nar1_prepare, nar1_return_year
 from services.nar1_form import fill as nar1_form_fill
 from services.nar1_form.appearance import AppearanceError
 from services.audit_service import log_event
 from services import audit_subject
 from services.tpsi import audit_context, credentials, filings, reads, shared_credentials
-# ALIASED, because this router already has a route handler called `doc_status`
-# (GET /tpsi/doc-status) and the bare name would be shadowed by it at
-# definition time — silently, and only at the one call site below.
-from services.tpsi import doc_status as cr_doc_status
 from services.tpsi.forms import nar1, nar1_mapper, nar1_source, nar1_summary
 from services.tpsi.forms.cr_vocabularies import default_capacity
 # Moved to services/tpsi/filings.py (BE-4): it reads only filings.* vocabulary,
@@ -514,113 +510,6 @@ async def balance(
     return body
 
 
-@router.get("/doc-status")
-async def doc_status(
-    br_no: str | None = None,
-    date_start: str | None = None,
-    date_end: str | None = None,
-    case_no: str | None = None,
-    document_ref_no: str | None = None,
-    user=Depends(require_permission("tpsi", "read")),
-):
-    try:
-        client = client_for(user)
-        rows = reads.case_status(
-            client,
-            br_no=br_no,
-            date_start=date_start,
-            date_end=date_end,
-            case_no=case_no,
-            document_ref_no=document_ref_no,
-        )
-    except Exception as exc:
-        raise _handle(exc)
-
-    await audit_auth(user, client)
-    await log_event(
-        user_id=user["id"],
-        user_display_name=user["display_name"],
-        action_type=ev.TPSI_STATUS,
-        event_code=ev.TPSI_STATUS,
-        entity_type="tpsi",
-        entity_id=case_no or document_ref_no or br_no or "",
-        metadata={"results": len(rows)},
-    )
-    return rows
-
-
-@router.post("/cases/{case_id}/refresh-status")
-async def refresh_cr_status(
-    case_id: str, user=Depends(require_permission("tpsi", "read")),
-):
-    """Ask CR what it has done with this case's return, and record the answer.
-
-    THE BUTTON THAT WAS REMOVED, PUT BACK BECAUSE ITS THREE OBJECTIONS ARE NOW
-    FALSE. `StageConfirmation` carried a "Check CR status" control until
-    2026-09-02, removed because (a) nothing persisted — the result lived in
-    `useState`; (b) nothing ever reached `registered`, since no code path wrote
-    it; and (c) the case already read Completed, so there was no state left to
-    advance. Migration 043 gives the answer a home, `filings.mark_registered`
-    writes the stage, and `completed` is gone — the case now sits on CR's own
-    answer, which starts at "not checked".
-
-    The fourth objection stands and is answered differently: this spends a CR
-    AUTHENTICATION, and repeated CR auth failures lock the account. So the
-    NORMAL path is `jobs/poll_cr_status`, which logs in once for the whole book;
-    this is the exception, for an operator who needs the answer now.
-
-    `tpsi:read`, exactly as `GET /tpsi/doc-status` and `GET /tpsi/balance` are:
-    the level reflects the effect on CR and on money, and this has neither.
-    Precedent for a case-subject route gated on a TPSI module is
-    `POST /cases/{id}/manual-submit`, which takes `tpsi:submit`.
-
-    POST, not GET, because it writes: a GET that changes a statutory record is
-    a GET a mail-security gateway or a browser prefetch would fire for you.
-    """
-    try:
-        case = nar1_cases.get_case(case_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc))
-
-    filing = nar1_cases.current_filing(case_id)
-
-    # Refused BEFORE a CR session is opened, and named. "Nothing happened" on a
-    # case that was never filed is indistinguishable from a broken button.
-    blocked = nar1_cr_status.due_for_check(case, filing)
-    if blocked:
-        raise HTTPException(409, {
-            "message": f"this case cannot be checked with CR — {blocked}",
-            "reason": "not_checkable",
-        })
-
-    try:
-        client = client_for(user)
-        result = nar1_cr_status.refresh(client, case, filing)
-    except Exception as exc:
-        raise _handle(exc)
-
-    await audit_auth(user, client)
-    await nar1_cr_status.record(
-        result, case,
-        user_id=user["id"], user_display_name=user["display_name"],
-    )
-
-    return {
-        "cr_status": cr_doc_status.describe(result.get("cr_text"),
-                                            result.get("code")),
-        "checked": result.get("checked", False),
-        # Present when CR answered but the reply could not be attributed to THIS
-        # return — several documents under one case number. Not an error and not
-        # a status: nothing was written, and the screen says why rather than
-        # showing a badge nobody can act on.
-        "skipped": result.get("skipped"),
-        "changed": result.get("changed", False),
-        "previous": result.get("previous"),
-        "document_ref_no": result.get("document_ref_no"),
-        "checked_at": result.get("checked_at"),
-    }
-
-
 class PrepareIn(BaseModel):
     entity_id: str
     nar1_case_id: str
@@ -704,6 +593,14 @@ async def prepare_filing(
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise _handle(exc)
+
+    # This route prepares an ANNUAL RETURN. An ND2A/ND2B case (migration 050)
+    # opens its own filings through /officer-changes/{id}/validate.
+    if (case.get("form_code") or "Nar1") != "Nar1":
+        raise HTTPException(409, {
+            "message": (f"case {case.get('case_no') or case.get('id')} files form "
+                        f"{case.get('form_code')}; prepare it from its own page"),
+            "reason": "wrong_form"})
 
     # The one door `filings._refuse_if_case_finished` cannot cover: it guards a
     # filing that already exists, and this route makes a new one. Closing a case
@@ -1085,6 +982,31 @@ async def filing_pdf(
     )
 
 
+#: Forms whose filings belong to /officer-changes (migration 050).
+_OFFICER_CHANGE_FORMS = {"nd2a", "nd2b"}
+
+
+def _refuse_officer_change_filing(filing_id: str) -> None:
+    """An ND2A / ND2B filing is driven from its own routes, never these.
+
+    Those routes check what these cannot: that the client approved, that each
+    new director's consent is PIN-signed with their own account, and they run
+    the profile write-back after filing. Reached through here, a tpsi:submit
+    user could file a form the client never confirmed and leave the profiles
+    unchanged, with nothing to Undo. An unreadable filing passes: the route's
+    own read then fails in its own terms."""
+    try:
+        form = (filings.get_filing(filing_id).get("form_code") or "").lower()
+    except Exception:  # noqa: BLE001
+        return
+    if form in _OFFICER_CHANGE_FORMS:
+        raise HTTPException(409, {
+            "message": ("This filing is an officer change (ND2A / ND2B); drive it from "
+                        "its case page, which checks the client's approval and the "
+                        "consent signatures."),
+            "reason": "wrong_form"})
+
+
 @router.post("/filings/{filing_id}/validate")
 async def validate_filing(
     filing_id: str, user=Depends(require_permission("tpsi", "read"))
@@ -1102,6 +1024,7 @@ async def validate_filing(
     when either date is unknown, exactly as the submit gate does: CR, which
     has its own register, stays the check for what we cannot compute.
     """
+    _refuse_officer_change_filing(filing_id)
     try:
         early = filings.before_return_date(filings.get_filing(filing_id))
     except Exception:  # noqa: BLE001 — fail open; `validate` below reads the
@@ -1182,6 +1105,7 @@ async def sign_filing(
             "Send an empty body. If you meant to sign as someone else, they "
             "must sign in themselves.",
         )
+    _refuse_officer_change_filing(filing_id)
 
     # credentials.load_eservice lives INSIDE the try now, not before it: a
     # None it returns must map to a clean 400 via _handle like every other
@@ -1233,6 +1157,7 @@ async def sign_filing(
 async def edrive_filing(
     filing_id: str, user=Depends(require_permission("tpsi", "write"))
 ):
+    _refuse_officer_change_filing(filing_id)
     try:
         result = filings.upload_edrive(client_for(user), filing_id)
     except filings.CaseClosedInterlock as exc:
@@ -1448,6 +1373,7 @@ async def submit_filing(
     # credential (LookupError/RuntimeError from load_for_use) must reach the
     # caller as a clean 400/502 via _handle, not an unhandled 500 — _deposit_
     # account's own HTTPException(400) passes through _handle unchanged.
+    _refuse_officer_change_filing(filing_id)
     try:
         shared = None if body.deposit_account else shared_credentials.load_for_use()
         account = _deposit_account(body.deposit_account, shared)

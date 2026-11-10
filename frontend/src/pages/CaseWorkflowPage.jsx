@@ -12,7 +12,6 @@ import StageClientVerification from '../components/case/StageClientVerification.
 import StageSigning from '../components/case/StageSigning.jsx'
 import StageSubmission from '../components/case/StageSubmission.jsx'
 import StageConfirmation from '../components/case/StageConfirmation.jsx'
-import StageCrStatus from '../components/case/StageCrStatus.jsx'
 import {
   STAGE_LABELS, reachedStage, isValidated, isSubmitted, isClosed, describeError,
   persistedFailure, canRestart, isLocked,
@@ -60,7 +59,6 @@ export default function CaseWorkflowPage() {
   const canClose = caps.closeCase
   const canValidate = caps.validate
   const canSubmit = caps.submit
-  const canReadTpsi = can('tpsi', 'read')
 
   const [caseRow, setCaseRow] = useState(undefined)
   const [loadError, setLoadError] = useState(null)
@@ -99,6 +97,12 @@ export default function CaseWorkflowPage() {
   const load = useCallback(async () => {
     try {
       const data = await api.get(`/cases/${caseId}`)
+      // An ND2A / ND2B shares this table and this id space (migration 050);
+      // its workflow is its own page. A bookmark or an old link lands here.
+      if (data?.form_code && data.form_code !== 'Nar1') {
+        navigate(`/officer-changes/${caseId}`, { replace: true })
+        return null
+      }
       setCaseRow(data)
       // Open on the furthest stage that is actually reachable, the first time
       // only — re-reading after an action must not yank the operator forward
@@ -110,7 +114,7 @@ export default function CaseWorkflowPage() {
       setCaseRow(null)
       return null
     }
-  }, [caseId])
+  }, [caseId, navigate])
 
   useEffect(() => { load() }, [load])
 
@@ -176,7 +180,7 @@ export default function CaseWorkflowPage() {
   }
   if (loadError) {
     return (
-      <div style={{ padding: 24, background: '#FEE2E2', borderRadius: 8, color: '#B91C1C', fontSize: 13 }}>
+      <div className="alert al-danger" role="alert">
         Failed to load this case: {loadError}
       </div>
     )
@@ -282,6 +286,15 @@ export default function CaseWorkflowPage() {
               modules, held independently, which is why the stages below refuse
               separately. */}
           <span className="perm-tag">Modules: <b>nar1</b>, <b>tpsi</b></span>
+          <button className="btn btn-outline" onClick={() => navigate('/dashboard')}>
+            Back to cases
+          </button>
+          {c.entity_id && (
+            <button className="btn btn-outline"
+                    onClick={() => navigate(`/companies/${c.entity_id}`)}>
+              Company profile
+            </button>
+          )}
           {/* In the HEADER, not inside stage 1 (v11). Restart is what you reach
               for when something is wrong at Client Verification or Signing —
               which is exactly where the button used to be unreachable, because
@@ -329,15 +342,6 @@ export default function CaseWorkflowPage() {
               button: it teaches an operator that their edits are unsaved until
               they press it, which is false, and one day they will leave a
               screen believing they had not committed something they had. */}
-          <button className="btn btn-outline" onClick={() => navigate('/dashboard')}>
-            Back to cases
-          </button>
-          {c.entity_id && (
-            <button className="btn btn-outline"
-                    onClick={() => navigate(`/companies/${c.entity_id}`)}>
-              Company profile
-            </button>
-          )}
         </div>
       </div>
 
@@ -477,10 +481,7 @@ export default function CaseWorkflowPage() {
           <StageSubmission {...stageProps} canSubmit={canSubmit} />
         )}
         {current === 5 && (
-          <StageConfirmation caseRow={c} onGo={goTo} />
-        )}
-        {current === 6 && (
-          <StageCrStatus {...stageProps} canRead={canReadTpsi} />
+          <StageConfirmation caseRow={c} />
         )}
         </>
       )}

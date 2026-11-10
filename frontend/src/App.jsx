@@ -5,6 +5,7 @@ import DashboardPage from './pages/DashboardPage.jsx'
 import CompanyRegistryPage from './pages/CompanyRegistryPage.jsx'
 import CompanyProfilePage from './pages/CompanyProfilePage.jsx'
 import CaseWorkflowPage from './pages/CaseWorkflowPage.jsx'
+import OfficerChangeCasePage from './pages/OfficerChangeCasePage.jsx'
 import PersonsRegistryPage from './pages/PersonsRegistryPage.jsx'
 import PersonProfilePage from './pages/PersonProfilePage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
@@ -83,6 +84,12 @@ export default function App() {
           <Route path="cases/:caseId" element={
             <RequirePermission module="nar1" permission="read">
               <CaseWorkflowPage />
+            </RequirePermission>
+          } />
+          {/* ND2A / ND2B (migration 050): their own page and module. */}
+          <Route path="officer-changes/:caseId" element={
+            <RequirePermission module="officer_changes" permission="read">
+              <OfficerChangeCasePage />
             </RequirePermission>
           } />
           <Route path="persons" element={

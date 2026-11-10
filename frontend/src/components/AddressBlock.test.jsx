@@ -41,9 +41,9 @@ function setup(props = {}) {
 describe('AddressBlock', () => {
   it('shows every line CR receives, so nothing is filed that was never displayed', () => {
     setup()
-    expect(screen.getByLabelText(/Flat \/ Floor \/ Block/i)).toHaveValue('Suite C, Level 7')
+    expect(screen.getByLabelText(/Flat\/Floor\/Block/i)).toHaveValue('Suite C, Level 7')
     expect(screen.getByLabelText(/Building/i)).toHaveValue('World Trust Tower')
-    expect(screen.getByLabelText(/Street \/ Estate/i)).toHaveValue('50 Stanley Street, Central')
+    expect(screen.getByLabelText(/Street\/Estate/i)).toHaveValue('50 Stanley Street, Central')
     expect(screen.getByLabelText(/Country/i)).toHaveValue('HK')
   })
 
@@ -55,7 +55,7 @@ describe('AddressBlock', () => {
   it('marks a line that exceeds the limit, because CR will refuse it', async () => {
     setup({ value: { ...ADDRESS, line3: 'x'.repeat(LIMIT + 1) } })
     expect(screen.getByTestId('count-line3')).toHaveAttribute('data-over', 'true')
-    expect(screen.getByLabelText(/Street \/ Estate/i)).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText(/Street\/Estate/i)).toHaveAttribute('aria-invalid', 'true')
   })
 
   it('does not mark a line of exactly the limit', () => {
@@ -105,7 +105,7 @@ describe('AddressBlock', () => {
 
   it('renders an empty address without crashing', () => {
     setup({ value: null })
-    expect(screen.getByLabelText(/Flat \/ Floor \/ Block/i)).toHaveValue('')
+    expect(screen.getByLabelText(/Flat\/Floor\/Block/i)).toHaveValue('')
   })
 
   // -- The country list must be CR's, not Viewpoint's -----------------------
@@ -118,7 +118,7 @@ describe('AddressBlock', () => {
 
   it('offers CRs countries and never Viewpoints unfilable ones', () => {
     setup()
-    const select = screen.getByLabelText('Country')
+    const select = screen.getByLabelText('Country/Region')
     const options = [...select.querySelectorAll('option')].map(o => o.value)
 
     expect(options).toContain('HK')
@@ -129,7 +129,7 @@ describe('AddressBlock', () => {
 
   it('shows every label in English', () => {
     setup()
-    const labels = [...screen.getByLabelText('Country').querySelectorAll('option')]
+    const labels = [...screen.getByLabelText('Country/Region').querySelectorAll('option')]
       .map(o => o.textContent)
       // The empty-value placeholder is "Select…" — its ellipsis is not ASCII
       // and it is not a country, so it is not what this test is about.
@@ -144,7 +144,7 @@ describe('AddressBlock', () => {
     // would destroy the only evidence of what someone meant.
     setup({ value: { ...ADDRESS, country: 'HK-CH' } })
 
-    expect(screen.getByLabelText('Country')).toHaveValue('HK-CH')
+    expect(screen.getByLabelText('Country/Region')).toHaveValue('HK-CH')
     expect(screen.getByText(/not in list/)).toBeInTheDocument()
   })
 })

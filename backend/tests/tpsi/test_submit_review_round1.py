@@ -199,7 +199,7 @@ def test_a_receipt_never_overwrites_an_edrive_row():
     """Code review 02, N-8: an e-Drive row already holds the return."""
     assert filings.STAGE_EDRIVE not in filings._RECEIPT_OVERWRITES
     assert filings.STAGE_SUBMITTED not in filings._RECEIPT_OVERWRITES
-    assert filings.STAGE_REGISTERED not in filings._RECEIPT_OVERWRITES
+    assert filings.LEGACY_REGISTERED not in filings._RECEIPT_OVERWRITES
 
 
 def test_hk_date_of_is_public_for_the_route():
@@ -453,12 +453,11 @@ def test_nar1_is_recognised_by_name_or_by_reference_and_silence_is_not_refused(
     assert response.status_code == 200, response.text
 
 
-def test_the_hints_are_the_ones_the_status_poll_already_uses():
-    """One decision about what CR calls this return, not two (review 02, B3)."""
-    from services import nar1_cr_status
+def test_the_hints_live_in_doc_status_and_filings_shares_them():
+    """One decision about what CR calls this return (review 02, B3). The status
+    poll that used to share it is gone (Levi 2026-10-27)."""
     from services.tpsi import doc_status
 
-    assert nar1_cr_status._NAR1_DOCUMENT_HINTS is doc_status.NAR1_DOCUMENT_HINTS
     assert filings.NAR1_DOCUMENT_HINTS is doc_status.NAR1_DOCUMENT_HINTS
 
 

@@ -217,6 +217,33 @@ describe('CompanyProfilePage', () => {
     expect(screen.queryByText('Corporate Party Details')).not.toBeInTheDocument()
   })
 
+  it('shows an alternate director on the Directors tile with whom it is alternate to', async () => {
+    // PBI-70 (Jacqueline 2026-11-04). Role alone would read as a second director.
+    mockGet({ ...CLIENT, officers: [...CLIENT.officers, {
+      id: 'o2', role: 'alternate_director', appointed_date: '2025-01-01', is_current: true,
+      alternate_to_officer_id: 'o1', alternate_to_name: 'John Smith',
+      persons: { id: 'p2', full_name: 'Alice Alt' } }] })
+    renderPage()
+    const tile = (await screen.findByText('Director(s)')).closest('.card')
+    expect(within(tile).getByText('Alice Alt')).toBeInTheDocument()
+    expect(within(tile).getByText('alternate director')).toBeInTheDocument()
+    const label = within(tile).getByText('Alternate to')
+    expect(label.closest('.kv-row')).toHaveTextContent('John Smith')
+    // The director's own row has no such line.
+    expect(within(tile).getAllByText('Alternate to')).toHaveLength(1)
+  })
+
+  it('hands the Add Director dialog this company\'s officers, so Alternate to is a picker', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const tile = (await screen.findByText('Director(s)')).closest('.card')
+    await user.click(within(tile).getByRole('button', { name: '+ Add' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add Director / Officer' })
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'alternate_director')
+    const to = within(dialog).getByLabelText(/Alternate to/)
+    expect([...to.querySelectorAll('option')].map(o => o.textContent)).toEqual(['Select…', 'John Smith'])
+  })
+
   it('hides client tiles + Cases pane and reveals the corporate tile for a non-client', async () => {
     mockGet(CORP_ONLY)
     renderPage()
@@ -241,7 +268,7 @@ describe('CompanyProfilePage', () => {
           { id: 'c1', case_no: 'NAR-2026-0041', return_year: 2026,
             workflow_status: { code: 'signing', label: 'Signing' } },
           { id: 'c2', case_no: 'NAR-2025-0007', return_year: 2025,
-            workflow_status: { code: 'cr_registered', label: 'Registered by CR' } },
+            workflow_status: { code: 'filed', label: 'Filed' } },
         ],
         nnc1: [],
       },

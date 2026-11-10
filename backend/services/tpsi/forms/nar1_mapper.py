@@ -800,7 +800,12 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
     }
     if person.get("former_name"):
         block["indvPrevEngName"] = person["former_name"]
-    if person.get("email"):
+    # `hide_email_on_forms` (migration 058, Levi 2026-10-29): the person asked
+    # that their address not appear on anything we file or print. CR marks
+    # indvEmailAddr Mandatory = N, so leaving it out cannot cause a refusal; the
+    # rendered PDF reads this XML, so it is blank there too. The address stays
+    # on the profile and is still used to SEND mail.
+    if person.get("email") and not person.get("hide_email_on_forms"):
         block["indvEmailAddr"] = person["email"]
     block.update(_identity(identity_documents.get(person["id"], []), problems, where))
     return {k: v for k, v in block.items() if v not in ("", None, {})}
@@ -980,7 +985,38 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
     # without this, a missing residential address on an authorised-rep-only
     # person would raise a MappingError over data that was never going to be
     # sent, blocking a filing that is otherwise perfectly valid.
-    _MAPPED_ROLES = {"director", "reserve_director", "company_secretary"}
+    #
+    # `alternate_director` (Jacqueline, 2026-11-04, PBI-70) sits in the SAME
+    # indDir / corpDir lists as a director, told apart by dirInd N and altDirInd
+    # Y -- CR's example carries both flags on every row -- with `altTo` naming
+    # the director it acts for. The printed NAR1 already has the boxes
+    # (nar1_form.fill reads altDirInd and altTo), so nothing else changes.
+    _MAPPED_ROLES = {"director", "reserve_director", "company_secretary",
+                     "alternate_director"}
+
+    def _alternate_flags(officer: dict) -> dict:
+        director = next((o for o in graph["officers"]
+                         if o.get("id") == officer.get("alternate_to_officer_id")), None)
+        name = ""
+        if director is not None:
+            if director.get("person_id"):
+                p = persons.get(director["person_id"]) or {}
+                name = " ".join(x for x in (p.get("surname"), p.get("given_names")) if x) \
+                    or p.get("full_name") or ""
+            else:
+                corp = (graph.get("entities") or {}).get(director.get("corporate_entity_id")) or {}
+                name = corp.get("company_name") or director.get("corporate_name") or ""
+        who = officer.get("corporate_name") or (
+            (persons.get(officer.get("person_id")) or {}).get("full_name")) or officer.get("id")
+        if not name:
+            problems.append(f"alternate director {who}: the director they act for is "
+                            "not recorded, and the return must say whom they are alternate to")
+            return {}
+        if len(name) > 72:
+            problems.append(f"alternate director {who}: the name of the director they act "
+                            f"for ({len(name)} characters) is longer than CR's 72")
+            return {}
+        return {"dirInd": "N", "altDirInd": "Y", "altTo": name}
 
     for officer in graph["officers"]:
         if not officer.get("is_current", True):
@@ -1034,6 +1070,8 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
                 # dirInd Y marks a director as opposed to an alternate; CR's
                 # example sets it on every director row.
                 corp_dir.append({"dirInd": "Y", **block})
+            elif role == "alternate_director":
+                corp_dir.append({**_alternate_flags(officer), **block})
             elif role == "company_secretary":
                 corp_sec.append(block)
             continue
@@ -1049,6 +1087,8 @@ def _officer_lists(graph: dict, problems: list[str]) -> dict:
                             hkg_only=role == "company_secretary")
         if role == "director":
             ind_dir.append({"dirInd": "Y", **block})
+        elif role == "alternate_director":
+            ind_dir.append({**_alternate_flags(officer), **block})
         elif role == "reserve_director":
             res_dir.append(block)
         elif role == "company_secretary":

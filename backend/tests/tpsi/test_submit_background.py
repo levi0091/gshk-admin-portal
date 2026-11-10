@@ -153,7 +153,21 @@ def test_submitform_waits_180_seconds_and_every_other_call_60():
         assert h.validate().status_code == 200
         assert h.sign().status_code == 200
         h.submit()
-        h.http.get("/tpsi/doc-status?case_no=1", headers=H)
+        # docStatusEnquiry is reached by the resolve route only (the CR status
+        # poll and its GET route were removed, Levi 2026-10-17 / 2026-10-27):
+        # put the row in an unknown outcome and verify it is lodged.
+        row = h.store.get("tpsi_filings", "f1")
+        row["stage"] = "submission_unknown"
+        row["submit_started_at"] = "2026-10-23T00:30:00+00:00"
+        h.http.post("/tpsi/filings/f1/resolve", headers=H,
+                    json={"outcome": "lodged", "receipt": {
+                        "caseNo": "180256934", "pymtNo": "5010475972",
+                        "pymtRefNo": "733037536", "pymtMtd": "Deduct from Account",
+                        "transactionDate": "23/10/2026",
+                        "transactionTime": "09:15:30", "totalAmount": "2610.00",
+                        "paymentRcptList": [{"rcptNo": "D7700", "revCode": "16",
+                                             "docShtFrm": "NAR1L",
+                                             "amtChrg": "2610.00"}]}})
 
     timeouts = h.cr.timeouts
     assert timeouts["/tpsi/submitFormNar1"] == [180.0]

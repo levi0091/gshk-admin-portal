@@ -2,6 +2,8 @@
 
 **Date:** 2026-09-16 · **Author:** Levi (BA/Lead) via Claude Code · **Status:** design
 
+> **Reversed in part by `2026-10-17-cr-status-removal-and-confirmation-receipt-design.md`** (migration 054): CR will not report a status after filing, so stage 6, the CR codes and the `poll_cr_status` job are removed and a filed case reads Filed. The auto-approval job (item 5) is unaffected.
+
 Five defects and requests, reported off a live DEV case (NAR-2026-0001,
 Wealthix Limited, CR case 151120654, filed 16/09/2026):
 

@@ -28,8 +28,15 @@ import { describeError } from './workflow.js'
  * The screen never claims the close succeeded until the server says so: the
  * page re-reads the case rather than assuming, exactly as every stage does.
  */
-export default function CloseCaseModal({ caseRow: c, onClose, onClosed }) {
-  const [reason, setReason] = useState('')
+export default function CloseCaseModal({
+  caseRow: c, onClose, onClosed,
+  // An officer-change case closes through its own route (same rules, same body).
+  closePath = `/cases/${c.id}/close`,
+  // A reason the screen already knows (Jacqueline A7: "closed pending further
+  // instructions"). Still editable, still required.
+  initialReason = '',
+}) {
+  const [reason, setReason] = useState(initialReason)
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -47,7 +54,7 @@ export default function CloseCaseModal({ caseRow: c, onClose, onClosed }) {
     setBusy(true)
     setError(null)
     try {
-      await api.post(`/cases/${c.id}/close`, { reason: reason.trim() })
+      await api.post(closePath, { reason: reason.trim() })
       await onClosed()
     } catch (e) {
       // Rendered HERE, not bubbled to the page banner. The page is about to
@@ -60,7 +67,7 @@ export default function CloseCaseModal({ caseRow: c, onClose, onClosed }) {
   }
 
   return (
-    <div className="overlay" onClick={busy ? undefined : onClose}>
+    <div className="overlay">
       <div className="modal modal-sm" onClick={e => e.stopPropagation()}
            role="alertdialog" aria-label="Close case">
         <div className="modal-hdr">
@@ -74,22 +81,9 @@ export default function CloseCaseModal({ caseRow: c, onClose, onClosed }) {
         </div>
 
         <div className="modal-body">
-          {error && (
-            <div className="alert al-danger" role="alert"
-                 style={{ marginBottom: 14 }}>
-              <span className="al-icon">⚠</span>
-              <div className="al-body">
-                <b>{error.message}</b>
-                {error.hint && (
-                  <div style={{ marginTop: 4 }}>{error.hint}</div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* The consequence first, in the operator's own terms, and stated as
               what will be true afterwards rather than as a warning label. */}
-          <div className="alert al-warn" role="status"
+          <div className="alert al-danger" role="status"
                style={{ marginBottom: 16 }}>
             <span className="al-icon">⚠</span>
             <div className="al-body">
@@ -134,6 +128,21 @@ export default function CloseCaseModal({ caseRow: c, onClose, onClosed }) {
               <span className="f-hint">
                 So the case being closed is the one you meant.
               </span>
+            </div>
+          )}
+
+          {/* Last, beside the button that caused it: above the warning it pushed
+              the form down the moment the operator pressed Close. */}
+          {error && (
+            <div className="alert al-danger" role="alert"
+                 style={{ marginTop: 14, marginBottom: 0 }}>
+              <span className="al-icon">⚠</span>
+              <div className="al-body">
+                <b>{error.message}</b>
+                {error.hint && (
+                  <div style={{ marginTop: 4 }}>{error.hint}</div>
+                )}
+              </div>
             </div>
           )}
         </div>

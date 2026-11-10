@@ -20,6 +20,7 @@ from services import (
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE, COMPANY_TYPE, CURRENCY)
 from services.cr_forms.readiness import filing_problems
+from services.officer_changes import particulars
 from services.cr_forms import control_nature, record_types
 
 router = APIRouter()
@@ -178,8 +179,11 @@ _SECRETARY_ROLE = "company_secretary"
 _RELATIONS = {
     "officers": {
         "table": "entity_officers",
+        # `alternate_to_officer_id`: the director an alternate director acts for
+        # (migration 061, PBI-70). Only meaningful for role='alternate_director';
+        # `_validate_link_attributes` requires it there and clears it otherwise.
         "fields": {"role", "position", "appointed_date", "resigned_date",
-                   "resignation_reason", "is_current"},
+                   "resignation_reason", "is_current", "alternate_to_officer_id"},
     },
     "secretaries": {
         "table": "entity_officers",
@@ -408,6 +412,7 @@ class LinkPartyRequest(BaseModel):
     corporate_entity_id: Optional[str] = None
     corporate_name: Optional[str] = None
     role: Optional[str] = None
+    alternate_to_officer_id: Optional[str] = None
     position: Optional[str] = None
     appointed_date: Optional[str] = None
     resigned_date: Optional[str] = None
@@ -765,6 +770,18 @@ async def get_company(
         if cid:
             r["corporate_entity"] = corp_names.get(cid)
 
+    # An alternate director is shown with the director it acts for (migration
+    # 061). Named from the rows already read: a director is in `officers`.
+    director_names = {
+        r["id"]: ((r.get("persons") or {}).get("full_name")
+                  or (r.get("corporate_entity") or {}).get("company_name")
+                  or r.get("corporate_name"))
+        for r in officers
+    }
+    for r in officers:
+        if r.get("alternate_to_officer_id"):
+            r["alternate_to_name"] = director_names.get(r["alternate_to_officer_id"])
+
     # Every address the profile shows, in ONE query.
     #
     # Brian's B4 ("shareholders need an address") and D2 (a director's
@@ -1037,6 +1054,12 @@ async def update_company(
             )
         updates["company_type"] = value
 
+    # A body corporate officer's name, email and TCSP licence are ND2B items:
+    # baseline every appointment it holds before the write (spec §4).
+    if particulars.TRACKED_ENTITY_FIELDS & updates.keys():
+        particulars.capture_before_edit(corporate_entity_id=company_id,
+                                        user_id=user["id"])
+
     updated = (
         sb.table("entities").update(updates).eq("id", company_id).execute()
     ).data[0]
@@ -1171,6 +1194,10 @@ async def update_registered_address(
             sb.table("addresses").select("*")
             .eq("id", current["registered_address_id"]).single().execute()
         ).data
+
+    # A body corporate officer's address is ND2B item (b): baseline first.
+    particulars.capture_before_edit(corporate_entity_id=company_id,
+                                    user_id=user["id"])
 
     try:
         result = address_service.save(
@@ -1639,6 +1666,70 @@ def _resolve_party_type(person_id: Optional[str], corporate_entity_id: Optional[
     return "individual" if person_id else "corporate"
 
 
+def _validate_alternate(sb, out: dict, current: Optional[dict]) -> None:
+    """An alternate director acts for ONE current director of this company, and
+    only an alternate has that link (migration 061, PBI-70 -- Jacqueline
+    2026-11-04). Mutates `out`: a role changed away from alternate drops the link.
+
+    Same refusals as `cases._check_alternate_to` on an ND2A appointment, so the
+    profile and the form cannot disagree about what a valid alternate is."""
+    held = current or {}
+    if "role" not in out and "alternate_to_officer_id" not in out:
+        # Grandfathered, like company_type and owner_type: an edit that touches
+        # neither field must not be refused because the director has since left.
+        return
+    role = out.get("role") or held.get("role")
+    link = out["alternate_to_officer_id"] if "alternate_to_officer_id" in out \
+        else held.get("alternate_to_officer_id")
+    if role != "alternate_director":
+        if held.get("alternate_to_officer_id") or out.get("alternate_to_officer_id"):
+            out["alternate_to_officer_id"] = None
+        return
+    if not link:
+        raise HTTPException(
+            status_code=422,
+            detail="An alternate director must be alternate to a director — choose "
+                   "which one.")
+    entity_id = held.get("entity_id") or out.get("entity_id")
+    rows = (sb.table("entity_officers").select("*").eq("id", str(link)).execute().data) or []
+    director = rows[0] if rows else None
+    if (not director or director.get("entity_id") != entity_id
+            or director.get("is_current") is False
+            or director.get("role") != "director"):
+        raise HTTPException(
+            status_code=422,
+            detail="An alternate director must be alternate to a current director "
+                   "of this company.")
+    person_id = out.get("person_id") or held.get("person_id")
+    corp_id = out.get("corporate_entity_id") or held.get("corporate_entity_id")
+    if (person_id and director.get("person_id") == person_id) or (
+            corp_id and director.get("corporate_entity_id") == corp_id):
+        raise HTTPException(
+            status_code=422, detail="A director cannot be their own alternate.")
+
+
+def _refuse_orphaning_alternates(sb, out: dict, current: Optional[dict]) -> None:
+    """A director cannot stop being a current director while an alternate still
+    acts for them (review S5) — the ND2A refuses the same thing as
+    `rules.alternate_orphaned`, and the profile must not be the way around it.
+    Only an edit that ends the directorship is checked: `is_current` going false,
+    or the role changing away from director."""
+    held = current or {}
+    if held.get("role") != "director" or held.get("is_current") is False or not held.get("id"):
+        return
+    ending = out.get("is_current") is False or ("role" in out and out["role"] != "director")
+    if not ending:
+        return
+    alternates = (sb.table("entity_officers").select("id")
+                  .eq("alternate_to_officer_id", str(held["id"]))
+                  .eq("is_current", True).execute().data) or []
+    if alternates:
+        raise HTTPException(
+            status_code=422,
+            detail="This director still has a current alternate director. End the "
+                   "alternate first, or make them alternate to another director.")
+
+
 def _validate_link_attributes(sb, relation: str, values: dict,
                               current: Optional[dict] = None) -> dict:
     """Refuse here what the DATABASE would refuse, with a sentence about the field.
@@ -1678,6 +1769,10 @@ def _validate_link_attributes(sb, relation: str, values: dict,
                         "It has no share capital recorded yet — add a class "
                         "under Share Capital first.")),
             )
+
+    if relation == "officers":
+        _validate_alternate(sb, out, current)
+        _refuse_orphaning_alternates(sb, out, current)
 
     for field in ("owner_type", "nature_of_control"):
         if field in out:
@@ -1727,6 +1822,59 @@ def _party_summary(name: str, row: dict) -> str:
     """e.g. 'John Smith (director)' — what the link actually is."""
     role = row.get("role") or row.get("owner_type")
     return f"{name} ({role})" if role else name
+
+
+# --------------------------------------------------------------------------- #
+#  A body corporate OFFICER's particulars changed on its profile, CR not told
+#  (spec §4). The company here is the officer, not the company it serves.
+#  Registered before the `/{company_id}/{relation}` catch-alls on purpose.
+# --------------------------------------------------------------------------- #
+
+def _change_rows(rows: list[dict]) -> list[dict]:
+    return [{**row, "items": [
+        {k: v for k, v in item.items() if k not in ("effective_date", "omitted")}
+        for item in row["items"]]} for row in rows]
+
+
+@router.get("/{company_id}/particulars-changes")
+async def get_particulars_changes(company_id: str, user=Depends(live_company("read"))):
+    return {"changes": _change_rows(particulars.pending_for_corporate(company_id))}
+
+
+class DismissIn(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    #: The company the body corporate is an officer OF (Jacqueline BQ2).
+    entity_id: Optional[str] = None
+
+
+@router.post("/{company_id}/particulars-changes/dismiss")
+async def dismiss_particulars_changes(company_id: str, body: Optional[DismissIn] = None,
+                                      user=Depends(live_company("write"))):
+    sb = get_supabase()
+    entity_id = body.entity_id if body else None
+    pending = [r for r in particulars.pending_for_corporate(company_id)
+               if not entity_id or r["entity_id"] == entity_id]
+    dismissed = particulars.dismiss(corporate_entity_id=company_id, user_id=user["id"],
+                                    entity_id=entity_id)
+    if dismissed:
+        rows = (sb.table("entities").select("id, company_name, br_number")
+                .eq("id", company_id).execute().data) or [{"id": company_id}]
+        await log_event(
+            case_id=company_id, user_id=user["id"],
+            user_display_name=user["display_name"],
+            action_type=audit_events.OFFICER_PARTICULARS_DISMISSED,
+            event_code=audit_events.OFFICER_PARTICULARS_DISMISSED,
+            company_name=rows[0].get("company_name"),
+            **audit_subject.for_company(rows[0]),
+            entity_type="entity", entity_id=str(company_id),
+            new_value=f"{dismissed} appointment(s)",
+            metadata={"appointments": dismissed, "entity_id": entity_id, "dismissed": [
+                {"entity_id": r["entity_id"], "company_name": r.get("company_name"),
+                 "capacity": r["capacity"],
+                 "items": [i["label"] for i in r["items"]]} for r in pending]})
+    return {"dismissed": dismissed}
 
 
 @router.post("/{company_id}/{relation}", status_code=201)
