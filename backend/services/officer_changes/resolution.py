@@ -28,11 +28,18 @@ are decisions rather than restyling:
     keeps a line too (Jacqueline, UAT 2026-11-08, reversing this module's
     earlier "a line nobody can sign is not a signature line"): the
     administrator or executor of the estate signs it on the deceased's behalf,
-    so it prints "Name:" blank for them, "For and on behalf of the estate of",
-    the director's name with "(deceased)", and "Administrator / Executor". The
-    portal knows nobody in that role, so the line carries no person and no
+    so it prints "Name:", "For and on behalf of the estate of", the director's
+    name with "(deceased)", and "Administrator / Executor". "Name:" carries the
+    administrator or executor typed on the cessation (`executor_name`,
+    migration 062; Jacqueline, UAT 2026-11-10) and is blank without one. That
+    person is not on record, so the line carries no person id and no
     e-signature is ever asked for or printed on it.
-    Alternate directors are not signatories.
+    Alternate directors sign too (Jacqueline, UAT 2026-11-09, PBI-70: "For
+    the W/R, can we set for all the directors and alternative directors to
+    sign?", then "Alternate director still not showing"): every alternate in
+    office before the changes, after the directors, and every alternate
+    appointed on this form, after the directors appointed. Their block ends
+    "Alternate Director" where a director's ends "Director".
   * THE HEADER. Company name in English, then in Chinese on its own line when
     there is one, then "(Business License No. <BR number>)" (the template's
     wording, not "Business Registration No."), then "(the "Company")".
@@ -79,6 +86,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 from services.officer_change_form import stamp
+from services.officer_changes import capacities
 from services.officer_changes.deadlines import _as_date
 
 # -- the sample's geometry (points; y measured DOWN from the top edge) -----------
@@ -326,43 +334,56 @@ def _corporate(row: dict) -> bool:
 
 def _signers(entries: list[dict], officers: list[dict]) -> list[dict]:
     """Everyone who signs, in order, de-duplicated by party: every director in
-    office BEFORE the changes (those ceasing included), then every director
-    appointed on this form. `{name, person_id, corporate, deceased}` each.
+    office BEFORE the changes (those ceasing included), then every alternate
+    director in office before them, then every director appointed on this
+    form, then every alternate appointed on it.
+    `{name, person_id, corporate, deceased, title}` each.
 
-    This is the ONE statement of who signs, and the views below read it. A
-    director who has died keeps their line, for the administrator or executor
-    of the estate, and that line carries NO person id: the deceased cannot be
-    asked to sign and the executor is not on record, so nobody is sent a link
-    for it and no drawn signature can land on it. Alternate directors are never
-    on it."""
-    dead = {e.get("officer_id") for e in entries
+    This is the ONE statement of who signs, and the views below read it (so an
+    alternate with a line is also asked for a drawn signature, and the
+    multi-signer round includes them). A director who has died keeps their
+    line, for the administrator or executor of the estate, and that line
+    carries NO person id: the deceased cannot be asked to sign and the executor
+    is not on record, so nobody is sent a link for it and no drawn signature
+    can land on it."""
+    # officer -> the administrator / executor named on their cessation ("" when
+    # none is), for every director ceasing by death on this form.
+    dead = {e["officer_id"]: _executor(e) for e in entries
             if e.get("kind") == "cessation" and e.get("cessation_reason") == "D"
             and e.get("officer_id")}
     rows: list[dict] = []
-    for o in officers:
-        if o.get("role") != "director":
-            continue
-        deceased = o.get("officer_id") in dead or bool(o.get("date_of_death"))
-        rows.append({"name": _display(o.get("name"), o.get("name_zh")),
-                     "person_id": None if deceased else o.get("person_id"),
-                     "key": o.get("person_id") or o.get("corporate_entity_id"),
-                     "corporate": _corporate(o), "deceased": deceased})
+    for capacity in capacities.DIRECTORS:
+        for o in officers:
+            if o.get("role") != capacity:
+                continue
+            deceased = o.get("officer_id") in dead or bool(o.get("date_of_death"))
+            rows.append({"name": _display(o.get("name"), o.get("name_zh")),
+                         "person_id": None if deceased else o.get("person_id"),
+                         "key": o.get("person_id") or o.get("corporate_entity_id"),
+                         "corporate": _corporate(o), "deceased": deceased,
+                         "title": capacities.LABEL[capacity],
+                         "signs_for": dead.get(o.get("officer_id")) or ""})
     # Once the changes are written to the profile (`apply`), a director who
     # ceased is no longer among `officers`; their line comes from the cessation
     # entry instead, so a filed case re-renders the resolution they signed
     # (review S4) rather than one without them.
     listed = {o.get("officer_id") for o in officers}
-    for e in entries:
-        if (e.get("kind") == "cessation" and e.get("capacity") == "director"
-                and e.get("officer_id") not in listed
-                and (e.get("party") or {}).get("name")):
-            deceased = e.get("cessation_reason") == "D"
-            rows.append({"name": _party(e),
-                         "person_id": None if deceased else e.get("person_id"),
-                         "key": e.get("person_id") or e.get("corporate_entity_id"),
-                         "corporate": _corporate(e), "deceased": deceased})
-    for e in entries:
-        if e.get("kind") == "appointment" and e.get("capacity") == "director":
+    for capacity in capacities.DIRECTORS:
+        for e in entries:
+            if (e.get("kind") == "cessation" and e.get("capacity") == capacity
+                    and e.get("officer_id") not in listed
+                    and (e.get("party") or {}).get("name")):
+                deceased = e.get("cessation_reason") == "D"
+                rows.append({"name": _party(e),
+                             "person_id": None if deceased else e.get("person_id"),
+                             "key": e.get("person_id") or e.get("corporate_entity_id"),
+                             "corporate": _corporate(e), "deceased": deceased,
+                             "title": capacities.LABEL[capacity],
+                             "signs_for": _executor(e) if deceased else ""})
+    for capacity in capacities.DIRECTORS:
+        for e in entries:
+            if e.get("kind") != "appointment" or e.get("capacity") != capacity:
+                continue
             corporate = _corporate(e)
             # A body corporate being appointed names, on its appointment, the
             # individual who signs its consent ("Consent signed by"); that is
@@ -372,6 +393,7 @@ def _signers(entries: list[dict], officers: list[dict]) -> list[dict]:
             rows.append({"name": _party(e), "person_id": e.get("person_id"),
                          "key": e.get("person_id") or e.get("corporate_entity_id"),
                          "corporate": corporate, "deceased": False,
+                         "title": capacities.LABEL[capacity],
                          "signs_for": (str(e.get("consent_person_name") or "").strip()
                                        if corporate else "")})
     seen, out = set(), []
@@ -384,6 +406,11 @@ def _signers(entries: list[dict], officers: list[dict]) -> list[dict]:
             seen.add(key)
             out.append(row)
     return out
+
+
+def _executor(entry: dict) -> str:
+    """The administrator / executor named on a death's cessation, or ""."""
+    return " ".join(str(entry.get("executor_name") or "").split())
 
 
 def signatories(entries: list[dict], officers: list[dict]) -> list[str]:
@@ -412,16 +439,19 @@ def _rule_for(block: list[str]) -> str:
 
 def _block_lines(row: dict, width: float) -> list[str]:
     """The text lines under one signature rule."""
+    title = row.get("title") or "Director"
+    signer = row.get("signs_for")
+    named = _wrap(f"Name: {signer}", REGULAR, width) if signer else ["Name:"]
     if row.get("deceased"):
-        lines = ["Name:", "For and on behalf of the estate of",
+        # "Name:" carries the administrator / executor when the cessation
+        # names one (UAT 2026-11-10, PBI-59), and is left to the pen otherwise.
+        lines = [*named, "For and on behalf of the estate of",
                  *_wrap(f"{row['name']} (deceased)", REGULAR, width),
                  "Administrator / Executor"]
     elif row["corporate"]:
-        signer = row.get("signs_for")
-        lines = [*(_wrap(f"Name: {signer}", REGULAR, width) if signer else ["Name:"]),
-                 "For and on behalf of", *_wrap(row["name"], REGULAR, width), "Director"]
+        lines = [*named, "For and on behalf of", *_wrap(row["name"], REGULAR, width), title]
     else:
-        lines = [*_wrap(f"Name: {row['name']}", REGULAR, width), "Director"]
+        lines = [*_wrap(f"Name: {row['name']}", REGULAR, width), title]
     return lines
 
 
