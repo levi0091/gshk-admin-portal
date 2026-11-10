@@ -84,6 +84,14 @@ def test_create_numbers_the_case_and_marks_its_form(db):
     assert b["case_no"].startswith("ND2B-") and b["nar1_type"] == "change_of_particulars"
 
 
+def test_a_new_case_starts_with_multiple_directors_must_sign_ticked(db):
+    """Levi 2026-11-10: the option defaults to on; a reused case keeps its choice."""
+    case, _ = cases.create_case(entity_id="E1", form_code="Nd2a", user_id="U1")
+    assert case["multi_signer"] is True
+    b, _ = cases.create_case(entity_id="E1", form_code="Nd2b", user_id="U1")
+    assert b["multi_signer"] is True
+
+
 def test_create_reuses_the_open_unsent_case_of_that_form(db, nd2a):
     again, reused = cases.create_case(entity_id="E1", form_code="Nd2a", user_id="U1")
     assert reused is True and again["id"] == nd2a["id"]
