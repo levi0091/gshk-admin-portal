@@ -242,39 +242,20 @@ def _apply_change(sb, case, entry, user) -> dict:
     return {"baseline_before": before, "items": [i["key"] for i in filed]}
 
 
-def _dismiss_elsewhere(case: dict, entry: dict, user: dict) -> dict | None:
-    """The same change, filed here, stops being reported for the party's other
-    companies (Levi 2026-10-05). Never raises: the filing stands either way."""
-    party = _party(entry)
-    try:
-        companies = particulars.dismiss_filed_elsewhere(
-            filed_entity_id=case["entity_id"], items=entry.get("items") or [],
-            user_id=user["id"], **party)
-    except Exception as exc:  # noqa: BLE001
-        print(f"officer change: dismissal elsewhere failed for {entry.get('id')}: {exc!r}",
-              file=sys.stderr)
-        return None
-    if not companies:
-        return None
-    return {"entry_id": entry["id"], "person_id": party.get("person_id"),
-            "corporate_entity_id": party.get("corporate_entity_id"), "companies": companies}
-
-
-def _split_before(elsewhere: dict) -> tuple[dict, list[dict]]:
-    """The audit-safe half (labels only) and the Undo half (before-states)."""
-    befores = [{"entity_id": c["entity_id"], "baseline_before": c.get("baseline_before")}
-               for c in elsewhere["companies"]]
-    safe = {**elsewhere, "companies": [{k: v for k, v in c.items() if k != "baseline_before"}
-                                       for c in elsewhere["companies"]]}
-    return safe, befores
-
-
 async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
-    """`{"applied": [...], "errors": [str], "dismissed_elsewhere": [...],
-    "person_fields": [...]}` — the last is each profile field written, for the
-    router to audit on the person. Idempotent."""
+    """`{"applied": [...], "errors": [str], "person_fields": [...]}` — the last
+    is each profile field written, for the router to audit on the person.
+    Idempotent.
+
+    An ND2B filed here moves THIS company's baseline only. The same change at
+    the party's other companies stays pending until each files its own ND2B
+    (Jacqueline, UAT 2026-11-10, PBI-68, reversing Levi's 2026-10-05 "dismiss
+    ... after it has been filed with at least one company"): CR is told per
+    company, and a warning cleared by a filing elsewhere let colleagues believe
+    a company had filed when it had not. A company where a filing really is
+    not needed is dismissed by hand, which is audited."""
     sb = get_supabase()
-    applied, errors, dismissed, person_fields = [], [], [], []
+    applied, errors, person_fields = [], [], []
     texts = {r["entry_id"]: r["text"] for r in plan(case, entries)}
     for entry in entries:
         record = entry.get("applied") or {}
@@ -309,11 +290,6 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
                 record = _apply_appointment(sb, case, entry, user)
             else:
                 record = _apply_change(sb, case, entry, user)
-                elsewhere = _dismiss_elsewhere(case, entry, user)
-                if elsewhere:
-                    safe, befores = _split_before(elsewhere)
-                    record["dismissed_elsewhere"] = befores
-                    dismissed.append(safe)
             record["applied_at"] = _now()
             sb.table("officer_change_entries").update({"applied": record}) \
                 .eq("id", entry["id"]).execute()
@@ -325,8 +301,7 @@ async def apply_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
     if not errors:
         sb.table("nar1_cases").update({"changes_applied_at": _now(),
                                        "updated_at": _now()}).eq("id", case["id"]).execute()
-    return {"applied": applied, "errors": errors, "dismissed_elsewhere": dismissed,
-            "person_fields": person_fields}
+    return {"applied": applied, "errors": errors, "person_fields": person_fields}
 
 
 def _restore_baseline(sb, case, entry, before, user) -> None:
@@ -370,6 +345,8 @@ async def undo_changes(case: dict, entries: list[dict], *, user: dict) -> dict:
                 _restore_baseline(sb, case, entry, record.get("baseline_before"), user)
                 # The same change, dismissed for the party's other companies
                 # when this was filed, comes back with it (review finding 2).
+                # Filing no longer dismisses anything elsewhere (PBI-68, UAT
+                # 2026-11-10); this restores what a case filed before then did.
                 party = _party(entry)
                 for other in record.get("dismissed_elsewhere") or []:
                     if other.get("baseline_before") is not None:
