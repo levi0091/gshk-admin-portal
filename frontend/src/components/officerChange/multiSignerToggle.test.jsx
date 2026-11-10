@@ -115,6 +115,8 @@ describe('the option', () => {
     wrap({ multi_signer: true })
     await waitFor(() => expect(get).toHaveBeenCalledWith('/officer-changes/k1/verification/signers'))
     await waitFor(() => expect(option()).toBeEnabled())
+    // It starts ticked on a new case (Levi 2026-11-10), so the hint says how out.
+    expect(screen.getByText(/Untick this to send one email/)).toBeInTheDocument()
   })
 
   it('is absent for a read-only user while it is off', async () => {

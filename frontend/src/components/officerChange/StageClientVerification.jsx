@@ -274,7 +274,9 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
               <span>Multiple directors must sign</span>
             </label>
             <div className="f-hint" id="oc-multi-hint">
-              {multi
+              {multi && required === 0 && !sent
+                ? 'No director on this form has a box to sign. Untick this to send one email to the recipients you choose.'
+                : multi
                 ? 'Each director below gets their own email and signs separately. The case moves on only when all of them have signed.'
                 : required === 0 ? 'No director on this form has a box to sign.'
                   : required > 0

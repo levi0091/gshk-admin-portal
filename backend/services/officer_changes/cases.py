@@ -99,6 +99,11 @@ def create_case(*, entity_id: str, form_code: str, user_id: str) -> tuple[dict, 
         "entity_id": entity_id, "case_no": case_no, "form_code": form_code,
         "nar1_type": _NAR1_TYPE[form_code], "created_by": user_id,
         "assigned_to": user_id,
+        # "Multiple directors must sign" starts ticked (Levi 2026-11-10): each
+        # director signs their own link unless the operator unticks it before
+        # the first send. The column's DEFAULT stays false, because a NAR1 may
+        # not carry it (CHECK nar1_cases_multi_signer_officer_change_only).
+        "multi_signer": True,
     }).execute().data[0]
     return row, False
 
