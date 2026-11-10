@@ -37,7 +37,7 @@ def test_061_revises_060_and_is_the_head():
     m = _migration()
     assert (m.revision, m.down_revision) == ("061", "060")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["061"]
+    assert script.get_heads() == ["062"]
 
 
 def test_the_role_enum_gains_alternate_director_idempotently():

@@ -242,6 +242,41 @@ def test_an_edit_to_deceased_needs_the_date_and_back_to_resignation_clears_it(db
     assert after["date_of_death"] is None
 
 
+# -- who signs for the estate (Jacqueline, UAT 2026-11-10, PBI-59) ------------------------
+
+def test_a_death_may_name_the_administrator_or_executor(db, nd2a):
+    entry = cases.add_entry(nd2a, {**DEATH, "executor_name": "  CHAN   Siu Ming "},
+                            user_id="U1")
+    assert entry["executor_name"] == "CHAN Siu Ming"
+    assert "Administrator / executor: CHAN Siu Ming" in cases._summary(entry)
+    # Optional: emptied, it is cleared rather than kept as "".
+    _, after = cases.update_entry(nd2a, entry["id"], {"executor_name": ""}, user_id="U1")
+    assert after["executor_name"] is None
+
+
+def test_a_resignation_keeps_no_executor_and_switching_to_it_clears_one(db, nd2a):
+    entry = cases.add_entry(nd2a, {**DEATH, "cessation_reason": "R",
+                                   "executor_name": "CHAN Siu Ming"}, user_id="U1")
+    assert entry["executor_name"] is None
+    _, after = cases.update_entry(nd2a, entry["id"], {
+        "cessation_reason": "D", "date_of_death": "2026-09-18",
+        "executor_name": "CHAN Siu Ming"}, user_id="U1")
+    assert after["executor_name"] == "CHAN Siu Ming"
+    _, after = cases.update_entry(nd2a, entry["id"], {"cessation_reason": "R"}, user_id="U1")
+    assert after["executor_name"] is None
+
+
+def test_an_overlong_executor_name_is_refused(db, nd2a):
+    with pytest.raises(ValueError, match="at most 120"):
+        cases.add_entry(nd2a, {**DEATH, "executor_name": "X" * 121}, user_id="U1")
+
+
+def test_a_body_corporate_has_no_executor(db, nd2a):
+    entry = cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O3",
+                                   "executor_name": "CHAN Siu Ming"}, user_id="U1")
+    assert entry["executor_name"] is None
+
+
 def test_a_body_corporate_has_no_date_of_death(db, nd2a):
     entry = cases.add_entry(nd2a, {"kind": "cessation", "officer_id": "O3",
                                    "date_of_death": "2026-09-20"}, user_id="U1")

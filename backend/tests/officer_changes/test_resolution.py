@@ -63,6 +63,27 @@ def _text(pdf: bytes) -> str:
     return " ".join(" ".join(p.get_text().split()) for p in _pages(pdf))
 
 
+def _blocks(pdf: bytes) -> list[str]:
+    """Each signature block's lines joined, read column by column: a row sets
+    two blocks side by side, so plain text extraction interleaves them."""
+    out = []
+    for page in _pages(pdf):
+        lines = _lines(page)
+        dated = next((r["y"] for r in lines if r["text"].startswith("Dated:")), 0)
+        for x in (resolution.LEFT, resolution.SIGNATURE_COLUMNS[1]):
+            column = [r for r in lines if r["y"] > dated and abs(r["x0"] - x) < 2
+                      and not r["text"].startswith("_")]
+            block: list[str] = []
+            for r in column:
+                if r["text"].startswith("Name:") and block:
+                    out.append(" ".join(block))
+                    block = []
+                block.append(r["text"])
+            if block:
+                out.append(" ".join(block))
+    return out
+
+
 @pytest.fixture(scope="module")
 def sample_page():
     return _pages(resolution.render(CASE, ENTITY, SAMPLE, OFFICERS))[0]
@@ -301,6 +322,23 @@ def test_a_director_who_has_died_keeps_a_line_for_the_estate():
     assert pdf
 
 
+def test_the_estate_line_names_the_administrator_or_executor_when_one_is_given():
+    """Jacqueline, UAT 2026-11-10 (PBI-59): "can we also add the name via the
+    system while preparing the documents?" Still no person id: the executor is
+    never sent a link and no drawn signature prints there."""
+    dead = {**RESIGN, "cessation_reason": "D", "executor_name": "CHAN Siu Ming"}
+    assert resolution.signatory_people([dead, APPOINT], OFFICERS)[0] == (
+        "PIK YI REBECCA LAW 羅碧儀", None)
+    blocks = _blocks(resolution.render(CASE, ENTITY, [dead, APPOINT], OFFICERS))
+    assert ("Name: CHAN Siu Ming For and on behalf of the estate of "
+            "PIK YI REBECCA LAW 羅碧儀 (deceased) Administrator / Executor") in blocks
+    # Also once filing has removed the director from the officers list.
+    after_apply = [o for o in OFFICERS if o["officer_id"] != "O1"]
+    blocks = _blocks(resolution.render(CASE, ENTITY, [dead, APPOINT], after_apply))
+    assert any(b.startswith("Name: CHAN Siu Ming For and on behalf of the estate")
+               for b in blocks)
+
+
 def test_the_rule_reaches_the_end_of_a_long_name():
     """Jacqueline, UAT 2026-11-09: "Can we make the line the same length as the
     name?" A short name keeps the template's 29 underscores."""
@@ -329,7 +367,9 @@ def test_a_filed_case_keeps_the_deceased_line_after_the_profile_is_updated():
         ("PIK YI REBECCA LAW 羅碧儀", None), ("Aldo KRIEL 歐立德", None)]
 
 
-def test_alternate_directors_are_worded_and_do_not_sign():
+def test_alternate_directors_are_worded_and_sign():
+    """Jacqueline, UAT 2026-11-09 (PBI-70): "For the W/R, can we set for all the
+    directors and alternative directors to sign?" """
     alt_in = {"id": "N7", "kind": "appointment", "capacity": "alternate_director",
               "effective_date": "2026-03-20", "alternate_to_name": "PIK YI REBECCA LAW",
               "party": {"name": "Zed ALTERNATE"}}
@@ -345,8 +385,33 @@ def test_alternate_directors_are_worded_and_do_not_sign():
             "to PIK YI REBECCA LAW effective from the date hereof.") in out
     assert ("IT IS RESOLVED that Old ALTERNATE shall resign as alternate director to "
             "PIK YI REBECCA LAW from the company effective from the date hereof.") in out
-    assert "Name: Zed" not in out and "Name: Old" not in out
-    assert resolution.signatories([alt_out, alt_in], officers) == ["PIK YI REBECCA LAW 羅碧儀"]
+    blocks = _blocks(resolution.render(CASE, ENTITY, [alt_out, alt_in], officers))
+    assert "Name: Zed ALTERNATE Alternate Director" in blocks
+    assert "Name: Old ALTERNATE Alternate Director" in blocks
+    assert "Name: PIK YI REBECCA LAW 羅碧儀 Director" in blocks
+    assert resolution.signatory_people([alt_out, alt_in], officers) == [
+        ("PIK YI REBECCA LAW 羅碧儀", "P1"), ("Old ALTERNATE", "P8"), ("Zed ALTERNATE", None)]
+
+
+def test_alternates_sign_after_the_directors_in_each_group():
+    """The board before (directors, then alternates), then the appointed
+    (directors, then alternates), whatever order the profile lists them in."""
+    officers = [{"officer_id": "O8", "role": "alternate_director", "name": "Old ALTERNATE",
+                 "person_id": "P8"}, *OFFICERS]
+    alt_in = {"id": "N7", "kind": "appointment", "capacity": "alternate_director",
+              "person_id": "P9", "party": {"name": "Zed ALTERNATE"}}
+    assert resolution.signatory_people([alt_in, APPOINT], officers) == [
+        ("PIK YI REBECCA LAW 羅碧儀", "P1"), ("Old ALTERNATE", "P8"),
+        ("Aldo KRIEL 歐立德", None), ("Zed ALTERNATE", "P9")]
+
+
+def test_a_corporate_alternate_signs_for_and_on_behalf_as_alternate_director():
+    alt_in = {"id": "N7", "kind": "appointment", "capacity": "alternate_director",
+              "party_type": "corporate", "corporate_entity_id": "C9",
+              "consent_person_name": "Mary SIGNER", "party": {"name": "Alt Holdings Limited"}}
+    blocks = _blocks(resolution.render(CASE, ENTITY, [alt_in], OFFICERS))
+    assert ("Name: Mary SIGNER For and on behalf of Alt Holdings Limited Alternate Director"
+            in blocks)
 
 
 def test_a_long_board_breaks_onto_a_second_page():

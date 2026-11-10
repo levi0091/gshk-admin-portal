@@ -50,7 +50,7 @@ _ADDRESS_KEYS = ("line1", "line2", "line3", "city", "state_region", "postal_code
 #: row is derived (the party of a cessation, the items of a change) or owned by
 #: a later stage (KYC, consent, what filing applied).
 _WRITABLE = {
-    "cessation": {"effective_date", "cessation_reason", "date_of_death"},
+    "cessation": {"effective_date", "cessation_reason", "date_of_death", "executor_name"},
     "appointment": {"capacity", "effective_date", "correspondence_same_as_residential",
                     "correspondence_address", "section5_confirmed",
                     "consent_person_id", "consent_capacity", "alternate_to_officer_id"},
@@ -138,6 +138,27 @@ def _store_deadline(case_id: str) -> None:
 
 
 # -- validating an entry -------------------------------------------------------------
+
+#: Migration 062's CHECK, and the same number here.
+EXECUTOR_NAME_MAX = 120
+
+
+def _executor_name(reason, name) -> str | None:
+    """Who signs the written resolution for a director who has died
+    (Jacqueline, UAT 2026-11-10, PBI-59: "can we also add the name via the
+    system while preparing the documents?"). Optional free text, kept only for
+    a death; anything else clears it. Printed after "Name:" on the estate's
+    line, which still carries no person and is never sent for e-signature."""
+    if reason != "D":
+        return None
+    text = " ".join(str(name or "").split())
+    if not text:
+        return None
+    if len(text) > EXECUTOR_NAME_MAX:
+        raise ValueError(f"The administrator / executor's name can be at most "
+                         f"{EXECUTOR_NAME_MAX} characters")
+    return text
+
 
 def _death_date(reason, date_of_death, effective_date) -> str | None:
     """The date of death a natural person's cessation keeps (Levi 2026-10-18):
@@ -395,9 +416,12 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
                 row["date_of_death"] = _death_date(
                     payload["cessation_reason"], payload.get("date_of_death"),
                     row["effective_date"])
+                row["executor_name"] = _executor_name(payload["cessation_reason"],
+                                                      payload.get("executor_name"))
             else:
                 row["cessation_reason"] = None
                 row["date_of_death"] = None
+                row["executor_name"] = None
             if promoted:
                 # Not a column: `add_entry` lifts it off before the insert and
                 # hands it to the router, which puts it in the audit row.
@@ -487,8 +511,13 @@ def update_entry(case: dict, entry_id: str, patch: dict, *, user_id) -> tuple[di
             changes["date_of_death"] = _death_date(
                 merged["cessation_reason"], merged.get("date_of_death"),
                 merged.get("effective_date"))
-        elif "date_of_death" in changes:
-            changes["date_of_death"] = None
+            changes["executor_name"] = _executor_name(merged["cessation_reason"],
+                                                      merged.get("executor_name"))
+        else:
+            if "date_of_death" in changes:
+                changes["date_of_death"] = None
+            if "executor_name" in changes:
+                changes["executor_name"] = None
     if before["kind"] == "appointment":
         others = [e for e in list_entries(case["id"]) if e["id"] != entry_id]
         _check_appointment(case, merged, others, exclude_id=entry_id)
@@ -977,6 +1006,8 @@ def _summary(entry: dict) -> str:
         bits = [capacity, f"ceases {_day(entry.get('effective_date'))}"]
         if entry.get("cessation_reason") == "D" and entry.get("date_of_death"):
             bits.append(f"Deceased on {_day(entry['date_of_death'])}")
+            if entry.get("executor_name"):
+                bits.append(f"Administrator / executor: {entry['executor_name']}")
         elif entry.get("cessation_reason"):
             bits.append(_REASON_LABEL[entry["cessation_reason"]])
         return " · ".join(bits)

@@ -38,7 +38,7 @@ def test_060_revises_059_and_is_the_head():
     m = _migration()
     assert (m.revision, m.down_revision) == ("060", "059")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["061"]
+    assert script.get_heads() == ["062"]
 
 
 def test_both_columns_are_added_to_nar1_cases():

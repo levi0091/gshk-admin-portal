@@ -266,7 +266,7 @@ describe('CessationDrawer — alternate directors', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries',
       { kind: 'cessation', officer_id: 'o9', effective_date: '2026-09-28', cessation_reason: 'R',
-        date_of_death: null }))
+        date_of_death: null, executor_name: null }))
   })
 
   it('names the capacity and principal of an alternate being edited', () => {
@@ -708,7 +708,7 @@ describe('CessationDrawer — the date of death', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries', {
       kind: 'cessation', officer_id: 'o2', effective_date: '2026-09-20',
-      cessation_reason: 'D', date_of_death: '2026-09-20' }))
+      cessation_reason: 'D', date_of_death: '2026-09-20', executor_name: null }))
   })
 
   it('cannot add a death without its date', async () => {
@@ -740,7 +740,39 @@ describe('CessationDrawer — the date of death', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries', {
       kind: 'cessation', officer_id: 'o2', effective_date: '2026-09-20',
-      cessation_reason: 'R', date_of_death: null }))
+      cessation_reason: 'R', date_of_death: null, executor_name: null }))
+  })
+
+  // Jacqueline, UAT 2026-11-10 (PBI-59): the estate line on the W/R names who signs.
+  it('may name the administrator or executor on a death, and sends it', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o2')
+    await userEvent.type(screen.getByLabelText(/Administrator \/ executor/), '  WONG Executor ')
+    await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries', {
+      kind: 'cessation', officer_id: 'o2', effective_date: '2026-09-20',
+      cessation_reason: 'D', date_of_death: '2026-09-20', executor_name: 'WONG Executor' }))
+  })
+
+  it('asks for no administrator on a resignation and sends none', async () => {
+    post.mockResolvedValue({ id: 'k1' })
+    wrap(<CessationDrawer data={BASE} onClose={() => {}} onSaved={() => {}} />)
+    await userEvent.selectOptions(screen.getByLabelText(/Officer/), 'o2')
+    await userEvent.type(screen.getByLabelText(/Administrator \/ executor/), 'WONG Executor')
+    await userEvent.click(screen.getByLabelText('Resignation / Others'))
+    expect(screen.queryByLabelText(/Administrator \/ executor/)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Add cessation' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/officer-changes/k1/entries',
+      expect.objectContaining({ cessation_reason: 'R', executor_name: null })))
+  })
+
+  it('shows the administrator an entry already holds when it is edited', () => {
+    const entry = { id: 'n1', kind: 'cessation', party_type: 'individual', officer_id: 'o1',
+      capacity: 'director', cessation_reason: 'D', date_of_death: '2026-09-17',
+      executor_name: 'WONG Executor', effective_date: '2026-09-17', party: { name: 'CHAN Tai Man' } }
+    wrap(<CessationDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
+    expect(screen.getByLabelText(/Administrator \/ executor/)).toHaveValue('WONG Executor')
   })
 
   it('shows the date an entry already holds when it is edited', () => {

@@ -44,6 +44,10 @@ function todayIso() {
  * person ceases on the day they die, so the cessation date follows it — until
  * the operator types one of their own.
  *
+ * A DEATH MAY NAME WHO SIGNS FOR THE ESTATE (Jacqueline, UAT 2026-11-10,
+ * PBI-59). Optional free text, printed after "Name:" on the written
+ * resolution's estate line; never a party the portal sends anything to.
+ *
  * `preselect` is an `officerRef`, set when the operator pressed Cease on an
  * officer's row on the company profile.
  */
@@ -61,6 +65,7 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
   const [reason, setReason] = useState(entry?.cessation_reason || reasonFor(initial))
   const [died, setDied] = useState(entry?.date_of_death || initial?.date_of_death || '')
   const [date, setDate] = useState(entry?.effective_date || initial?.date_of_death || '')
+  const [executor, setExecutor] = useState(entry?.executor_name || '')
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const name = editing ? entry.party?.name : officer?.name
@@ -83,7 +88,12 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
     const who = officerId.startsWith('cs:')
       ? { secretary_id: officerId.slice(3) } : { officer_id: officerId }
     const person = individual
-      ? { cessation_reason: reason, date_of_death: reason === 'D' ? died : null } : {}
+      ? {
+          cessation_reason: reason,
+          date_of_death: reason === 'D' ? died : null,
+          executor_name: reason === 'D' ? (executor.trim() || null) : null,
+        }
+      : {}
     try {
       const next = editing
         ? await officerChangeApi.updateEntry(data.id, entry.id, { effective_date: date, ...person })
@@ -153,6 +163,18 @@ export default function CessationDrawer({ data, entry, preselect, onClose, onSav
                  onChange={e => changeDied(e.target.value)} />
           <div className="f-hint">
             Not on CR&apos;s form. It is saved to {name || 'the person'}&apos;s profile once the form is filed.
+          </div>
+        </div>
+      )}
+
+      {individual && reason === 'D' && (
+        <div className="f-group">
+          <label className="f-label" htmlFor="oc-executor">Administrator / executor</label>
+          <input id="oc-executor" className="f-input" value={executor} maxLength={120}
+                 autoComplete="off" onChange={e => setExecutor(e.target.value)} />
+          <div className="f-hint">
+            Optional. Printed after &quot;Name:&quot; on the written resolution, where the
+            administrator or executor signs for the estate. Leave blank to fill in by hand.
           </div>
         </div>
       )}

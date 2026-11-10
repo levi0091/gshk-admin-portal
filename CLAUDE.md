@@ -93,7 +93,7 @@ Agents are expensive here: every dispatched agent loads this file and re-reads t
 > - `GET /auth/super-admins` is unauthenticated, and that is the point.
 > - Confirm & File mails the client a RECEIPT (ND2, Levi 2026-10-17)
 > - Three ND2 follow-ups (migration 055): a death asks for its date; secretary drawer lists GSHK first; e-Sign saves the signed form
-> - ND2A / ND2B after Jacqueline's feedback (migrations 052, 053): the chain is `049 → 051 → 056 → 050 → 052 → 053 → 054 → 055 → 057`; blank effective dates; CR's consent signature IS the consent; the resolution is GSHK's own sample; manual checks gate Data Verification; identification and addresses are per COMPANY; an ND2B filed for one company stops the same change being reported for others
+> - ND2A / ND2B after Jacqueline's feedback (migrations 052, 053): the chain is `049 → 051 → 056 → 050 → 052 → 053 → 054 → 055 → 057 → … → 062`; blank effective dates; CR's consent signature IS the consent; the resolution is GSHK's own sample; manual checks gate Data Verification; identification and addresses are per COMPANY; an ND2B filed for one company NO LONGER clears the same change at the others (Jacqueline 2026-11-10); a death may name its administrator / executor (062)
 
 | AI | Claude API | Called from Railway backend only — never from frontend |
 

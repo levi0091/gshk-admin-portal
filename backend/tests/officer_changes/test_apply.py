@@ -221,46 +221,47 @@ def test_same_as_residential_writes_no_correspondence_address(db):
     assert not new.get("correspondence_address_id")
 
 
-def test_an_nd2b_filed_for_one_company_dismisses_the_same_change_elsewhere(db, monkeypatch):
-    """Levi 2026-10-05: 'We will dismiss the change not yet filed warning after
-    it has been filed with at least one company.'"""
-    calls = []
-    monkeypatch.setattr(particulars, "dismiss_filed_elsewhere",
-                        lambda **k: calls.append(k) or [{"entity_id": "E2", "items": ["Email address"],
-                                                          "company_name": "Second", "capacity": "director"}])
-    particulars.capture_before_edit(person_id="P1", user_id="U1")
-    db.tables["persons"][0]["email"] = "new@example.com"
-    items = particulars.pending_for_officer("E1", person_id="P1", capacity="director")
-    change = {"id": "N4", "case_id": "K1", "kind": "change", "capacity": "director",
-              "party_type": "individual", "person_id": "P1", "officer_id": "O1",
-              "items": items, "party": {"name": "CHAN Tai Man"}}
-    out = _run(apply.apply_changes, CASE, _entries(db, change))
-    assert calls[0]["person_id"] == "P1" and calls[0]["filed_entity_id"] == "E1"
-    assert out["dismissed_elsewhere"] == [{"entry_id": "N4", "person_id": "P1",
-                                           "corporate_entity_id": None,
-                                           "companies": calls and [{"entity_id": "E2",
-                                                                    "items": ["Email address"],
-                                                                    "company_name": "Second",
-                                                                    "capacity": "director"}]}]
-
-
-def test_undo_restores_the_companies_the_filing_dismissed(db):
-    """Review finding 2: CR rejected the ND2B for E1 and Undo ran. CR was never
-    told for E2 either, so E2 must report the change again too."""
+def _second_directorship(db):
     db.tables["entities"].append({"id": "E2", "company_name": "Second Limited"})
     db.tables["entity_officers"].append(
         {"id": "O8", "entity_id": "E2", "person_id": "P1", "party_type": "individual",
          "role": "director", "is_current": True})
+
+
+def _email_change(db):
     particulars.capture_before_edit(person_id="P1", user_id="U1")
     db.tables["persons"][0]["email"] = "new@example.com"
     items = particulars.pending_for_officer("E1", person_id="P1", capacity="director")
-    change = {"id": "N4", "case_id": "K1", "kind": "change", "capacity": "director",
-              "party_type": "individual", "person_id": "P1", "officer_id": "O1",
-              "items": items, "party": {"name": "CHAN Tai Man"}}
-    out = _run(apply.apply_changes, CASE, _entries(db, change))
+    return {"id": "N4", "case_id": "K1", "kind": "change", "capacity": "director",
+            "party_type": "individual", "person_id": "P1", "officer_id": "O1",
+            "items": items, "party": {"name": "CHAN Tai Man"}}
+
+
+def test_an_nd2b_filed_for_one_company_leaves_the_same_change_pending_elsewhere(db):
+    """Jacqueline, UAT 2026-11-10 (PBI-68): the change filed for Company A was
+    cleared for the director's other companies too, so colleagues could not tell
+    that B and C had not filed. Each company now keeps it until its own ND2B."""
+    _second_directorship(db)
+    out = _run(apply.apply_changes, CASE, _entries(db, _email_change(db)))
+    assert out["errors"] == [] and "dismissed_elsewhere" not in out
+    assert {r["entity_id"] for r in particulars.pending_for_person("P1")} == {"E2"}
+    assert not any(r.get("source") == "dismissed" for r in db.rows("officer_cr_particulars"))
+
+
+def test_undo_of_a_case_filed_before_the_change_restores_what_it_dismissed(db):
+    """Review finding 2, kept for cases filed while a filing still dismissed the
+    change elsewhere: their entries carry the other companies' before-states,
+    and Undo puts them back."""
+    _second_directorship(db)
+    change = _email_change(db)
+    before_e2 = particulars.baseline("E2", person_id="P1")
+    _run(apply.apply_changes, CASE, _entries(db, change))
+    # What the old code did at filing time: E2's baseline moved forward too.
+    particulars.advance("E2", person_id="P1", items=change["items"], user_id="U1",
+                        capacity="director", source="dismissed")
+    entry = next(e for e in db.rows("officer_change_entries") if e["id"] == "N4")
+    entry["applied"]["dismissed_elsewhere"] = [{"entity_id": "E2", "baseline_before": before_e2}]
     assert particulars.pending_for_person("P1") == []
-    # The before-state is kept on the entry, never in the audit metadata.
-    assert "baseline_before" not in str(out["dismissed_elsewhere"])
     _run(apply.undo_changes, CASE, db.rows("officer_change_entries"))
     assert {r["entity_id"] for r in particulars.pending_for_person("P1")} == {"E1", "E2"}
 
