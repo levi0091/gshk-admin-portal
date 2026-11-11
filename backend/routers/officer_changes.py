@@ -565,9 +565,23 @@ def _problems(exc: prepare.MappingError) -> HTTPException:
                                "problems": list(exc.problems)})
 
 
-async def _form_xml(case: dict, filing: dict | None) -> str:
-    """CR's own copy once it has one; otherwise the form built from the record."""
-    if filing and filing.get("validated_xml"):
+async def _form_xml(case: dict, filing: dict | None, *, audience: str = "staff") -> str:
+    """The form each screen shows.
+
+    `client` (Client Verification) is THE COPY THE CLIENT WAS SENT, frozen in
+    `verification_xml`, and before a send the form built from the record. It is
+    never CR's validated copy (PROD feedback, 2026-11-12): CR is sent the names
+    of officers it already holds in its own capitals (`prepare.for_cr`), so
+    once CR validated, this screen printed "CGAHCHBAABBG" while the client had
+    been sent, signed and received "Cgahchbaabbg".
+
+    `staff` and `public` show CR's own copy once it has one -- the Submission
+    screen's "as it will be filed" -- and otherwise the form built from the record.
+    """
+    if audience == "client":
+        if case.get("verification_sent_at") and case.get("verification_xml"):
+            return case["verification_xml"]
+    elif filing and filing.get("validated_xml"):
         return filing["validated_xml"]
     return await prepare.build_form_xml(case, svc.list_entries(case["id"]))
 
@@ -594,7 +608,7 @@ async def preview(case_id: str, audience: str = Query("client"),
     case = load_case(case_id)
     filing = nar1_cases.current_filing(case_id)
     try:
-        xml = await _form_xml(case, filing)
+        xml = await _form_xml(case, filing, audience=audience)
         pdf = await _render(case, xml, filing, public_only=audience == "public",
                             signatures=signed_copies.for_form(case))
     except prepare.MappingError as exc:
