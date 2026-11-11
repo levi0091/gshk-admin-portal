@@ -217,7 +217,8 @@ async def patch_case(case_id: str, body: CasePatchIn,
         capacity = body.signatory_capacity.strip()
         # The vocabulary of THIS signer: CR takes any string here and refuses a
         # capacity of the wrong kind only after the form is submitted.
-        _, is_corporate = svc._signatory_party(case["entity_id"])
+        _, is_corporate = svc._signatory_party(case["entity_id"],
+                                               svc.list_entries(case["id"]))
         valid = CAPACITY_BODY_CORPORATE if is_corporate else CAPACITY_INDIVIDUAL
         if capacity and capacity not in valid:
             kind = "a body corporate" if is_corporate else "a natural person"

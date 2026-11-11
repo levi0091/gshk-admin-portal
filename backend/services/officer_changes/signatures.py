@@ -139,12 +139,12 @@ def must_sign(case: dict, person_id) -> bool:
             return False
         sb = get_supabase()
         entity_id = case["entity_id"]
-        if (cases.signatory_person_id(entity_id) == person_id
+        entries = cases.list_entries(case["id"])
+        if (cases.signatory_person_id(entity_id, entries) == person_id
                 and _is_current_director(sb, entity_id, person_id)):
             return True
         if case.get("form_code") != "Nd2a":
             return False
-        entries = cases.list_entries(case["id"])
         if any(e.get("kind") == "appointment" and e.get("capacity") in capacities.DIRECTORS
                and e.get("person_id") == person_id for e in entries):
             return True

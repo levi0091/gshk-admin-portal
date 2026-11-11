@@ -74,7 +74,10 @@ async def build_form_xml(case: dict, entries: list[dict], *,
     problem at once — a length CR would refuse included."""
     graph = await source.load_graph(case["entity_id"], entries)
     data = _MAPPERS[case["form_code"]](
-        graph, entries, signatory_capacity=_capacity(graph, case),
+        # The signer, and so its default capacity, is the secretary AFTER the
+        # form's changes (`nd2a_mapper.after_changes`) — the one it prints.
+        graph, entries,
+        signatory_capacity=_capacity(nd2a_mapper.after_changes(graph, entries), case),
         signing_identity=signing_identity, for_esign=for_esign, require_dates=require_dates)
     if for_esign:
         data = for_cr(case["form_code"], data)
