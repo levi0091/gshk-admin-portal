@@ -1,5 +1,6 @@
 """The router's one door to CR's XML: build, problems, and the consent plan."""
 import asyncio
+import re
 
 import pytest
 
@@ -164,3 +165,101 @@ def test_consent_plan_carries_the_eregistry_identity_mismatch(monkeypatch):
     assert row["ready"] is True  # a warning, not a refusal: CR decides
     assert "X123" in row["id_mismatch"] and "Y765" in row["id_mismatch"]
     assert "X1234567" not in row["id_mismatch"]
+
+
+# -- CR's officer lookup is case-sensitive (PROD feedback, 2026-11-12) --------------
+#
+# Only the XML sent to CR (`for_esign=True`, Data Verification's validate) carries
+# the capitals. The preview and the manual route's PDF print the name as entered,
+# and the profile is never written (Levi, 2026-11-12).
+
+def _world_of(monkeypatch, form: str, fixture: str):
+    path = next(p for p in fx.files(form) if fixture in p.name)
+    graph, entries = fx.build_world(path)
+
+    async def load(entity_id, entries_):
+        return graph
+
+    monkeypatch.setattr(prepare.source, "load_graph", load)
+    return graph, entries
+
+
+def _values(xml: str, tag: str) -> list[str]:
+    return re.findall(rf"<cr:{tag}>([^<]*)</cr:{tag}>", xml)
+
+
+def test_a_leaving_director_goes_to_cr_in_capitals_but_prints_as_entered(monkeypatch):
+    graph, entries = _world_of(monkeypatch, "ND2A", "Cease Individual Director")
+    person = graph["persons"][entries[0]["person_id"]]
+    person.update(surname="Sulanguit", given_names="Hermi Nia Marie Huelgas")
+
+    to_cr = asyncio.run(prepare.build_form_xml(CASE, entries, for_esign=True))
+    assert _values(to_cr, "indvEngSname") == ["SULANGUIT"]
+    assert _values(to_cr, "indvEngOname") == ["HERMI NIA MARIE HUELGAS"]
+
+    printed = asyncio.run(prepare.build_form_xml(CASE, entries))
+    assert _values(printed, "indvEngSname") == ["Sulanguit"]
+    assert _values(printed, "indvEngOname") == ["Hermi Nia Marie Huelgas"]
+    assert person["given_names"] == "Hermi Nia Marie Huelgas"  # the profile is untouched
+
+
+def test_a_leaving_director_held_in_a_baseline_goes_to_cr_in_capitals(monkeypatch):
+    graph, entries = _world_of(monkeypatch, "ND2A", "Cease Individual Director")
+    graph["baselines"] = {entries[0]["person_id"]: {
+        "party_type": "individual",
+        "name_en": {"surname": "SULANGUIT", "given_names": "Hermi Nia Marie Huelgas"},
+        "name_zh": "", "hkid": "", "passport": {"number": "P1553726B"}}}
+    to_cr = asyncio.run(prepare.build_form_xml(CASE, entries, for_esign=True))
+    assert _values(to_cr, "indvEngOname") == ["HERMI NIA MARIE HUELGAS"]
+    assert _values(to_cr, "indvPptNoPartial") == ["P1553"]
+    printed = asyncio.run(prepare.build_form_xml(CASE, entries))
+    assert _values(printed, "indvEngOname") == ["Hermi Nia Marie Huelgas"]
+
+
+def test_a_leaving_body_corporate_goes_to_cr_in_capitals(monkeypatch):
+    graph, entries = _world_of(monkeypatch, "ND2A", "Cease Corporate Secretary")
+    graph["entities"][entries[0]["corporate_entity_id"]]["company_name"] = \
+        "Corpagent Online (HK) Limited"
+    to_cr = asyncio.run(prepare.build_form_xml(CASE, entries, for_esign=True))
+    assert _values(to_cr, "corpEngName") == ["CORPAGENT ONLINE (HK) LIMITED"]
+    printed = asyncio.run(prepare.build_form_xml(CASE, entries))
+    assert _values(printed, "corpEngName") == ["Corpagent Online (HK) Limited"]
+
+
+def test_an_nd2b_part_a_goes_to_cr_in_capitals_but_prints_as_entered(monkeypatch):
+    graph, entries = _world_of(monkeypatch, "ND2B", "Change Individual Director")
+    entries[0]["registered"]["name_en"] = {"surname": "Sulanguit",
+                                           "given_names": "Hermi Nia Marie Huelgas"}
+    case = {**CASE, "form_code": "Nd2b"}
+    to_cr = asyncio.run(prepare.build_form_xml(case, entries, for_esign=True))
+    assert _values(to_cr, "indvEngSname")[0] == "SULANGUIT"
+    assert _values(to_cr, "indvEngOname")[0] == "HERMI NIA MARIE HUELGAS"
+    printed = asyncio.run(prepare.build_form_xml(case, entries))
+    assert _values(printed, "indvEngOname")[0] == "Hermi Nia Marie Huelgas"
+
+
+def test_for_cr_capitalises_only_the_names_that_identify_a_held_officer():
+    nd2a = {"resCesBeans": [{"indvEngSname": "Chan", "indvEngOname": "Tai Man",
+                             "indvChiName": "陳大文"}],
+            "appOfNpBeans": [{"indvEngSname": "Wong", "indvEngOname": "Siu Ming"}],
+            "appOfBcBeans": [{"corpEngName": "New Co Limited"}]}
+    out = prepare.for_cr("Nd2a", nd2a)
+    assert out["resCesBeans"][0] == {"indvEngSname": "CHAN", "indvEngOname": "TAI MAN",
+                                     "indvChiName": "陳大文"}
+    assert out["appOfNpBeans"][0] == {"indvEngSname": "Wong", "indvEngOname": "Siu Ming"}
+    assert out["appOfBcBeans"][0] == {"corpEngName": "New Co Limited"}
+
+    nd2b = {"npBeans": [{"indvEngSname": "Sulanguit", "indvEngOname": "Hermi Nia",
+                         "indvNewEngSname": "Sulanguit", "indvNewEngOname": "Hermi Nia"}],
+            "bcBeans": [{"corpEngName": "Old Co Limited", "corpNewEngName": "New Co Limited"}]}
+    out = prepare.for_cr("Nd2b", nd2b)
+    assert out["npBeans"][0] == {"indvEngSname": "SULANGUIT", "indvEngOname": "HERMI NIA",
+                                 "indvNewEngSname": "Sulanguit",
+                                 "indvNewEngOname": "Hermi Nia"}
+    assert out["bcBeans"][0] == {"corpEngName": "OLD CO LIMITED",
+                                 "corpNewEngName": "New Co Limited"}
+
+
+def test_for_cr_leaves_an_empty_name_empty():
+    out = prepare.for_cr("Nd2a", {"resCesBeans": [{"indvEngSname": "", "corpEngName": None}]})
+    assert out["resCesBeans"][0] == {"indvEngSname": "", "corpEngName": None}

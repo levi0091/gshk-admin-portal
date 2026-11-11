@@ -263,6 +263,44 @@ def test_preview_is_the_full_form_by_default(env):
     assert render.call_args_list[1].kwargs["public_only"] is False
 
 
+SENT = "<cr:indvEngOname>Cgahchbaabbg</cr:indvEngOname>"
+VALIDATED = "<cr:indvEngOname>CGAHCHBAABBG</cr:indvEngOname>"
+BUILT = "<cr:indvEngOname>Built</cr:indvEngOname>"
+
+
+def _previewed_xml(env, audience, *, sent: bool, validated: bool) -> str:
+    """The XML the preview rendered for this audience and case state."""
+    env.case.update(verification_sent_at="2026-11-12T01:00:00+00:00" if sent else None,
+                    verification_xml=SENT if sent else None)
+    filing = {"id": "F1", "validated_xml": VALIDATED} if validated else None
+    with patch.object(oc.nar1_cases, "current_filing", return_value=filing), \
+         patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock,
+                      return_value=BUILT), \
+         patch.object(oc, "render_form", return_value=b"%PDF-1.7") as render:
+        resp = client.get(f"/officer-changes/K1/preview?audience={audience}", headers=H)
+    assert resp.status_code == 200
+    return render.call_args.args[1]
+
+
+def test_the_client_preview_is_the_copy_the_client_was_sent_not_crs(env):
+    """PROD feedback 2026-11-12: CR is sent the leaving officer's name in its
+    capitals, so after validation the Client Verification screen printed
+    "CGAHCHBAABBG" while the client had been sent "Cgahchbaabbg"."""
+    assert _previewed_xml(env, "client", sent=True, validated=True) == SENT
+
+
+def test_the_client_preview_before_a_send_is_built_from_the_record(env):
+    assert _previewed_xml(env, "client", sent=False, validated=False) == BUILT
+    # Restart clears the frozen copy; CR's copy of the old form is not the client's.
+    assert _previewed_xml(env, "client", sent=False, validated=True) == BUILT
+
+
+def test_the_staff_preview_is_still_crs_copy_once_validated(env):
+    """The Submission screen's "as it will be filed"."""
+    assert _previewed_xml(env, "staff", sent=True, validated=True) == VALIDATED
+    assert _previewed_xml(env, "staff", sent=True, validated=False) == BUILT
+
+
 def test_preview_reports_every_mapping_problem(env):
     with patch.object(oc.prepare, "build_form_xml", new_callable=AsyncMock,
                       side_effect=MappingError(["company: no BR number", "x: no date"])):

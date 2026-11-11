@@ -206,11 +206,48 @@ def test_corporate_items_name_address_email_tcsp():
 def test_spelling_and_formatting_noise_is_not_a_change():
     base = _base_person()
     now = copy.deepcopy(base)
-    now["name_en"] = {"surname": " chan ", "given_names": "tai  man"}
+    now["name_en"] = {"surname": " CHAN ", "given_names": "Tai  Man"}
     now["email"] = "TM@Example.com "
     now["hkid"] = "A123456(3)"
-    now["residential_address"] = {**HOME, "state_region": "", "postal_code": ""}
+    now["residential_address"] = {**HOME, "line1": "flat a, 10/f",
+                                  "state_region": "", "postal_code": ""}
     assert pt.diff(base, now, capacity="director") == []
+
+
+@pytest.mark.parametrize("key, change", [
+    ("name_en", {"surname": "CHAN", "given_names": "TAI MAN"}),
+    ("alias", {"alias_en": "TOMMY", "alias_zh": ""}),
+])
+def test_a_name_re_cased_on_the_profile_is_a_pending_change(key, change):
+    """Levi 2026-11-12: a case-only name edit raises the ND2B alert, so there is
+    something to file or Dismiss (it used to raise nothing at all)."""
+    base = _base_person()
+    base["alias"] = {"alias_en": "Tommy", "alias_zh": ""}
+    now = copy.deepcopy(base)
+    now[key] = change
+    items = pt.diff(base, now, capacity="director")
+    assert _keys(items) == [key]
+    assert items[0]["old"] == base[key] and items[0]["new"] == change
+
+
+def test_a_body_corporate_re_cased_on_its_profile_is_a_pending_change():
+    base = {"party_type": "corporate",
+            "name": {"name": "Corpagent Online (HK) Limited", "name_zh": ""},
+            "address": dict(OFFICE), "email": "a@example.com",
+            "tcsp": {"licence_no": "", "exemption_reason": ""}}
+    now = copy.deepcopy(base)
+    now["name"]["name"] = "CORPAGENT ONLINE (HK) LIMITED"
+    assert _keys(pt.diff(base, now, capacity="company_secretary")) == ["name"]
+
+
+def test_a_re_cased_name_is_pending_until_dismissed(db):
+    pt.capture_before_edit(person_id="P1", user_id="U1")
+    _person(db, given_names="TAI MAN")
+    pending = pt.pending_for_person("P1")
+    assert pending and all(_keys(row["items"]) == ["name_en"] for row in pending)
+    pt.dismiss(person_id="P1", user_id="U1")
+    assert pt.baseline("E1", person_id="P1")["name_en"]["given_names"] == "TAI MAN"
+    assert pt.pending_for_person("P1") == []
 
 
 def test_a_missing_passport_equals_an_empty_one():

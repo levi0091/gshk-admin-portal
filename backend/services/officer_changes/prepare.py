@@ -6,8 +6,10 @@ else CR's usual arrangement — GSHK Ltd is the secretary and a GSHK director
 signs for it), runs the form's mapper and builds the XML.
 
 `for_esign=True` is what Data Verification passes before validating with CR:
-every e-Registry account the filing needs must then be present. Anything else
-— the client's preview, the manual route's PDF — only needs the particulars.
+every e-Registry account the filing needs must then be present, and the names
+that identify an officer CR already holds go out in capitals (`for_cr`).
+Anything else — the client's preview, the manual route's PDF — only needs the
+particulars, printed in the case they were entered.
 """
 from __future__ import annotations
 
@@ -21,9 +23,35 @@ from services.tpsi.forms.cr_vocabularies import (
 )
 from services.tpsi.forms.nar1_mapper import MappingError
 
-__all__ = ["MappingError", "build_form_xml", "mapping_problems", "consent_plan"]
+__all__ = ["MappingError", "build_form_xml", "for_cr", "mapping_problems", "consent_plan"]
 
 _MAPPERS = {"Nd2a": nd2a_mapper.map_case, "Nd2b": nd2b_mapper.map_case}
+
+#: The beans that IDENTIFY an officer CR already holds (ND2A's leaving officer,
+#: ND2B's Part A) and their English-name fields. Appointments, and ND2B's new
+#: particulars (`indvNew*`, `corpNew*`), are filed as entered.
+_HELD_NAMES = {
+    "Nd2a": {"resCesBeans": ("indvEngSname", "indvEngOname", "corpEngName")},
+    "Nd2b": {"npBeans": ("indvEngSname", "indvEngOname"), "bcBeans": ("corpEngName",)},
+}
+
+
+def for_cr(form_code: str, data: dict) -> dict:
+    """The mapped form as CR must be SENT it: identifying English names in capitals.
+
+    CR finds the officer a cessation or an ND2B Part A names by name and partial
+    number, and that lookup is case-sensitive (CR test, 2026-11-11: an ND2B and
+    an ND2A CR had accepted, re-sent with one name in title case, came back "No
+    matched individual officier." / "No matched corporate officier."). CR keeps
+    names in capitals; Viewpoint's, and so many profiles' and baselines', are
+    mixed case. Only the XML sent to CR changes — never the profile, and not the
+    PDF, which prints the name as entered (Levi, 2026-11-12)."""
+    for beans, fields in _HELD_NAMES.get(form_code, {}).items():
+        for bean in data.get(beans) or []:
+            for field in fields:
+                if bean.get(field):
+                    bean[field] = bean[field].upper()
+    return data
 
 
 def _capacity(graph: dict, case: dict) -> str | None:
@@ -46,8 +74,13 @@ async def build_form_xml(case: dict, entries: list[dict], *,
     problem at once — a length CR would refuse included."""
     graph = await source.load_graph(case["entity_id"], entries)
     data = _MAPPERS[case["form_code"]](
-        graph, entries, signatory_capacity=_capacity(graph, case),
+        # The signer, and so its default capacity, is the secretary AFTER the
+        # form's changes (`nd2a_mapper.after_changes`) — the one it prints.
+        graph, entries,
+        signatory_capacity=_capacity(nd2a_mapper.after_changes(graph, entries), case),
         signing_identity=signing_identity, for_esign=for_esign, require_dates=require_dates)
+    if for_esign:
+        data = for_cr(case["form_code"], data)
     try:
         return form_xml.build(case["form_code"], data)
     except form_xml.FormValidationError as exc:

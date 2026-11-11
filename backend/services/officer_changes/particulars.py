@@ -71,10 +71,14 @@ _CORPORATE_ITEMS = (
     ("tcsp", "i", "TCSP licence", "company_secretary"),
 )
 
-#: Names compare case-insensitively: "chan" typed for "CHAN" is the same name to
-#: CR, and reporting it would file a change nobody made.
-_CASE_INSENSITIVE = {"name_en", "alias", "name", "email", "residential_address",
-                     "correspondence_address", "address", "tcsp"}
+#: Addresses, emails and TCSP numbers compare case-insensitively. NAMES DO NOT
+#: (Levi, 2026-11-12, reversing the original rule): CR's officer lookup is
+#: case-sensitive, and an edit that only re-cases a name used to raise nothing,
+#: so the ND2A kept printing the baseline's wording with no alert to dismiss.
+#: A case-only edit is now a pending change: file it, or Dismiss it to move the
+#: baseline to the profile. Whitespace is still noise.
+_CASE_INSENSITIVE = {"email", "residential_address", "correspondence_address", "address",
+                     "tcsp"}
 
 
 def _now() -> str:

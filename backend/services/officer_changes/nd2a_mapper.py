@@ -33,6 +33,7 @@ from __future__ import annotations
 import re
 
 from services.officer_changes import capacities
+from services.officer_changes import secretaries_after as sa
 from services.tpsi.forms import nar1_mapper as nm
 from services.tpsi.forms.cr_vocabularies import resolve_country
 
@@ -337,6 +338,43 @@ def _corporate_appointment(graph, entry, bean_id, problems, for_esign,
     return bean
 
 
+def after_changes(graph: dict, entries: list[dict]) -> dict:
+    """The graph with its secretaries as they stand once this form is filed —
+    the one the form's SIGNER is derived from (`secretaries_after`).
+
+    Only `secretaries` and `officers` differ, and only for the signatory: the
+    beans are mapped from the graph as it is. A secretary the form ceases is
+    dropped; one it appoints is added (a body corporate also as an officer row,
+    which is where `_corporate_secretary_br` finds its BR). When that leaves
+    nobody to sign, the graph comes back unchanged — today's signer, rather
+    than an unsigned form."""
+    if not sa.changes_secretary(entries):
+        return graph
+    entities = graph.get("entities") or {}
+    gone = sa.ceased(entries, {cid: (corp or {}).get("company_name")
+                               for cid, corp in entities.items()})
+    secretaries = [s for s in graph.get("secretaries") or [] if not sa.is_ceased(s, gone)]
+    officers = [o for o in graph.get("officers") or []
+                if not (o.get("role") == sa.SECRETARY and sa.is_ceased(o, gone))]
+    for entry in sa.appointed(entries):
+        if entry.get("person_id"):
+            secretaries.append({"person_id": entry["person_id"], "is_current": True,
+                                "is_gshk": False})
+            continue
+        corp = entities.get(entry.get("corporate_entity_id")) or {}
+        name, br = _s(corp.get("company_name")), _s(corp.get("br_number"))
+        if not name:
+            continue
+        secretaries.append({"secretary_name": name, "is_current": True,
+                            "corporate_entity_id": entry["corporate_entity_id"],
+                            "corporate_br_no": br, "is_gshk": br == sa.GSHK_BR})
+        officers.append({"role": sa.SECRETARY, "party_type": "corporate", "is_current": True,
+                         "corporate_entity_id": entry["corporate_entity_id"],
+                         "corporate_name": name, "corporate_br_no": br})
+    after = {**graph, "secretaries": secretaries, "officers": officers}
+    return after if nm._derive_signatory(after) else graph
+
+
 def signatory(graph: dict, problems: list[str], *, signatory_capacity, signing_identity,
               for_esign: bool) -> dict:
     """NAR1's form-level block, unchanged. Off the e-Sign route the person
@@ -388,7 +426,8 @@ def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None
         data["appOfNpBeans"] = natural
     if corporate:
         data["appOfBcBeans"] = corporate
-    data.update(signatory(graph, problems, signatory_capacity=signatory_capacity,
+    data.update(signatory(after_changes(graph, entries), problems,
+                          signatory_capacity=signatory_capacity,
                           signing_identity=signing_identity, for_esign=for_esign))
     if problems:
         raise MappingError(problems)

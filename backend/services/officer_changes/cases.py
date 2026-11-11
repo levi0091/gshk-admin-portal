@@ -26,7 +26,7 @@ from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
     apply, capacities, checks, deadlines, documents, eservice, particulars, prepare,
-    rules,
+    rules, secretaries_after,
 )
 from services.tpsi import fees
 from services.tpsi import filings as tpsi_filings
@@ -1024,26 +1024,8 @@ def _summary(entry: dict) -> str:
     return f"{capacity} · {len(filed)} of {len(entry['items'])} change(s) to file"
 
 
-def _signatory_row(entity_id: str) -> tuple[str, bool, str | None]:
-    """`(name, is_corporate, person_id)` of whoever signs, in the ORDER the XML
-    takes them (`nar1_mapper._signatory_candidates`): the secretary REGISTER
-    first, a GSHK-flagged row before any other, then a secretary on the officer
-    list.
-
-    Reading the officer list alone named nobody for a company whose secretary
-    is on the register only — and offered a natural-person secretary CR's Body
-    Corporate capacities, a value that does not fit the signer the XML then
-    names. `person_id` is the natural person's id and None for a body corporate
-    (or for nobody), which is what the e-signature pad needs to know."""
-    sb = get_supabase()
-    register = (sb.table("company_secretaries").select("*").eq("entity_id", entity_id)
-                .eq("is_current", True).execute().data) or []
-    register.sort(key=lambda r: not r.get("is_gshk"))
-    officers = (sb.table("entity_officers").select("*").eq("entity_id", entity_id)
-                .eq("role", "company_secretary").eq("is_current", True).execute().data) or []
-    candidates = register + officers
-    people = _by_id("persons", [r.get("person_id") for r in candidates])
-    corps = _by_id("entities", [r.get("corporate_entity_id") for r in candidates])
+def _first_signer(candidates: list[dict], people: dict, corps: dict
+                  ) -> tuple[str, bool, str | None] | None:
     for row in candidates:
         person = people.get(row.get("person_id") or "")
         if person:
@@ -1053,16 +1035,65 @@ def _signatory_row(entity_id: str) -> tuple[str, bool, str | None]:
                 or (corps.get(row.get("corporate_entity_id") or "") or {}).get("company_name"))
         if name:
             return name, True, None
-    return "", True, None
+    return None
 
 
-def _signatory_party(entity_id: str) -> tuple[str, bool]:
+def _signatory_row(entity_id: str, entries: list[dict] | None = None
+                   ) -> tuple[str, bool, str | None]:
+    """`(name, is_corporate, person_id)` of whoever signs, in the ORDER the XML
+    takes them (`nar1_mapper._signatory_candidates`): the secretary REGISTER
+    first, a GSHK-flagged row before any other, then a secretary on the officer
+    list.
+
+    With the case's `entries`, the register is read as it stands AFTER the
+    form's changes, as `nd2a_mapper.after_changes` reads it for the XML: a
+    secretary the form ceases does not sign, and one it appoints does
+    (Jacqueline, PROD 2026-11-12). Nobody left falls back to today's signer.
+
+    Reading the officer list alone named nobody for a company whose secretary
+    is on the register only — and offered a natural-person secretary CR's Body
+    Corporate capacities, a value that does not fit the signer the XML then
+    names. `person_id` is the natural person's id and None for a body corporate
+    (or for nobody), which is what the e-signature pad needs to know."""
+    sb = get_supabase()
+    register = (sb.table("company_secretaries").select("*").eq("entity_id", entity_id)
+                .eq("is_current", True).execute().data) or []
+    officers = (sb.table("entity_officers").select("*").eq("entity_id", entity_id)
+                .eq("role", "company_secretary").eq("is_current", True).execute().data) or []
+    entries = entries or []
+    joining = secretaries_after.appointed(entries)
+    candidates = register + officers
+    people = _by_id("persons", [r.get("person_id") for r in candidates + joining])
+    corps = _by_id("entities", [r.get("corporate_entity_id") for r in candidates + joining]
+                   + [e.get("corporate_entity_id") for e in entries])
+    if secretaries_after.changes_secretary(entries):
+        gone = secretaries_after.ceased(
+            entries, {cid: c.get("company_name") for cid, c in corps.items()})
+        rows = [r for r in register if not secretaries_after.is_ceased(r, gone)]
+        for entry in joining:
+            if entry.get("person_id"):
+                rows.append({"person_id": entry["person_id"], "is_gshk": False})
+            else:
+                corp = corps.get(entry.get("corporate_entity_id") or "") or {}
+                rows.append({"corporate_entity_id": entry.get("corporate_entity_id"),
+                             "is_gshk": str(corp.get("br_number") or "").strip()
+                             == secretaries_after.GSHK_BR})
+        rows.sort(key=lambda r: not r.get("is_gshk"))
+        rows += [o for o in officers if not secretaries_after.is_ceased(o, gone)]
+        found = _first_signer(rows, people, corps)
+        if found:
+            return found
+    register.sort(key=lambda r: not r.get("is_gshk"))
+    return _first_signer(register + officers, people, corps) or ("", True, None)
+
+
+def _signatory_party(entity_id: str, entries: list[dict] | None = None) -> tuple[str, bool]:
     """`(name, is_corporate)` of whoever signs — see `_signatory_row`."""
-    name, is_corporate, _person_id = _signatory_row(entity_id)
+    name, is_corporate, _person_id = _signatory_row(entity_id, entries)
     return name, is_corporate
 
 
-def signatory_person_id(entity_id: str) -> str | None:
+def signatory_person_id(entity_id: str, entries: list[dict] | None = None) -> str | None:
     """The natural person who signs the form-level declaration, or None.
 
     None for a body corporate — which is nearly every GSHK client, whose
@@ -1070,13 +1101,13 @@ def signatory_person_id(entity_id: str) -> str | None:
     in the same order as the XML names the signer, so the person asked to draw a
     signature is the person the form prints.
     """
-    return _signatory_row(entity_id)[2]
+    return _signatory_row(entity_id, entries)[2]
 
 
-def _signatory(entity_id: str, case: dict) -> dict:
-    """Who signs the form-level declaration: the company secretary, as NAR1's
-    `_signatory_block` derives it — for nearly every GSHK client, GSHK Ltd."""
-    name, is_corporate = _signatory_party(entity_id)
+def _signatory(entity_id: str, case: dict, entries: list[dict] | None = None) -> dict:
+    """Who signs the form-level declaration: the company secretary after the
+    form's changes, as the XML derives it — for nearly every GSHK client, GSHK Ltd."""
+    name, is_corporate = _signatory_party(entity_id, entries)
     choices = sorted(CAPACITY_BODY_CORPORATE if is_corporate else CAPACITY_INDIVIDUAL)
     return {"name": name, "is_corporate": is_corporate, "capacities": choices,
             "default_capacity": default_capacity(is_corporate=is_corporate),
@@ -1206,7 +1237,7 @@ async def composite(case_id: str, *, user: dict) -> dict:
                   "default": "esign" if esign else "manual", "consents": consents},
         "officers": officers,
         "documents": docs,
-        "signatory": _signatory(case["entity_id"], case),
+        "signatory": _signatory(case["entity_id"], case, entries),
         "profile_changes": profile_changes,
         "problems": problems,
         "filing": ({k: filing.get(k) for k in ("id", "stage", "validated_at",
