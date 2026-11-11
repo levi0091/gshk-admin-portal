@@ -70,6 +70,14 @@ describe('stylesheet contract', () => {
     expect(btn).toMatch(/white-space:\s*nowrap/)
   })
 
+  it('lets a confirm dialog wrap a long button rather than overflow its card', () => {
+    expect(rule(INDEX_CSS, '.modal-confirm-actions')).toMatch(/flex-wrap:\s*wrap/)
+  })
+
+  it('hides an action row with nothing in it', () => {
+    expect(rule(OC_CSS, '.oc-send-row:empty')).toMatch(/display:\s*none/)
+  })
+
   it('sizes the ND2B effective date to the btn-sm beside it', () => {
     expect(rule(OC_CSS, '.oc-pc-items .date-input > input:first-child')).toMatch(/height:\s*30px/)
     expect(rule(INDEX_CSS, '.btn-sm') ?? '').not.toMatch(/height:\s*(?!30px)\d+px/)

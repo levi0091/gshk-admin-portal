@@ -151,7 +151,7 @@
    in the portal and like .oc-answer-row below: what the row SAYS on the left
    (a badge, a hint, a field, a tick box), the buttons on the right, under a
    rule. It used to drop EVERY button 21.5px — right for the Reply-by date box
-   it was written for, wrong on the nine other rows that reuse the class, where
+   it was written for, wrong on the ten other rows that reuse the class, where
    it left the button hanging below and to the side of the badge or hint it
    belongs to. `order` moves the words left without reordering the DOM, so the
    tab order and the tests are unchanged. */
@@ -160,6 +160,8 @@
   margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
 }
 .oc-send-row + .oc-send-row { border-top: 0; padding-top: 0; margin-top: 10px; }
+/* A row with nothing to offer in this state draws no stray rule. */
+.oc-send-row:empty { display: none; }
 .oc-send-row > :not(.btn) { order: -1; }
 .oc-send-row > button.btn:first-of-type { margin-left: auto; }
 .oc-send-row > .check-row { flex: 1 1 320px; margin: 0; }
