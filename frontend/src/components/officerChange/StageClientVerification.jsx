@@ -288,7 +288,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
         )}
 
         {multi && can.write && !converged && (
-          <div className="oc-send-row">{replyByField}</div>
+          <div className="oc-send-row oc-send-row-field">{replyByField}</div>
         )}
         {multi && (
           <SignerPanels data={data} state={signerState} loadError={signerError} can={can}
@@ -302,7 +302,7 @@ export default function StageClientVerification({ data, reload, can, goTo }) {
               <RecipientPicker recipients={recipients || []} to={to} onChange={setTo}
                                disabled={sending || recipients === null} />
             </div>
-            <div className="oc-send-row">
+            <div className="oc-send-row oc-send-row-field">
               {replyByField}
               <button className="btn btn-primary" disabled={Boolean(blocked) || sending} onClick={send}>
                 {sending ? 'Sending…' : sent ? 'Send again' : 'Send to client'}

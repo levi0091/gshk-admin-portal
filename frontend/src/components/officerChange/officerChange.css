@@ -79,6 +79,13 @@
 .oc-pc + .oc-pc { margin-top: 10px; }
 .oc-pc-hd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .oc-pc-name { font-weight: 600; color: var(--t-head); font-size: 14px; }
+/* "Open profile" is a link: the global `a` reset left it reading as a third
+   piece of plain 14px text beside the name and capacity (2026-11-12). */
+.oc-pc-hd a { font-size: 12px; font-weight: 600; color: var(--indigo); text-decoration: underline; }
+.oc-pc-hd a:hover { color: var(--carrot); }
+/* Select and button on one line in the card header; the button keeps its width. */
+.oc-add-officer .f-select { width: 280px; max-width: 100%; }
+.oc-add-officer .btn { flex: none; }
 .oc-pc-items { width: 100%; border-collapse: collapse; font-size: 13px; }
 .oc-pc-items th {
   text-align: left; font-size: 11px; font-weight: 600; color: var(--t-muted);
@@ -92,7 +99,8 @@
 .oc-pc-items tr.omitted .oc-new { text-decoration: line-through; }
 .oc-old { color: var(--t-muted); overflow-wrap: anywhere; }
 .oc-new { color: var(--t-head); font-weight: 600; overflow-wrap: anywhere; }
-.oc-pc-items .date-input > input:first-child { height: 32px; font-size: 13px; }
+/* 30px, the height of the btn-sm Omit / Data maintenance beside it. */
+.oc-pc-items .date-input > input:first-child { height: 30px; font-size: 13px; }
 
 /* -- the side drawer (add / edit an entry) ------------------------------------------ */
 .oc-drawer-wrap {
@@ -139,10 +147,26 @@
 
 /* -- page header extras ---------------------------------------------------------------- */
 .oc-deadline-over { color: var(--danger); font-weight: 600; }
-.oc-send-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 12px; }
-/* The button lines up with the date box beside it, not with the hint under the
-   box: 21.5px is the label's line plus its gap. */
-.oc-send-row > .btn { margin-top: 21.5px; }
+/* A stage's own action row (2026-11-12), laid out like every other action bar
+   in the portal and like .oc-answer-row below: what the row SAYS on the left
+   (a badge, a hint, a field, a tick box), the buttons on the right, under a
+   rule. It used to drop EVERY button 21.5px — right for the Reply-by date box
+   it was written for, wrong on the nine other rows that reuse the class, where
+   it left the button hanging below and to the side of the badge or hint it
+   belongs to. `order` moves the words left without reordering the DOM, so the
+   tab order and the tests are unchanged. */
+.oc-send-row {
+  display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+}
+.oc-send-row + .oc-send-row { border-top: 0; padding-top: 0; margin-top: 10px; }
+.oc-send-row > :not(.btn) { order: -1; }
+.oc-send-row > button.btn:first-of-type { margin-left: auto; }
+.oc-send-row > .check-row { flex: 1 1 320px; margin: 0; }
+/* A labelled field beside the button: the button lines up with the BOX, not
+   with the hint under it — 21.5px is the label's line plus its gap. */
+.oc-send-row-field { align-items: flex-start; }
+.oc-send-row-field > .btn { margin-top: 21.5px; }
 /* A question and its answers, on one line: the hint centred on the buttons, and
    the buttons at the right as every other action bar in the portal has them. */
 .oc-answer-row {

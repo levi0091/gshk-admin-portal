@@ -71,6 +71,9 @@ a { text-decoration: none; color: inherit; }
   padding: 0 16px; height: 36px; border-radius: var(--r-sm);
   font-size: 13px; font-weight: 600; transition: .15s; cursor: pointer;
   font-family: var(--font);
+  /* One line, always: the height is fixed, so a label that wrapped inside it
+     ("Add / officer" on the ND2B card, 2026-11-12) was squeezed, not resized. */
+  white-space: nowrap;
 }
 .btn-primary { background: var(--indigo); color: #fff; border: none; }
 .btn-primary:hover { background: var(--indigo-90); }

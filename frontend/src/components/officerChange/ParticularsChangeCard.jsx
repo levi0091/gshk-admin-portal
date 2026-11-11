@@ -81,7 +81,7 @@ export default function ParticularsChangeCard({ data, reload, can }) {
           </div>
         </div>
         {editable && available.length > 0 && (
-          <div className="row gap-8">
+          <div className="row gap-8 oc-add-officer">
             <select className="f-select" aria-label="Officer to add" value={adding}
                     onChange={e => setAdding(e.target.value)}>
               <option value="">Add an officer…</option>
