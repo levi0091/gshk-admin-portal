@@ -224,4 +224,18 @@ describe('StageSigning — who signs is chosen once, on Data Verification', () =
     expect(screen.getByText('Choose who signs on Data Verification first.')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent(/Ben LAU cannot sign yet: e-Registry password missing/)
   })
+
+  it('warns when GSHK signs but the staff member has no e-Service account', () => {
+    const data = { ...DATA, signer: { ...SIGNER, party: 'gshk', default: 'gshk',
+      gshk: { ...SIGNER.gshk, eservice_user_id: null } } }
+    wrap(<StageSigning data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText(/Your e-Service account is not set up/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Add it in CR Credentials' })).toHaveAttribute('href', '/cr-credentials')
+  })
+
+  it('does not point a read-only role back to a choice it cannot make', () => {
+    const data = { ...DATA, signer: { ...SIGNER, director_ready: false } }
+    wrap(<StageSigning data={data} reload={vi.fn()} can={{ ...ALL, write: false }} goTo={vi.fn()} />)
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/Choose who signs/)
+  })
 })

@@ -47,6 +47,10 @@ export function SignerSummary({ signer, signatory, canChange, onChange }) {
   const capacity = directorSigns ? 'Director'
     : (signatory?.selected_capacity || signatory?.default_capacity || signer.gshk?.capacity)
   const account = directorSigns ? director?.eservice_user_id : signer.gshk?.eservice_user_id
+  // GSHK signs with the logged-in user's own e-Service account; without one CR
+  // has nothing to sign with, so say so here rather than at CR.
+  const noStaffAccount = !directorSigns && !signer.gshk?.eservice_user_id
+  const back = canChange ? ' Choose who signs on Data Verification.' : ''
 
   return (
     <section className="oc-ss" data-testid="signer-summary" data-party={signer.party}
@@ -73,10 +77,18 @@ export function SignerSummary({ signer, signatory, canChange, onChange }) {
       )}
       {blocked && (
         <div className="oc-sc-warn" role="alert">
-          {director ? `${director.name} cannot sign yet: ${director.reason || 'e-Registry not set up'}. `
-            : 'No director who can sign is chosen. '}
-          Choose who signs on Data Verification.
+          {director ? `${director.name} cannot sign yet: ${director.reason || 'e-Registry not set up'}.`
+            : 'No director who can sign is chosen.'}
+          {back}
         </div>
+      )}
+      {noStaffAccount && (
+        <div className="oc-sc-warn" role="alert">
+          Your e-Service account is not set up. <Link to="/cr-credentials">Add it in CR Credentials</Link>
+        </div>
+      )}
+      {directorSigns && director?.ready && director.id_mismatch && (
+        <div className="oc-sc-warn" role="status">{director.id_mismatch}</div>
       )}
     </section>
   )
