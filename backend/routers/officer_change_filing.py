@@ -31,7 +31,7 @@ from routers.officer_changes import (
 )
 from services import audit_events as ev, document_service, nar1_cases
 from services.officer_changes import (
-    apply, cases as svc, documents, eservice, filed_form, prepare, signing,
+    apply, cases as svc, documents, eservice, filed_form, prepare, signer_choice, signing,
 )
 from services.tpsi import credentials, filings
 
@@ -181,9 +181,16 @@ async def validate(case_id: str, user=Depends(require_permission("tpsi", "write"
     if missing:
         raise HTTPException(409, {"message": "e-Sign is not available: " + "; ".join(missing),
                                   "reason": "esign_unavailable"})
+    # Who signs is decided HERE and stored with the filing: the signatory block
+    # is part of what CR validates, so signing must use the same account.
+    try:
+        pin = signer_choice.pinned_for_validation(case, entries)
+    except signer_choice.SignerUnavailable as exc:
+        raise HTTPException(409, {"message": str(exc), "reason": "director_signer_unavailable"})
     try:
         xml = await prepare.build_form_xml(
-            case, entries, signing_identity=credentials.load_signatory_identity(user["id"]),
+            {**case, **pin, "signing_method": "esign"}, entries,
+            signing_identity=credentials.load_signatory_identity(user["id"]),
             for_esign=True)
     except prepare.MappingError as exc:
         raise HTTPException(422, {"message": "The form cannot be validated yet",
@@ -208,7 +215,16 @@ async def validate(case_id: str, user=Depends(require_permission("tpsi", "write"
                     metadata={"filing_id": filing["id"], "form_code": case["form_code"],
                               "faults": getattr(exc, "faults", None)})
         raise _explain(tpsi_router._handle(exc))
-    nar1_cases.update_case(case_id, {"signing_method": "esign"})
+    stored = {"signing_method": "esign"}
+    if signer_choice.offered(case):
+        stored.update(pin)
+    nar1_cases.update_case(case_id, stored)
+    for field in ("signing_party", "signing_director_person_id"):
+        if field in stored and stored[field] != case.get(field):
+            await audit(case, user, ev.CASE_FIELD_UPDATED, old_value=case.get(field),
+                        new_value=stored[field],
+                        metadata={"field": field, "case_no": case.get("case_no"),
+                                  "source": "validate"})
     if created:
         await audit(case, user, ev.TPSI_FILING_CREATED, new_value=filing["id"],
                     metadata={"form_code": case["form_code"]})
@@ -226,8 +242,9 @@ _EMPTY_BODY_ONLY = ("Send an empty body: the form is signed with your own e-Serv
 async def sign(case_id: str, request: Request,
                user=Depends(require_permission("tpsi", "write"))):
     """Empty body. The overall signature is the signed-in user's own e-Service
-    account; each new director's consent is THEIR stored e-Registry account
-    (answer 8).
+    account — or, on an ND2A validated with a director as signer
+    (`signer_choice`), that director's stored e-Registry account; each new
+    director's consent is THEIR stored e-Registry account (answer 8).
 
     The body is read raw, not declared: a declared `dict` answered a JSON list
     or string with FastAPI's 422, which echoes the input — a password sent
@@ -245,11 +262,24 @@ async def sign(case_id: str, request: Request,
                                   "reason": "not_validated"})
     _refuse_if_dates_missing(case)
     _refuse_if_date_ahead(case)
-    pair = credentials.load_eservice(user["id"])
-    if pair is None:
-        raise HTTPException(409, {"message": "You have no e-Service signing password stored. "
-                                             "Add one under CR Credentials.",
-                                  "reason": "no_signing_credential"})
+    director_id = signer_choice.for_sign(case)
+    if director_id is not None:
+        # A director signs the form (Levi 2026-11-13): their own e-Registry
+        # account, stored on their profile — never the staff member's.
+        stored_director = eservice.load_for_signing(director_id) if director_id else None
+        if stored_director is None:
+            raise HTTPException(409, {
+                "message": "The director chosen to sign has no complete e-Registry "
+                           "account stored on their profile. Set it up there, or choose "
+                           "GSHK e-Service — CR then validates the form again.",
+                "reason": "director_signer_unavailable"})
+        pair = (stored_director[0], stored_director[2])
+    else:
+        pair = credentials.load_eservice(user["id"])
+        if pair is None:
+            raise HTTPException(409, {"message": "You have no e-Service signing password "
+                                                 "stored. Add one under CR Credentials.",
+                                      "reason": "no_signing_credential"})
     plan = await prepare.consent_plan(case, svc.list_entries(case_id))
     consents = []
     for row in plan:
@@ -285,9 +315,14 @@ async def sign(case_id: str, request: Request,
         await audit(case, user, ev.OFFICER_CONSENT_SIGNED, new_value=consent["bean_id"],
                     metadata={"entry_id": consent["entry_id"], "person_id": consent["person_id"],
                               "eservice_user_id": consent["user_id"]})
+    # Which account put the overall signature on is part of the record: the
+    # account ID only, never a password.
     await audit(case, user, ev.TPSI_SIGN, new_value="signed",
                 metadata={"filing_id": filing["id"], "form_code": case["form_code"],
-                          "consents": len(consents)})
+                          "consents": len(consents),
+                          "signed_by": "director" if director_id is not None else "gshk",
+                          "signing_director_person_id": director_id or None,
+                          "signatory_account": pair[0]})
     return await respond(case_id, user)
 
 

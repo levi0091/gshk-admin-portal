@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from db.supabase import get_supabase
 from services.officer_changes import (
-    capacities, eservice, form_xml, nd2a_mapper, nd2b_mapper, source,
+    capacities, eservice, form_xml, nd2a_mapper, nd2b_mapper, signer_choice, source,
 )
 from services.tpsi.forms import nar1_mapper
 from services.tpsi.forms.cr_vocabularies import (
@@ -66,6 +66,34 @@ def _capacity(graph: dict, case: dict) -> str | None:
     return default_capacity(is_corporate=resolved.get("is_corporate") is True)
 
 
+def _director_signer(case: dict, entries: list[dict], *, for_esign: bool) -> dict | None:
+    """The explicit signatory when a director signs this ND2A (`signer_choice`),
+    else None — the secretary after the changes signs, as before.
+
+    Only the e-Sign route offers the choice; the manual route's form is signed
+    on CR's portal. On e-Sign a chosen director who cannot sign is a problem
+    the operator must fix; anywhere else (the client's preview, the composite's
+    mapping check) the form falls back to the usual signer rather than fail."""
+    if not signer_choice.offered(case) or case.get("signing_method") == "manual":
+        return None
+    try:
+        choice = signer_choice.resolve(case, entries)
+    except Exception:  # noqa: BLE001 — a preview must still render
+        if for_esign:
+            raise
+        return None
+    if choice["party"] != signer_choice.DIRECTOR:
+        return None
+    if choice["director"] is None:
+        if for_esign:
+            raise MappingError([
+                "signatory: the form is to be signed by a director, but no director "
+                "who stays on after it has a complete e-Registry account — set one up "
+                "on the director's profile, or choose GSHK e-Service at Signing"])
+        return None
+    return signer_choice.form_signatory(choice["director"])
+
+
 async def build_form_xml(case: dict, entries: list[dict], *,
                          signing_identity: dict | None = None,
                          for_esign: bool = False,
@@ -73,12 +101,16 @@ async def build_form_xml(case: dict, entries: list[dict], *,
     """The form model XML for this case. Raises `MappingError` listing every
     problem at once — a length CR would refuse included."""
     graph = await source.load_graph(case["entity_id"], entries)
+    signer = _director_signer(case, entries, for_esign=for_esign)
+    extra = {"signer": signer} if signer is not None else {}
     data = _MAPPERS[case["form_code"]](
         # The signer, and so its default capacity, is the secretary AFTER the
-        # form's changes (`nd2a_mapper.after_changes`) — the one it prints.
+        # form's changes (`nd2a_mapper.after_changes`) — the one it prints. A
+        # director chosen at Signing replaces it (`signer_choice`).
         graph, entries,
         signatory_capacity=_capacity(nd2a_mapper.after_changes(graph, entries), case),
-        signing_identity=signing_identity, for_esign=for_esign, require_dates=require_dates)
+        signing_identity=None if signer is not None else signing_identity,
+        for_esign=for_esign, require_dates=require_dates, **extra)
     if for_esign:
         data = for_cr(case["form_code"], data)
     try:

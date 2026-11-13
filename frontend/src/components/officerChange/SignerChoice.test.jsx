@@ -1,0 +1,133 @@
+// Who signs an e-Signed ND2A: GSHK's e-Service, or a director's own e-Registry
+// account (Levi 2026-11-13).
+import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+import SignerChoice from './SignerChoice.jsx'
+import StageSigning from './StageSigning.jsx'
+
+const patch = vi.fn(); const post = vi.fn()
+vi.mock('../../lib/api.js', () => ({
+  api: {
+    get: vi.fn(), post: (...a) => post(...a), patch: (...a) => patch(...a),
+    del: vi.fn(), upload: vi.fn(), put: vi.fn(), blob: vi.fn(),
+  },
+}))
+
+const BEN = { person_id: 'p2', name: 'Ben LAU', eservice_user_id: 'ER-BEN', ready: true,
+  reason: null, profile_path: '/persons/p2' }
+const ADA = { person_id: 'p1', name: 'Ada CHAN', eservice_user_id: null, ready: false,
+  reason: 'e-Registry not set up', profile_path: '/persons/p1' }
+const SIGNER = {
+  offered: true, party: 'director', default: 'director', stored: false,
+  changes_secretary: true, director_person_id: 'p2', director_ready: true,
+  candidates: [BEN, ADA],
+  gshk: { signs_for: 'Get Started HK Limited',
+    capacity: 'Director of the Company Secretary (Body Corporate)', eservice_user_id: 'STAFF-1' },
+}
+const ALL = { write: true, tpsiWrite: true, tpsiSubmit: true, tpsiRead: true }
+const wrap = ui => render(<MemoryRouter>{ui}</MemoryRouter>)
+
+describe('SignerChoice', () => {
+  it('draws nothing when the form does not offer the choice', () => {
+    const { container } = wrap(<SignerChoice signer={{ offered: false }} can={ALL} onChoose={vi.fn()} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('suggests a director on a secretary change and says why', () => {
+    wrap(<SignerChoice signer={SIGNER} can={ALL} onChoose={vi.fn()} />)
+    expect(screen.getByText(/changes the company secretary/)).toBeInTheDocument()
+    expect(screen.getByText('Suggested')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Director's e-Registry/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Ben LAU signs' })).toBeChecked()
+  })
+
+  it('names the account that signs on each option', () => {
+    wrap(<SignerChoice signer={SIGNER} can={ALL} onChoose={vi.fn()} />)
+    expect(screen.getByText('STAFF-1')).toBeInTheDocument()
+    expect(screen.getByText('ER-BEN')).toBeInTheDocument()
+  })
+
+  it('toggles to GSHK with one click', async () => {
+    const onChoose = vi.fn()
+    wrap(<SignerChoice signer={SIGNER} can={ALL} onChoose={onChoose} />)
+    await userEvent.click(screen.getByRole('radio', { name: /GSHK e-Service/ }))
+    expect(onChoose).toHaveBeenCalledWith({ signing_party: 'gshk' })
+  })
+
+  it('toggles to a specific director', async () => {
+    const onChoose = vi.fn()
+    wrap(<SignerChoice signer={{ ...SIGNER, party: 'gshk', default: 'gshk', changes_secretary: false }}
+                       can={ALL} onChoose={onChoose} />)
+    expect(screen.getByRole('radio', { name: /GSHK e-Service/ })).toBeChecked()
+    await userEvent.click(screen.getByRole('radio', { name: 'Ben LAU signs' }))
+    expect(onChoose).toHaveBeenCalledWith({ signing_party: 'director', signing_director_person_id: 'p2' })
+  })
+
+  it('disables a director with no e-Registry and points at their profile', () => {
+    wrap(<SignerChoice signer={SIGNER} can={ALL} onChoose={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: 'Ada CHAN signs' })).toBeDisabled()
+    const row = screen.getByText('Ada CHAN').closest('li')
+    expect(within(row).getByText('e-Registry not set up')).toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: 'Set up on profile' })).toHaveAttribute('href', '/persons/p1')
+  })
+
+  it('disables the director option entirely when no director has e-Registry set up', () => {
+    const signer = { ...SIGNER, party: 'gshk', default: 'gshk', director_person_id: null,
+      director_ready: false, candidates: [ADA] }
+    wrap(<SignerChoice signer={signer} can={ALL} onChoose={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: /Director's e-Registry/ })).toBeDisabled()
+    expect(screen.getByText(/Director e-Registry is not set up/)).toBeInTheDocument()
+    expect(screen.queryByText('Suggested')).not.toBeInTheDocument()
+  })
+
+  it('warns that changing the signer after validation means validating again', () => {
+    wrap(<SignerChoice signer={SIGNER} can={ALL} validated onChoose={vi.fn()} />)
+    expect(screen.getByText(/back to CR to validate again/)).toBeInTheDocument()
+  })
+
+  it('is read-only once the form is signed', () => {
+    wrap(<SignerChoice signer={SIGNER} can={ALL} validated locked onChoose={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: /GSHK e-Service/ })).toBeDisabled()
+    expect(screen.getByText(/The form is signed/)).toBeInTheDocument()
+  })
+
+  it('is read-only for a role that cannot write', () => {
+    wrap(<SignerChoice signer={SIGNER} can={{ write: false }} onChoose={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: /GSHK e-Service/ })).toBeDisabled()
+  })
+})
+
+describe('StageSigning with a director signing', () => {
+  const DATA = {
+    id: 'k1', case_no: 'ND2A-2026-0020', form_code: 'Nd2a', case_type: 'ND2A',
+    client_approved: true, entries: [], dates_missing: [],
+    route: { esign_available: true, reasons: [], consents: [] },
+    signatory: { name: 'Ben LAU', party: 'director', default_capacity: 'Director' },
+    signer: SIGNER, filing: null,
+  }
+  beforeEach(() => { patch.mockReset(); post.mockReset() })
+
+  it('says the director signs the form with their own account', () => {
+    wrap(<StageSigning data={DATA} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText(/signed by Ben LAU as Director/)).toBeInTheDocument()
+  })
+
+  it('saves a toggle through PATCH and reloads the case', async () => {
+    const reload = vi.fn()
+    patch.mockResolvedValue({ id: 'k1' })
+    wrap(<StageSigning data={DATA} reload={reload} can={ALL} goTo={vi.fn()} />)
+    await userEvent.click(screen.getByRole('radio', { name: /GSHK e-Service/ }))
+    expect(patch).toHaveBeenCalledWith('/officer-changes/k1', { signing_party: 'gshk' })
+    expect(reload).toHaveBeenCalledWith({ id: 'k1' })
+  })
+
+  it('holds Validate while the chosen director can no longer sign', () => {
+    const data = { ...DATA, signer: { ...SIGNER, director_ready: false } }
+    wrap(<StageSigning data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Validate with CR' })).toBeDisabled()
+    expect(screen.getByText(/Choose a director who can sign/)).toBeInTheDocument()
+  })
+})

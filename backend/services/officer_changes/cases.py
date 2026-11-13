@@ -26,9 +26,9 @@ from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
     apply, capacities, checks, deadlines, documents, eservice, particulars, prepare,
-    rules, secretaries_after,
+    rules, secretaries_after, signer_choice,
 )
-from services.tpsi import fees
+from services.tpsi import credentials, fees
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL, default_capacity,
@@ -1111,7 +1111,24 @@ def _signatory(entity_id: str, case: dict, entries: list[dict] | None = None) ->
     choices = sorted(CAPACITY_BODY_CORPORATE if is_corporate else CAPACITY_INDIVIDUAL)
     return {"name": name, "is_corporate": is_corporate, "capacities": choices,
             "default_capacity": default_capacity(is_corporate=is_corporate),
-            "selected_capacity": case.get("signatory_capacity")}
+            "selected_capacity": case.get("signatory_capacity"), "party": "gshk"}
+
+
+def _director_signatory(director: dict) -> dict:
+    """`_signatory`'s shape for a director signing an ND2A (`signer_choice`):
+    a natural person, in the one capacity a director signs in."""
+    cap = signer_choice.DIRECTOR_CAPACITY
+    return {"name": director.get("name"), "is_corporate": False, "capacities": [cap],
+            "default_capacity": cap, "selected_capacity": cap, "party": "director",
+            "person_id": director.get("person_id"),
+            "eservice_user_id": director.get("eservice_user_id")}
+
+
+def _signer_view(case: dict, entries: list[dict], user: dict, gshk: dict) -> dict:
+    staff = credentials.load_signatory_identity(user["id"]) if user.get("id") else None
+    return signer_choice.view(case, entries,
+                              staff_account=(staff or {}).get("eservice_user_id") or None,
+                              gshk_signatory=gshk)
 
 
 # -- the composite -----------------------------------------------------------------
@@ -1202,6 +1219,18 @@ async def composite(case_id: str, *, user: dict) -> dict:
         item["consent_mode"] = "esign" if row.get("ready") and esign else "manual"
     filing = _soft(problems, "The CR filing", lambda: nar1_cases.current_filing(case_id), None)
     consent_statuses(consents, filing)
+    gshk_signatory = _signatory(case["entity_id"], case, entries)
+    signer = _soft(problems, "Who signs the form",
+                   lambda: _signer_view(case, entries, user, gshk_signatory), {"offered": False})
+    signatory = gshk_signatory
+    if signer.get("offered") and signer.get("party") == signer_choice.DIRECTOR \
+            and case.get("signing_method") != "manual":
+        # The signer the e-Sign form names, so Data Verification and Signing
+        # say the same thing the XML does (`prepare._director_signer`).
+        chosen = next((c for c in signer.get("candidates") or []
+                       if c["person_id"] == signer.get("director_person_id")), None)
+        if chosen and chosen.get("ready"):
+            signatory = _director_signatory(chosen)
 
     return {
         **case,
@@ -1237,7 +1266,8 @@ async def composite(case_id: str, *, user: dict) -> dict:
                   "default": "esign" if esign else "manual", "consents": consents},
         "officers": officers,
         "documents": docs,
-        "signatory": _signatory(case["entity_id"], case, entries),
+        "signatory": signatory,
+        "signer": signer,
         "profile_changes": profile_changes,
         "problems": problems,
         "filing": ({k: filing.get(k) for k in ("id", "stage", "validated_at",

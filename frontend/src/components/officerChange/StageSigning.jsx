@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { officerChangeApi } from './api.js'
 import CrRefusal from './CrRefusal.jsx'
 import EffectiveDatesPanel from './EffectiveDatesPanel.jsx'
+import SignerChoice from './SignerChoice.jsx'
 import { errorOf, isManual, filingOpensNote } from './workflow.js'
 
 /**
@@ -76,6 +77,13 @@ export default function StageSigning({ data, reload, can, goTo }) {
   const datesPending = (data.dates_missing || []).length > 0
   const opensNote = filingOpensNote(data)
   const mismatches = consents.filter(c => c.id_mismatch)
+  // Who signs (ND2A only, Levi 2026-11-13). A director chosen who can no longer
+  // sign stops Validate and Apply here rather than at CR.
+  const signer = data.signer || {}
+  const directorSigns = signer.offered && signer.party === 'director'
+  const signerBlocked = directorSigns && !signer.director_ready
+  const signingDirector = directorSigns
+    ? (signer.candidates || []).find(c => c.person_id === signer.director_person_id) : null
 
   async function run(promise) {
     setError(null); setBusy(true)
@@ -141,6 +149,8 @@ export default function StageSigning({ data, reload, can, goTo }) {
     {!validated && <EffectiveDatesPanel data={data} reload={reload} can={can} />}
     <div className="card">
       <div className="card-title">Signing — e-Sign via CR</div>
+      <SignerChoice signer={signer} can={can} busy={busy} validated={validated} locked={signed}
+                    onChoose={body => run(officerChangeApi.patch(data.id, body))} />
       <ERegistryHints entries={data.entries} />
       {mismatches.length > 0 && (
         // Jacqueline, note 1: e-Reg is not updated when CR's register is.
@@ -175,9 +185,14 @@ export default function StageSigning({ data, reload, can, goTo }) {
         </>
       )}
       <ul style={{ margin: '10px 0 0', paddingLeft: 18 }}>
-        <li>The form itself: signed with your own e-Service account, for {data.signatory?.name}
-          {data.signatory?.selected_capacity || data.signatory?.default_capacity
-            ? ` as ${data.signatory.selected_capacity || data.signatory.default_capacity}` : ''}.</li>
+        {signingDirector ? (
+          <li>The form itself: signed by {signingDirector.name} as Director, with their own
+            e-Registry account ({signingDirector.eservice_user_id}).</li>
+        ) : (
+          <li>The form itself: signed with your own e-Service account, for {data.signatory?.name}
+            {data.signatory?.selected_capacity || data.signatory?.default_capacity
+              ? ` as ${data.signatory.selected_capacity || data.signatory.default_capacity}` : ''}.</li>
+        )}
       </ul>
       {consents.length === 0 && (
         <p className="f-hint">No consent signature is needed on this form — only the overall signature.</p>
@@ -186,12 +201,14 @@ export default function StageSigning({ data, reload, can, goTo }) {
         {!validated ? (
           can.tpsiWrite ? (
             <>
-              <button className="btn btn-primary" disabled={busy || datesPending || Boolean(opensNote)}
+              <button className="btn btn-primary"
+                      disabled={busy || datesPending || Boolean(opensNote) || signerBlocked}
                       onClick={() => run(officerChangeApi.validate(data.id))}>
                 {busy ? 'Validating…' : 'Validate with CR'}
               </button>
               <span className="f-hint">
-                {datesPending ? 'Enter the effective dates above first; CR checks them.'
+                {signerBlocked ? 'Choose a director who can sign, or GSHK e-Service, first.'
+                  : datesPending ? 'Enter the effective dates above first; CR checks them.'
                   : opensNote || 'CR checks the form, dates included, before it is signed.'}
               </span>
             </>
@@ -202,7 +219,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
             <button className="btn btn-primary" onClick={() => goTo(4)}>Continue to Submission →</button>
           </>
         ) : can.tpsiWrite ? (
-          <button className="btn btn-primary" disabled={busy}
+          <button className="btn btn-primary" disabled={busy || signerBlocked}
                   onClick={() => run(officerChangeApi.sign(data.id))}>
             {busy ? 'Signing…' : consents.length ? 'Apply consent signature' : 'Apply signature'}
           </button>

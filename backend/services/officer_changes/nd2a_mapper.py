@@ -376,13 +376,21 @@ def after_changes(graph: dict, entries: list[dict]) -> dict:
 
 
 def signatory(graph: dict, problems: list[str], *, signatory_capacity, signing_identity,
-              for_esign: bool) -> dict:
+              for_esign: bool, signer: dict | None = None) -> dict:
     """NAR1's form-level block, unchanged. Off the e-Sign route the person
     signing for a body corporate secretary is not needed (nothing goes to CR),
-    so only a block with no name at all is a problem."""
+    so only a block with no name at all is a problem.
+
+    `signer` is an explicit natural-person signatory — a director signing with
+    their own e-Registry account (`signer_choice.form_signatory`). It carries its
+    own capacity, so the case's stored capacity (chosen for the secretary) and
+    the staff member's identity do not apply to it."""
     found: list[str] = []
-    block = nm._signatory_block(graph, None, found, capacity_override=signatory_capacity,
-                                signing_identity=signing_identity)
+    if signer is not None:
+        block = nm._signatory_block(graph, signer, found)
+    else:
+        block = nm._signatory_block(graph, None, found, capacity_override=signatory_capacity,
+                                    signing_identity=signing_identity)
     if for_esign or not block.get("selectPersonName"):
         problems.extend(found)
     return block
@@ -390,7 +398,7 @@ def signatory(graph: dict, problems: list[str], *, signatory_capacity, signing_i
 
 def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None = None,
              signing_identity: dict | None = None, for_esign: bool = False,
-             require_dates: bool | None = None) -> dict:
+             require_dates: bool | None = None, signer: dict | None = None) -> dict:
     """`require_dates` defaults to `for_esign`: CR is sent only dated changes,
     while the client's draft and the manual route's PDF may wait for them."""
     require_dates = for_esign if require_dates is None else require_dates
@@ -428,7 +436,8 @@ def map_case(graph: dict, entries: list[dict], *, signatory_capacity: str | None
         data["appOfBcBeans"] = corporate
     data.update(signatory(after_changes(graph, entries), problems,
                           signatory_capacity=signatory_capacity,
-                          signing_identity=signing_identity, for_esign=for_esign))
+                          signing_identity=signing_identity, for_esign=for_esign,
+                          signer=signer))
     if problems:
         raise MappingError(problems)
     return data

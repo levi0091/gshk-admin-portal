@@ -29,7 +29,7 @@ from services.audit_service import log_event
 from services.officer_change_form import FormFillError, render as render_form
 from services.officer_changes import (
     cases as svc, documents, emails, eservice, prepare,
-    recipients as recipients_svc, resolution, signatures, signed_copies,
+    recipients as recipients_svc, resolution, signatures, signed_copies, signer_choice,
 )
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms.cr_vocabularies import CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL
@@ -167,6 +167,54 @@ class CasePatchIn(BaseModel):
     #: once and the first confirmation wins; on, each required director is sent
     #: a link of their own and the case is approved when the last has signed.
     multi_signer: bool | None = None
+    #: ND2A e-Sign: who puts the overall signature on — 'gshk' (the staff
+    #: member's e-Service account) or 'director' (a director's own e-Registry
+    #: account, `signing_director_person_id`). See `signer_choice`.
+    signing_party: str | None = None
+    signing_director_person_id: str | None = None
+
+
+def _signer_patch(case: dict, body: CasePatchIn) -> dict:
+    """The columns a signer choice writes, or {} when nothing changes. Raises
+    the 4xx a choice that cannot be honoured deserves."""
+    if body.signing_party is None and body.signing_director_person_id is None:
+        return {}
+    if not signer_choice.offered(case):
+        raise HTTPException(400, "Choosing who signs is offered on an ND2A only")
+    entries = svc.list_entries(case["id"])
+    party = body.signing_party or signer_choice.DIRECTOR
+    if party not in signer_choice.PARTIES:
+        raise HTTPException(400, "signing_party is 'gshk' or 'director'")
+    if party == signer_choice.GSHK:
+        wanted = {"signing_party": signer_choice.GSHK, "signing_director_person_id": None}
+    else:
+        options = signer_choice.candidates(case, entries)
+        person_id = body.signing_director_person_id or next(
+            (c["person_id"] for c in options if c["ready"]), None)
+        chosen = next((c for c in options if c["person_id"] == person_id), None)
+        if chosen is None or not chosen["ready"]:
+            if not person_id:
+                message = ("No director who stays on after this form has a complete "
+                           "e-Registry account to sign with.")
+            elif chosen is None:
+                message = ("That person is not a current director who stays on after "
+                           "this form, so cannot sign it.")
+            else:
+                message = f"{chosen['name']} cannot sign: {chosen['reason']}."
+            raise HTTPException(409, {"message": message,
+                                      "reason": "director_signer_unavailable"})
+        wanted = {"signing_party": signer_choice.DIRECTOR,
+                  "signing_director_person_id": person_id}
+    changed = {k: v for k, v in wanted.items() if v != case.get(k)}
+    if not changed:
+        return {}
+    filing = nar1_cases.current_filing(case["id"])
+    if filing and filing.get("stage") == tpsi_filings.STAGE_SIGNED:
+        raise HTTPException(409, {
+            "message": "This form has already been signed, so who signs it can no longer "
+                       "change. Restart verification to sign it again.",
+            "reason": "already_signed"})
+    return changed
 
 
 @router.patch("/{case_id}")
@@ -226,9 +274,19 @@ async def patch_case(case_id: str, body: CasePatchIn,
                                      f"capacities for {kind} signing")
         if capacity != (case.get("signatory_capacity") or ""):
             patch["signatory_capacity"] = capacity or None
+    signer = _signer_patch(case, body)
+    patch.update(signer)
+    superseded = 0
+    if signer and not body.restart_verification:
+        # The signatory block is part of the form CR validated: a new signer
+        # means a new validation, so the old attempt is retired, not reused.
+        superseded = tpsi_filings.supersede_all_for_case(case["id"])
     for field, new in patch.items():
+        meta = {"field": field, "case_no": case.get("case_no")}
+        if field in signer and superseded:
+            meta["filings_superseded"] = superseded
         await audit(case, user, ev.CASE_FIELD_UPDATED, old_value=case.get(field),
-                    new_value=new, metadata={"field": field, "case_no": case.get("case_no")})
+                    new_value=new, metadata=meta)
     if body.restart_verification:
         await _restart(case, user, patch)
     elif patch:

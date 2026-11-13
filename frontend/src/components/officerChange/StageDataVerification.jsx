@@ -60,7 +60,13 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
           <label className="f-label" htmlFor="oc-capacity">
             {signatory.name ? `${signatory.name} signs as` : 'Signing capacity'}
           </label>
-          {can.write ? (
+          {signatory.party === 'director' ? (
+            // A director signs with their own e-Registry account, in the one
+            // capacity a director signs in; who signs is chosen at Signing.
+            <div className="f-static" id="oc-capacity">
+              Director <span className="f-hint">(a director signs; change this at Signing)</span>
+            </div>
+          ) : can.write ? (
             <select id="oc-capacity" className="f-select" disabled={busy}
                     value={signatory.selected_capacity || signatory.default_capacity || ''}
                     onChange={e => run(officerChangeApi.patch(data.id, { signatory_capacity: e.target.value }))}>

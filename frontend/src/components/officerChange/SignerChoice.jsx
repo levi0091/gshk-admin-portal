@@ -1,0 +1,130 @@
+import { Link } from 'react-router-dom'
+
+/**
+ * Who puts the overall signature on an e-Signed ND2A (Levi 2026-11-13).
+ *
+ * Two tiles, in the family of the Route chooser (`meth-opt`): GSHK's e-Service
+ * account, or a director's own e-Registry account. On an ND2A that changes
+ * the company secretary GSHK is not yet related to the company, so the server
+ * defaults to a director there — but only when one has an account to sign with.
+ *
+ * Each tile ends in a plate naming the CR account that will actually sign, so
+ * the operator sees the credential before pressing anything. A director with no
+ * complete e-Registry account is still listed (the board is never shown short),
+ * disabled, with a link to the profile where the account is set up.
+ *
+ * The server decides everything that matters (`data.signer`): who may sign,
+ * the default, and the stored choice. This component only draws it and sends
+ * `{signing_party, signing_director_person_id}` through `onChoose`.
+ */
+export default function SignerChoice({ signer, can, busy, validated, locked, onChoose }) {
+  if (!signer?.offered) return null
+  const candidates = signer.candidates || []
+  const ready = candidates.filter(c => c.ready)
+  const party = signer.party
+  const directorSigns = party === 'director'
+  const editable = can.write && !locked
+  const anyReady = ready.length > 0
+  const suggestDirector = signer.default === 'director'
+
+  function choose(body) {
+    if (!editable || busy) return
+    onChoose(body)
+  }
+
+  return (
+    <fieldset className="oc-sc" data-testid="signer-choice" disabled={!editable || busy}>
+      <legend className="oc-sc-legend">Who signs the form</legend>
+      {signer.changes_secretary && (
+        <p className="oc-sc-why">
+          This form changes the company secretary. GSHK is not related to the company until
+          CR registers it, so a director signs with their own e-Registry account.
+        </p>
+      )}
+
+      <div className="oc-sc-options">
+        <div className={`oc-sc-tile ${!directorSigns ? 'sel' : ''}`} data-party="gshk">
+          <label className="oc-sc-head">
+            <input type="radio" name="oc-signer-party" className="oc-sc-radio"
+                   checked={!directorSigns}
+                   onChange={() => choose({ signing_party: 'gshk' })} />
+            <span className="oc-sc-title">GSHK e-Service</span>
+          </label>
+          <p className="oc-sc-sub">
+            Your own e-Service account from CR Credentials, signing for{' '}
+            {signer.gshk?.signs_for || 'the company secretary'}
+            {signer.gshk?.capacity ? ` as ${signer.gshk.capacity}` : ''}.
+          </p>
+          <div className="oc-sc-plate" data-state={signer.gshk?.eservice_user_id ? 'ready' : 'missing'}>
+            {signer.gshk?.eservice_user_id ? (
+              <><span className="oc-sc-plate-k">Signs with</span>
+                <span className="oc-sc-plate-v">{signer.gshk.eservice_user_id}</span></>
+            ) : (
+              <span>Your e-Service account is not set up. <Link to="/cr-credentials">Add it in CR Credentials</Link></span>
+            )}
+          </div>
+        </div>
+
+        <div className={`oc-sc-tile ${directorSigns ? 'sel' : ''} ${anyReady ? '' : 'is-off'}`}
+             data-party="director">
+          <label className="oc-sc-head">
+            <input type="radio" name="oc-signer-party" className="oc-sc-radio"
+                   checked={directorSigns} disabled={!anyReady}
+                   onChange={() => choose({ signing_party: 'director' })} />
+            <span className="oc-sc-title">Director's e-Registry</span>
+            {suggestDirector && <span className="oc-sc-tag">Suggested</span>}
+          </label>
+          <p className="oc-sc-sub">
+            {anyReady
+              ? 'A director who stays on after this form signs as Director, with the e-Registry account on their profile.'
+              : 'Director e-Registry is not set up. No director who stays on after this form has an e-Registry account on their profile.'}
+          </p>
+          {candidates.length > 0 ? (
+            <ul className="oc-sc-directors" aria-label="Directors who can sign">
+              {candidates.map(c => {
+                const picked = directorSigns && signer.director_person_id === c.person_id
+                return (
+                  <li key={c.person_id} className={`oc-sc-dir ${picked ? 'sel' : ''}`}
+                      data-ready={c.ready ? 'yes' : 'no'}>
+                    <label className="oc-sc-dir-row">
+                      <input type="radio" name="oc-signer-director" className="oc-sc-radio sm"
+                             checked={picked} disabled={!c.ready}
+                             aria-label={`${c.name} signs`}
+                             onChange={() => choose({ signing_party: 'director',
+                               signing_director_person_id: c.person_id })} />
+                      <span className="oc-sc-dir-name">{c.name}</span>
+                      {c.ready
+                        ? <span className="oc-sc-plate-v">{c.eservice_user_id}</span>
+                        : <span className="oc-sc-missing">{c.reason || 'e-Registry not set up'}</span>}
+                    </label>
+                    {!c.ready && c.profile_path && (
+                      <Link className="oc-sc-setup" to={c.profile_path}>Set up on profile</Link>
+                    )}
+                    {c.ready && c.id_mismatch && picked && (
+                      <div className="oc-sc-warn" role="status">{c.id_mismatch}</div>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          ) : (
+            <div className="oc-sc-plate" data-state="missing">
+              No current natural-person director stays on after this form.
+            </div>
+          )}
+          {directorSigns && !signer.director_ready && (
+            <div className="oc-sc-warn" role="alert">
+              The director chosen to sign can no longer sign. Choose another director, or GSHK e-Service.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {locked ? (
+        <p className="oc-sc-foot">The form is signed. Restart verification to change who signs.</p>
+      ) : validated && editable ? (
+        <p className="oc-sc-foot">Changing who signs sends the form back to CR to validate again.</p>
+      ) : null}
+    </fieldset>
+  )
+}
