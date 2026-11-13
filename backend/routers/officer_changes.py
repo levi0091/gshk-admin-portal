@@ -182,7 +182,7 @@ def _signer_patch(case: dict, body: CasePatchIn) -> dict:
     if not signer_choice.offered(case):
         raise HTTPException(400, "Choosing who signs is offered on an ND2A only")
     entries = svc.list_entries(case["id"])
-    party = body.signing_party or signer_choice.DIRECTOR
+    party = signer_choice.DIRECTOR if body.signing_party is None else body.signing_party
     if party not in signer_choice.PARTIES:
         raise HTTPException(400, "signing_party is 'gshk' or 'director'")
     if party == signer_choice.GSHK:
@@ -209,7 +209,17 @@ def _signer_patch(case: dict, body: CasePatchIn) -> dict:
     if not changed:
         return {}
     filing = nar1_cases.current_filing(case["id"])
-    if filing and filing.get("stage") == tpsi_filings.STAGE_SIGNED:
+    stage = (filing or {}).get("stage")
+    if stage in nar1_cases.CR_MAY_HOLD_STAGES:
+        # CR may already hold a form signed by the old signer; a locked filing
+        # survives a restart, so not even a restart may rename who signed it.
+        raise HTTPException(409, {
+            "message": "The Companies Registry may already hold this form, so who signs "
+                       "it can no longer change.",
+            "reason": "cr_may_hold"})
+    if stage == tpsi_filings.STAGE_SIGNED and not body.restart_verification:
+        # A restart supersedes the signed filing itself, so it may carry the
+        # new choice in the same request.
         raise HTTPException(409, {
             "message": "This form has already been signed, so who signs it can no longer "
                        "change. Restart verification to sign it again.",

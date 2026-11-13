@@ -225,6 +225,38 @@ def test_a_signed_form_keeps_its_signer(env):
     sup.assert_not_called()
 
 
+@pytest.mark.parametrize("stage", ["submitting", "submission_unknown"])
+def test_a_form_cr_may_hold_keeps_its_signer_even_on_a_restart(env, stage):
+    # A locked filing survives a restart, so renaming its signer would make the
+    # case say a director signed a form CR holds with GSHK's signature.
+    env.case = {**CASE, "signing_party": "gshk"}
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY]), \
+         patch.object(oc.nar1_cases, "current_filing", return_value={"stage": stage}):
+        for body in ({"signing_party": "director"},
+                     {"signing_party": "director", "restart_verification": True}):
+            resp = client.patch("/officer-changes/K1", headers=H, json=body)
+            assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "cr_may_hold"
+    env.update.assert_not_called()
+
+
+def test_a_restart_may_change_the_signer_of_a_signed_form(env):
+    env.case = {**CASE, "signing_party": "gshk"}
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY]), \
+         patch.object(oc.nar1_cases, "current_filing", return_value={"stage": "signed"}), \
+         patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=0), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=1):
+        resp = client.patch("/officer-changes/K1", headers=H,
+                            json={"signing_party": "director", "restart_verification": True})
+    assert resp.status_code == 200, resp.text
+    written = env.update.call_args.args[1]
+    assert written["signing_party"] == "director" and written["client_approved"] is None
+
+
+def test_an_empty_signing_party_is_refused(env):
+    resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": ""})
+    assert resp.status_code == 400
+
+
 def test_choosing_the_same_signer_again_changes_nothing(env):
     env.case = {**CASE, "signing_party": "gshk"}
     with patch.object(oc.tpsi_filings, "supersede_all_for_case") as sup:
