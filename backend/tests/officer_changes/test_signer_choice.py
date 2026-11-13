@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from services.officer_changes import prepare, signer_choice as sc
+from services.officer_changes import cases, prepare, signer_choice as sc
 from tests.officer_changes import cr_fixtures as fx
 from tests.officer_changes.fakes import FakeSupabase
 
@@ -15,6 +15,8 @@ CEASE_SEC = {"id": "X1", "kind": "cessation", "capacity": "company_secretary",
 APPOINT_SEC = {"id": "X2", "kind": "appointment", "capacity": "company_secretary",
                "corporate_entity_id": "C-GSHK"}
 APPOINT_DIR = {"id": "X3", "kind": "appointment", "capacity": "director", "person_id": "P9"}
+APPOINT_OTHER_SEC = {"id": "X4", "kind": "appointment", "capacity": "company_secretary",
+                     "corporate_entity_id": "C-NEW"}
 
 
 @pytest.fixture
@@ -38,9 +40,18 @@ def db(monkeypatch):
         "person_eservice_credentials": [
             {"person_id": "P2", "eservice_user_id": "ER-BEN",
              "eservice_person_name": "LAU, BEN", "eservice_password_enc": "enc"}],
+        # Corpagent is the secretary today; the form may appoint GSHK.
+        "company_secretaries": [
+            {"id": "S1", "entity_id": "E1", "is_current": True,
+             "corporate_entity_id": "C-OLD", "secretary_name": "Corpagent Online (HK) Limited"}],
+        "entities": [
+            {"id": "C-OLD", "company_name": "Corpagent Online (HK) Limited", "br_number": "1"},
+            {"id": "C-GSHK", "company_name": "Get Started HK Limited", "br_number": "67169839"},
+            {"id": "C-NEW", "company_name": "New Secretaries Limited", "br_number": "2"}],
     })
     monkeypatch.setattr(sc, "get_supabase", lambda: fake)
     monkeypatch.setattr(sc.eservice, "get_supabase", lambda: fake)
+    monkeypatch.setattr(cases, "get_supabase", lambda: fake)
     return fake
 
 
@@ -52,10 +63,32 @@ def test_candidates_are_current_natural_person_directors_ready_first(db):
     assert "enc" not in str(out)
 
 
-def test_a_director_the_form_ceases_cannot_sign(db):
+def test_a_director_the_form_ceases_may_still_sign(db):
+    # CR's portal lists the resigning director among the signatories (Brian
+    # Yiu, 2026-11-13): they are a director on the day they sign.
     leaving = {"id": "X9", "kind": "cessation", "capacity": "director", "officer_id": "O2",
                "person_id": "P2"}
-    assert [c["person_id"] for c in sc.candidates(CASE, [leaving])] == ["P1"]
+    out = sc.candidates(CASE, [leaving])
+    assert [(c["person_id"], c["ready"], c["ceasing"]) for c in out] == [
+        ("P2", True, True), ("P1", False, False)]
+    assert sc.resolve(CASE, [leaving, CEASE_SEC, APPOINT_SEC])["director"]["person_id"] == "P2"
+
+
+def test_gshk_cannot_sign_for_the_secretary_the_form_appoints(db):
+    # DEV 2026-11-13: CR refused "The user has no association with this company".
+    problem = sc.gshk_problem(CASE, [CEASE_SEC, APPOINT_SEC])
+    assert "Get Started HK Limited" in problem and "no association" in problem
+    # Nor for any secretary that only joins on this form.
+    assert sc.gshk_problem(CASE, [CEASE_SEC, APPOINT_OTHER_SEC])
+
+
+def test_gshk_may_sign_for_a_secretary_already_on_the_register(db):
+    # Appointing a second secretary leaves today's secretary signing.
+    assert sc.gshk_problem(CASE, [APPOINT_OTHER_SEC]) is None
+    assert sc.gshk_problem(CASE, [APPOINT_DIR]) is None
+    db.tables["company_secretaries"][0].update(
+        corporate_entity_id="C-GSHK", secretary_name="Get Started HK Limited", is_gshk=True)
+    assert sc.gshk_problem(CASE, [APPOINT_OTHER_SEC]) is None
 
 
 def test_a_secretary_change_defaults_to_the_ready_director(db):
@@ -70,13 +103,27 @@ def test_without_a_secretary_change_gshk_signs_and_nothing_is_read(monkeypatch):
     assert choice["party"] == "gshk" and choice["candidates"] is None
 
 
-def test_a_secretary_change_with_no_ready_director_stays_with_gshk(db):
+def test_with_no_ready_director_gshk_signs_when_it_can(db):
     db.tables["person_eservice_credentials"].clear()
-    assert sc.resolve(CASE, [CEASE_SEC])["party"] == "gshk"
+    assert sc.resolve(CASE, [APPOINT_OTHER_SEC])["party"] == "gshk"
+
+
+def test_when_gshk_cannot_sign_a_director_must_even_with_no_account(db):
+    db.tables["person_eservice_credentials"].clear()
+    choice = sc.resolve(CASE, [CEASE_SEC, APPOINT_SEC])
+    assert choice["party"] == "director" and choice["director"] is None
+    assert choice["gshk_problem"]
+    with pytest.raises(sc.SignerUnavailable, match="Manual route"):
+        sc.pinned_for_validation(CASE, [CEASE_SEC, APPOINT_SEC])
+
+
+def test_a_stored_gshk_yields_when_gshk_cannot_sign(db):
+    choice = sc.resolve({**CASE, "signing_party": "gshk"}, [CEASE_SEC, APPOINT_SEC])
+    assert choice["party"] == "director" and choice["director"]["person_id"] == "P2"
 
 
 def test_a_stored_choice_beats_the_default(db):
-    assert sc.resolve({**CASE, "signing_party": "gshk"}, [CEASE_SEC])["party"] == "gshk"
+    assert sc.resolve({**CASE, "signing_party": "gshk"}, [APPOINT_OTHER_SEC])["party"] == "gshk"
     choice = sc.resolve({**CASE, "signing_party": "director",
                          "signing_director_person_id": "P2"}, [APPOINT_DIR])
     assert choice["party"] == "director" and choice["director"]["person_id"] == "P2"
@@ -92,12 +139,13 @@ def test_nd2b_never_offers_the_choice(monkeypatch):
     monkeypatch.setattr(sc, "get_supabase", lambda: pytest.fail("read the database"))
     case = {**CASE, "form_code": "Nd2b", "signing_party": "director"}
     assert sc.resolve(case, [CEASE_SEC])["party"] == "gshk"
+    assert sc.gshk_problem(case, [CEASE_SEC, APPOINT_SEC]) is None
     assert sc.for_sign(case) is None
     assert sc.view(case, [], staff_account=None, gshk_signatory={}) == {"offered": False}
 
 
 def test_validation_pins_the_party_or_refuses(db):
-    assert sc.pinned_for_validation(CASE, [CEASE_SEC]) == {
+    assert sc.pinned_for_validation(CASE, [CEASE_SEC, APPOINT_SEC]) == {
         "signing_party": "director", "signing_director_person_id": "P2"}
     assert sc.pinned_for_validation(CASE, [APPOINT_DIR]) == {
         "signing_party": "gshk", "signing_director_person_id": None}
@@ -114,15 +162,17 @@ def test_signing_reads_only_the_stored_party():
 
 
 def test_the_view_carries_both_options(db):
-    out = sc.view(CASE, [CEASE_SEC], staff_account="STAFF-1",
+    out = sc.view(CASE, [CEASE_SEC, APPOINT_SEC], staff_account="STAFF-1",
                   gshk_signatory={"name": "Get Started HK Limited",
                                   "default_capacity": "Director of the Company Secretary "
                                                       "(Body Corporate)"})
     assert out["offered"] and out["party"] == "director" and out["changes_secretary"]
     assert out["director_person_id"] == "P2" and out["director_ready"]
-    assert out["gshk"] == {"signs_for": "Get Started HK Limited",
-                           "capacity": "Director of the Company Secretary (Body Corporate)",
-                           "eservice_user_id": "STAFF-1"}
+    assert not out["gshk"]["available"] and "no association" in out["gshk"]["reason"]
+    assert {k: v for k, v in out["gshk"].items() if k not in ("available", "reason")} == {
+        "signs_for": "Get Started HK Limited",
+        "capacity": "Director of the Company Secretary (Body Corporate)",
+        "eservice_user_id": "STAFF-1"}
 
 
 def test_the_form_names_the_director_as_their_account_does():
@@ -146,6 +196,7 @@ def _world(monkeypatch, ready: bool):
         {"person_id": "P2", "name": "Ben LAU", "eservice_user_id": "ER-BEN",
          "eservice_person_name": "LAU, BEN", "ready": ready,
          "reason": None if ready else "e-Registry not set up"}])
+    monkeypatch.setattr(prepare.signer_choice, "gshk_problem", lambda case, entries_: None)
     return entries
 
 
@@ -186,5 +237,5 @@ def test_a_chosen_director_who_cannot_sign_stops_esign_but_not_the_preview(monke
     case = {**CASE, "signing_party": "director", "signing_director_person_id": "P2"}
     with pytest.raises(prepare.MappingError) as exc:
         asyncio.run(prepare.build_form_xml(case, entries, for_esign=True))
-    assert "choose GSHK e-Service at Signing" in str(exc.value.problems)
+    assert "choose another signer" in str(exc.value.problems)
     assert "ER-BEN" not in asyncio.run(prepare.build_form_xml(case, entries))

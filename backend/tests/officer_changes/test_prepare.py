@@ -184,6 +184,7 @@ def _world_of(monkeypatch, form: str, fixture: str):
     # No director has an e-Registry account in these worlds, so a secretary
     # change keeps the GSHK signer (`signer_choice`'s default).
     monkeypatch.setattr(prepare.signer_choice, "candidates", lambda case, entries: [])
+    monkeypatch.setattr(prepare.signer_choice, "gshk_problem", lambda case, entries: None)
     return graph, entries
 
 

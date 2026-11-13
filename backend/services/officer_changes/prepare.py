@@ -87,9 +87,9 @@ def _director_signer(case: dict, entries: list[dict], *, for_esign: bool) -> dic
     if choice["director"] is None:
         if for_esign:
             raise MappingError([
-                "signatory: the form is to be signed by a director, but no director "
-                "who stays on after it has a complete e-Registry account — set one up "
-                "on the director's profile, or choose GSHK e-Service at Signing"])
+                "signatory: the form is to be signed by a director, but the director "
+                "chosen has no complete e-Registry account — set one up on the "
+                "director's profile, or choose another signer"])
         return None
     return signer_choice.form_signatory(choice["director"])
 

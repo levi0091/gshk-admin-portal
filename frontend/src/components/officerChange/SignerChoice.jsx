@@ -17,6 +17,18 @@ import { Link } from 'react-router-dom'
  * the default, and the stored choice. This component only draws it and sends
  * `{signing_party, signing_director_person_id}` through `onChoose`.
  */
+/** True when the chosen signer cannot sign, so Validate must wait. */
+export function signerBlocked(signer) {
+  return Boolean(signer?.offered && signer.party === 'director' && !signer.director_ready)
+}
+
+/** The hint beside a held Validate button. */
+export function signerBlockedHint(signer) {
+  return signer?.gshk?.available === false
+    ? 'Choose a director who can sign first, or file by the Manual route.'
+    : 'Choose a director who can sign, or GSHK e-Service, first.'
+}
+
 export default function SignerChoice({ signer, can, busy, validated, locked, onChoose }) {
   if (!signer?.offered) return null
   const candidates = signer.candidates || []
@@ -26,6 +38,9 @@ export default function SignerChoice({ signer, can, busy, validated, locked, onC
   const editable = can.write && !locked
   const anyReady = ready.length > 0
   const suggestDirector = signer.default === 'director'
+  // GSHK cannot sign for a secretary this form only appoints: CR answers "The
+  // user has no association with this company" (DEV 2026-11-13).
+  const gshkOff = signer.gshk?.available === false
 
   function choose(body) {
     if (!editable || busy) return
@@ -35,18 +50,25 @@ export default function SignerChoice({ signer, can, busy, validated, locked, onC
   return (
     <fieldset className="oc-sc" data-testid="signer-choice" disabled={!editable || busy}>
       <legend className="oc-sc-legend">Who signs the form</legend>
-      {signer.changes_secretary && (
+      {gshkOff ? (
         <p className="oc-sc-why">
-          This form changes the company secretary. GSHK is not related to the company until
-          CR registers it, so a director signs with their own e-Registry account.
+          {signer.gshk?.signs_for || 'The new secretary'} is not yet the company secretary, so
+          CR will not accept its signature on this form. A director signs with their own
+          e-Registry account; GSHK's TPSI account still validates, pays for and files it.
+        </p>
+      ) : signer.changes_secretary && (
+        <p className="oc-sc-why">
+          This form changes the company secretary, so a director is suggested to sign with
+          their own e-Registry account. GSHK's TPSI account still files it.
         </p>
       )}
 
       <div className="oc-sc-options">
-        <div className={`oc-sc-tile ${!directorSigns ? 'sel' : ''}`} data-party="gshk">
+        <div className={`oc-sc-tile ${!directorSigns ? 'sel' : ''} ${gshkOff ? 'is-off' : ''}`}
+             data-party="gshk">
           <label className="oc-sc-head">
             <input type="radio" name="oc-signer-party" className="oc-sc-radio"
-                   checked={!directorSigns}
+                   checked={!directorSigns} disabled={gshkOff}
                    onChange={() => choose({ signing_party: 'gshk' })} />
             <span className="oc-sc-title">GSHK e-Service</span>
           </label>
@@ -55,8 +77,12 @@ export default function SignerChoice({ signer, can, busy, validated, locked, onC
             {signer.gshk?.signs_for || 'the company secretary'}
             {signer.gshk?.capacity ? ` as ${signer.gshk.capacity}` : ''}.
           </p>
-          <div className="oc-sc-plate" data-state={signer.gshk?.eservice_user_id ? 'ready' : 'missing'}>
-            {signer.gshk?.eservice_user_id ? (
+          <div className="oc-sc-plate"
+               data-state={gshkOff || !signer.gshk?.eservice_user_id ? 'missing' : 'ready'}>
+            {gshkOff ? (
+              <span>Not available: CR answers "The user has no association with this company"
+                until it registers the new secretary.</span>
+            ) : signer.gshk?.eservice_user_id ? (
               <><span className="oc-sc-plate-k">Signs with</span>
                 <span className="oc-sc-plate-v">{signer.gshk.eservice_user_id}</span></>
             ) : (
@@ -76,8 +102,8 @@ export default function SignerChoice({ signer, can, busy, validated, locked, onC
           </label>
           <p className="oc-sc-sub">
             {anyReady
-              ? 'A director who stays on after this form signs as Director, with the e-Registry account on their profile.'
-              : 'Director e-Registry is not set up. No director who stays on after this form has an e-Registry account on their profile.'}
+              ? 'A director signs as Director with the e-Registry account on their profile. A director resigning on this form may sign too.'
+              : 'Director e-Registry is not set up. No director has an e-Registry account on their profile.'}
           </p>
           {candidates.length > 0 ? (
             <ul className="oc-sc-directors" aria-label="Directors who can sign">
@@ -92,7 +118,10 @@ export default function SignerChoice({ signer, can, busy, validated, locked, onC
                              aria-label={`${c.name} signs`}
                              onChange={() => choose({ signing_party: 'director',
                                signing_director_person_id: c.person_id })} />
-                      <span className="oc-sc-dir-name">{c.name}</span>
+                      <span className="oc-sc-dir-name">
+                        {c.name}
+                        {c.ceasing && <span className="oc-sc-leaving">resigning on this form</span>}
+                      </span>
                       {c.ready
                         ? <span className="oc-sc-plate-v">{c.eservice_user_id}</span>
                         : <span className="oc-sc-missing">{c.reason || 'e-Registry not set up'}</span>}
@@ -109,12 +138,14 @@ export default function SignerChoice({ signer, can, busy, validated, locked, onC
             </ul>
           ) : (
             <div className="oc-sc-plate" data-state="missing">
-              No current natural-person director stays on after this form.
+              The company has no current natural-person director on record.
             </div>
           )}
           {directorSigns && !signer.director_ready && (
             <div className="oc-sc-warn" role="alert">
-              The director chosen to sign can no longer sign. Choose another director, or GSHK e-Service.
+              {anyReady
+                ? `No director chosen can sign yet. Choose one with e-Registry set up${gshkOff ? '' : ', or GSHK e-Service'}.`
+                : `Set up a director's e-Registry on their profile${gshkOff ? ', or file by the Manual route' : ', or choose GSHK e-Service'}.`}
             </div>
           )}
         </div>

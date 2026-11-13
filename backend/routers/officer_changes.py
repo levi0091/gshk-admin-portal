@@ -186,6 +186,9 @@ def _signer_patch(case: dict, body: CasePatchIn) -> dict:
     if party not in signer_choice.PARTIES:
         raise HTTPException(400, "signing_party is 'gshk' or 'director'")
     if party == signer_choice.GSHK:
+        problem = signer_choice.gshk_problem(case, entries)
+        if problem:
+            raise HTTPException(409, {"message": problem, "reason": "gshk_signer_unavailable"})
         wanted = {"signing_party": signer_choice.GSHK, "signing_director_person_id": None}
     else:
         options = signer_choice.candidates(case, entries)

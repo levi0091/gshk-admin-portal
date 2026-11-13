@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import SignerChoice from './SignerChoice.jsx'
 import StageSigning from './StageSigning.jsx'
+import StageDataVerification from './StageDataVerification.jsx'
 
 const patch = vi.fn(); const post = vi.fn()
 vi.mock('../../lib/api.js', () => ({
@@ -94,9 +95,70 @@ describe('SignerChoice', () => {
     expect(screen.getByText(/The form is signed/)).toBeInTheDocument()
   })
 
+  it('greys out GSHK while the form only appoints it, and says why', () => {
+    // DEV 2026-11-13: CR refused "The user has no association with this company".
+    const signer = { ...SIGNER, gshk: { ...SIGNER.gshk, available: false,
+      reason: 'Get Started HK Limited becomes the company secretary only when CR registers this form' } }
+    wrap(<SignerChoice signer={signer} can={ALL} onChoose={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: /GSHK e-Service/ })).toBeDisabled()
+    expect(screen.getByText(/is not yet the company secretary/)).toBeInTheDocument()
+    expect(screen.getByText(/no association with this company/)).toBeInTheDocument()
+    expect(screen.queryByText('STAFF-1')).not.toBeInTheDocument()
+  })
+
+  it('offers a director who resigns on this form, and says so', () => {
+    const signer = { ...SIGNER, candidates: [{ ...BEN, ceasing: true }, ADA] }
+    wrap(<SignerChoice signer={signer} can={ALL} onChoose={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: 'Ben LAU signs' })).toBeEnabled()
+    expect(screen.getByText('resigning on this form')).toBeInTheDocument()
+  })
+
   it('is read-only for a role that cannot write', () => {
     wrap(<SignerChoice signer={SIGNER} can={{ write: false }} onChoose={vi.fn()} />)
     expect(screen.getByRole('radio', { name: /GSHK e-Service/ })).toBeDisabled()
+  })
+})
+
+describe('StageDataVerification — who signs is chosen before CR validates', () => {
+  const DATA = {
+    id: 'k1', case_no: 'ND2A-2026-0020', form_code: 'Nd2a', case_type: 'ND2A',
+    client_approved: true, signing_method: 'esign', manual_checks: [], entries: [],
+    dates_missing: [], route: { esign_available: true, default: 'esign', reasons: [] },
+    signatory: { name: 'Ben LAU', party: 'director', default_capacity: 'Director' },
+    signer: SIGNER, filing: null,
+  }
+  beforeEach(() => { patch.mockReset(); post.mockReset() })
+
+  it('shows the chooser on e-Sign and drops the secretary capacity when a director signs', () => {
+    wrap(<StageDataVerification data={DATA} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByTestId('signer-choice')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/signs as/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Validate with CR Portal' })).toBeEnabled()
+  })
+
+  it('switches to a director through PATCH', async () => {
+    patch.mockResolvedValue({ id: 'k1' })
+    const data = { ...DATA, signer: { ...SIGNER, party: 'gshk', default: 'gshk' },
+      signatory: { name: 'Get Started HK Limited', party: 'gshk', capacities: ['Director'],
+        default_capacity: 'Director' } }
+    wrap(<StageDataVerification data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    await userEvent.click(screen.getByRole('radio', { name: 'Ben LAU signs' }))
+    expect(patch).toHaveBeenCalledWith('/officer-changes/k1',
+      { signing_party: 'director', signing_director_person_id: 'p2' })
+  })
+
+  it('holds Validate while no director can sign and GSHK cannot either', () => {
+    const data = { ...DATA, signer: { ...SIGNER, director_ready: false, candidates: [ADA],
+      gshk: { ...SIGNER.gshk, available: false } } }
+    wrap(<StageDataVerification data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Validate with CR Portal' })).toBeDisabled()
+    expect(screen.getByText(/file by the Manual route/, { selector: '.f-hint' })).toBeInTheDocument()
+  })
+
+  it('keeps the chooser off the manual route', () => {
+    const data = { ...DATA, signing_method: 'manual' }
+    wrap(<StageDataVerification data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByTestId('signer-choice')).not.toBeInTheDocument()
   })
 })
 

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import ManualChecks from './ManualChecks.jsx'
 import CrRefusal from './CrRefusal.jsx'
+import SignerChoice, { signerBlocked, signerBlockedHint } from './SignerChoice.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf, filingOpensNote } from './workflow.js'
 
@@ -35,6 +36,11 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
   const datesPending = (data.dates_missing || []).length > 0
   const opensNote = filingOpensNote(data)
   const validateLater = datesPending || Boolean(opensNote)
+  const signer = data.signer || {}
+  const signed = data.filing?.stage === 'signed'
+  // An ND2A on e-Sign asks who signs; the manual route is signed on CR's portal.
+  const choosing = Boolean(signer.offered) && method === 'esign'
+  const held = choosing && signerBlocked(signer)
 
   async function run(promise) {
     setError(null); setBusy(true)
@@ -56,16 +62,23 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
 
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-title">Signing</div>
+        {choosing && (
+          // Who signs is chosen HERE, before CR validates: the signatory block
+          // is inside the form CR checks (DEV 2026-11-13).
+          <div style={{ marginTop: 10 }}>
+            <SignerChoice signer={signer} can={can} busy={busy} validated={validated}
+                          locked={signed} onChoose={body => run(officerChangeApi.patch(data.id, body))} />
+          </div>
+        )}
+        {!(choosing && signer.party === 'director') && (
         <div className="f-group" style={{ marginTop: 10, maxWidth: 520 }}>
           <label className="f-label" htmlFor="oc-capacity">
             {signatory.name ? `${signatory.name} signs as` : 'Signing capacity'}
           </label>
           {signatory.party === 'director' ? (
             // A director signs with their own e-Registry account, in the one
-            // capacity a director signs in; who signs is chosen at Signing.
-            <div className="f-static" id="oc-capacity">
-              Director <span className="f-hint">(a director signs; change this at Signing)</span>
-            </div>
+            // capacity a director signs in.
+            <div className="f-static" id="oc-capacity">Director</div>
           ) : can.write ? (
             <select id="oc-capacity" className="f-select" disabled={busy}
                     value={signatory.selected_capacity || signatory.default_capacity || ''}
@@ -78,6 +91,7 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
             </div>
           )}
         </div>
+        )}
 
         {can.write ? (
           <fieldset className="meth-group" style={{ border: 0, padding: 0, marginTop: 12 }}>
@@ -120,10 +134,13 @@ export default function StageDataVerification({ data, reload, can, goTo }) {
 
         <div className="oc-send-row">
           {method === 'esign' && !validated && !validateLater && can.tpsiWrite && (
-            <button className="btn btn-primary" disabled={busy || openChecks.length > 0}
-                    onClick={() => run(officerChangeApi.validate(data.id))}>
-              {busy ? 'Validating…' : 'Validate with CR Portal'}
-            </button>
+            <>
+              <button className="btn btn-primary" disabled={busy || openChecks.length > 0 || held}
+                      onClick={() => run(officerChangeApi.validate(data.id))}>
+                {busy ? 'Validating…' : 'Validate with CR Portal'}
+              </button>
+              {held && <span className="f-hint">{signerBlockedHint(signer)}</span>}
+            </>
           )}
           {method === 'esign' && !validated && validateLater && !checked && can.write && (
             <>

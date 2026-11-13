@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { officerChangeApi } from './api.js'
 import CrRefusal from './CrRefusal.jsx'
 import EffectiveDatesPanel from './EffectiveDatesPanel.jsx'
-import SignerChoice from './SignerChoice.jsx'
+import SignerChoice, { signerBlockedHint } from './SignerChoice.jsx'
 import { errorOf, isManual, filingOpensNote } from './workflow.js'
 
 /**
@@ -207,7 +207,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
                 {busy ? 'Validating…' : 'Validate with CR'}
               </button>
               <span className="f-hint">
-                {signerBlocked ? 'Choose a director who can sign, or GSHK e-Service, first.'
+                {signerBlocked ? signerBlockedHint(signer)
                   : datesPending ? 'Enter the effective dates above first; CR checks them.'
                   : opensNote || 'CR checks the form, dates included, before it is signed.'}
               </span>

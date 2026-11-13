@@ -1024,22 +1024,44 @@ def _summary(entry: dict) -> str:
     return f"{capacity} · {len(filed)} of {len(entry['items'])} change(s) to file"
 
 
-def _first_signer(candidates: list[dict], people: dict, corps: dict
-                  ) -> tuple[str, bool, str | None] | None:
+def _first_signer_row(candidates: list[dict], people: dict, corps: dict
+                      ) -> tuple[tuple[str, bool, str | None], dict] | None:
+    """The first row that names somebody, with the answer it gives."""
     for row in candidates:
         person = people.get(row.get("person_id") or "")
         if person:
             return (person.get("full_name") or person.get("full_name_zh") or "",
-                    False, person["id"])
+                    False, person["id"]), row
         name = (row.get("secretary_name") or row.get("corporate_name")
                 or (corps.get(row.get("corporate_entity_id") or "") or {}).get("company_name"))
         if name:
-            return name, True, None
+            return (name, True, None), row
     return None
+
+
+def _first_signer(candidates: list[dict], people: dict, corps: dict
+                  ) -> tuple[str, bool, str | None] | None:
+    found = _first_signer_row(candidates, people, corps)
+    return found[0] if found else None
 
 
 def _signatory_row(entity_id: str, entries: list[dict] | None = None
                    ) -> tuple[str, bool, str | None]:
+    return _signatory_pick(entity_id, entries)[0]
+
+
+def secretary_signer_joins(entity_id: str, entries: list[dict] | None = None) -> bool:
+    """True when the secretary who would sign is one THIS form appoints.
+
+    CR checks the signer's association "as at the date of signature", and a
+    secretary the form appoints is not associated until CR registers the form:
+    validating with it is refused as "The user has no association with this
+    company" (DEV, 2026-11-13, an ND2A appointing Get Started HK Limited)."""
+    return _signatory_pick(entity_id, entries)[1]
+
+
+def _signatory_pick(entity_id: str, entries: list[dict] | None = None
+                    ) -> tuple[tuple[str, bool, str | None], bool]:
     """`(name, is_corporate, person_id)` of whoever signs, in the ORDER the XML
     takes them (`nar1_mapper._signatory_candidates`): the secretary REGISTER
     first, a GSHK-flagged row before any other, then a secretary on the officer
@@ -1072,19 +1094,20 @@ def _signatory_row(entity_id: str, entries: list[dict] | None = None
         rows = [r for r in register if not secretaries_after.is_ceased(r, gone)]
         for entry in joining:
             if entry.get("person_id"):
-                rows.append({"person_id": entry["person_id"], "is_gshk": False})
+                rows.append({"person_id": entry["person_id"], "is_gshk": False,
+                             "joins": True})
             else:
                 corp = corps.get(entry.get("corporate_entity_id") or "") or {}
                 rows.append({"corporate_entity_id": entry.get("corporate_entity_id"),
                              "is_gshk": str(corp.get("br_number") or "").strip()
-                             == secretaries_after.GSHK_BR})
+                             == secretaries_after.GSHK_BR, "joins": True})
         rows.sort(key=lambda r: not r.get("is_gshk"))
         rows += [o for o in officers if not secretaries_after.is_ceased(o, gone)]
-        found = _first_signer(rows, people, corps)
+        found = _first_signer_row(rows, people, corps)
         if found:
-            return found
+            return found[0], bool(found[1].get("joins"))
     register.sort(key=lambda r: not r.get("is_gshk"))
-    return _first_signer(register + officers, people, corps) or ("", True, None)
+    return (_first_signer(register + officers, people, corps) or ("", True, None)), False
 
 
 def _signatory_party(entity_id: str, entries: list[dict] | None = None) -> tuple[str, bool]:

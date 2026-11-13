@@ -252,6 +252,19 @@ def test_a_restart_may_change_the_signer_of_a_signed_form(env):
     assert written["signing_party"] == "director" and written["client_approved"] is None
 
 
+def test_gshk_cannot_be_chosen_while_the_form_only_appoints_it(env):
+    # CR: "The user has no association with this company" (DEV 2026-11-13).
+    env.case = {**CASE, "signing_party": "director", "signing_director_person_id": "P2"}
+    with patch.object(oc.signer_choice, "gshk_problem",
+                      return_value="Get Started HK Limited becomes the company secretary "
+                                   "only when CR registers this form") as problem:
+        resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": "gshk"})
+    problem.assert_called_once()
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "gshk_signer_unavailable"
+    env.update.assert_not_called()
+
+
 def test_an_empty_signing_party_is_refused(env):
     resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": ""})
     assert resp.status_code == 400

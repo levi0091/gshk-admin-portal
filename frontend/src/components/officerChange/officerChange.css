@@ -357,9 +357,14 @@ label.oc-check-main { cursor: pointer; }
 .oc-sc-dir-row { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; cursor: pointer; font-size: 12.5px; }
 .oc-sc-dir[data-ready="no"] .oc-sc-dir-row { cursor: default; }
 .oc-sc-dir-name { color: var(--t-head); font-weight: 500; overflow-wrap: anywhere; }
+/* A director this form ceases may still sign (CR lists them): said, not hidden. */
+.oc-sc-leaving {
+  margin-left: 6px; font-size: 11px; font-weight: 500; color: var(--t-muted);
+  white-space: nowrap;
+}
 .oc-sc-dir-row .oc-sc-plate-v { margin-left: auto; font-size: 12px; }
-.oc-sc-missing { margin-left: auto; font-size: 11.5px; color: var(--peridot-ink); font-weight: 600; }
-.oc-sc-setup { font-size: 11.5px; font-weight: 600; color: var(--indigo); }
+.oc-sc-missing { margin-left: auto; font-size: 11px; color: var(--peridot-ink); font-weight: 600; }
+.oc-sc-setup { font-size: 11px; font-weight: 600; color: var(--indigo); }
 .oc-sc-warn { font-size: 12px; color: var(--carrot-ink); line-height: 1.5; flex-basis: 100%; }
 .oc-sc-foot { margin: 8px 0 0; font-size: 12px; color: var(--t-muted); }
 .oc-sc:disabled .oc-sc-head, .oc-sc:disabled .oc-sc-dir-row { cursor: default; }
