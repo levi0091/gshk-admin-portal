@@ -29,6 +29,59 @@ export function signerBlockedHint(signer) {
     : 'Choose a director who can sign, or GSHK e-Service, first.'
 }
 
+/**
+ * Who signs, READ-ONLY, for the Signing stage (Levi 2026-11-13: "only make them
+ * select it once"). The choice is made on Data Verification, before CR
+ * validates, because the signatory is inside the form CR checks. Signing only
+ * restates it — the signer, the capacity and the CR account — and offers the
+ * way back to change it. One stored value drives both screens, so they cannot
+ * disagree.
+ */
+export function SignerSummary({ signer, signatory, canChange, onChange }) {
+  if (!signer?.offered) return null
+  const directorSigns = signer.party === 'director'
+  const director = directorSigns
+    ? (signer.candidates || []).find(c => c.person_id === signer.director_person_id) : null
+  const blocked = signerBlocked(signer)
+  const who = directorSigns ? director?.name : (signer.gshk?.signs_for || signatory?.name)
+  const capacity = directorSigns ? 'Director'
+    : (signatory?.selected_capacity || signatory?.default_capacity || signer.gshk?.capacity)
+  const account = directorSigns ? director?.eservice_user_id : signer.gshk?.eservice_user_id
+
+  return (
+    <section className="oc-ss" data-testid="signer-summary" data-party={signer.party}
+             aria-label="Who signs the form">
+      <div className="oc-ss-main">
+        <span className="oc-ss-k">Who signs the form</span>
+        {who ? (
+          <span className="oc-ss-who">
+            <b>{who}</b>{capacity ? ` as ${capacity}` : ''}
+            {director?.ceasing && <span className="oc-sc-leaving">resigning on this form</span>}
+          </span>
+        ) : (
+          <span className="oc-ss-who">No director chosen</span>
+        )}
+        <span className="oc-ss-acct">
+          {directorSigns ? "Director's e-Registry" : 'GSHK e-Service'}
+          {account && !blocked && <span className="oc-sc-plate-v">{account}</span>}
+        </span>
+      </div>
+      {canChange && (
+        <button type="button" className="btn btn-sm btn-outline" onClick={onChange}>
+          Change on Data Verification
+        </button>
+      )}
+      {blocked && (
+        <div className="oc-sc-warn" role="alert">
+          {director ? `${director.name} cannot sign yet: ${director.reason || 'e-Registry not set up'}. `
+            : 'No director who can sign is chosen. '}
+          Choose who signs on Data Verification.
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function SignerChoice({ signer, can, busy, validated, locked, onChoose }) {
   if (!signer?.offered) return null
   const candidates = signer.candidates || []

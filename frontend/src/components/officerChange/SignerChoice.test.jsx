@@ -162,7 +162,7 @@ describe('StageDataVerification — who signs is chosen before CR validates', ()
   })
 })
 
-describe('StageSigning with a director signing', () => {
+describe('StageSigning — who signs is chosen once, on Data Verification', () => {
   const DATA = {
     id: 'k1', case_no: 'ND2A-2026-0020', form_code: 'Nd2a', case_type: 'ND2A',
     client_approved: true, entries: [], dates_missing: [],
@@ -172,24 +172,56 @@ describe('StageSigning with a director signing', () => {
   }
   beforeEach(() => { patch.mockReset(); post.mockReset() })
 
-  it('says the director signs the form with their own account', () => {
+  it('restates the chosen director, read-only, with the account that signs', () => {
     wrap(<StageSigning data={DATA} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
-    expect(screen.getByText(/signed by Ben LAU as Director/)).toBeInTheDocument()
+    const summary = screen.getByTestId('signer-summary')
+    expect(within(summary).getByText('Ben LAU')).toBeInTheDocument()
+    expect(within(summary).getByText(/as Director/)).toBeInTheDocument()
+    expect(within(summary).getByText('ER-BEN')).toBeInTheDocument()
+    expect(screen.queryByTestId('signer-choice')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
   })
 
-  it('saves a toggle through PATCH and reloads the case', async () => {
-    const reload = vi.fn()
-    patch.mockResolvedValue({ id: 'k1' })
-    wrap(<StageSigning data={DATA} reload={reload} can={ALL} goTo={vi.fn()} />)
-    await userEvent.click(screen.getByRole('radio', { name: /GSHK e-Service/ }))
-    expect(patch).toHaveBeenCalledWith('/officer-changes/k1', { signing_party: 'gshk' })
-    expect(reload).toHaveBeenCalledWith({ id: 'k1' })
+  it('restates GSHK with its capacity and e-Service account', () => {
+    const data = { ...DATA, signer: { ...SIGNER, party: 'gshk', default: 'gshk' },
+      signatory: { name: 'Get Started HK Limited', party: 'gshk',
+        selected_capacity: 'Director of the Company Secretary (Body Corporate)' } }
+    wrap(<StageSigning data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    const summary = screen.getByTestId('signer-summary')
+    expect(within(summary).getByText('Get Started HK Limited')).toBeInTheDocument()
+    expect(within(summary).getByText('GSHK e-Service')).toBeInTheDocument()
+    expect(within(summary).getByText('STAFF-1')).toBeInTheDocument()
   })
 
-  it('holds Validate while the chosen director can no longer sign', () => {
-    const data = { ...DATA, signer: { ...SIGNER, director_ready: false } }
+  it('says when the director signing resigns on this form', () => {
+    const data = { ...DATA, signer: { ...SIGNER, candidates: [{ ...BEN, ceasing: true }, ADA] } }
+    wrap(<StageSigning data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.getByText('resigning on this form')).toBeInTheDocument()
+  })
+
+  it('sends the operator back to Data Verification to change it, without saving anything', async () => {
+    const goTo = vi.fn()
+    wrap(<StageSigning data={DATA} reload={vi.fn()} can={ALL} goTo={goTo} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Change on Data Verification' }))
+    expect(goTo).toHaveBeenCalledWith(2)
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('offers no change once the form is signed, or to a role that cannot write', () => {
+    const signed = { ...DATA, filing: { stage: 'signed' } }
+    const { unmount } = wrap(<StageSigning data={signed} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Change on Data Verification' })).not.toBeInTheDocument()
+    unmount()
+    wrap(<StageSigning data={DATA} reload={vi.fn()} can={{ ...ALL, write: false }} goTo={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Change on Data Verification' })).not.toBeInTheDocument()
+  })
+
+  it('holds Validate while the chosen director can no longer sign, and points back', () => {
+    const data = { ...DATA, signer: { ...SIGNER, director_ready: false,
+      candidates: [{ ...BEN, ready: false, reason: 'e-Registry password missing' }, ADA] } }
     wrap(<StageSigning data={data} reload={vi.fn()} can={ALL} goTo={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Validate with CR' })).toBeDisabled()
-    expect(screen.getByText(/Choose a director who can sign/)).toBeInTheDocument()
+    expect(screen.getByText('Choose who signs on Data Verification first.')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(/Ben LAU cannot sign yet: e-Registry password missing/)
   })
 })

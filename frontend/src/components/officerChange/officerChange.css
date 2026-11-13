@@ -311,7 +311,7 @@ label.oc-check-main { cursor: pointer; }
 .oc-sc-legend { font-size: 13px; font-weight: 600; color: var(--t-head); padding: 0; margin-bottom: 6px; }
 .oc-sc-why {
   margin: 0 0 10px; padding: 8px 12px; border-left: 3px solid var(--indigo);
-  background: var(--indigo-5); font-size: 12.5px; line-height: 1.55; color: var(--t-body);
+  background: var(--indigo-5); font-size: 12px; line-height: 1.55; color: var(--t-body);
   max-width: 72ch;
 }
 .oc-sc-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -329,7 +329,7 @@ label.oc-check-main { cursor: pointer; }
 .oc-sc-radio.sm { width: 13px; height: 13px; }
 .oc-sc-radio:disabled { cursor: not-allowed; }
 .oc-sc-radio:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
-.oc-sc-title { font-size: 13.5px; font-weight: 600; color: var(--t-head); }
+.oc-sc-title { font-size: 14px; font-weight: 600; color: var(--t-head); }
 .oc-sc-tag {
   margin-left: auto; font-size: 11px; font-weight: 600; color: var(--indigo);
   background: var(--indigo-10); border-radius: 999px; padding: 2px 8px;
@@ -368,6 +368,18 @@ label.oc-check-main { cursor: pointer; }
 .oc-sc-warn { font-size: 12px; color: var(--carrot-ink); line-height: 1.5; flex-basis: 100%; }
 .oc-sc-foot { margin: 8px 0 0; font-size: 12px; color: var(--t-muted); }
 .oc-sc:disabled .oc-sc-head, .oc-sc:disabled .oc-sc-dir-row { cursor: default; }
+/* The same choice, restated read-only on Signing (SignerSummary). Chosen once,
+   on Data Verification; this is a receipt of it, not a second control. */
+.oc-ss {
+  display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap;
+  margin: 12px 0 0; padding: 10px 14px; border-radius: var(--r);
+  background: var(--indigo-5); border-left: 3px solid var(--carrot);
+}
+.oc-ss-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 260px; min-width: 0; }
+.oc-ss-k { font-size: 11px; font-weight: 600; color: var(--t-muted); }
+.oc-ss-who { font-size: 13px; color: var(--t-body); overflow-wrap: anywhere; }
+.oc-ss-who b { color: var(--t-head); font-weight: 600; }
+.oc-ss-acct { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--t-muted); }
 @media (max-width: 720px) {
   .oc-sc-options { grid-template-columns: 1fr; }
 }

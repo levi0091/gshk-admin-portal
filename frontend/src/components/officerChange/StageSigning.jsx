@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { officerChangeApi } from './api.js'
 import CrRefusal from './CrRefusal.jsx'
 import EffectiveDatesPanel from './EffectiveDatesPanel.jsx'
-import SignerChoice, { signerBlockedHint } from './SignerChoice.jsx'
+import { SignerSummary } from './SignerChoice.jsx'
 import { errorOf, isManual, filingOpensNote } from './workflow.js'
 
 /**
@@ -77,13 +77,12 @@ export default function StageSigning({ data, reload, can, goTo }) {
   const datesPending = (data.dates_missing || []).length > 0
   const opensNote = filingOpensNote(data)
   const mismatches = consents.filter(c => c.id_mismatch)
-  // Who signs (ND2A only, Levi 2026-11-13). A director chosen who can no longer
-  // sign stops Validate and Apply here rather than at CR.
+  // Who signs (ND2A only, Levi 2026-11-13) is CHOSEN on Data Verification and
+  // only restated here. A director chosen who can no longer sign stops Validate
+  // and Apply here rather than at CR.
   const signer = data.signer || {}
   const directorSigns = signer.offered && signer.party === 'director'
   const signerBlocked = directorSigns && !signer.director_ready
-  const signingDirector = directorSigns
-    ? (signer.candidates || []).find(c => c.person_id === signer.director_person_id) : null
 
   async function run(promise) {
     setError(null); setBusy(true)
@@ -149,8 +148,8 @@ export default function StageSigning({ data, reload, can, goTo }) {
     {!validated && <EffectiveDatesPanel data={data} reload={reload} can={can} />}
     <div className="card">
       <div className="card-title">Signing — e-Sign via CR</div>
-      <SignerChoice signer={signer} can={can} busy={busy} validated={validated} locked={signed}
-                    onChoose={body => run(officerChangeApi.patch(data.id, body))} />
+      <SignerSummary signer={signer} signatory={data.signatory}
+                     canChange={can.write && !signed} onChange={() => goTo(2)} />
       <ERegistryHints entries={data.entries} />
       {mismatches.length > 0 && (
         // Jacqueline, note 1: e-Reg is not updated when CR's register is.
@@ -184,16 +183,11 @@ export default function StageSigning({ data, reload, can, goTo }) {
           </div>
         </>
       )}
-      <ul style={{ margin: '10px 0 0', paddingLeft: 18 }}>
-        {signingDirector ? (
-          <li>The form itself: signed by {signingDirector.name} as Director, with their own
-            e-Registry account ({signingDirector.eservice_user_id}).</li>
-        ) : (
-          <li>The form itself: signed with your own e-Service account, for {data.signatory?.name}
+      {!signer.offered && <ul style={{ margin: '10px 0 0', paddingLeft: 18 }}>
+        <li>The form itself: signed with your own e-Service account, for {data.signatory?.name}
             {data.signatory?.selected_capacity || data.signatory?.default_capacity
               ? ` as ${data.signatory.selected_capacity || data.signatory.default_capacity}` : ''}.</li>
-        )}
-      </ul>
+      </ul>}
       {consents.length === 0 && (
         <p className="f-hint">No consent signature is needed on this form — only the overall signature.</p>
       )}
@@ -207,7 +201,7 @@ export default function StageSigning({ data, reload, can, goTo }) {
                 {busy ? 'Validating…' : 'Validate with CR'}
               </button>
               <span className="f-hint">
-                {signerBlocked ? signerBlockedHint(signer)
+                {signerBlocked ? 'Choose who signs on Data Verification first.'
                   : datesPending ? 'Enter the effective dates above first; CR checks them.'
                   : opensNote || 'CR checks the form, dates included, before it is signed.'}
               </span>
