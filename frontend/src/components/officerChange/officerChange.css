@@ -354,7 +354,7 @@ label.oc-check-main { cursor: pointer; }
 .oc-sc-tile.sel .oc-sc-dir { background: #fff; }
 .oc-sc-dir.sel { border-color: var(--carrot-20); }
 .oc-sc-dir[data-ready="no"] { background: transparent; border: 1px dashed var(--indigo-20); }
-.oc-sc-dir-row { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; cursor: pointer; font-size: 12.5px; }
+.oc-sc-dir-row { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; cursor: pointer; font-size: 12px; }
 .oc-sc-dir[data-ready="no"] .oc-sc-dir-row { cursor: default; }
 .oc-sc-dir-name { color: var(--t-head); font-weight: 500; overflow-wrap: anywhere; }
 /* A director this form ceases may still sign (CR lists them): said, not hidden. */

@@ -197,11 +197,11 @@ def _signer_patch(case: dict, body: CasePatchIn) -> dict:
         chosen = next((c for c in options if c["person_id"] == person_id), None)
         if chosen is None or not chosen["ready"]:
             if not person_id:
-                message = ("No director who stays on after this form has a complete "
+                message = ("No director has a complete "
                            "e-Registry account to sign with.")
             elif chosen is None:
-                message = ("That person is not a current director who stays on after "
-                           "this form, so cannot sign it.")
+                message = ("That person is not a current director of the company, "
+                           "so cannot sign this form.")
             else:
                 message = f"{chosen['name']} cannot sign: {chosen['reason']}."
             raise HTTPException(409, {"message": message,
