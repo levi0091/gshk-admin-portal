@@ -37,7 +37,7 @@ def test_062_revises_061_and_is_the_head():
     m = _migration()
     assert (m.revision, m.down_revision) == ("062", "061")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["062"]
+    assert script.get_heads() == ["063"]
 
 
 def test_the_column_is_nullable_text_with_a_length_check():

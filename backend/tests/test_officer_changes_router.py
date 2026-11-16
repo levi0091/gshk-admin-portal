@@ -161,6 +161,132 @@ def test_the_signatory_capacity_must_fit_the_signer(env):
     assert good.status_code == 200
 
 
+# -- who signs an ND2A (Levi 2026-11-13) ------------------------------------------------
+
+READY = {"person_id": "P2", "name": "Ben LAU", "ready": True, "reason": None}
+NOT_SET_UP = {"person_id": "P1", "name": "Ada CHAN", "ready": False,
+              "reason": "e-Registry not set up"}
+
+
+def test_choosing_a_director_to_sign_is_stored_and_audited(env):
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY, NOT_SET_UP]), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=0):
+        resp = client.patch("/officer-changes/K1", headers=H,
+                            json={"signing_party": "director",
+                                  "signing_director_person_id": "P2"})
+    assert resp.status_code == 200, resp.text
+    assert env.update.call_args.args[1] == {"signing_party": "director",
+                                            "signing_director_person_id": "P2"}
+    fields = [c.kwargs["metadata"]["field"] for c in env.audit.await_args_list]
+    assert fields == ["signing_party", "signing_director_person_id"]
+
+
+def test_a_director_without_an_eregistry_account_cannot_be_chosen(env):
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY, NOT_SET_UP]):
+        resp = client.patch("/officer-changes/K1", headers=H,
+                            json={"signing_party": "director",
+                                  "signing_director_person_id": "P1"})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["reason"] == "director_signer_unavailable"
+    assert "Ada CHAN" in detail["message"] and "not set up" in detail["message"]
+    env.update.assert_not_called()
+
+
+def test_someone_who_is_not_a_staying_director_cannot_be_chosen(env):
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY]):
+        resp = client.patch("/officer-changes/K1", headers=H,
+                            json={"signing_party": "director",
+                                  "signing_director_person_id": "P-STRANGER"})
+    assert resp.status_code == 409
+
+
+def test_changing_the_signer_after_validation_sends_the_form_back_to_cr(env):
+    env.case = {**CASE, "signing_party": "gshk"}
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY]), \
+         patch.object(oc.nar1_cases, "current_filing", return_value={"stage": "validated"}), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=1) as sup:
+        resp = client.patch("/officer-changes/K1", headers=H,
+                            json={"signing_party": "director"})
+    assert resp.status_code == 200, resp.text
+    sup.assert_called_once_with("K1")
+    assert env.update.call_args.args[1]["signing_director_person_id"] == "P2"
+    party = next(c.kwargs for c in env.audit.await_args_list
+                 if c.kwargs["metadata"]["field"] == "signing_party")
+    assert party["metadata"]["filings_superseded"] == 1
+
+
+def test_a_signed_form_keeps_its_signer(env):
+    env.case = {**CASE, "signing_party": "director", "signing_director_person_id": "P2"}
+    with patch.object(oc.nar1_cases, "current_filing", return_value={"stage": "signed"}), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case") as sup:
+        resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": "gshk"})
+    assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "already_signed"
+    sup.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["submitting", "submission_unknown"])
+def test_a_form_cr_may_hold_keeps_its_signer_even_on_a_restart(env, stage):
+    # A locked filing survives a restart, so renaming its signer would make the
+    # case say a director signed a form CR holds with GSHK's signature.
+    env.case = {**CASE, "signing_party": "gshk"}
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY]), \
+         patch.object(oc.nar1_cases, "current_filing", return_value={"stage": stage}):
+        for body in ({"signing_party": "director"},
+                     {"signing_party": "director", "restart_verification": True}):
+            resp = client.patch("/officer-changes/K1", headers=H, json=body)
+            assert resp.status_code == 409 and resp.json()["detail"]["reason"] == "cr_may_hold"
+    env.update.assert_not_called()
+
+
+def test_a_restart_may_change_the_signer_of_a_signed_form(env):
+    env.case = {**CASE, "signing_party": "gshk"}
+    with patch.object(oc.signer_choice, "candidates", return_value=[READY]), \
+         patch.object(oc.nar1_cases, "current_filing", return_value={"stage": "signed"}), \
+         patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=0), \
+         patch.object(oc.tpsi_filings, "supersede_all_for_case", return_value=1):
+        resp = client.patch("/officer-changes/K1", headers=H,
+                            json={"signing_party": "director", "restart_verification": True})
+    assert resp.status_code == 200, resp.text
+    written = env.update.call_args.args[1]
+    assert written["signing_party"] == "director" and written["client_approved"] is None
+
+
+def test_gshk_cannot_be_chosen_while_the_form_only_appoints_it(env):
+    # CR: "The user has no association with this company" (DEV 2026-11-13).
+    env.case = {**CASE, "signing_party": "director", "signing_director_person_id": "P2"}
+    with patch.object(oc.signer_choice, "gshk_problem",
+                      return_value="Get Started HK Limited becomes the company secretary "
+                                   "only when CR registers this form") as problem:
+        resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": "gshk"})
+    problem.assert_called_once()
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "gshk_signer_unavailable"
+    env.update.assert_not_called()
+
+
+def test_an_empty_signing_party_is_refused(env):
+    resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": ""})
+    assert resp.status_code == 400
+
+
+def test_choosing_the_same_signer_again_changes_nothing(env):
+    env.case = {**CASE, "signing_party": "gshk"}
+    with patch.object(oc.tpsi_filings, "supersede_all_for_case") as sup:
+        resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": "gshk"})
+    assert resp.status_code == 200
+    sup.assert_not_called()
+    env.update.assert_not_called()
+
+
+def test_only_an_nd2a_offers_the_signer_choice(env):
+    env.case = {**CASE, "form_code": "Nd2b"}
+    resp = client.patch("/officer-changes/K1", headers=H, json={"signing_party": "director"})
+    assert resp.status_code == 400
+    bad = client.patch("/officer-changes/K1", headers=H, json={"signing_party": "client"})
+    assert bad.status_code == 400
+
+
 def test_restart_revokes_links_supersedes_filings_and_reopens_the_list(env):
     env.case = {**CASE, "verification_sent_at": "2026-10-01T00:00:00Z", "client_approved": True}
     with patch.object(oc.nar1_approvals, "supersede_outstanding", return_value=2) as links, \

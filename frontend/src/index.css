@@ -71,6 +71,9 @@ a { text-decoration: none; color: inherit; }
   padding: 0 16px; height: 36px; border-radius: var(--r-sm);
   font-size: 13px; font-weight: 600; transition: .15s; cursor: pointer;
   font-family: var(--font);
+  /* One line, always: the height is fixed, so a label that wrapped inside it
+     ("Add / officer" on the ND2B card, 2026-11-12) was squeezed, not resized. */
+  white-space: nowrap;
 }
 .btn-primary { background: var(--indigo); color: #fff; border: none; }
 .btn-primary:hover { background: var(--indigo-90); }
@@ -281,6 +284,9 @@ tbody td { padding: 11px 8px; color: var(--t-body); vertical-align: middle; }
 .modal-confirm-text { font-size: 12px; color: var(--t-muted); margin-top: 6px; }
 .modal-confirm-actions {
   display: flex; justify-content: center; gap: 10px; margin-top: 18px;
+  /* .btn does not wrap its label, so a long one ("Restart — back to Client
+     Verification") moves to its own line instead of leaving the 340px card. */
+  flex-wrap: wrap;
 }
 
 /* The case is over. Grey, not red: closing is a decision somebody made on

@@ -79,7 +79,9 @@ def test_validate_builds_for_esign_and_asks_cr(env):
     assert resp.status_code == 200, resp.text
     assert build.await_args.kwargs["for_esign"] is True
     validate.assert_called_once()
-    assert env.update.call_args.args[1] == {"signing_method": "esign"}
+    # No secretary change and no stored choice: GSHK signs, and validating pins it.
+    assert env.update.call_args.args[1] == {"signing_method": "esign", "signing_party": "gshk",
+                                            "signing_director_person_id": None}
     assert "TPSI_VALIDATE" in _actions(env.audit)
 
 
@@ -165,6 +167,77 @@ def test_sign_applies_each_directors_stored_consent_then_the_overall(env):
     assert _actions(env.audit) == ["OFFICER_CONSENT_SIGNED", "TPSI_SIGN"]
     assert SECRET not in str(env.audit.await_args_list)
     sb.return_value.table.assert_called_with("officer_change_entries")
+
+
+# -- who signs: GSHK or a director (Levi 2026-11-13) -----------------------------------
+
+def test_validate_pins_the_director_it_validated_with(env):
+    env.cr.side_effect = None
+    pin = {"signing_party": "director", "signing_director_person_id": "P2"}
+    with patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ocf.signer_choice, "pinned_for_validation", return_value=pin), \
+         patch.object(ocf.prepare, "build_form_xml", new_callable=AsyncMock,
+                      return_value="<x/>") as build, \
+         patch.object(ocf.credentials, "load_signatory_identity", return_value=None), \
+         patch.object(ocf.filings, "create_filing", return_value={"id": "F1", "stage": "draft"}), \
+         patch.object(ocf.filings, "validate"):
+        resp = client.post("/officer-changes/K1/validate", headers=H)
+    assert resp.status_code == 200, resp.text
+    # The XML is built for the pinned signer, and the same signer is stored.
+    assert build.await_args.args[0]["signing_party"] == "director"
+    assert env.update.call_args.args[1] == {"signing_method": "esign", **pin}
+    fields = [c.kwargs["metadata"].get("field") for c in env.audit.await_args_list
+              if c.kwargs["action_type"] == "CASE_FIELD_UPDATED"]
+    assert fields == ["signing_party", "signing_director_person_id"]
+
+
+def test_validate_refuses_a_director_signer_who_cannot_sign(env):
+    with patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ocf.signer_choice, "pinned_for_validation",
+                      side_effect=ocf.signer_choice.SignerUnavailable("No director ...")):
+        resp = client.post("/officer-changes/K1/validate", headers=H)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "director_signer_unavailable"
+
+
+def test_a_director_signs_with_their_own_eregistry_account_not_the_staff_one(env):
+    env.cr.side_effect = None
+    env.case = {**CASE, "signing_party": "director", "signing_director_person_id": "P2"}
+    env.filing = {"id": "F1", "stage": "validated"}
+    with patch.object(ocf.credentials, "load_eservice",
+                      side_effect=AssertionError("used the staff credential")), \
+         patch.object(ocf.prepare, "consent_plan", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ocf.eservice, "load_for_signing",
+                      return_value=("ER-BEN", "LAU, BEN", SECRET)) as load, \
+         patch.object(ocf.signing, "sign", return_value={"result": "OK"}) as sign:
+        resp = client.post("/officer-changes/K1/sign", headers=H)
+    assert resp.status_code == 200, resp.text
+    load.assert_called_once_with("P2")
+    assert sign.call_args.kwargs["signatory_user_id"] == "ER-BEN"
+    assert sign.call_args.kwargs["eservice_password"] == SECRET
+    signed = next(c.kwargs for c in env.audit.await_args_list
+                  if c.kwargs["action_type"] == "TPSI_SIGN")
+    assert signed["metadata"]["signed_by"] == "director"
+    assert signed["metadata"]["signatory_account"] == "ER-BEN"
+    assert SECRET not in str(env.audit.await_args_list)
+
+
+def test_a_director_signer_without_a_stored_account_is_refused_before_cr(env):
+    env.case = {**CASE, "signing_party": "director", "signing_director_person_id": "P2"}
+    env.filing = {"id": "F1", "stage": "validated"}
+    with patch.object(ocf.eservice, "load_for_signing", return_value=None):
+        resp = client.post("/officer-changes/K1/sign", headers=H)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason"] == "director_signer_unavailable"
+    env.cr.assert_not_called()
+
+
+def test_a_gshk_signed_form_still_needs_the_staff_credential(env):
+    env.case = {**CASE, "signing_party": "gshk"}
+    env.filing = {"id": "F1", "stage": "validated"}
+    with patch.object(ocf.credentials, "load_eservice", return_value=None):
+        resp = client.post("/officer-changes/K1/sign", headers=H)
+    assert resp.json()["detail"]["reason"] == "no_signing_credential"
 
 
 def test_sign_names_a_director_without_a_stored_credential(env):

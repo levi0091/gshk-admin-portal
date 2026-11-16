@@ -26,9 +26,9 @@ from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
     apply, capacities, checks, deadlines, documents, eservice, particulars, prepare,
-    rules, secretaries_after,
+    rules, secretaries_after, signer_choice,
 )
-from services.tpsi import fees
+from services.tpsi import credentials, fees
 from services.tpsi import filings as tpsi_filings
 from services.tpsi.forms.cr_vocabularies import (
     CAPACITY_BODY_CORPORATE, CAPACITY_INDIVIDUAL, default_capacity,
@@ -1024,22 +1024,44 @@ def _summary(entry: dict) -> str:
     return f"{capacity} · {len(filed)} of {len(entry['items'])} change(s) to file"
 
 
-def _first_signer(candidates: list[dict], people: dict, corps: dict
-                  ) -> tuple[str, bool, str | None] | None:
+def _first_signer_row(candidates: list[dict], people: dict, corps: dict
+                      ) -> tuple[tuple[str, bool, str | None], dict] | None:
+    """The first row that names somebody, with the answer it gives."""
     for row in candidates:
         person = people.get(row.get("person_id") or "")
         if person:
             return (person.get("full_name") or person.get("full_name_zh") or "",
-                    False, person["id"])
+                    False, person["id"]), row
         name = (row.get("secretary_name") or row.get("corporate_name")
                 or (corps.get(row.get("corporate_entity_id") or "") or {}).get("company_name"))
         if name:
-            return name, True, None
+            return (name, True, None), row
     return None
+
+
+def _first_signer(candidates: list[dict], people: dict, corps: dict
+                  ) -> tuple[str, bool, str | None] | None:
+    found = _first_signer_row(candidates, people, corps)
+    return found[0] if found else None
 
 
 def _signatory_row(entity_id: str, entries: list[dict] | None = None
                    ) -> tuple[str, bool, str | None]:
+    return _signatory_pick(entity_id, entries)[0]
+
+
+def secretary_signer_joins(entity_id: str, entries: list[dict] | None = None) -> bool:
+    """True when the secretary who would sign is one THIS form appoints.
+
+    CR checks the signer's association "as at the date of signature", and a
+    secretary the form appoints is not associated until CR registers the form:
+    validating with it is refused as "The user has no association with this
+    company" (DEV, 2026-11-13, an ND2A appointing Get Started HK Limited)."""
+    return _signatory_pick(entity_id, entries)[1]
+
+
+def _signatory_pick(entity_id: str, entries: list[dict] | None = None
+                    ) -> tuple[tuple[str, bool, str | None], bool]:
     """`(name, is_corporate, person_id)` of whoever signs, in the ORDER the XML
     takes them (`nar1_mapper._signatory_candidates`): the secretary REGISTER
     first, a GSHK-flagged row before any other, then a secretary on the officer
@@ -1072,19 +1094,20 @@ def _signatory_row(entity_id: str, entries: list[dict] | None = None
         rows = [r for r in register if not secretaries_after.is_ceased(r, gone)]
         for entry in joining:
             if entry.get("person_id"):
-                rows.append({"person_id": entry["person_id"], "is_gshk": False})
+                rows.append({"person_id": entry["person_id"], "is_gshk": False,
+                             "joins": True})
             else:
                 corp = corps.get(entry.get("corporate_entity_id") or "") or {}
                 rows.append({"corporate_entity_id": entry.get("corporate_entity_id"),
                              "is_gshk": str(corp.get("br_number") or "").strip()
-                             == secretaries_after.GSHK_BR})
+                             == secretaries_after.GSHK_BR, "joins": True})
         rows.sort(key=lambda r: not r.get("is_gshk"))
         rows += [o for o in officers if not secretaries_after.is_ceased(o, gone)]
-        found = _first_signer(rows, people, corps)
+        found = _first_signer_row(rows, people, corps)
         if found:
-            return found
+            return found[0], bool(found[1].get("joins"))
     register.sort(key=lambda r: not r.get("is_gshk"))
-    return _first_signer(register + officers, people, corps) or ("", True, None)
+    return (_first_signer(register + officers, people, corps) or ("", True, None)), False
 
 
 def _signatory_party(entity_id: str, entries: list[dict] | None = None) -> tuple[str, bool]:
@@ -1111,7 +1134,24 @@ def _signatory(entity_id: str, case: dict, entries: list[dict] | None = None) ->
     choices = sorted(CAPACITY_BODY_CORPORATE if is_corporate else CAPACITY_INDIVIDUAL)
     return {"name": name, "is_corporate": is_corporate, "capacities": choices,
             "default_capacity": default_capacity(is_corporate=is_corporate),
-            "selected_capacity": case.get("signatory_capacity")}
+            "selected_capacity": case.get("signatory_capacity"), "party": "gshk"}
+
+
+def _director_signatory(director: dict) -> dict:
+    """`_signatory`'s shape for a director signing an ND2A (`signer_choice`):
+    a natural person, in the one capacity a director signs in."""
+    cap = signer_choice.DIRECTOR_CAPACITY
+    return {"name": director.get("name"), "is_corporate": False, "capacities": [cap],
+            "default_capacity": cap, "selected_capacity": cap, "party": "director",
+            "person_id": director.get("person_id"),
+            "eservice_user_id": director.get("eservice_user_id")}
+
+
+def _signer_view(case: dict, entries: list[dict], user: dict, gshk: dict) -> dict:
+    staff = credentials.load_signatory_identity(user["id"]) if user.get("id") else None
+    return signer_choice.view(case, entries,
+                              staff_account=(staff or {}).get("eservice_user_id") or None,
+                              gshk_signatory=gshk)
 
 
 # -- the composite -----------------------------------------------------------------
@@ -1202,6 +1242,18 @@ async def composite(case_id: str, *, user: dict) -> dict:
         item["consent_mode"] = "esign" if row.get("ready") and esign else "manual"
     filing = _soft(problems, "The CR filing", lambda: nar1_cases.current_filing(case_id), None)
     consent_statuses(consents, filing)
+    gshk_signatory = _signatory(case["entity_id"], case, entries)
+    signer = _soft(problems, "Who signs the form",
+                   lambda: _signer_view(case, entries, user, gshk_signatory), {"offered": False})
+    signatory = gshk_signatory
+    if signer.get("offered") and signer.get("party") == signer_choice.DIRECTOR \
+            and case.get("signing_method") != "manual":
+        # The signer the e-Sign form names, so Data Verification and Signing
+        # say the same thing the XML does (`prepare._director_signer`).
+        chosen = next((c for c in signer.get("candidates") or []
+                       if c["person_id"] == signer.get("director_person_id")), None)
+        if chosen and chosen.get("ready"):
+            signatory = _director_signatory(chosen)
 
     return {
         **case,
@@ -1237,7 +1289,8 @@ async def composite(case_id: str, *, user: dict) -> dict:
                   "default": "esign" if esign else "manual", "consents": consents},
         "officers": officers,
         "documents": docs,
-        "signatory": _signatory(case["entity_id"], case, entries),
+        "signatory": signatory,
+        "signer": signer,
         "profile_changes": profile_changes,
         "problems": problems,
         "filing": ({k: filing.get(k) for k in ("id", "stage", "validated_at",

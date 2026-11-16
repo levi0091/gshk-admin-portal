@@ -130,15 +130,22 @@ export default function StageConfirmation({ data, reload, can }) {
       <ProfileChangesList changes={data.profile_changes} documents={data.documents} done={!unfinished} />
 
       {(canUndo || data.undone_at) && (
-        <div className="oc-send-row">
+        // The portal's action bar, as on the NAR1 stages: it used to be a bare
+        // row floating under the last card, left-aligned, with nothing saying
+        // when the button is the right one to press (2026-11-12).
+        <div className="action-bar">
+          <div className="ab-note">
+            {data.undone_at
+              ? <span className="f-hint">Profile update undone {formatDateTime(data.undone_at)}.</span>
+              : 'Only if the Companies Registry rejected this filing.'}
+          </div>
           {canUndo && (
-            <button className="btn btn-danger-outline btn-outline" disabled={busy}
-                    onClick={() => setConfirmUndo(true)}>
-              CR rejected it — undo profile update
-            </button>
-          )}
-          {data.undone_at && (
-            <span className="f-hint">Profile update undone {formatDateTime(data.undone_at)}.</span>
+            <div className="ab-actions">
+              <button className="btn btn-danger-outline btn-outline" disabled={busy}
+                      onClick={() => setConfirmUndo(true)}>
+                CR rejected it — undo profile update
+              </button>
+            </div>
           )}
         </div>
       )}
