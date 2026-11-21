@@ -231,6 +231,12 @@ def test_differences_come_back_in_a_stable_order():
      "Director (individual) 2 · Address · Building"),
     ("shareCapitals/shareCapital[3]/paidUpCapital",
      "Share capital · Share class 3 · Paid-up capital"),
+    # Filed since 2026-11-21: a return validated before then drifts on these
+    # at submit, and the refusal has to name them in words.
+    ("brName", "Business name"),
+    ("totalAmountMortCharge", "Mortgages and charges"),
+    ("indSecList/indSec[1]/reason",
+     "Company secretary (individual) 1 · Reason no TCSP licence is required"),
 ])
 def test_labels_read_as_english(path, expected):
     assert drift._label(path) == expected
