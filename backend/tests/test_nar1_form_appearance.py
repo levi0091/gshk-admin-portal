@@ -702,3 +702,10 @@ def test_layout_wraps_words_before_it_shrinks_them():
     lines, size = ap.layout("KOHKOHKOH KOHKOH KOHKOH", (0.0, 0.0, 140.0, 30.0))
     assert len(lines) == 2
     assert size == ap.DEFAULT_SIZE
+
+
+@pytest.mark.parametrize("value", ["CHAN", "Flat A, 12/F", "Ordinary", "1"])
+def test_a_value_that_already_fitted_keeps_its_size(value):
+    """The across-check only bites on a word wider than the box."""
+    ap.register_fonts()
+    assert ap.layout(value, (0.0, 0.0, 140.0, 30.0)) == ([value], ap.DEFAULT_SIZE)

@@ -1927,3 +1927,19 @@ def test_every_new_field_passes_crs_schema():
     g["company_phone"] = "+852 3500 1234"
     g["business_names"] = [{"business_name": "TEST TRADING"}]
     assert nar1.validate(mapped(g)) == []
+
+
+def test_an_overlong_licence_number_is_not_filed_and_does_not_block():
+    """The persons screen does not cap it; CR takes 20 characters. Truncating
+    would file somebody else's licence, so it is treated as absent."""
+    g = _individual_secretary(tcsp_licence_no="TC" + "9" * 19)
+    sec = mapped(g)["indSecList"][0]
+    assert "indvTcspNo" not in sec
+    assert (sec["exempted"], sec["reason"]) == ("Y", "Not for business")
+    assert nar1.validate(mapped(g)) == []
+
+
+def test_an_overlong_exemption_reason_falls_back_to_the_default():
+    g = _individual_secretary(tcsp_exemption_reason="x" * 351)
+    assert mapped(g)["indSecList"][0]["reason"] == "Not for business"
+    assert nar1.validate(mapped(g)) == []

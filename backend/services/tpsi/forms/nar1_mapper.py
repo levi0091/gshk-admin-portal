@@ -820,6 +820,10 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
 #: is not carrying on a trust or company service business.
 DEFAULT_TCSP_EXEMPTION_REASON = "Not for business"
 
+#: indSec's indvTcspNo and reason limits (nar1_schema.json).
+_TCSP_NO_MAX = 20
+_TCSP_REASON_MAX = 350
+
 
 def _individual_secretary_licence(person: dict) -> dict:
     """indSec's indvTcspNo / exempted / reason (migration 038 columns).
@@ -829,11 +833,16 @@ def _individual_secretary_licence(person: dict) -> dict:
     or the other; leaving all three out printed an unanswered section 12A on
     every return with a natural-person secretary.
     """
+    # Over CR's length is treated as absent, never truncated and never sent:
+    # the persons screen does not cap either column, and an optional field
+    # must not turn a fileable return into a FormValidationError. A cut-off
+    # licence number would be somebody else's licence.
     licence = (person.get("tcsp_licence_no") or "").strip()
-    if licence:
+    if licence and len(licence) <= _TCSP_NO_MAX:
         return {"indvTcspNo": licence, "exempted": "N"}
-    reason = ((person.get("tcsp_exemption_reason") or "").strip()
-              or DEFAULT_TCSP_EXEMPTION_REASON)
+    reason = (person.get("tcsp_exemption_reason") or "").strip()
+    if not reason or len(reason) > _TCSP_REASON_MAX:
+        reason = DEFAULT_TCSP_EXEMPTION_REASON
     return {"exempted": "Y", "reason": reason}
 
 
