@@ -228,6 +228,10 @@ _PERSON_FIELD_CODES = {
     "place_of_birth": VP_COMPLIANCE,
     "marital_status": VP_COMPLIANCE,
     "date_of_death": VP_COMPLIANCE,
+    # An individual secretary's own licence, filed on NAR1 s12A since
+    # 2026-11-21. Same folder as the company's licence above.
+    "tcsp_licence_no": VP_STATUTORY,
+    "tcsp_exemption_reason": VP_STATUTORY,
 }
 
 # (relation, operation) -> code. Officers and secretaries are both statutory

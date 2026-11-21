@@ -322,3 +322,32 @@ def test_a_schedule_page_number_uses_the_footers_sans_face(rendered):
     assert size == 8.0, f"the schedule page number drew at {size}pt, not 8pt"
     assert "Helvetica" in face, \
         f"the schedule page number drew in {face}, not the footer's sans face"
+
+
+# ---------------------------------------------------------------------------
+# A surname that is one long word (GSHK 2026-11-21, Schedule 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("surname", ["CHARLINGTUHHE", "KOHKOHKOHKOHKOHKOHKOH"])
+def test_a_one_word_surname_stays_inside_its_box(surname):
+    """It ran out of the Surname box and over Other Names: `wrap` leaves a word
+    longer than the line on a line of its own, and `layout` counted lines
+    without asking whether that one line fit across."""
+    reader = PdfReader(io.BytesIO(fill.render(
+        build_xml(members=(surname,)), submitted_on=SPECIMEN_FILED_ON)))
+    field = fm.SCHEDULE_1[0]["surname_en"]
+    text, x, _, size, _ = drawn(reader, field)
+    _, _, x1, _ = box(reader, field)
+    assert text == surname, "a surname must never be broken"
+    assert x + ap.measure(text, size) <= x1
+
+
+def test_a_two_word_surname_still_wraps_at_full_size():
+    """Picture 2: "KOHKOHKOH KOHKOH KOHKOH" already fitted on two lines, and
+    shrinking it instead would be a regression."""
+    reader = PdfReader(io.BytesIO(fill.render(
+        build_xml(members=("KOHKOHKOH KOHKOH KOHKOH",)),
+        submitted_on=SPECIMEN_FILED_ON)))
+    text, _, _, size, _ = drawn(reader, fm.SCHEDULE_1[0]["surname_en"])
+    assert text != "KOHKOHKOH KOHKOH KOHKOH"   # wrapped, not on one line
+    assert size >= 8.0

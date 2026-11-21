@@ -374,14 +374,25 @@ def layout(text: str, rect, *, size: float = DEFAULT_SIZE, bold: bool = True,
     `_MIN_SIZE` rather than the two tidy lines CR's own form shows. So the
     value is WRAPPED into the lines the box can hold, and only shrunk when
     even that will not fit.
+
+    "Fit" means across as well as down. `wrap` leaves a word longer than the
+    line on a line of its own, so one line of a one-word surname always "fits"
+    the line count while running straight out of the box into Other Names
+    (GSHK 2026-11-21, Schedule 1). Such a word is shrunk until it ends inside
+    the box's right edge, and is never broken: a statutory return must not
+    split somebody's name. The edge, not the inset margin: CR's footer page
+    numbers sit in boxes narrower than two insets and must stay at 8pt.
     """
     x0, y0, x1, y1 = (float(v) for v in rect)
     usable = (x1 - x0) - 2 * _INSET
+    inside = (x1 - x0) - _INSET
     height = y1 - y0
     current = size
     while current > _MIN_SIZE:
         lines = wrap(text, usable, current, bold=bold, latin=latin)
-        if len(lines) <= _lines_that_fit(height, current):
+        if (len(lines) <= _lines_that_fit(height, current)
+                and all(measure(line, current, bold=bold, latin=latin) <= inside
+                        for line in lines)):
             return lines, round(current, 2)
         current -= 0.25
     # At the floor, take whatever the box holds and let it overflow visibly.

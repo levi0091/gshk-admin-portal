@@ -806,3 +806,47 @@ def test_section_7_still_says_none_given_when_there_is_no_email():
     for a company nobody has typed an address onto."""
     values = values_of(fill.render_fields(build_xml()))
     assert values[fm.MAIN_2["email_address"]] == [fill.NONE_GIVEN]
+
+
+
+# ---- s2, nature, s8, s9, s12A: printed from the XML (GSHK 2026-11-21) -------
+
+def _with(extra_model="", extra_secretary=""):
+    xml = build_xml()
+    xml = xml.replace("<cr:formCode>", extra_model + "<cr:formCode>", 1)
+    return xml.replace("</cr:indSec>", extra_secretary + "</cr:indSec>", 1)
+
+
+def test_the_business_name_and_nature_are_printed():
+    values = values_of(fill.render_fields(_with(
+        "<cr:brName>TEST TRADING</cr:brName><cr:nature>096</cr:nature>")))
+    assert values[fm.MAIN_1["business_name"]] == ["TEST TRADING"]
+    assert values[fm.MAIN_1["business_nature_code"]] == ["096"]
+
+
+def test_the_nature_description_comes_from_the_code_before_CR_writes_it():
+    from services.tpsi.forms.cr_vocabularies import BUSINESS_NATURE
+    values = values_of(fill.render_fields(_with("<cr:nature>096</cr:nature>")))
+    assert values[fm.MAIN_1["business_nature_desc"]] == [BUSINESS_NATURE["096"]]
+
+
+def test_CRs_own_nature_description_wins_once_it_has_one():
+    values = values_of(fill.render_fields(_with(
+        "<cr:nature>096</cr:nature><cr:natureDesc>CR WORDING</cr:natureDesc>")))
+    assert values[fm.MAIN_1["business_nature_desc"]] == ["CR WORDING"]
+
+
+def test_the_phone_and_mortgages_are_printed():
+    values = values_of(fill.render_fields(_with(
+        "<cr:telNo>35001234</cr:telNo>"
+        "<cr:totalAmountMortCharge>12345678</cr:totalAmountMortCharge>")))
+    assert values[fm.MAIN_2["phone"]] == ["35001234"]
+    assert values[fm.MAIN_2["mortgages_total"]] == ["12,345,678.00"]
+
+
+def test_an_unlicensed_individual_secretary_prints_the_reason_and_the_tick():
+    values = values_of(fill.render_fields(_with(extra_secretary=(
+        "<cr:exempted>Y</cr:exempted><cr:reason>Not for business</cr:reason>"))))
+    block = fm.SECRETARY_INDIVIDUAL
+    assert values[block["tcsp_reason"]] == ["Not for business"]
+    assert values[block["tcsp_not_required"]] == [fm.CHECKBOX_ON]

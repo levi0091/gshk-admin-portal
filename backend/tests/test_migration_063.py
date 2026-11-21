@@ -25,14 +25,14 @@ def _statements(direction: str) -> list[str]:
     return seen
 
 
-def test_063_revises_062_and_is_the_head():
+def test_063_revises_062():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     m = _migration()
     assert (m.revision, m.down_revision) == ("063", "062")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["063"]
+    assert script.get_revision("063").down_revision == "062"
 
 
 def test_both_columns_are_nullable_and_the_party_is_checked():

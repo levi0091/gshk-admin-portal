@@ -684,3 +684,21 @@ def test_a_character_neither_CJK_face_carries_still_refuses_loudly():
     with pytest.raises((ap.AppearanceError, fill.FormFillError)) as excinfo:
         fill.render(build_xml(directors=("😀 EMOJI",)))
     assert "😀" in str(excinfo.value) or "U+1F600" in str(excinfo.value)
+
+
+def test_layout_shrinks_one_unbreakable_word_until_it_fits_across():
+    """A word wider than the box used to be accepted because it was one line in
+    a box with room for two, and so drew over the box next to it."""
+    ap.register_fonts()
+    rect = (0.0, 0.0, 140.0, 30.0)
+    lines, size = ap.layout("KOHKOHKOHKOHKOHKOHKOH", rect)
+    assert lines == ["KOHKOHKOHKOHKOHKOHKOH"]
+    assert size < ap.DEFAULT_SIZE
+    assert ap.measure(lines[0], size) <= 140.0 - ap._INSET
+
+
+def test_layout_wraps_words_before_it_shrinks_them():
+    ap.register_fonts()
+    lines, size = ap.layout("KOHKOHKOH KOHKOH KOHKOH", (0.0, 0.0, 140.0, 30.0))
+    assert len(lines) == 2
+    assert size == ap.DEFAULT_SIZE

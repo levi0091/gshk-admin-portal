@@ -69,11 +69,12 @@ RULES: list[tuple] = [
     # These must precede the generic rules below or they resolve to
     # entities.tcsp_licence_no, which would file GSHK's licence number against
     # a natural person.
-    ("indSecList", "tcspNo",    UNSOURCED,
-     "an individual secretary's own TCSP licence; no persons column holds it "
-     "and Viewpoint's only %tcsp% matches are workflow-template flags"),
-    ("indSecList", "exempted",  UNSOURCED, "as tcspNo on an individual secretary"),
-    ("indSecList", "reason",    UNSOURCED, "as tcspNo on an individual secretary"),
+    # Their own columns since migration 038. With neither set, the mapper
+    # files exempted Y and "Not for business" (GSHK 2026-11-21).
+    ("indSecList", "tcspNo",    MAPPED, "persons.tcsp_licence_no"),
+    ("indSecList", "exempted",  DERIVED,
+     "Y unless persons.tcsp_licence_no is set, as CR requires"),
+    ("indSecList", "reason",    MAPPED, "persons.tcsp_exemption_reason"),
 
     (None, "tcspNo",            MAPPED, "entities.tcsp_licence_no"),
     (None, "corpTcspNo",        MAPPED, "entities.tcsp_licence_no"),

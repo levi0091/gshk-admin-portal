@@ -392,6 +392,30 @@ def test_update_company_audits_only_changed_fields():
         assert events[0]["event_code"] == "ADC"       # Viewpoint's master-file code
 
 
+def test_the_nar1_phone_choice_is_saved_and_audited():
+    """NAR1 s8 (migration 064): GSHK's "Not use" default, turned on per company."""
+    current = {"id": "e1", "company_name": "Co", "nar1_show_phone": False}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase") as msb, \
+         patch("routers.companies.log_events", new=AsyncMock()) as audit:
+        sb = msb.return_value
+        sb.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = current
+        sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+            {**current, "nar1_show_phone": True}]
+        resp = client.patch("/companies/e1", json={"nar1_show_phone": True}, headers=H)
+        assert resp.status_code == 200
+        assert sb.table.return_value.update.call_args.args[0] == {"nar1_show_phone": True}
+        events = audit.await_args.args[0]
+        assert [(e["old_value"], e["new_value"]) for e in events] == [(False, True)]
+
+
+def test_the_nar1_phone_choice_must_be_a_boolean():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.companies.get_supabase"):
+        resp = client.patch("/companies/e1", json={"nar1_show_phone": "maybe"}, headers=H)
+        assert resp.status_code == 422
+
+
 def test_update_company_no_fields_400():
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.companies.get_supabase"):

@@ -1803,3 +1803,127 @@ def test_the_email_reaches_the_xml_where_cr_puts_it():
     assert (
         "<cr:corpEmailAddr>dataresources@getstarted.hk</cr:corpEmailAddr>" in xml
     )
+
+
+# ---- s2 business name, nature, s8 phone, s9 mortgages, s12A licence ---------
+# GSHK 2026-11-21: "the information below (pages 1 to 3) can be filled in the
+# system but cannot be shown on the draft NAR1 form." The renderer read all of
+# these from the XML; the mapper had never put them there.
+
+def _company(**entity_over):
+    g = graph()
+    g["entity"].update(entity_over)
+    return g
+
+
+def test_the_current_business_name_is_filed():
+    g = _company()
+    g["business_names"] = [
+        {"business_name": "OLD TRADING", "cessation_date": "2020-01-01"},
+        {"business_name": "TEST TRADING", "cessation_date": None},
+    ]
+    data = mapped(g)
+    assert data["brName"] == "TEST TRADING"
+    assert "<cr:brName>TEST TRADING</cr:brName>" in nar1.build_nar1_xml(data)
+
+
+def test_a_chinese_only_business_name_is_filed_as_it_stands():
+    g = _company()
+    g["business_names"] = [{"business_name": None, "business_name_zh": "測試貿易"}]
+    assert mapped(g)["brName"] == "測試貿易"
+
+
+def test_no_business_name_files_nothing():
+    assert "brName" not in mapped(graph())
+
+
+def test_too_many_names_for_the_box_files_the_first_rather_than_a_cut_list():
+    g = _company()
+    g["business_names"] = [{"business_name": "A" * 100}, {"business_name": "B" * 100}]
+    assert mapped(g)["brName"] == "A" * 100
+
+
+def test_the_business_nature_code_is_filed_but_not_its_description():
+    """natureDesc is CR's to fill after validation, like dateReturnMadeUp."""
+    data = mapped(_company(business_nature_code="096",
+                           business_nature_desc="Anything"))
+    assert data["nature"] == "096"
+    assert "natureDesc" not in data
+
+
+def test_an_unknown_business_nature_code_is_omitted_not_refused():
+    """Business nature is Mandatory = N: it must never stop a filing."""
+    assert "nature" not in mapped(_company(business_nature_code="XYZ"))
+
+
+def test_the_phone_is_not_filed_by_default():
+    g = _company()
+    g["company_phone"] = "+852 3500 1234"
+    assert "telNo" not in mapped(g)
+
+
+@pytest.mark.parametrize("stored", ["+852 3500 1234", "35001234", "(852) 3500-1234"])
+def test_a_chosen_hong_kong_phone_is_filed_as_eight_digits(stored):
+    g = _company(nar1_show_phone=True)
+    g["company_phone"] = stored
+    assert mapped(g)["telNo"] == "35001234"
+
+
+@pytest.mark.parametrize("stored", ["+65 6123 4567", "+44 20 7946 0958", "1234", None])
+def test_a_phone_that_is_not_a_hong_kong_number_is_never_filed(stored):
+    g = _company(nar1_show_phone=True)
+    g["company_phone"] = stored
+    assert "telNo" not in mapped(g)
+
+
+def test_the_mortgages_total_is_filed():
+    data = mapped(_company(mortgages_total="12345678"))
+    assert data["totalAmountMortCharge"] == "12345678"
+
+
+def test_no_mortgages_total_files_nothing():
+    assert "totalAmountMortCharge" not in mapped(_company(mortgages_total="  "))
+
+
+def _individual_secretary(**person_over):
+    return graph(
+        secretaries=[{"person_id": "p1", "is_gshk": False, "is_current": True}],
+        persons={"p1": person(**person_over)},
+        addresses={"a1": ADDR, "a2": ADDR},
+    )
+
+
+def test_an_unlicensed_individual_secretary_is_not_for_business_by_default():
+    sec = mapped(_individual_secretary())["indSecList"][0]
+    assert sec["exempted"] == "Y"
+    assert sec["reason"] == "Not for business"
+    assert "indvTcspNo" not in sec
+
+
+def test_an_individual_secretarys_own_exemption_reason_wins():
+    sec = mapped(_individual_secretary(
+        tcsp_exemption_reason="Acting for a group company"))["indSecList"][0]
+    assert (sec["exempted"], sec["reason"]) == ("Y", "Acting for a group company")
+
+
+def test_a_licensed_individual_secretary_files_the_licence_and_no_reason():
+    sec = mapped(_individual_secretary(tcsp_licence_no="TC001234"))["indSecList"][0]
+    assert (sec["indvTcspNo"], sec["exempted"]) == ("TC001234", "N")
+    assert "reason" not in sec
+
+
+def test_a_director_carries_no_licence_fields():
+    g = graph(officers=[{"id": "o1", "role": "director", "person_id": "p1",
+                         "is_current": True}],
+              persons={"p1": person()}, addresses={"a1": ADDR, "a2": ADDR})
+    director = mapped(g)["indDirList"][0]
+    assert not {"indvTcspNo", "exempted", "reason"} & director.keys()
+
+
+def test_every_new_field_passes_crs_schema():
+    g = _individual_secretary()
+    g["entity"].update(business_nature_code="096", mortgages_total="Nil",
+                       nar1_show_phone=True)
+    g["company_phone"] = "+852 3500 1234"
+    g["business_names"] = [{"business_name": "TEST TRADING"}]
+    assert nar1.validate(mapped(g)) == []

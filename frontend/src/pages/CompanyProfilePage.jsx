@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { liveCaseWarning } from '../lib/liveCase.js'
+import { NAR1_PHONE_FIELD, nar1PhoneLabel } from '../lib/nar1Phone.js'
 import { formatDate, formatNumber } from '../lib/format.js'
 import StatusBadge from '../components/StatusBadge.jsx'
 import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
@@ -296,6 +297,7 @@ export default function CompanyProfilePage() {
     setDraft({
       ...Object.fromEntries(EDITABLE.map(f => [f.key, company[f.key] ?? ''])),
       company_phone: companyPhone(company),
+      [NAR1_PHONE_FIELD.key]: company[NAR1_PHONE_FIELD.key] === true,
     })
     setAddrDraft({ ...EMPTY_ADDRESS, ...(company.registered_address || {}) })
     setEditing(true)
@@ -354,7 +356,10 @@ export default function CompanyProfilePage() {
     return Object.fromEntries(
       Object.entries(draft)
         .filter(([k]) => k !== PHONE_FIELD.key)
-        .filter(([k, v]) => (company[k] ?? '') !== v)
+        // A boolean is compared as one: a row from before migration 064 has
+        // no flag at all, and that means false, not "changed".
+        .filter(([k, v]) => (typeof v === 'boolean'
+          ? company[k] === true : (company[k] ?? '')) !== v)
     )
   }
 
@@ -712,6 +717,9 @@ export default function CompanyProfilePage() {
                 <FormField field={{ ...PHONE_FIELD, full: true }}
                            value={draft[PHONE_FIELD.key]} lookups={lookups}
                            onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
+                <FormField field={NAR1_PHONE_FIELD}
+                           value={draft[NAR1_PHONE_FIELD.key]} lookups={lookups}
+                           onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
               </div>
             ) : (
               <div className="kv-list">
@@ -760,6 +768,7 @@ export default function CompanyProfilePage() {
                   {company.email}
                 </Kv>
                 <Kv label="Company Phone">{companyPhone(company) || null}</Kv>
+                <Kv label="Phone on NAR1">{nar1PhoneLabel(company)}</Kv>
                 <Kv label="Create Date">{formatDate(company.created_at)}</Kv>
                 <Kv label="Incorporation Date">{formatDate(company.incorporation_date)}</Kv>
                 {/* CASE NOTES WERE EDITABLE AND DISPLAYED NOWHERE. Typing a

@@ -93,6 +93,9 @@ _EDITABLE_FIELDS = {
     # corpSec/corpDir on THEIR returns -- and diffs all three against its own
     # database, which is how a blank one became a discrepancy notice.
     "email",
+    # NAR1 s8 (migration 064): whether the company phone is filed at all.
+    # GSHK's default is "Not use", so it is off until somebody turns it on.
+    "nar1_show_phone",
 }
 
 # Dashboard tiles (wireframe_v7 s2) + which statuses count as unfinished work.
@@ -278,6 +281,8 @@ class CreateCompanyRequest(BaseModel):
     business_nature_code: Optional[str] = None
     mortgages_total: Optional[str] = None
     email: Optional[str] = None
+    # Omitted means the column default, false: the phone is not filed.
+    nar1_show_phone: Optional[bool] = None
     # Add Company form (wireframe_v7): these live in `addresses` / `contacts`,
     # not on `entities` — created alongside the company below.
     registered_address: Optional[str] = None
@@ -304,6 +309,7 @@ class UpdateCompanyRequest(BaseModel):
     business_nature_code: Optional[str] = None
     mortgages_total: Optional[str] = None
     email: Optional[str] = None
+    nar1_show_phone: Optional[bool] = None
     ar_last_date: Optional[str] = None
     ar_next_date: Optional[str] = None
     ar_due_date: Optional[str] = None
