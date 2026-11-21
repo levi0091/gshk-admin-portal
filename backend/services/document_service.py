@@ -14,9 +14,13 @@ Rules enforced here:
 - Every mutation audits via audit_service (PBI-11); audit never blocks the op.
 """
 import hashlib
+import re
+import time
+import unicodedata
 import uuid
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
+import httpx
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,21 +60,109 @@ def _storage_path(owner_kind: str, owner_id: str, document_type_code: str,
     section carries exactly one document type (`cr_receipt`) and a constant
     directory between the id and the version says nothing.
     """
-    safe_name = (file_name or "file").replace("/", "_")
+    safe_name = storage_name(file_name)
     if owner_kind in _CASE_OWNER_KINDS:
         return f"{owner_kind}/{owner_id}/{version}/{safe_name}"
     return f"{owner_kind}/{owner_id}/{document_type_code}/{version}/{safe_name}"
 
 
-def _upload_bytes(sb, path: str, content: bytes, mime_type: Optional[str]) -> None:
+# ── Storage keys ─────────────────────────────────────────────────────────────
+# SUPABASE STORAGE REFUSES MOST OF WHAT A FILE NAME CAN HOLD (measured on DEV,
+# 2026-11-21): "—", "–", "é", Chinese, and `# % [ ] { } ^ ~ | < >` each answer
+# 400 InvalidKey. CR's own form PDFs are named "ND2A Notification — Form ND2A
+# _ X LIMITED.pdf", so the first ND2 notice GSHK dropped failed. The KEY is
+# therefore an ASCII rendering of the name. The NAME is untouched: `file_name`
+# keeps it, the screen shows it, and a download is served under it (the
+# signed URL's `download` option), so nobody ever sees the key.
+
+_DASHES = dict.fromkeys(map(ord, "‐‑‒–—―−"), "-")
+#: A conservative subset of what Storage accepts.
+_KEY_UNSAFE = re.compile(r"[^A-Za-z0-9 _.()\-]+")
+_KEY_STEM_MAX = 100
+
+
+def storage_name(file_name) -> str:
+    """The last segment of a storage key for `file_name`: ASCII, never empty,
+    extension kept, at most ~110 characters."""
+    raw = str(file_name or "").replace("/", "_").replace("\\", "_").translate(_DASHES)
+    ascii_ = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode()
+    stem, dot, ext = ascii_.rpartition(".")
+    if not dot or not re.fullmatch(r"[A-Za-z0-9]{1,10}", ext):
+        stem, ext = ascii_, ""
+    ext = ext.lower()
+    stem = _KEY_UNSAFE.sub("_", stem)
+    stem = re.sub(r"\s+", " ", re.sub(r"_+", "_", stem)).strip(" ._-")
+    stem = stem[:_KEY_STEM_MAX].rstrip(" ._-") or "file"
+    return f"{stem}.{ext}" if ext else stem
+
+
+# ── Transient failures ───────────────────────────────────────────────────────
+# Supabase sits behind Cloudflare, which drops connections whenever it likes
+# (db/supabase.py retries READS for exactly this). A write here is retried
+# only where a second attempt cannot make a second document: the storage
+# upload upserts onto a key no other upload shares, and every insert carries
+# an id chosen BEFORE the first attempt, so a retry of an insert that did land
+# meets its own primary key and is read back instead of written twice.
+
+_TRANSIENT = (httpx.TransportError,)
+_ATTEMPTS = 3
+_BACKOFF = 0.4
+T = TypeVar("T")
+
+
+def _retrying(step: Callable[[], T]) -> T:
+    for attempt in range(_ATTEMPTS):
+        try:
+            return step()
+        except _TRANSIENT:
+            if attempt == _ATTEMPTS - 1:
+                raise
+            time.sleep(_BACKOFF * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+def _is_duplicate_key(exc: Exception) -> bool:
+    return getattr(exc, "code", None) == "23505" or "23505" in str(exc)
+
+
+def _insert_once(sb, table: str, row: dict) -> dict:
+    """Insert `row` (which carries its own `id`) exactly once, across retries."""
+    tried = False
+
+    def step():
+        nonlocal tried
+        first, tried = not tried, True
+        try:
+            return sb.table(table).insert(row).execute().data[0]
+        except _TRANSIENT:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if not first and _is_duplicate_key(exc):
+                # The attempt that "failed" had landed: this is our own row.
+                return (sb.table(table).select("*").eq("id", row["id"])
+                        .single().execute()).data
+            raise
     try:
-        sb.storage.from_(BUCKET).upload(
+        return _retrying(step)
+    except _TRANSIENT as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The connection to the database dropped while saving. "
+                   "Nothing was saved twice; please try again.") from exc
+
+
+def _upload_bytes(sb, path: str, content: bytes, mime_type: Optional[str]) -> None:
+    """Store the bytes. Refusals surface as 503, NEVER 502: Cloudflare and the
+    Railway edge answer an origin 502 with their own page, which carries no
+    CORS headers, so the browser reported only "Failed to fetch"."""
+    try:
+        _retrying(lambda: sb.storage.from_(BUCKET).upload(
             path,
             content,
             {"content-type": mime_type or "application/octet-stream", "upsert": "true"},
-        )
+        ))
     except Exception as exc:  # storage failure must surface (unlike audit)
-        raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}")
+        raise HTTPException(status_code=503, detail=f"Storage upload failed: {exc}")
 
 
 def _case_row(sb, case_id: str) -> dict:
@@ -197,8 +289,15 @@ async def upload_to_bucket(
     content: bytes,
     mime_type: Optional[str],
     user: dict,
+    upload_id: Optional[str] = None,
 ) -> dict:
     """One file dropped into one bucket. ALWAYS a new document, never a version.
+
+    `upload_id` makes the upload IDEMPOTENT. The browser mints one per file and
+    sends the same one on every retry; it becomes the document's id. A retry
+    whose first attempt DID land (the reply was what got lost) finds its own
+    row and returns it, so retrying can never put a file in a bucket twice.
+    An id that belongs to another owner is refused rather than returned.
 
     `upload_document` versions in place on (owner, type), which is right for a
     passport and wrong here: every bucket upload shares the type `other`, so
@@ -210,8 +309,7 @@ async def upload_to_bucket(
     if owner_kind not in _BUCKET_OWNER_KINDS:
         raise HTTPException(status_code=400, detail="Invalid owner kind")
     owner_type = document_sections.owner_type_of(owner_kind)
-    if not document_sections.is_bucket_for(owner_type, bucket) \
-            or bucket == document_sections.OTHER_BUCKET:
+    if not document_sections.is_bucket_for(owner_type, bucket):
         raise HTTPException(
             status_code=422,
             detail=f"{bucket!r} is not a document bucket on a {owner_type} profile")
@@ -221,11 +319,21 @@ async def upload_to_bucket(
 
     sb = get_supabase()
     checksum = hashlib.sha256(content).hexdigest()
-    safe_name = (file_name or "file").replace("/", "_")
-    path = f"{owner_kind}/{owner_id}/bucket/{bucket}/{uuid.uuid4().hex}/{safe_name}"
+    if upload_id:
+        try:
+            doc_id = str(uuid.UUID(str(upload_id)))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="upload_id must be a uuid")
+        landed = _replay(sb, owner_kind, owner_id, doc_id, bucket)
+        if landed:
+            return landed
+    else:
+        doc_id = str(uuid.uuid4())
+    path = f"{owner_kind}/{owner_id}/bucket/{bucket}/{doc_id}/{storage_name(file_name)}"
     _upload_bytes(sb, path, content, mime_type)
 
     row = {
+        "id": doc_id,
         **_owner_columns(owner_kind, owner_id),
         "document_type_code": BUCKET_DOCUMENT_TYPE,
         "bucket": bucket,
@@ -240,8 +348,19 @@ async def upload_to_bucket(
         "is_generated": False,
         "uploaded_by": user["id"],
     }
-    created = sb.table("documents").insert(row).execute().data[0]
-    sb.table("document_versions").insert({
+    try:
+        created = _insert_once(sb, "documents", row)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # A retry that overtook its own first attempt: that one owns the row.
+        if upload_id and _is_duplicate_key(exc):
+            landed = _replay(sb, owner_kind, owner_id, doc_id, bucket)
+            if landed:
+                return landed
+        raise
+    _insert_once(sb, "document_versions", {
+        "id": str(uuid.uuid4()),
         "document_id": created["id"],
         "version_number": 1,
         "file_name": file_name,
@@ -251,7 +370,7 @@ async def upload_to_bucket(
         "file_size_bytes": len(content),
         "checksum_sha256": checksum,
         "created_by": user["id"],
-    }).execute()
+    })
 
     label = _bucket_label(bucket)
     await log_event(
@@ -268,6 +387,19 @@ async def upload_to_bucket(
     )
     return {**created, "bucket": bucket, "tags": created.get("tags") or [],
             "uploaded_at": created.get("created_at")}
+
+
+def _replay(sb, owner_kind: str, owner_id: str, doc_id: str, bucket: str) -> Optional[dict]:
+    """The document an earlier attempt of this upload already made, or None."""
+    landed = _retrying(lambda: sb.table("documents").select("*")
+                       .eq("id", doc_id).execute()).data or []
+    if not landed:
+        return None
+    mine = landed[0]
+    if str(mine.get(_OWNER_COLUMN[owner_kind])) != str(owner_id):
+        raise HTTPException(status_code=409, detail="That upload id belongs to another record")
+    return {**mine, "bucket": mine.get("bucket") or bucket, "tags": mine.get("tags") or [],
+            "uploaded_at": mine.get("created_at"), "replayed": True}
 
 
 def _bucket_label(key: Optional[str]) -> str:
@@ -320,9 +452,7 @@ async def update_documents(*, owner_kind: str, owner_id: str,
     if not ids:
         raise HTTPException(status_code=422, detail="Choose at least one document")
 
-    if edit.bucket is not None and (
-            not document_sections.is_bucket_for(owner_type, edit.bucket)
-            or edit.bucket == document_sections.OTHER_BUCKET):
+    if edit.bucket is not None and not document_sections.is_bucket_for(owner_type, edit.bucket):
         raise HTTPException(
             status_code=422,
             detail=f"{edit.bucket!r} is not a document bucket on a {owner_type} profile")

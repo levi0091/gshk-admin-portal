@@ -1195,6 +1195,7 @@ async def upload_person_document(
     person_id: str,
     file: UploadFile = File(...),
     bucket: Optional[str] = Form(None),
+    upload_id: Optional[str] = Form(None),
     document_type_code: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
     user=Depends(live_person("write")),
@@ -1209,7 +1210,7 @@ async def upload_person_document(
         return await document_service.upload_to_bucket(
             owner_kind="person", owner_id=person_id, bucket=bucket,
             file_name=file.filename, content=content,
-            mime_type=file.content_type, user=user)
+            mime_type=file.content_type, user=user, upload_id=upload_id)
     if not document_type_code:
         raise HTTPException(status_code=422,
                             detail="Choose a bucket to upload this file into")

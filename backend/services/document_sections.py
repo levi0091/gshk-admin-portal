@@ -119,9 +119,15 @@ def sections_for(owner_type: str) -> list[dict]:
 # this change). `bucket_of()` places it from its type, so no backfill is needed
 # and none of those callers had to learn about buckets.
 
-#: Where a document that fits no bucket is shown. It renders only while it
-#: holds something, and the screen invites the operator to move what is in it.
-OTHER_BUCKET = "other"
+# EVERY document lands in one of GSHK's buckets. There is no "Other" bucket
+# (Levi 2026-11-21: "follow the buckets I define … find a suitable bucket and
+# park the documents there"). A person has one bucket, so everything that is
+# not an identity document is in it; a company's unplaceable rows go to its
+# DEFAULT bucket, where an operator can Move them if they belong elsewhere.
+
+#: Retired with the fallback bucket. A row stored under it (none on DEV or
+#: PROD, 2026-11-21) is placed by its type like any unbucketed row.
+RETIRED_BUCKETS = frozenset({"other"})
 
 BUCKETS = [
     {
@@ -185,16 +191,6 @@ BUCKETS = [
         "owner_types": ["person"],
         "suggestions": ["Address Proof", "AML Case Report", "AML Passport Report"],
     },
-    {
-        "key": OTHER_BUCKET,
-        "label": "Other Documents",
-        "description": "Not in a bucket yet. Select them and choose Move to",
-        "owner_types": ["person", "company"],
-        "suggestions": [],
-        # Shown only while it holds something: it is where unplaced files
-        # wait, not a place anyone should choose to file into.
-        "fallback": True,
-    },
 ]
 
 BUCKET_KEYS = tuple(b["key"] for b in BUCKETS)
@@ -212,6 +208,21 @@ _BUCKET_BY_CODE = {
     },
     "person": {},
 }
+
+#: Where a row lands when neither its code nor its category says. A person has
+#: one bucket. A company's leftovers (the generic `other` type, anything a
+#: future migration adds before this table learns it) are due-diligence papers
+#: far more often than anything else on the profile.
+DEFAULT_BUCKET = {"company": "corporate_identity", "person": "kyc"}
+
+#: A CR filing receipt is the receipt for ONE filing, and that filing decides
+#: its bucket. The form is named in the receipt's title or file name, which
+#: every receipt writer sets ("ND2A-2026-0001 — CR receipt", "… NAR1 2026.pdf").
+_RECEIPT_FORM_BUCKET = (
+    ("nar1", "annual_return"),
+    ("nnc1", "incorporation"),
+)
+_RECEIPT_DEFAULT = "maintenance"     # ND2A, ND2B and every later officer form
 
 #: `document_types.category` -> bucket, per owner. `identity` is absent on
 #: purpose: a person's identity scans render on their identity records.
@@ -277,11 +288,12 @@ def is_bucket_for(owner_type: str, key) -> bool:
 
 
 def bucket_of(owner_type: str, doc: dict):
-    """Which bucket a stored `documents` row is shown in.
+    """Which bucket a stored `documents` row is shown in, always one of the
+    owner's own buckets.
 
     The row's own `bucket` wins: a person chose it. Otherwise it is placed by
-    its type. None means "not a bucket document at all": a person's identity
-    scan, which renders on its identity record instead.
+    its type, then by the owner's default. None means "not a bucket document
+    at all": a person's identity scan, which renders on its identity record.
     """
     chosen = doc.get("bucket")
     if chosen and is_bucket_for(owner_type, chosen):
@@ -292,9 +304,13 @@ def bucket_of(owner_type: str, doc: dict):
             category == IDENTITY_CATEGORY or is_identity_code(code)
             or code == LEGACY_IDENTITY_CODE):
         return None
+    if owner_type == "company" and code == "cr_receipt":
+        said = f"{doc.get('title') or ''} {doc.get('file_name') or ''}".lower()
+        return next((b for form, b in _RECEIPT_FORM_BUCKET if form in said),
+                    _RECEIPT_DEFAULT)
     return (_BUCKET_BY_CODE.get(owner_type, {}).get(code or "")
             or _BUCKET_BY_CATEGORY.get(owner_type, {}).get(category or "")
-            or OTHER_BUCKET)
+            or DEFAULT_BUCKET.get(owner_type, "corporate_identity"))
 
 
 def extension_of(file_name) -> str:

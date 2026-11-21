@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, within, waitFor, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
@@ -9,7 +9,7 @@ vi.mock('../lib/download.js', () => ({ downloadDocument: vi.fn() }))
 
 import { api } from '../lib/api.js'
 import { downloadDocument } from '../lib/download.js'
-import DocumentBuckets from './DocumentBuckets.jsx'
+import DocumentBuckets, { uploadTiming } from './DocumentBuckets.jsx'
 import { DEFAULT_LIMITS } from '../lib/documentSections.js'
 
 const BUCKETS = [
@@ -170,6 +170,72 @@ describe('DocumentBuckets — upload', () => {
     expect(await screen.findByText('Storage is unavailable')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText(/1 uploaded to Payments · 1 not uploaded/))
       .toBeInTheDocument())
+    // A refusal about this file is not offered as Retry: it would be refused again.
+    expect(screen.queryByRole('button', { name: /^Retry/ })).toBeNull()
+  })
+})
+
+describe('DocumentBuckets — an upload that may be passing is retried, never duplicated', () => {
+  const offline = () => Object.assign(new Error('Could not reach the server.'), { offline: true })
+  const ids = () => api.upload.mock.calls.map(([, f]) => f.get('upload_id'))
+  let delay
+  beforeEach(() => { delay = uploadTiming.retryDelayMs; uploadTiming.retryDelayMs = 0 })
+  afterEach(() => { uploadTiming.retryDelayMs = delay })
+
+  it('sends a uuid upload id, one per file', async () => {
+    const user = userEvent.setup()
+    renderBuckets()
+    await user.upload(screen.getByLabelText('Choose files for Payments'), [pdf('a.pdf'), pdf('b.pdf')])
+    await waitFor(() => expect(api.upload).toHaveBeenCalledTimes(2))
+    const [a, b] = ids()
+    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(a).not.toBe(b)
+  })
+
+  it('retries a dropped connection by itself, with the SAME upload id', async () => {
+    const user = userEvent.setup()
+    const ok = api.upload.getMockImplementation()
+    api.upload.mockImplementationOnce(() => Promise.reject(offline()))
+      .mockImplementationOnce(() => Promise.reject(Object.assign(new Error('Busy'), { status: 503 })))
+      .mockImplementation(ok)
+    renderBuckets()
+    await user.upload(screen.getByLabelText('Choose files for Maintenance'),
+      [pdf('ND2A Notification — Form ND2A _ XXXXXX LIMITED.pdf')])
+    expect(await screen.findByText(/1 uploaded to Maintenance/)).toBeInTheDocument()
+    expect(api.upload).toHaveBeenCalledTimes(3)
+    expect(new Set(ids()).size).toBe(1)
+  })
+
+  it('after the automatic retries, offers Retry, which resends the same file under the same id', async () => {
+    const user = userEvent.setup()
+    const ok = api.upload.getMockImplementation()
+    api.upload.mockImplementation(() => Promise.reject(offline()))
+    renderBuckets()
+    await user.upload(screen.getByLabelText('Choose files for Payments'), [pdf('slip.pdf')])
+    expect(await screen.findByText(/0 uploaded to Payments · 1 not uploaded/)).toBeInTheDocument()
+    expect(screen.getByText(/Could not reach the server/)).toBeInTheDocument()
+    expect(api.upload).toHaveBeenCalledTimes(3)
+
+    api.upload.mockImplementation(ok)
+    await user.click(screen.getByRole('button', { name: 'Retry the failed file' }))
+    expect(await screen.findByText(/1 uploaded to Payments/)).toBeInTheDocument()
+    expect(api.upload).toHaveBeenCalledTimes(4)
+    expect(new Set(ids()).size).toBe(1)
+    expect(api.upload.mock.calls[3][1].get('file').name).toBe('slip.pdf')
+    expect(screen.queryByRole('button', { name: /^Retry/ })).toBeNull()
+  })
+
+  it('lists a document once when the server replays an upload that had already landed', async () => {
+    const user = userEvent.setup()
+    api.upload.mockResolvedValue({
+      id: 'd1', file_name: 'd1.pdf', bucket: 'payments', tags: [], status: 'active',
+      current_version: 1, uploaded_at: '2026-11-11T02:00:00Z', replayed: true,
+    })
+    renderBuckets()
+    await user.upload(screen.getByLabelText('Choose files for Payments'), [pdf('d1.pdf')])
+    await screen.findByText(/1 uploaded to Payments/)
+    expect(within(region('Payments')).getAllByRole('checkbox', { name: 'Select d1.pdf' }))
+      .toHaveLength(1)
   })
 })
 

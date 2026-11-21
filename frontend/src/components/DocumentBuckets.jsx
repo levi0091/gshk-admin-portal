@@ -39,6 +39,26 @@ import ConfirmDialog from './ConfirmDialog.jsx'
 
 const PREVIEW = 5
 const CONCURRENCY = 3
+/** Retries a file gets by itself when the failure may be passing. */
+const AUTO_RETRIES = 2
+export const uploadTiming = { retryDelayMs: 1000 }
+
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+/** No answer at all, or the server's own trouble: worth trying again. A 4xx
+ *  is an answer about THIS file, and the same file will get it again. */
+function isPassing(err) {
+  return Boolean(err?.offline) || Number(err?.status) >= 500
+}
+
+function newUploadId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  const b = globalThis.crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = [...b].map(x => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
 
 let seq = 0
 const nextKey = () => `u${++seq}`
@@ -168,29 +188,53 @@ export default function DocumentBuckets({
     setNotice(null)
     const items = files.map(file => {
       const error = refusalFor(file, limits)
-      return { key: nextKey(), name: file.name, file, status: error ? 'failed' : 'queued', error }
+      return {
+        key: nextKey(), name: file.name, file, uploadId: newUploadId(), bucketKey,
+        status: error ? 'failed' : 'queued', error, retryable: false,
+      }
     })
     setBatch({ bucket: bucket?.label || bucketKey, items })
-    const update = (key, patch) => setBatch(b => (b && {
-      ...b, items: b.items.map(i => (i.key === key ? { ...i, ...patch } : i)),
-    }))
+    await runUploads(items.filter(i => i.status === 'queued'))
+  }, [basePath, buckets, limits])
 
-    const queue = items.filter(i => i.status === 'queued')
+  const updateItem = (key, patch) => setBatch(b => (b && {
+    ...b, items: b.items.map(i => (i.key === key ? { ...i, ...patch } : i)),
+  }))
+
+  /**
+   * Upload each item, three at a time. A failure that may be passing (no
+   * answer at all, or a 5xx) is retried twice by itself, and then offered as
+   * Retry. Every attempt of one file carries the SAME upload id, which the
+   * server makes the document's id, so a retry after a reply that was lost on
+   * the way back returns the document already made instead of a second copy.
+   */
+  async function runUploads(list) {
+    const queue = [...list]
     const created = []
     async function worker() {
       while (queue.length) {
         const item = queue.shift()
-        update(item.key, { status: 'uploading' })
-        const fd = new FormData()
-        fd.append('file', item.file)
-        fd.append('bucket', bucketKey)
-        try {
-          const doc = await api.upload(basePath, fd)
-          created.push(doc)
-          setDocs(list => [{ tags: [], ...doc }, ...list])
-          update(item.key, { status: 'done', file: null })
-        } catch (err) {
-          update(item.key, { status: 'failed', error: err.message, file: null })
+        updateItem(item.key, { status: 'uploading', error: '' })
+        for (let attempt = 0; ; attempt += 1) {
+          const fd = new FormData()
+          fd.append('file', item.file)
+          fd.append('bucket', item.bucketKey)
+          fd.append('upload_id', item.uploadId)
+          try {
+            const doc = await api.upload(basePath, fd)
+            created.push(doc)
+            setDocs(all => [{ tags: [], ...doc }, ...all.filter(d => d.id !== doc.id)])
+            updateItem(item.key, { status: 'done', file: null })
+            break
+          } catch (err) {
+            const passing = isPassing(err)
+            if (passing && attempt < AUTO_RETRIES) {
+              await wait(uploadTiming.retryDelayMs * (attempt + 1))
+              continue
+            }
+            updateItem(item.key, { status: 'failed', error: err.message, retryable: passing })
+            break
+          }
         }
       }
     }
@@ -200,7 +244,13 @@ export default function DocumentBuckets({
       setSelected(ids)
       setFresh(ids)
     }
-  }, [basePath, buckets, limits])
+  }
+
+  function retryFailed() {
+    const again = (batch?.items || []).filter(i => i.status === 'failed' && i.retryable && i.file)
+    for (const i of again) updateItem(i.key, { status: 'queued', error: '' })
+    runUploads(again)
+  }
 
   async function takeDrop(dt, bucketKey) {
     const { files, remote } = readDrop(dt)
@@ -246,7 +296,7 @@ export default function DocumentBuckets({
         </div>
       )}
 
-      {batch && <UploadTray batch={batch} onDismiss={() => setBatch(null)} />}
+      {batch && <UploadTray batch={batch} onRetry={retryFailed} onDismiss={() => setBatch(null)} />}
 
       {shown.map(bucket => (
         <Bucket
@@ -405,9 +455,10 @@ function DropOverlay({ ownerName, targets, max, counts, onDrop }) {
   )
 }
 
-function UploadTray({ batch, onDismiss }) {
+function UploadTray({ batch, onRetry, onDismiss }) {
   const done = batch.items.filter(i => i.status === 'done').length
   const failed = batch.items.filter(i => i.status === 'failed')
+  const retryable = failed.filter(i => i.retryable && i.file).length
   const running = batch.items.some(i => i.status === 'queued' || i.status === 'uploading')
   return (
     <div className="bk-tray" aria-live="polite">
@@ -419,7 +470,14 @@ function UploadTray({ batch, onDismiss }) {
               + (failed.length ? ` · ${failed.length} not uploaded` : '')}
         </span>
         {!running && (
-          <button type="button" className="bk-link" onClick={onDismiss}>Dismiss</button>
+          <span className="bk-tray-actions">
+            {retryable > 0 && (
+              <button type="button" className="btn btn-outline btn-sm" onClick={onRetry}>
+                Retry {retryable === 1 ? 'the failed file' : `${retryable} failed files`}
+              </button>
+            )}
+            <button type="button" className="bk-link" onClick={onDismiss}>Dismiss</button>
+          </span>
         )}
       </div>
       {(running || failed.length > 0) && (

@@ -5,9 +5,12 @@ them afterwards in bulk. Supabase, Storage and the audit writer are mocked.
 """
 import importlib.util
 import pathlib
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from main import app
@@ -39,7 +42,11 @@ def test_the_migration_checks_exactly_the_buckets_the_code_knows():
     spec = importlib.util.spec_from_file_location("m065", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert tuple(mod.BUCKET_KEYS) == document_sections.BUCKET_KEYS
+    # 065 also allows `other`, the fallback bucket retired the same day it
+    # shipped (Levi 2026-11-21). It is never written again: no route accepts it.
+    assert set(mod.BUCKET_KEYS) == set(document_sections.BUCKET_KEYS) \
+        | document_sections.RETIRED_BUCKETS
+    assert not set(document_sections.BUCKET_KEYS) & document_sections.RETIRED_BUCKETS
     assert mod.AUDIT_CODE[0] == audit_events.GF_DOC_UPDATED
     assert (mod.revision, mod.down_revision) == ("065", "064")
 
@@ -81,11 +88,46 @@ def test_a_company_has_gshks_six_buckets_in_their_order():
     ("nd2a", "government_form", "maintenance"),
     ("resignation_letter", "officer_change", "maintenance"),
     ("addr_utility_bill", "address_proof", "corporate_identity"),
-    ("other", "internal", "other"),
+    # Nothing is left outside GSHK's buckets (Levi 2026-11-21).
+    ("other", "internal", "corporate_identity"),
+    ("never_seen", None, "corporate_identity"),
 ])
 def test_a_typed_company_document_is_placed_by_its_type(code, category, bucket):
     doc = {"document_type_code": code, "document_types": {"category": category}}
     assert document_sections.bucket_of("company", doc) == bucket
+
+
+@pytest.mark.parametrize("title, file_name, bucket", [
+    ("ND2A-2026-0001 — CR receipt", "Primevector Limited - ND2A 2026.pdf", "maintenance"),
+    (None, "Skyline NAR1 2026 receipt.pdf", "annual_return"),
+    ("NNC1 receipt", None, "incorporation"),
+    (None, None, "maintenance"),
+])
+def test_a_company_cr_receipt_goes_where_its_filing_went(title, file_name, bucket):
+    doc = {"document_type_code": "cr_receipt", "document_types": {"category": "filing"},
+           "title": title, "file_name": file_name}
+    assert document_sections.bucket_of("company", doc) == bucket
+
+
+@pytest.mark.parametrize("code, category", [
+    ("cr_receipt", "filing"), ("resignation_letter", "officer_change"),
+    ("consent_to_act", "officer_change"), ("other", "internal"), ("nd2a", "government_form"),
+    ("addr_utility_bill", "address_proof"), ("never_seen", None),
+])
+def test_everything_on_a_person_but_identity_is_in_the_one_bucket(code, category):
+    doc = {"document_type_code": code, "document_types": {"category": category}}
+    assert document_sections.bucket_of("person", doc) == "kyc"
+
+
+def test_a_row_stored_under_the_retired_fallback_is_placed_by_its_type():
+    doc = {"bucket": "other", "document_type_code": "nd2b",
+           "document_types": {"category": "government_form"}}
+    assert document_sections.bucket_of("company", doc) == "maintenance"
+
+
+def test_no_owner_has_a_fallback_bucket():
+    for owner in ("company", "person"):
+        assert not any(b.get("fallback") for b in document_sections.buckets_for(owner))
 
 
 def test_a_chosen_bucket_beats_the_type():
@@ -172,6 +214,182 @@ def test_two_files_of_one_name_get_two_storage_paths():
     p1 = sb1.storage.from_.return_value.upload.call_args[0][0]
     p2 = sb2.storage.from_.return_value.upload.call_args[0][0]
     assert p1 != p2 and p1.endswith("/slip.pdf") and "/bucket/payments/" in p1
+
+
+# ── storage keys: Storage refuses most of what a file name holds ────────────
+
+#: Supabase Storage's own key rule (storage-api `isValidKey`); `\w` is ASCII.
+#: Measured on DEV 2026-11-21: "—", "–", "é", Chinese, # % [ ] { } ^ ~ | < >
+#: each answer 400 InvalidKey.
+_STORAGE_KEY_OK = re.compile(r"^(\w|/|!|-|\.|\*|'|\(|\)| |&|\$|@|=|;|:|\+|,|\?)*$", re.ASCII)
+
+CR_FORM_NAME = "ND2A Notification — Form ND2A _ XXXXXX LIMITED.pdf"
+
+
+@pytest.mark.parametrize("name, key", [
+    (CR_FORM_NAME, "ND2A Notification - Form ND2A _ XXXXXX LIMITED.pdf"),
+    ("ND2B Notification – Form ND2B.pdf", "ND2B Notification - Form ND2B.pdf"),
+    ("Café résumé.PDF", "Cafe resume.pdf"),
+    ("中文文件.pdf", "file.pdf"),
+    ("公司 NAR1 2026.pdf", "NAR1 2026.pdf"),
+    ("a#b%c[d]{e}^f~g|h<i>.xlsx", "a_b_c_d_e_f_g_h_i.xlsx"),
+    ("../../etc/passwd", "etc_passwd"),
+    ("no extension", "no extension"),
+    ("", "file"),
+    (None, "file"),
+    ("x" * 300 + ".pdf", "x" * 100 + ".pdf"),
+])
+def test_a_storage_key_is_what_storage_accepts(name, key):
+    got = document_service.storage_name(name)
+    assert got == key
+    assert _STORAGE_KEY_OK.match(got) and "/" not in got
+
+
+def test_a_cr_form_pdf_uploads_and_keeps_its_own_name():
+    """The 2026-11-21 failure: CR names its form PDFs with an em dash."""
+    resp, sb, _ = _bucket_upload("/companies/e1/documents", {"bucket": "maintenance"},
+                                 name=CR_FORM_NAME)
+    assert resp.status_code == 201, resp.text
+    key = sb.storage.from_.return_value.upload.call_args[0][0]
+    assert _STORAGE_KEY_OK.match(key), key
+    row = sb.table.return_value.insert.call_args_list[0][0][0]
+    assert row["file_name"] == CR_FORM_NAME          # the name nobody sees changed
+    assert row["storage_path"] == key
+
+
+def test_a_storage_refusal_is_a_503_never_a_502():
+    """Cloudflare and the Railway edge replace an origin 502 with their own page,
+    which has no CORS headers: the browser said only "Failed to fetch"."""
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("services.document_service.get_supabase") as msb, \
+         patch("services.document_service.log_event", new=AsyncMock()):
+        msb.return_value.storage.from_.return_value.upload.side_effect = \
+            RuntimeError("InvalidKey")
+        resp = client.post("/companies/e1/documents", data={"bucket": "payments"},
+                           files={"file": ("a.pdf", b"%PDF", "application/pdf")}, headers=H)
+    assert resp.status_code == 503
+    assert "InvalidKey" in resp.json()["detail"]
+    msb.return_value.table.return_value.insert.assert_not_called()
+
+
+def test_a_dropped_connection_to_storage_is_retried():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("services.document_service.get_supabase") as msb, \
+         patch("services.document_service.time.sleep"), \
+         patch("services.document_service.log_event", new=AsyncMock()):
+        sb = msb.return_value
+        sb.storage.from_.return_value.upload.side_effect = [
+            httpx.RemoteProtocolError("Server disconnected"), None]
+        sb.table.return_value.insert.return_value.execute.return_value.data = [
+            {"id": "doc-9", "created_at": "2026-11-21T04:00:00+00:00"}]
+        resp = client.post("/companies/e1/documents", data={"bucket": "payments"},
+                           files={"file": ("a.pdf", b"%PDF", "application/pdf")}, headers=H)
+    assert resp.status_code == 201, resp.text
+    assert sb.storage.from_.return_value.upload.call_count == 2
+
+
+class _DuplicateKey(Exception):
+    code = "23505"
+
+
+def test_an_insert_that_landed_before_the_connection_dropped_is_not_made_twice():
+    sb = MagicMock()
+    row = {"id": "fixed-id", "file_name": "a.pdf"}
+    sb.table.return_value.insert.return_value.execute.side_effect = [
+        httpx.ReadError("dropped"), _DuplicateKey("duplicate key value 23505")]
+    sb.table.return_value.select.return_value.eq.return_value.single.return_value \
+        .execute.return_value.data = {"id": "fixed-id", "file_name": "a.pdf"}
+    with patch("services.document_service.time.sleep"):
+        got = document_service._insert_once(sb, "documents", row)
+    assert got["id"] == "fixed-id"
+    assert sb.table.return_value.insert.call_count == 2
+    assert all(c[0][0]["id"] == "fixed-id" for c in sb.table.return_value.insert.call_args_list)
+
+
+def test_a_duplicate_key_on_the_first_attempt_is_a_real_error():
+    sb = MagicMock()
+    sb.table.return_value.insert.return_value.execute.side_effect = _DuplicateKey("23505")
+    with pytest.raises(_DuplicateKey):
+        document_service._insert_once(sb, "documents", {"id": "x"})
+
+
+def test_an_insert_that_keeps_dropping_is_a_503():
+    sb = MagicMock()
+    sb.table.return_value.insert.return_value.execute.side_effect = httpx.ReadError("dropped")
+    with patch("services.document_service.time.sleep"), pytest.raises(HTTPException) as exc:
+        document_service._insert_once(sb, "documents", {"id": "x"})
+    assert exc.value.status_code == 503
+    assert sb.table.return_value.insert.call_count == 3
+
+
+def test_every_bucket_upload_row_carries_its_id_before_the_first_attempt():
+    _resp, sb, _ = _bucket_upload("/companies/e1/documents", {"bucket": "payments"})
+    doc, ver = (c[0][0] for c in sb.table.return_value.insert.call_args_list[:2])
+    assert doc["id"] and ver["id"] and doc["id"] in doc["storage_path"]
+
+
+# ── upload_id: a browser retry never files the same drop twice ──────────────
+
+UPLOAD_ID = "6f1c2b3a-0d4e-4f5a-9b8c-7d6e5f4a3b2c"
+
+
+def _upload_with_id(landed, *, insert_error=None, upload_id=UPLOAD_ID):
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("services.document_service.get_supabase") as msb, \
+         patch("services.document_service.log_event", new=AsyncMock()) as audit:
+        sb = msb.return_value
+        lookups = list(landed)
+        sb.table.return_value.select.return_value.eq.return_value.execute.side_effect = \
+            lambda: MagicMock(data=lookups.pop(0) if lookups else [])
+        ins = sb.table.return_value.insert.return_value.execute
+        if insert_error:
+            ins.side_effect = insert_error
+        else:
+            ins.return_value.data = [{"id": UPLOAD_ID, "created_at": "2026-11-21T04:00:00+00:00"}]
+        resp = client.post("/companies/e1/documents",
+                           data={"bucket": "maintenance", "upload_id": upload_id},
+                           files={"file": (CR_FORM_NAME, b"%PDF", "application/pdf")}, headers=H)
+        return resp, sb, audit
+
+
+def test_the_upload_id_becomes_the_document_id():
+    resp, sb, _ = _upload_with_id([[]])
+    assert resp.status_code == 201, resp.text
+    row = sb.table.return_value.insert.call_args_list[0][0][0]
+    assert row["id"] == UPLOAD_ID and f"/{UPLOAD_ID}/" in row["storage_path"]
+
+
+def test_a_retry_whose_first_attempt_landed_returns_that_document():
+    first = {"id": UPLOAD_ID, "entity_id": "e1", "bucket": "maintenance",
+             "file_name": CR_FORM_NAME, "created_at": "2026-11-21T04:00:00+00:00"}
+    resp, sb, audit = _upload_with_id([[first]])
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["id"] == UPLOAD_ID and resp.json()["replayed"] is True
+    sb.storage.from_.return_value.upload.assert_not_called()
+    sb.table.return_value.insert.assert_not_called()
+    audit.assert_not_awaited()                 # one upload, one audit row
+
+
+def test_a_retry_that_overtook_its_first_attempt_returns_the_first_attempts_row():
+    first = {"id": UPLOAD_ID, "entity_id": "e1", "bucket": "maintenance",
+             "created_at": "2026-11-21T04:00:00+00:00"}
+    resp, sb, _ = _upload_with_id([[], [first]], insert_error=_DuplicateKey("23505"))
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["replayed"] is True
+    assert sb.table.return_value.insert.call_count == 1   # never a version row of its own
+
+
+def test_an_upload_id_of_another_owner_is_refused():
+    other = {"id": UPLOAD_ID, "entity_id": "someone-else", "bucket": "payments"}
+    resp, sb, _ = _upload_with_id([[other]])
+    assert resp.status_code == 409
+    sb.storage.from_.return_value.upload.assert_not_called()
+
+
+def test_an_upload_id_must_be_a_uuid():
+    resp, sb, _ = _upload_with_id([[]], upload_id="not-a-uuid")
+    assert resp.status_code == 422
+    sb.storage.from_.return_value.upload.assert_not_called()
 
 
 def test_a_person_uploads_into_kyc():

@@ -127,18 +127,17 @@ def test_sections_group_their_types_under_the_right_heading():
 
 def test_a_person_gets_identity_then_one_kyc_bucket():
     """GSHK 2026-11-21: identity documents unchanged; address proof, AML case
-    report and AML passport report share ONE bucket. `other` is the fallback
-    the screen shows only while it holds something."""
+    report and AML passport report share ONE bucket, and it is the only one:
+    no fallback (Levi 2026-11-21)."""
     body = _sections([
         {"code": "id_passport", "label": "Passport", "category": "identity"},
     ]).json()
     assert [s["key"] for s in body["sections"]] == ["identity"]
-    assert [b["key"] for b in body["buckets"]] == ["kyc", "other"]
+    assert [b["key"] for b in body["buckets"]] == ["kyc"]
     kyc = body["buckets"][0]
     assert kyc["fallback"] is False
     assert {"Address Proof", "AML Case Report", "AML Passport Report"} \
         <= set(kyc["suggestions"])
-    assert body["buckets"][1]["fallback"] is True
 
 
 def test_buckets_come_back_even_with_no_types_at_all():
@@ -147,7 +146,7 @@ def test_buckets_come_back_even_with_no_types_at_all():
     assert body["sections"] == []
     assert [b["key"] for b in body["buckets"]] == [
         "annual_return", "corporate_identity", "br_renewal", "maintenance",
-        "payments", "incorporation", "other"]
+        "payments", "incorporation"]
     assert body["upload_limits"]["max_files"] == 20
 
 
