@@ -124,14 +124,16 @@ def test_every_audit_code_the_services_name_is_seeded_and_no_others():
     assert seeded == set(ev.OFFICER_CHANGE_CODES)
 
 
-def test_every_supporting_document_type_lands_in_a_section_that_exists():
-    """A category matching no section falls to "Other Documents"; these are the
-    evidence behind a statutory filing and have a section of their own."""
-    for _code, _label, category, applies_to, _order in _migration(M050).DOCUMENT_TYPES:
-        owners = (["person", "company"] if applies_to == "both" else [applies_to])
-        for owner in owners:
-            keys = {s["key"] for s in document_sections.sections_for(owner)}
-            assert category in keys, (category, owner)
+def test_every_officer_change_document_on_a_company_lands_in_maintenance():
+    """Buckets replaced sections on 2026-11-21. GSHK list Filed ND2A / ND2B
+    under Maintenance, so the signed form and the papers behind it go there on
+    a company. A person has no Maintenance bucket; theirs wait in Other."""
+    for code, _label, category, applies_to, _order in _migration(M050).DOCUMENT_TYPES:
+        doc = {"document_type_code": code, "document_types": {"category": category}}
+        if applies_to in ("company", "both"):
+            assert document_sections.bucket_of("company", doc) == "maintenance", code
+        if applies_to in ("person", "both"):
+            assert document_sections.bucket_of("person", doc) == "other", code
 
 
 def test_the_credential_table_is_locked_down_like_the_rest():

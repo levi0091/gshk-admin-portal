@@ -14,14 +14,17 @@ Rules enforced here:
 - Every mutation audits via audit_service (PBI-11); audit never blocks the op.
 """
 import hashlib
+import uuid
 from typing import Optional
 
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from db.supabase import get_supabase
 from services.audit_service import log_event
 from services import audit_subject
 from services import audit_events
+from services import document_sections
 
 BUCKET = "gflowdesk-documents"
 _SIGNED_URL_TTL = 3600  # seconds
@@ -176,6 +179,257 @@ def _owner_kind_of(doc: dict) -> str:
     return "entity"
 
 
+#: The `document_types` row a bucket upload is filed under. A bucket file has
+#: no type (GSHK 2026-11-21), and the column is NOT NULL with an FK, so it
+#: takes the catch-all that has existed since migration 003.
+BUCKET_DOCUMENT_TYPE = "other"
+
+#: Owner kinds a profile can drop files into. A case-owned receipt cannot.
+_BUCKET_OWNER_KINDS = {"entity", "person"}
+
+
+async def upload_to_bucket(
+    *,
+    owner_kind: str,
+    owner_id: str,
+    bucket: str,
+    file_name: str,
+    content: bytes,
+    mime_type: Optional[str],
+    user: dict,
+) -> dict:
+    """One file dropped into one bucket. ALWAYS a new document, never a version.
+
+    `upload_document` versions in place on (owner, type), which is right for a
+    passport and wrong here: every bucket upload shares the type `other`, so
+    versioning would make the second payment slip "version 2" of the first and
+    hide it. Each file is its own row, at its own storage path (a uuid segment,
+    so two files with one name never overwrite each other's bytes: storage
+    uploads upsert).
+    """
+    if owner_kind not in _BUCKET_OWNER_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid owner kind")
+    owner_type = document_sections.owner_type_of(owner_kind)
+    if not document_sections.is_bucket_for(owner_type, bucket) \
+            or bucket == document_sections.OTHER_BUCKET:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{bucket!r} is not a document bucket on a {owner_type} profile")
+    refusal = document_sections.upload_refusal(file_name, len(content))
+    if refusal:
+        raise HTTPException(status_code=422, detail=f"{file_name}: {refusal}")
+
+    sb = get_supabase()
+    checksum = hashlib.sha256(content).hexdigest()
+    safe_name = (file_name or "file").replace("/", "_")
+    path = f"{owner_kind}/{owner_id}/bucket/{bucket}/{uuid.uuid4().hex}/{safe_name}"
+    _upload_bytes(sb, path, content, mime_type)
+
+    row = {
+        **_owner_columns(owner_kind, owner_id),
+        "document_type_code": BUCKET_DOCUMENT_TYPE,
+        "bucket": bucket,
+        "file_name": file_name,
+        "storage_bucket": BUCKET,
+        "storage_path": path,
+        "mime_type": mime_type,
+        "file_size_bytes": len(content),
+        "checksum_sha256": checksum,
+        "current_version": 1,
+        "status": "active",
+        "is_generated": False,
+        "uploaded_by": user["id"],
+    }
+    created = sb.table("documents").insert(row).execute().data[0]
+    sb.table("document_versions").insert({
+        "document_id": created["id"],
+        "version_number": 1,
+        "file_name": file_name,
+        "storage_bucket": BUCKET,
+        "storage_path": path,
+        "mime_type": mime_type,
+        "file_size_bytes": len(content),
+        "checksum_sha256": checksum,
+        "created_by": user["id"],
+    }).execute()
+
+    label = _bucket_label(bucket)
+    await log_event(
+        **_audit_owner(sb, owner_kind, owner_id),
+        user_id=user["id"],
+        user_display_name=user["display_name"],
+        action_type="DOCUMENT_UPLOADED",
+        event_code=audit_events.GF_DOC_UPLOADED,
+        entity_type="document",
+        entity_id=str(created["id"]),
+        new_value=f"{file_name} → {label}",
+        metadata={"owner_kind": owner_kind, "owner_id": owner_id,
+                  "bucket": bucket, "version": 1},
+    )
+    return {**created, "bucket": bucket, "tags": created.get("tags") or [],
+            "uploaded_at": created.get("created_at")}
+
+
+def _bucket_label(key: Optional[str]) -> str:
+    for b in document_sections.BUCKETS:
+        if b["key"] == key:
+            return b["label"]
+    return key or "—"
+
+
+class DocumentEdit(BaseModel):
+    """`PATCH /companies|persons/{id}/documents`: one change, many documents.
+
+    `title` is the DESCRIPTION on screen (the column predates the word). It is
+    changed only when the key is SENT: `""` or null clears it, absence leaves
+    every description alone, so a bulk "add tag" cannot wipe twenty of them.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[str] = Field(min_length=1, max_length=200)
+    bucket: Optional[str] = None
+    title: Optional[str] = None
+    add_tags: list[str] = Field(default_factory=list, max_length=20)
+    remove_tags: list[str] = Field(default_factory=list, max_length=20)
+
+    @property
+    def title_set(self) -> bool:
+        return "title" in self.model_fields_set
+
+
+async def update_documents(*, owner_kind: str, owner_id: str,
+                           edit: DocumentEdit, user: dict) -> list[dict]:
+    """Move, describe and tag many of one owner's documents in one request.
+
+    The bulk half of GSHK's 2026-11-21 ask: after a drop of twenty files, tag
+    or describe them "as a bulk, no need to click in". The same route serves
+    a single row's inline edit, with one id.
+
+    EVERY id must belong to this owner and be live, or nothing changes. The
+    owner is what the route's permission was checked against, so a document
+    of another company slipped into the list would be an edit made under the
+    wrong grant.
+
+    Audited as GF_DOC_UPDATED, one row per changed field per document, the
+    CASE_FIELD_UPDATED rule (CLAUDE.md, audit trail).
+    """
+    if owner_kind not in _BUCKET_OWNER_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid owner kind")
+    owner_type = document_sections.owner_type_of(owner_kind)
+    ids = list(dict.fromkeys(str(i) for i in edit.ids or []))
+    if not ids:
+        raise HTTPException(status_code=422, detail="Choose at least one document")
+
+    if edit.bucket is not None and (
+            not document_sections.is_bucket_for(owner_type, edit.bucket)
+            or edit.bucket == document_sections.OTHER_BUCKET):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{edit.bucket!r} is not a document bucket on a {owner_type} profile")
+
+    title = edit.title
+    if edit.title_set:
+        title = " ".join(str(title or "").split()) or None
+        if title and len(title) > document_sections.MAX_DESCRIPTION_LENGTH:
+            raise HTTPException(
+                status_code=422,
+                detail=f"A description is at most "
+                       f"{document_sections.MAX_DESCRIPTION_LENGTH} characters")
+    add = document_sections.normalise_tags(edit.add_tags)
+    remove = {t.casefold() for t in document_sections.normalise_tags(edit.remove_tags)}
+
+    sb = get_supabase()
+    rows = (
+        sb.table("documents")
+        .select("*, document_types(code, label, category)")
+        .in_("id", ids)
+        .eq(_OWNER_COLUMN[owner_kind], owner_id)
+        .neq("status", "deleted")
+        .execute()
+    ).data or []
+    found = {str(r["id"]) for r in rows}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{len(missing)} of these documents are not on this "
+                   f"{owner_type}'s profile any more. Reload and try again.")
+
+    audit_owner = None
+    updated: list[dict] = []
+    for doc in rows:
+        changes: dict = {}
+        events: list[tuple[str, str, str]] = []
+
+        if edit.bucket is not None:
+            was = document_sections.bucket_of(owner_type, doc)
+            if was != edit.bucket:
+                changes["bucket"] = edit.bucket
+                events.append(("bucket", _bucket_label(was), _bucket_label(edit.bucket)))
+
+        if edit.title_set and (doc.get("title") or None) != title:
+            changes["title"] = title
+            events.append(("description", doc.get("title") or "", title or ""))
+
+        if add or remove:
+            before = list(doc.get("tags") or [])
+            kept = [t for t in before if t.casefold() not in remove]
+            after = document_sections.normalise_tags(kept + add)
+            if len(after) > document_sections.MAX_TAGS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{doc.get('file_name') or 'A document'} would carry "
+                           f"{len(after)} tags; the most is {document_sections.MAX_TAGS}")
+            if after != before:
+                changes["tags"] = after
+                events.append(("tags", ", ".join(before), ", ".join(after)))
+
+        if not changes:
+            updated.append(doc)
+            continue
+
+        row = (sb.table("documents").update(changes).eq("id", doc["id"])
+               .execute()).data
+        merged = {**doc, **(row[0] if row else {}), **changes}
+        updated.append(merged)
+
+        if audit_owner is None:
+            audit_owner = _audit_owner(sb, owner_kind, owner_id)
+        for field, old, new in events:
+            await log_event(
+                **audit_owner,
+                user_id=user["id"],
+                user_display_name=user["display_name"],
+                action_type="DOCUMENT_UPDATED",
+                event_code=audit_events.GF_DOC_UPDATED,
+                entity_type="document",
+                entity_id=str(doc["id"]),
+                old_value=f"{doc.get('file_name')}: {field} {old or '(none)'}",
+                new_value=f"{doc.get('file_name')}: {field} {new or '(none)'}",
+                before_state={"field": field, "old": old},
+                after_state={"field": field, "new": new},
+                metadata={"owner_kind": owner_kind, "owner_id": owner_id},
+            )
+
+    return [_with_placement(owner_type, d) for d in updated]
+
+
+def _uploaded_at(doc: dict):
+    """When the file now shown was uploaded: its newest version, else the row."""
+    stamps = [v.get("created_at") for v in doc.get("document_versions") or []
+              if v.get("version_number") == doc.get("current_version")]
+    return next((s for s in stamps if s), None) or doc.get("created_at")
+
+
+def _with_placement(owner_type: str, doc: dict) -> dict:
+    return {
+        **doc,
+        "bucket": document_sections.bucket_of(owner_type, doc),
+        "tags": list(doc.get("tags") or []),
+        "uploaded_at": _uploaded_at(doc),
+    }
+
+
 async def upload_document(
     *,
     owner_kind: str,
@@ -307,12 +561,14 @@ def list_documents(*, owner_kind: str, owner_id: str,
     Embeds document_types so the UI can say WHAT the document is ("Certificate of
     Incorporation") and not just the uploaded file name.
 
-    `include_deleted` is what makes "remove it from the section, keep it in the
-    history" possible (Levi 2026-09-04). A soft delete retains the object and
-    the row on purpose (OQ-2); filtering the row out of every read as well threw
-    away the half of that decision the trail depends on. A profile asks for
-    everything and shows removed documents only in Document History, marked;
-    every other caller still gets the live set by default.
+    `include_deleted` keeps soft-deleted rows in the answer (OQ-2 retains them).
+    Document History, which showed them, was removed on 2026-11-21 (the audit
+    trail already records every upload and removal), so the profiles no longer
+    ask for them.
+
+    Each row carries its `bucket` (chosen, or placed by its type: see
+    `document_sections.bucket_of`), its `tags`, and `uploaded_at`, newest first:
+    GSHK sort a bucket by when a file arrived, not by what kind it is.
     """
     sb = get_supabase()
     q = (
@@ -322,7 +578,13 @@ def list_documents(*, owner_kind: str, owner_id: str,
     if not include_deleted:
         q = q.neq("status", "deleted")
     q = q.eq(_OWNER_COLUMN[owner_kind], owner_id)
-    return (q.order("document_type_code").execute().data) or []
+    rows = (q.order("created_at", desc=True).execute().data) or []
+    if owner_kind not in _BUCKET_OWNER_KINDS:
+        return rows
+    owner_type = document_sections.owner_type_of(owner_kind)
+    placed = [_with_placement(owner_type, r) for r in rows]
+    placed.sort(key=lambda d: str(d.get("uploaded_at") or ""), reverse=True)
+    return placed
 
 
 def create_signed_url(document_id: str, version_number: int | None = None) -> dict:

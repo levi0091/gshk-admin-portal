@@ -41,6 +41,8 @@ GF_FLAGS_CHANGED = "GF_FLAGS_CHANGED"
 GF_DOC_UPLOADED = "GF_DOC_UPLOADED"
 GF_DOC_VERSION = "GF_DOC_VERSION"
 GF_DOC_DELETED = "GF_DOC_DELETED"
+# A document moved to another bucket, described or tagged (migration 065).
+GF_DOC_UPDATED = "GF_DOC_UPDATED"
 # Soft delete of a whole record (migration 049). Viewpoint's ADN has no
 # deleting counterpart, and OFD / OCAD delete a ROLE, not the party.
 GF_COMPANY_DELETED = "GF_COMPANY_DELETED"
