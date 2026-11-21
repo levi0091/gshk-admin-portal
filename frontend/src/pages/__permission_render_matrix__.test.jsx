@@ -56,6 +56,7 @@ const COMPANY = {
   documents: [{
     id: 'd1', document_type_code: 'coi', current_version: 1, status: 'active',
     file_name: 'coi.pdf', updated_at: '2026-06-04T09:30:00Z',
+    bucket: 'incorporation', tags: [], uploaded_at: '2026-06-04T09:30:00Z',
     document_types: { code: 'coi', label: 'Certificate of Incorporation',
                       category: 'certificate' },
     document_versions: [{ id: 'v1', version_number: 1, file_name: 'coi.pdf',
@@ -84,6 +85,7 @@ const PERSON = {
   documents: [{
     id: 'd2', document_type_code: 'addr_utility_bill', current_version: 1,
     status: 'active', file_name: 'bill.pdf', updated_at: '2026-06-04T09:30:00Z',
+    bucket: 'kyc', tags: [], uploaded_at: '2026-06-04T09:30:00Z',
     document_types: { code: 'addr_utility_bill', label: 'Utility Bill',
                       category: 'address_proof' },
     document_versions: [{ id: 'v2', version_number: 1, file_name: 'bill.pdf',
@@ -108,6 +110,12 @@ const COMPANY_SECTIONS = {
       description: 'Certificates issued for this company', file_required: true,
       types: [{ code: 'coi', label: 'Certificate of Incorporation', id_type: null }] },
   ],
+  buckets: [
+    { key: 'payments', label: 'Payments', description: '', suggestions: ['Payment Slip'] },
+    { key: 'incorporation', label: 'Incorporation / Statutory Registers', description: '',
+      suggestions: [] },
+    { key: 'other', label: 'Other Documents', description: '', suggestions: [], fallback: true },
+  ],
   identity_fields: {},
 }
 
@@ -117,9 +125,10 @@ const PERSON_SECTIONS = {
       description: 'Identity records', file_required: false,
       types: [{ code: 'id_hkid', label: 'Hong Kong Identity Card', id_type: 'hkid' },
               { code: 'id_passport', label: 'Passport', id_type: 'passport' }] },
-    { key: 'address_proof', label: 'Proof of Address', is_identity: false,
-      description: 'Evidence of address', file_required: true,
-      types: [{ code: 'addr_utility_bill', label: 'Utility Bill', id_type: null }] },
+  ],
+  buckets: [
+    { key: 'kyc', label: 'KYC & AML', description: '', suggestions: ['Address Proof'] },
+    { key: 'other', label: 'Other Documents', description: '', suggestions: [], fallback: true },
   ],
   identity_fields: {
     hkid: { fields: [{ key: 'id_number', label: 'HKID number' }], required: ['id_number'] },
@@ -218,7 +227,7 @@ describe('Company profile — controls present per role', () => {
     auth = authFor(ROLES[role])
     mockApi(COMPANY, COMPANY_SECTIONS, COMPANY_LIST)
     render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
-    await screen.findByText('Document History')
+    await screen.findByText('Documents')
 
     // `Edit` appears on Company Information AND Corporate Party Details AND
     // each share class, so counting them apart is not the point — whether ANY
@@ -226,9 +235,11 @@ describe('Company profile — controls present per role', () => {
     expect(has(/^Edit$/), 'Edit').toBe(edit || shares || parties)
     expect(has(/^\+ Add$/), '+ Add (party)').toBe(parties)
     expect(has(/Add a class/), 'Add a class').toBe(shares)
-    expect(has(/Upload Document/), 'Upload Document').toBe(upload)
-    expect(has(/^Download$/), 'Download').toBe(download)
-    expect(has(/^Remove$/), 'Remove').toBe(remove || parties)
+    expect(has(/^Upload$/), 'Upload').toBe(upload)
+    expect(has(/^Download coi\.pdf$/), 'Download').toBe(download)
+    expect(has(/^Remove coi\.pdf$/), 'Remove (document)').toBe(remove)
+    expect(has(/^Description of coi\.pdf$/) || screen.queryAllByRole('textbox',
+      { name: /^Description of coi/ }).length > 0, 'Describe').toBe(upload)
     expect(has(/New case/), 'New case').toBe(newCase)
   })
 
@@ -237,7 +248,7 @@ describe('Company profile — controls present per role', () => {
       auth = authFor(perms)
       mockApi(COMPANY, COMPANY_SECTIONS, COMPANY_LIST)
       const { unmount } = render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
-      await screen.findByText('Document History')
+      await screen.findByText('Documents')
 
       const banner = screen.queryAllByRole('note')
         .some(n => /Read-only/.test(n.textContent))
@@ -264,12 +275,13 @@ describe('Person profile — controls present per role', () => {
     auth = authFor(ROLES[role])
     mockApi(PERSON, PERSON_SECTIONS, PERSON_LIST)
     render(<MemoryRouter><PersonProfilePage /></MemoryRouter>)
-    await screen.findByText('Document History')
+    await screen.findByText('Documents')
 
     expect(has(/^Edit$/), 'Edit').toBe(editPerson)
     expect(has(/Add Identity Document/), 'Add Identity Document').toBe(addId)
-    expect(has(/Upload Document/), 'Upload Document').toBe(upload)
-    expect(has(/^Download$/), 'Download (filed document)').toBe(download)
+    expect(has(/^Upload$/), 'Upload').toBe(upload)
+    expect(has(/^Download bill\.pdf$/), 'Download (filed document)').toBe(download)
+    expect(has(/^Remove bill\.pdf$/), 'Remove (filed document)').toBe(remove)
     expect(has(/Download scan/), 'Download scan').toBe(download)
     // `Remove` is on identity records and on filed documents, and both are
     // `persons:write` now — either one puts a Remove on the screen.
@@ -283,7 +295,7 @@ describe('Person profile — controls present per role', () => {
       auth = authFor(perms)
       mockApi(PERSON, PERSON_SECTIONS, PERSON_LIST)
       const { unmount } = render(<MemoryRouter><PersonProfilePage /></MemoryRouter>)
-      await screen.findByText('Document History')
+      await screen.findByText('Documents')
 
       const banner = screen.queryAllByRole('note')
         .some(n => /Read-only/.test(n.textContent) && /persons \(write\)/.test(n.textContent))
@@ -309,7 +321,7 @@ describe('ND2A / ND2B entry points per role (migration 050)', () => {
     auth = authFor(perms)
     mockApi(CLIENT, COMPANY_SECTIONS, COMPANY_LIST)
     render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
-    await screen.findByText('Document History')
+    await screen.findByText('Documents')
     expect(has(/Report a change/), 'Report a change').toBe(report)
     expect(has(/^Cease$/), 'Cease').toBe(cease)
     expect(has(/^Change particulars$/), 'Change particulars').toBe(cease)
@@ -324,7 +336,7 @@ describe('ND2A / ND2B entry points per role (migration 050)', () => {
     api.post.mockImplementation(url => Promise.resolve(
       url === '/officer-changes' ? { case: { id: 'k1' } } : {}))
     render(<MemoryRouter><CompanyProfilePage /></MemoryRouter>)
-    await screen.findByText('Document History')
+    await screen.findByText('Documents')
     const buttons = screen.getAllByRole('button', { name: 'Change particulars' })
     buttons[buttons.length - 1].click()
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(
@@ -344,7 +356,7 @@ describe('ND2A / ND2B entry points per role (migration 050)', () => {
     auth = authFor(perms)
     mockApi(PERSON, PERSON_SECTIONS, PERSON_LIST)
     render(<MemoryRouter><PersonProfilePage /></MemoryRouter>)
-    await screen.findByText('Document History')
+    await screen.findByText('Documents')
     expect(screen.queryAllByText('e-Registry account').length > 0, 'card').toBe(card)
     expect(has(/Add account/), 'Add account').toBe(addAccount)
   })
@@ -401,8 +413,8 @@ describe('nothing anywhere is merely disabled by a permission', () => {
   const DATA_DRIVEN = [/^Previous$/, /^Next$/]
 
   const screens = [
-    ['company profile', CompanyProfilePage, COMPANY, COMPANY_SECTIONS, 'Document History'],
-    ['person profile', PersonProfilePage, PERSON, PERSON_SECTIONS, 'Document History'],
+    ['company profile', CompanyProfilePage, COMPANY, COMPANY_SECTIONS, 'Documents'],
+    ['person profile', PersonProfilePage, PERSON, PERSON_SECTIONS, 'Documents'],
     ['company registry', CompanyRegistryPage, COMPANY, COMPANY_SECTIONS, 'Skyline Capital'],
     ['persons registry', PersonsRegistryPage, PERSON, PERSON_SECTIONS, 'John Smith'],
   ]

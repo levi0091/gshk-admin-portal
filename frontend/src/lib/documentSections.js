@@ -27,9 +27,25 @@ const pending = new Map()
 function normalise(data) {
   return {
     sections: Array.isArray(data?.sections) ? data.sections : [],
+    buckets: Array.isArray(data?.buckets) ? data.buckets : [],
+    upload_limits: { ...DEFAULT_LIMITS, ...(data?.upload_limits || {}) },
     identity_fields: (data && typeof data.identity_fields === 'object'
       && data.identity_fields) || {},
   }
+}
+
+/**
+ * The API's numbers, used only until `/documents/sections` answers. The API
+ * refuses the same things again, so a stale copy here can only make the screen
+ * stricter or looser than the server for a moment, never wrong in the record.
+ */
+export const DEFAULT_LIMITS = {
+  max_files: 20,
+  max_file_bytes: 50 * 1024 * 1024,
+  blocked_extensions: [],
+  max_tags: 12,
+  max_tag_length: 60,
+  max_description_length: 500,
 }
 
 export function fetchDocumentSections(ownerType = 'person') {
@@ -62,7 +78,7 @@ export function useDocumentSections(ownerType = 'person') {
   const [state, setState] = useState(() => {
     const hit = cache.get(ownerType)
     return hit ? { ...hit, ready: true, error: '' }
-      : { sections: [], identity_fields: {}, ready: false, error: '' }
+      : { ...normalise(null), ready: false, error: '' }
   })
   useEffect(() => {
     let alive = true
@@ -71,7 +87,7 @@ export function useDocumentSections(ownerType = 'person') {
       .catch(err => {
         if (alive) {
           setState({
-            sections: [], identity_fields: {}, ready: true,
+            ...normalise(null), ready: true,
             error: err?.message || 'Could not load the document sections',
           })
         }
@@ -88,25 +104,55 @@ export function _resetDocumentSections() {
 }
 
 /**
- * Documents grouped under the section their type belongs to.
+ * Live documents grouped by the bucket the API placed them in, newest upload
+ * first (GSHK 2026-11-21: "the buckets will be sorted based on uploaded date").
  *
- * Keyed on the EMBEDDED `document_types.category`, so a document uploaded under
- * a since-retired type (`id_scan`, the old catch-all) still lands in the right
- * section instead of disappearing from the screen. Anything whose category
- * matches no section falls to the last one, which is deliberately "Other
- * Documents" — a document rendered under the wrong heading is recoverable, one
- * rendered nowhere is not.
+ * The API decides the bucket (`document_sections.bucket_of`): a chosen one, or
+ * one derived from a legacy type. A document whose bucket the screen does not
+ * know falls into the fallback rather than vanishing; one with NO bucket is a
+ * person's identity scan, which renders on its identity record instead.
  */
-export function groupBySection(documents, sections) {
-  const keys = (Array.isArray(sections) ? sections : []).map(s => s.key)
-  const fallback = keys[keys.length - 1]
+export function groupByBucket(documents, buckets) {
+  const list = Array.isArray(buckets) ? buckets : []
+  const keys = list.map(b => b.key)
+  const fallback = (list.find(b => b.fallback) || list[list.length - 1])?.key
   const grouped = Object.fromEntries(keys.map(k => [k, []]))
   for (const doc of documents || []) {
-    const category = doc.document_types?.category
-    const key = keys.includes(category) ? category : fallback
+    if (doc.status === 'deleted' || !doc.bucket) continue
+    const key = keys.includes(doc.bucket) ? doc.bucket : fallback
     if (grouped[key]) grouped[key].push(doc)
   }
+  for (const k of keys) {
+    grouped[k].sort((a, b) =>
+      String(b.uploaded_at || b.created_at || '').localeCompare(
+        String(a.uploaded_at || a.created_at || '')))
+  }
   return grouped
+}
+
+/** "report.final.PDF" -> "pdf"; no dot -> "". */
+export function extensionOf(name) {
+  const n = String(name || '').trim().toLowerCase()
+  const i = n.lastIndexOf('.')
+  return i > 0 && i < n.length - 1 ? n.slice(i + 1) : ''
+}
+
+/**
+ * Why the screen will not send this file, or ''. The same three refusals the
+ * API makes (`document_sections.upload_refusal`), so the operator hears about
+ * a 60 MB scan before it has crossed the wire rather than after.
+ */
+export function refusalFor(file, limits = DEFAULT_LIMITS) {
+  const size = Number(file?.size || 0)
+  if (size <= 0) return 'The file is empty'
+  if (size > limits.max_file_bytes) {
+    return `Larger than ${Math.round(limits.max_file_bytes / (1024 * 1024))} MB`
+  }
+  const ext = extensionOf(file?.name)
+  if (ext && (limits.blocked_extensions || []).includes(ext)) {
+    return `.${ext} files can run code when opened, so they cannot be stored here`
+  }
+  return ''
 }
 
 /** The identity-document field rules for one `id_type`. */

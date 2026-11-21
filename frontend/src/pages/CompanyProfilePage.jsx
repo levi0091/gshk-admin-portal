@@ -5,15 +5,12 @@ import { liveCaseWarning } from '../lib/liveCase.js'
 import { NAR1_PHONE_FIELD, nar1PhoneLabel } from '../lib/nar1Phone.js'
 import { formatDate, formatNumber } from '../lib/format.js'
 import StatusBadge from '../components/StatusBadge.jsx'
-import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import LinkPartyModal from '../components/LinkPartyModal.jsx'
 import CopyPartiesModal from '../components/CopyPartiesModal.jsx'
 import ShareClassModal, { SHARE_CLASS_FIELDS } from '../components/ShareClassModal.jsx'
-import { useDocumentSections, groupBySection } from '../lib/documentSections.js'
-import {
-  DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
-} from '../components/DocumentSections.jsx'
+import { useDocumentSections } from '../lib/documentSections.js'
+import DocumentBuckets from '../components/DocumentBuckets.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import AddressBlock from '../components/AddressBlock.jsx'
 import { EMPTY_ADDRESS, addressPayload, addressChanged } from '../lib/address.js'
@@ -175,22 +172,10 @@ function FlagToggle({ on, label, sub, onToggle, busy, canWrite = true }) {
   )
 }
 
-// `DocumentList` was here: one flat list of every company document with a
-// Download and nothing else. It is now the shared `SectionDocuments` under one
-// card per category, with Remove beside Download — the same shape as the person
-// profile, because a company's documents are filed exactly the same way
-// (Levi 2026-09-04: "this is the same for the body corporation upload document
-// features").
-//
-// LEVI'S ITEM 13 ON 2026-09-04 ASKS FOR THE OPPOSITE, and it is not resolved
-// here: "no need to have multiple sections for different document types. just
-// split based on history and current 2 sections so it is clear." Collapsing
-// these cards would cost the per-section upload picker (which is what stops a
-// document being filed under the wrong type) and the Remove button, both of
-// which landed the same day — so the layout is left as it is and the question
-// is Levi's to settle. What item 13 also asked for and nobody had done, the
-// document TYPE made prominent and coloured, is delivered in
-// `components/DocumentSections.jsx`.
+// Documents are BUCKETS (GSHK 2026-11-21): six fixed ones, no document type
+// to pick and no form per file. `components/DocumentBuckets.jsx` owns the
+// upload, the bulk tag / describe / move and the removal; Document History is
+// gone, because the audit trail records every one of those.
 
 export default function CompanyProfilePage() {
   const { companyId } = useParams()
@@ -210,11 +195,6 @@ export default function CompanyProfilePage() {
   //: The live-case warning, held until the operator decides. null = no
   //: conflict, or already acknowledged.
   const [conflict, setConflict] = useState(null)
-  // The section whose upload dialog is open, or null. One piece of state
-  // rather than one flag per section.
-  const [uploadInto, setUploadInto] = useState(null)
-  // The document the Remove dialog is about, or null.
-  const [removing, setRemoving] = useState(null)
   const [newCase, setNewCase] = useState(false)
   const { hasPermission } = useAuth()
   // WHAT A READER MAY DO HERE. `companies:read` opens this page (the route
@@ -240,7 +220,7 @@ export default function CompanyProfilePage() {
   const [linkModal, setLinkModal] = useState(null)
   const [copyParties, setCopyParties] = useState(false)
   const {
-    sections, ready: sectionsReady, error: sectionsError,
+    buckets, upload_limits: uploadLimits, ready: sectionsReady, error: sectionsError,
   } = useDocumentSections('company')
   // The Corporate Party tile edits two fields nothing else on the profile
   // touches, so it holds its own draft rather than joining `draft` — opening
@@ -301,20 +281,6 @@ export default function CompanyProfilePage() {
     })
     setAddrDraft({ ...EMPTY_ADDRESS, ...(company.registered_address || {}) })
     setEditing(true)
-  }
-
-  async function confirmRemoveDocument() {
-    setBusy(true)
-    try {
-      await api.del(`/documents/${removing.id}`)
-      setRemoving(null)
-      load()
-    } catch (err) {
-      setRemoving(null)
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
   }
 
   // NAMES THE PARTY, AND SAYS WHAT IS LOST. "Remove this party from the
@@ -481,12 +447,6 @@ export default function CompanyProfilePage() {
   const isClient = !!company.is_client
   const isCorp = !!company.is_corporate_party
 
-  // Uploads filed under the section their type belongs to (migration 036).
-  // Removed ones are dropped here and kept in Document History — that is what a
-  // soft delete is for.
-  const liveDocs = (company.documents || []).filter(d => d.status !== 'deleted')
-  const bySection = groupBySection(liveDocs, sections)
-  const sectionLabels = Object.fromEntries(sections.map(s => [s.key, s.label]))
 
   // What CR would refuse, read off the same contract the API enforces.
   const warnFor = (table, column, value) => fieldWarning(contract, table, column, value)
@@ -537,9 +497,6 @@ export default function CompanyProfilePage() {
                         onToggle={() => toggleFlag('is_corporate_party')} />
           </div>
         </div>
-        {/* No page-level Upload button: it offered every document type at
-            once from a place that named no section. Each section carries its
-            own. */}
         {((caps.startOfficerChange && isClient) || caps.deleteCompany) && (
           <div className="pg-actions">
             {/* ND2A / ND2B are filed for a CLIENT's officers, like a NAR1. */}
@@ -596,29 +553,6 @@ export default function CompanyProfilePage() {
         />
       )}
 
-      {uploadInto && (
-        <UploadDocumentModal
-          ownerKind="entity"
-          ownerId={companyId}
-          ownerName={company.company_name}
-          category={uploadInto.key}
-          sectionLabel={uploadInto.label}
-          existingTypes={(bySection[uploadInto.key] || []).map(d => d.document_type_code)}
-          onClose={() => setUploadInto(null)}
-          onUploaded={() => { setUploadInto(null); load() }}
-        />
-      )}
-
-      {removing && (
-        <ConfirmDialog
-          title="Remove document"
-          busy={busy}
-          onCancel={() => setRemoving(null)}
-          onConfirm={confirmRemoveDocument}
-        >
-          <RemoveDocumentBody doc={removing} />
-        </ConfirmDialog>
-      )}
 
       {linkModal && (
         <LinkPartyModal
@@ -780,9 +714,8 @@ export default function CompanyProfilePage() {
 
           </div>
 
-          {/* Documents, one card per section — the same shape as the person
-              profile. "Unavailable" is not "none": if the catalogue could not
-              be loaded, say so rather than rendering empty sections. */}
+          {/* Documents, in GSHK's buckets. "Unavailable" is not "none": if the
+              bucket list could not be loaded, say so rather than render none. */}
           {!sectionsReady && (
             <div className="card mb-16">
               <div className="empty-state" style={{ padding: '16px 0' }}>Loading documents…</div>
@@ -793,50 +726,29 @@ export default function CompanyProfilePage() {
               <div className="card-hdr">
                 <div>
                   <div className="card-title">Documents</div>
-                  <div className="card-sub">Sections could not be loaded</div>
+                  <div className="card-sub">Buckets could not be loaded</div>
                 </div>
               </div>
               <div className="reveal-note reveal-note-danger">
                 {sectionsError} — this company’s documents are not shown below
-                because the section list is unavailable, not because there are
+                because the bucket list is unavailable, not because there are
                 none. Reload the page.
               </div>
             </div>
           )}
-
-          {sections.map(section => (
-            <DocumentSection key={section.key} section={section}
-                             count={(bySection[section.key] || []).length}
-                             onAdd={() => setUploadInto(section)}
-                             canAdd={canUploadDoc}>
-              {(bySection[section.key] || []).length === 0 ? (
-                <div className="empty-state" style={{ padding: '16px 0' }}>
-                  Nothing uploaded yet.
-                </div>
-              ) : (
-                <SectionDocuments
-                  documents={bySection[section.key]}
-                  busy={busy}
-                  onRemove={doc => setRemoving(doc)}
-                  canDownload={canDownloadDoc}
-                  canRemove={canRemoveDoc}
-                />
-              )}
-            </DocumentSection>
-          ))}
-
-          <div className="card mb-16">
-            <div className="card-hdr">
-              <div>
-                <div className="card-title">Document History</div>
-                <div className="card-sub">
-                  Every upload, by section and type · newest version is current, older versions preserved
-                </div>
-              </div>
-            </div>
-            <DocumentHistory documents={company.documents} sectionLabels={sectionLabels}
-                             canDownload={canDownloadDoc} />
-          </div>
+          {sectionsReady && !sectionsError && (
+            <DocumentBuckets
+              ownerKind="entity"
+              ownerId={companyId}
+              ownerName={company.company_name}
+              documents={company.documents}
+              buckets={buckets}
+              limits={uploadLimits}
+              canEdit={canUploadDoc}
+              canRemove={canRemoveDoc}
+              canDownload={canDownloadDoc}
+            />
+          )}
 
           {/* Corporate Party Details — gated on is_corporate_party */}
           {isCorp && (
