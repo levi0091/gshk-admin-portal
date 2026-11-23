@@ -106,7 +106,7 @@ async def load_entity_graph(entity_id: str) -> dict:
         return asyncio.to_thread(fn)
 
     (entity_rows, officers, secretaries, share_classes, shareholdings,
-     business_names, phones) = await asyncio.gather(
+     phones) = await asyncio.gather(
         q(lambda: sb.table("entities").select("*").eq("id", entity_id).execute().data),
         q(lambda: sb.table("entity_officers").select("*")
           .eq("entity_id", entity_id).eq("is_current", True).execute().data),
@@ -116,10 +116,8 @@ async def load_entity_graph(entity_id: str) -> dict:
           .eq("entity_id", entity_id).execute().data),
         q(lambda: sb.table("shareholdings").select("*")
           .eq("entity_id", entity_id).eq("is_current", True).execute().data),
-        # NAR1 s2 and s8. The profile reads the same two tables, so the draft
-        # can only print what the operator can see there.
-        q(lambda: sb.table("business_names").select("*")
-          .eq("entity_id", entity_id).execute().data),
+        # NAR1 s8. The profile reads the same rows, so the draft can only
+        # print what the operator can see there.
         q(lambda: sb.table("contacts").select("contact_value, is_preferred")
           .eq("entity_id", entity_id).eq("contact_type", "phone")
           .execute().data),
@@ -266,7 +264,6 @@ async def load_entity_graph(entity_id: str) -> dict:
         # `corporate_name` and showed Viewpoint's code ("GETSTA") as the
         # company secretary on the Data Verification screen.
         "entities": corporate_entities,
-        "business_names": business_names or [],
         # The preferred number first, as PUT /company-phone and the profile
         # read it.
         "company_phone": next(

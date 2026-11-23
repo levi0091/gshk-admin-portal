@@ -172,6 +172,7 @@ _COMPANY_FIELD_CODES = {
     "business_nature_code": VP_STATUTORY,
     "business_nature_desc": VP_STATUTORY,
     "mortgages_total": VP_STATUTORY,
+    "business_name": VP_STATUTORY,   # NAR1 s2 (migration 066)
     # NAR1 s16 — where a statutory register is kept. Statutory for the same
     # reason: moving the Register of Members changes what the return says.
     "record_location": VP_STATUTORY,

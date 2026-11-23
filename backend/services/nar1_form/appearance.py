@@ -327,13 +327,14 @@ def draw_position(text: str, rect, *, size: float, quadding=None,
 
 
 def wrap(text: str, width: float, size: float, *, bold: bool = True,
-         latin: str | None = None) -> list[str]:
+         latin: str | None = None, break_words: bool = False) -> list[str]:
     """`text` broken into lines that each fit `width`, greedily on spaces.
 
-    A word longer than the whole line is left on a line of its own and
-    overflows rather than being hyphenated or cut: it is somebody's building
-    name or email address, and a statutory return must not invent a break in
-    one.
+    By default a word longer than the whole line is left on a line of its own
+    and overflows. With `break_words`, such a word is instead cut into pieces
+    that each fit, with NO hyphen added -- a hyphen in a surname would read as
+    part of the name. `layout` asks for that only when breaking on spaces has
+    already failed, so a value with spaces in it is never cut mid-word.
 
     A value that already fits comes back VERBATIM, whitespace and all. Going
     through `split()` unconditionally cost `_company_name` the double space it
@@ -342,12 +343,29 @@ def wrap(text: str, width: float, size: float, *, bold: bool = True,
     """
     if measure(text, size, bold=bold, latin=latin) <= width:
         return [text]
+
+    def fits(value: str) -> bool:
+        return measure(value, size, bold=bold, latin=latin) <= width
+
     lines: list[str] = []
     current = ""
     for word in text.split():
+        if break_words and not fits(word):
+            if current:
+                lines.append(current)
+            piece = ""
+            for char in word:
+                # At least one character per piece, so a box narrower than one
+                # glyph still terminates.
+                if piece and not fits(piece + char):
+                    lines.append(piece)
+                    piece = char
+                else:
+                    piece += char
+            current = piece
+            continue
         candidate = f"{current} {word}" if current else word
-        if current and measure(candidate, size, bold=bold,
-                               latin=latin) > width:
+        if current and not fits(candidate):
             lines.append(current)
             current = word
         else:
@@ -375,28 +393,43 @@ def layout(text: str, rect, *, size: float = DEFAULT_SIZE, bold: bool = True,
     value is WRAPPED into the lines the box can hold, and only shrunk when
     even that will not fit.
 
-    "Fit" means across as well as down. `wrap` leaves a word longer than the
-    line on a line of its own, so one line of a one-word surname always "fits"
-    the line count while running straight out of the box into Other Names
-    (GSHK 2026-11-21, Schedule 1). Such a word is shrunk until it ends inside
-    the box's right edge, and is never broken: a statutory return must not
-    split somebody's name. The edge, not the inset margin: CR's footer page
-    numbers sit in boxes narrower than two insets and must stay at 8pt.
+    "Fit" means across as well as down, and the order of resort is GSHK's
+    (2026-11-23, Schedule 1 surnames): keep the size for as long as wrapping
+    can hold the value, and shrink only once even that would leave the box.
+
+      1. wrap on spaces;
+      2. if a single word is wider than the line, cut THAT word across lines
+         at the same size -- a one-word surname printed at 10pt over two
+         lines, exactly as a two-word surname is, rather than in a smaller,
+         lighter-looking face beside its neighbours;
+      3. only when the lines will not fit down the box, shrink and repeat.
+
+    A one-line box therefore behaves as before: cutting a word adds a line it
+    has no room for, so the word shrinks until it fits across. The edge, not
+    the inset margin, is what "across" means: CR's footer page numbers sit in
+    boxes narrower than two insets and must stay at 8pt.
     """
     x0, y0, x1, y1 = (float(v) for v in rect)
     usable = (x1 - x0) - 2 * _INSET
     inside = (x1 - x0) - _INSET
     height = y1 - y0
+
+    def fitting(lines, current):
+        return (len(lines) <= _lines_that_fit(height, current)
+                and all(measure(line, current, bold=bold, latin=latin) <= inside
+                        for line in lines))
+
     current = size
     while current > _MIN_SIZE:
-        lines = wrap(text, usable, current, bold=bold, latin=latin)
-        if (len(lines) <= _lines_that_fit(height, current)
-                and all(measure(line, current, bold=bold, latin=latin) <= inside
-                        for line in lines)):
-            return lines, round(current, 2)
+        for break_words in (False, True):
+            lines = wrap(text, usable, current, bold=bold, latin=latin,
+                         break_words=break_words)
+            if fitting(lines, current):
+                return lines, round(current, 2)
         current -= 0.25
     # At the floor, take whatever the box holds and let it overflow visibly.
-    return wrap(text, usable, _MIN_SIZE, bold=bold, latin=latin), _MIN_SIZE
+    return (wrap(text, usable, _MIN_SIZE, bold=bold, latin=latin,
+                 break_words=True), _MIN_SIZE)
 
 
 def draw_value(canvas, text: str, rect, *, size: float = DEFAULT_SIZE,

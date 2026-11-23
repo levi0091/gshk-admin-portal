@@ -58,8 +58,10 @@ const CLIENT = {
   business_nature_code: '070',
   business_nature_desc: 'Activities of head offices',
   mortgages_total: 'Nil',
-  business_names: [{ id: 'bn1', business_name: 'Skyline Advisory',
-                     business_name_zh: '天際顧問' }],
+  business_name: 'Skyline Advisory',
+  // Viewpoint's BR record: the company's own name, which is NOT a business
+  // name and must not be shown as one (GSHK 2026-11-23).
+  business_names: [{ id: 'bn1', business_name: 'BR Record Name Limited' }],
   share_classes: [{
     id: 'sc1', class_name: 'Ordinary', currency: 'HKD',
     total_issued: 10000, issued_amount: 10000, total_paid: 10000,
@@ -492,14 +494,13 @@ describe('CompanyProfilePage — the CR form fields', () => {
   const findInfoCard = async () =>
     (await screen.findByText('Company Information')).closest('.card')
 
-  it('shows the business name (B9)', async () => {
-    // 5,026 rows have sat in `business_names` since the ETL and no screen has
-    // ever read one.
+  it('shows the business name GSHK entered, not the BR record (B9)', async () => {
     renderPage()
     await findInfoCard()
 
     expect(screen.getByText('Business Name')).toBeInTheDocument()
-    expect(screen.getByText(/Skyline Advisory/)).toBeInTheDocument()
+    expect(screen.getByText('Skyline Advisory')).toBeInTheDocument()
+    expect(screen.queryByText(/BR Record Name Limited/)).not.toBeInTheDocument()
   })
 
   it('shows business nature as its code AND the description it drives (B5)', async () => {

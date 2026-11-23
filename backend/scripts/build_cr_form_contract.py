@@ -57,7 +57,7 @@ RULES: list[tuple] = [
     (None, "brNo",              MAPPED, "entities.br_number"),
     (None, "corpBrNo",          MAPPED, "entities.br_number"),
     (None, "ubino",             MAPPED, "entities.br_number"),
-    (None, "brName",            MAPPED, "business_names.business_name"),
+    (None, "brName",            MAPPED, "entities.business_name"),
     (None, "coyStatus",         MAPPED, "entities.company_type"),
     (None, "nature",            MAPPED, "entities.business_nature_code"),
     (None, "bnCode",            MAPPED, "entities.business_nature_code"),

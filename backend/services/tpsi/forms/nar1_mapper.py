@@ -852,30 +852,17 @@ _TEL_NO_LEN = 8
 _MORT_CHARGE_MAX = 120
 
 
-def _business_name(graph: dict) -> str | None:
-    """NAR1 s2, from `business_names`, the same rows the profile prints.
+def _business_name(entity: dict) -> str | None:
+    """NAR1 s2, "Business Name (If any)", from `entities.business_name`.
 
-    A name ceased before today is not one the company still trades under. More
-    than one current name is joined the way the profile joins them, unless the
-    result is longer than CR's box, in which case the first one is filed alone
-    rather than a cut-off list.
+    Only what GSHK entered for it (migration 066), never the Viewpoint BR
+    record in `business_names`, which is the company's own name for nearly
+    every company -- GSHK 2026-11-23: "Please do not default it." Empty files
+    nothing and the draft prints "N/A", as CR's own return does. Longer than
+    CR's box is omitted rather than cut, like every optional field here.
     """
-    today = _hk_today().isoformat()
-    names: list[str] = []
-    for row in graph.get("business_names") or []:
-        ceased = str(row.get("cessation_date") or "")[:10]
-        if ceased and ceased <= today:
-            continue
-        name = ((row.get("business_name") or "").strip()
-                or (row.get("business_name_zh") or "").strip())
-        if name and name not in names:
-            names.append(name)
-    if not names:
-        return None
-    joined = ", ".join(names)
-    if len(joined) <= _BR_NAME_MAX:
-        return joined
-    return names[0] if len(names[0]) <= _BR_NAME_MAX else None
+    name = (entity.get("business_name") or "").strip()
+    return name if name and len(name) <= _BR_NAME_MAX else None
 
 
 def _hk_telephone(value: str | None) -> str | None:
@@ -905,7 +892,7 @@ def _company_particulars(entity: dict, graph: dict) -> dict:
     (`nar1_form.fill`).
     """
     out: dict = {}
-    business_name = _business_name(graph)
+    business_name = _business_name(entity)
     if business_name:
         out["brName"] = business_name
     code = (entity.get("business_nature_code") or "").strip()

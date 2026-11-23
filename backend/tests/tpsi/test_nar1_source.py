@@ -531,11 +531,10 @@ async def test_an_unlinked_persons_primary_document_comes_first():
 
 
 
-async def test_the_business_names_and_the_preferred_phone_are_loaded():
-    """NAR1 s2 and s8 read the same rows the company profile shows."""
+async def test_the_preferred_phone_is_loaded():
+    """NAR1 s8 reads the same rows the company profile shows."""
     sb = _Supabase({
         "entities": [ENTITY],
-        "business_names": [{"entity_id": "e1", "business_name": "TEST TRADING"}],
         "contacts": [
             {"entity_id": "e1", "contact_type": "phone",
              "contact_value": "+852 2000 0000", "is_preferred": False},
@@ -545,12 +544,11 @@ async def test_the_business_names_and_the_preferred_phone_are_loaded():
     })
     with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
         g = await nar1_source.load_entity_graph("e1")
-    assert [b["business_name"] for b in g["business_names"]] == ["TEST TRADING"]
     assert g["company_phone"] == "+852 3500 1234"
 
 
-async def test_a_company_with_neither_loads_empty():
+async def test_a_company_with_no_phone_loads_none():
     sb = _Supabase({"entities": [ENTITY]})
     with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
         g = await nar1_source.load_entity_graph("e1")
-    assert (g["business_names"], g["company_phone"]) == ([], None)
+    assert g["company_phone"] is None

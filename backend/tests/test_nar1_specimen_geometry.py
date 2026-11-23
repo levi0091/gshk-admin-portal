@@ -325,29 +325,70 @@ def test_a_schedule_page_number_uses_the_footers_sans_face(rendered):
 
 
 # ---------------------------------------------------------------------------
-# A surname that is one long word (GSHK 2026-11-21, Schedule 1)
+# A surname that is one long word (GSHK 2026-11-21, revised 2026-11-23)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("surname", ["CHARLINGTUHHE", "KOHKOHKOHKOHKOHKOHKOH"])
-def test_a_one_word_surname_stays_inside_its_box(surname):
-    """It ran out of the Surname box and over Other Names: `wrap` leaves a word
-    longer than the line on a line of its own, and `layout` counted lines
-    without asking whether that one line fit across."""
+def drawn_all(reader, field):
+    """Every run drawn inside `field`'s box, top line first."""
+    index, rect = _widget(field)
+    x0, y0, x1, y1 = min(rect[0], rect[2]), min(rect[1], rect[3]), \
+        max(rect[0], rect[2]), max(rect[1], rect[3])
+    inside = [r for r in _runs(reader.pages[index])
+              if x0 - 1 <= r[1] <= x1 and y0 - 2 <= r[2] <= y1 + 2]
+    assert inside, f"nothing was drawn inside {field!r}"
+    return sorted(inside, key=lambda r: -r[2])
+
+
+def _surname_runs(surname):
     reader = PdfReader(io.BytesIO(fill.render(
         build_xml(members=(surname,)), submitted_on=SPECIMEN_FILED_ON)))
     field = fm.SCHEDULE_1[0]["surname_en"]
-    text, x, _, size, _ = drawn(reader, field)
-    _, _, x1, _ = box(reader, field)
-    assert text == surname, "a surname must never be broken"
-    assert x + ap.measure(text, size) <= x1
+    return drawn_all(reader, field), box(reader, field)
 
 
-def test_a_two_word_surname_still_wraps_at_full_size():
-    """Picture 2: "KOHKOHKOH KOHKOH KOHKOH" already fitted on two lines, and
-    shrinking it instead would be a regression."""
-    reader = PdfReader(io.BytesIO(fill.render(
-        build_xml(members=("KOHKOHKOH KOHKOH KOHKOH",)),
-        submitted_on=SPECIMEN_FILED_ON)))
-    text, _, _, size, _ = drawn(reader, fm.SCHEDULE_1[0]["surname_en"])
-    assert text != "KOHKOHKOH KOHKOH KOHKOH"   # wrapped, not on one line
-    assert size >= 8.0
+#: What a surname with a space in it (Picture 2, which GSHK accepted) draws at
+#: once it needs two lines: the box is 21.8pt tall, one line at 10pt, so two
+#: lines can be no bigger than this.
+TWO_LINE_SURNAME = "KOHKOHKOH KOHKOH KOHKOH"
+
+
+def test_a_surname_that_fits_keeps_the_rows_10pt():
+    runs, _ = _surname_runs("CHARLINGTUHHE")
+    assert [(r[0], r[3]) for r in runs] == [("CHARLINGTUHHE", ap.DEFAULT_SIZE)]
+
+
+@pytest.mark.parametrize("surname", [
+    "KOHKOHKOHKOHKOHKOHKOH",
+    "LEELEELEELEELEELEELEELEELEE",    # GSHK's 2026-11-23 screenshot
+])
+def test_a_one_word_surname_wraps_like_a_two_word_one(surname):
+    """GSHK 2026-11-23: shrinking it onto ONE line left it much smaller and
+    lighter than "Sze Mun" beside it, and unlike a two-word surname. It now
+    wraps onto two lines, cut where the line ends (no hyphen), at the same
+    size a two-word surname wraps at -- shrinking further only if two lines
+    still will not hold it."""
+    runs, (_, _, x1, _) = _surname_runs(surname)
+    two_word, _ = _surname_runs(TWO_LINE_SURNAME)
+    assert len(runs) == 2
+    assert "".join(r[0] for r in runs) == surname, "every letter, in order"
+    assert {r[3] for r in runs} == {two_word[0][3]}
+    for text, x, _, size, _ in runs:
+        assert x + ap.measure(text, size) <= x1
+
+
+def test_a_surname_too_long_for_two_lines_finally_shrinks_inside_its_box():
+    surname = "LEE" * 30
+    runs, (_, y0, x1, y1) = _surname_runs(surname)
+    assert "".join(r[0] for r in runs) == surname
+    assert max(r[3] for r in runs) < ap.DEFAULT_SIZE
+    for text, x, y, size, _ in runs:
+        assert x + ap.measure(text, size) <= x1
+        assert y0 <= y <= y1
+
+
+def test_a_two_word_surname_still_wraps_on_its_space():
+    """Picture 2: a surname with a space breaks at the space, never mid-word."""
+    runs, _ = _surname_runs(TWO_LINE_SURNAME)
+    assert len(runs) == 2 and len({r[3] for r in runs}) == 1
+    for text, *_ in runs:
+        assert set(text.split()) <= {"KOHKOHKOH", "KOHKOH"}

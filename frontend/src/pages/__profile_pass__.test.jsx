@@ -225,6 +225,22 @@ describe('CompanyProfilePage — the 2026-09-04 pass', () => {
     expect(await screen.findByText('Not used on NAR1')).toBeInTheDocument()
   })
 
+  it('lets the business name be entered from Edit (GSHK 2026-11-23)', async () => {
+    // It was printed on the profile and missing from this form.
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText('Company Information')).closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+
+    const box = screen.getByLabelText('Business Name')
+    expect(box).toHaveValue('')
+    await user.type(box, 'Test Trading')
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/companies/e1', { business_name: 'Test Trading' }))
+  })
+
   it('turns the phone on for the NAR1 and sends a real boolean', async () => {
     const user = userEvent.setup()
     renderPage()

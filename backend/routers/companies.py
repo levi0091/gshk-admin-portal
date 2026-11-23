@@ -96,6 +96,10 @@ _EDITABLE_FIELDS = {
     # NAR1 s8 (migration 064): whether the company phone is filed at all.
     # GSHK's default is "Not use", so it is off until somebody turns it on.
     "nar1_show_phone",
+    # NAR1 s2 (migration 066): "Business Name (If any)". Empty unless GSHK
+    # enters one; never the company name, which is what Viewpoint's BR record
+    # in `business_names` holds for nearly every company.
+    "business_name",
 }
 
 # Dashboard tiles (wireframe_v7 s2) + which statuses count as unfinished work.
@@ -283,6 +287,7 @@ class CreateCompanyRequest(BaseModel):
     email: Optional[str] = None
     # Omitted means the column default, false: the phone is not filed.
     nar1_show_phone: Optional[bool] = None
+    business_name: Optional[str] = None
     # Add Company form (wireframe_v7): these live in `addresses` / `contacts`,
     # not on `entities` — created alongside the company below.
     registered_address: Optional[str] = None
@@ -310,6 +315,7 @@ class UpdateCompanyRequest(BaseModel):
     mortgages_total: Optional[str] = None
     email: Optional[str] = None
     nar1_show_phone: Optional[bool] = None
+    business_name: Optional[str] = None
     ar_last_date: Optional[str] = None
     ar_next_date: Optional[str] = None
     ar_due_date: Optional[str] = None

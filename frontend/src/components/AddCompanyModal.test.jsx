@@ -238,6 +238,19 @@ describe('AddCompanyModal — dialling code (UAT F-3)', () => {
     })
   })
 
+  it('takes a business name at creation, as Edit does', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await fillRequired(user)
+    await user.type(screen.getByLabelText('Business Name'), 'Test Trading')
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/companies', expect.objectContaining({ business_name: 'Test Trading' }))
+    })
+  })
+
   it('can put the phone on the NAR1 from the start', async () => {
     const user = userEvent.setup()
     renderModal()

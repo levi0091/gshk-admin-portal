@@ -1816,31 +1816,28 @@ def _company(**entity_over):
     return g
 
 
-def test_the_current_business_name_is_filed():
-    g = _company()
-    g["business_names"] = [
-        {"business_name": "OLD TRADING", "cessation_date": "2020-01-01"},
-        {"business_name": "TEST TRADING", "cessation_date": None},
-    ]
-    data = mapped(g)
+def test_the_business_name_gshk_entered_is_filed():
+    data = mapped(_company(business_name="TEST TRADING"))
     assert data["brName"] == "TEST TRADING"
     assert "<cr:brName>TEST TRADING</cr:brName>" in nar1.build_nar1_xml(data)
 
 
-def test_a_chinese_only_business_name_is_filed_as_it_stands():
+def test_the_viewpoint_br_record_is_never_filed_as_a_business_name():
+    """GSHK 2026-11-23: "Please do not default it." The BR record holds the
+    company's own name for 4,878 of 5,028 companies on DEV."""
     g = _company()
-    g["business_names"] = [{"business_name": None, "business_name_zh": "測試貿易"}]
-    assert mapped(g)["brName"] == "測試貿易"
+    g["business_names"] = [{"business_name": "Queen Ann Curtain Limited"}]
+    assert "brName" not in mapped(g)
 
 
-def test_no_business_name_files_nothing():
-    assert "brName" not in mapped(graph())
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_no_business_name_files_nothing(blank):
+    assert "brName" not in mapped(_company(business_name=blank))
 
 
-def test_too_many_names_for_the_box_files_the_first_rather_than_a_cut_list():
-    g = _company()
-    g["business_names"] = [{"business_name": "A" * 100}, {"business_name": "B" * 100}]
-    assert mapped(g)["brName"] == "A" * 100
+def test_a_business_name_longer_than_crs_box_is_omitted_not_cut():
+    assert "brName" not in mapped(_company(business_name="A" * 151))
+    assert mapped(_company(business_name="A" * 150))["brName"] == "A" * 150
 
 
 def test_the_business_nature_code_is_filed_but_not_its_description():
@@ -1925,7 +1922,7 @@ def test_every_new_field_passes_crs_schema():
     g["entity"].update(business_nature_code="096", mortgages_total="Nil",
                        nar1_show_phone=True)
     g["company_phone"] = "+852 3500 1234"
-    g["business_names"] = [{"business_name": "TEST TRADING"}]
+    g["entity"]["business_name"] = "TEST TRADING"
     assert nar1.validate(mapped(g)) == []
 
 

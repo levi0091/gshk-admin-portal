@@ -824,6 +824,12 @@ def test_the_business_name_and_nature_are_printed():
     assert values[fm.MAIN_1["business_nature_code"]] == ["096"]
 
 
+def test_no_business_name_prints_NA_as_crs_own_return_does():
+    """GSHK 2026-11-23, and CR's filed Kanenas return: box 2 reads "N/A"."""
+    values = values_of(fill.render_fields(build_xml()))
+    assert values[fm.MAIN_1["business_name"]] == ["N/A"]
+
+
 def test_the_nature_description_comes_from_the_code_before_CR_writes_it():
     from services.tpsi.forms.cr_vocabularies import BUSINESS_NATURE
     values = values_of(fill.render_fields(_with("<cr:nature>096</cr:nature>")))

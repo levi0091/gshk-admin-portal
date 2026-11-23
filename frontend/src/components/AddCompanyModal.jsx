@@ -53,6 +53,8 @@ const DIAL_CODES = [
 // a lookup added to one appears in the other rather than being copied.
 const OPTIONAL_FIELDS = [
   { key: 'company_name_zh', label: 'Chinese Name', full: true },
+  // NAR1 s2 (migration 066): parity with the profile's Edit form.
+  { key: 'business_name', label: 'Business Name', full: true },
   { key: 'cr_number', label: 'CR No.' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
   // The code is picked and CR derives the description from it — the backend

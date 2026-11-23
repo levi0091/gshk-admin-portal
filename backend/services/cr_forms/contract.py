@@ -22,7 +22,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/brNo'):
         ('mapped', 'entities.br_number', True, 20),
     ('NAR1', 'submission/Eform/formModel/brName'):
-        ('mapped', 'business_names.business_name', False, 150),
+        ('mapped', 'entities.business_name', False, 150),
     ('NAR1', 'submission/Eform/formModel/nature'):
         ('mapped', 'entities.business_nature_code', False, 5),
     ('NAR1', 'submission/Eform/formModel/natureDesc'):

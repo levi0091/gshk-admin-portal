@@ -34,6 +34,10 @@ import {
 const EDITABLE = [
   { key: 'company_name', label: 'Company Name' },
   { key: 'company_name_zh', label: 'Chinese Name' },
+  // NAR1 s2, "Business Name (If any)" (migration 066). It was printed on the
+  // profile and missing from this form (GSHK 2026-11-23). Empty unless the
+  // company really trades under another name: blank prints "N/A" on the NAR1.
+  { key: 'business_name', label: 'Business Name' },
   { key: 'br_number', label: 'BRN' },
   { key: 'cr_number', label: 'CR No.' },
   // CR takes P / N / G on `coyType` and nothing else. A legacy free-text value
@@ -462,9 +466,6 @@ export default function CompanyProfilePage() {
   // agree about what "filable" means (OQ-2).
   const filingProblems = company.filing_problems || []
   const caseCount = (company.cases?.nar1?.length || 0) + (company.cases?.nnc1?.length || 0)
-  const businessName = (company.business_names || [])
-    .map(b => [b.business_name, b.business_name_zh].filter(Boolean).join(' · '))
-    .filter(Boolean).join(', ')
 
   return (
     <>
@@ -661,9 +662,14 @@ export default function CompanyProfilePage() {
                   <span className="font-semibold">{company.company_name}</span>
                 </Kv>
                 <Kv label="Chinese Name">{company.company_name_zh}</Kv>
-                {/* Brian's B9. Already in `business_names` for 5,026 companies
-                    and never shown; CR asks for it as `brName`. */}
-                <Kv label="Business Name">{businessName || null}</Kv>
+                {/* NAR1 s2 (migration 066). NOT Viewpoint's `business_names`,
+                    the BR record, which repeats the company's own name for
+                    nearly every company and so read as a business name it
+                    does not have (GSHK 2026-11-23). */}
+                <Kv label="Business Name"
+                    warning={warnFor('entities', 'business_name', company.business_name)}>
+                  {company.business_name || null}
+                </Kv>
                 <Kv label="Entity ID">{company.vp_source_key}</Kv>
                 <Kv label="BRN">{company.br_number}</Kv>
                 <Kv label="CR No.">{company.cr_number}</Kv>
