@@ -93,6 +93,13 @@ _EDITABLE_FIELDS = {
     # corpSec/corpDir on THEIR returns -- and diffs all three against its own
     # database, which is how a blank one became a discrepancy notice.
     "email",
+    # NAR1 s8 (migration 064): whether the company phone is filed at all.
+    # GSHK's default is "Not use", so it is off until somebody turns it on.
+    "nar1_show_phone",
+    # NAR1 s2 (migration 066): "Business Name (If any)". Empty unless GSHK
+    # enters one; never the company name, which is what Viewpoint's BR record
+    # in `business_names` holds for nearly every company.
+    "business_name",
 }
 
 # Dashboard tiles (wireframe_v7 s2) + which statuses count as unfinished work.
@@ -278,6 +285,9 @@ class CreateCompanyRequest(BaseModel):
     business_nature_code: Optional[str] = None
     mortgages_total: Optional[str] = None
     email: Optional[str] = None
+    # Omitted means the column default, false: the phone is not filed.
+    nar1_show_phone: Optional[bool] = None
+    business_name: Optional[str] = None
     # Add Company form (wireframe_v7): these live in `addresses` / `contacts`,
     # not on `entities` — created alongside the company below.
     registered_address: Optional[str] = None
@@ -304,6 +314,8 @@ class UpdateCompanyRequest(BaseModel):
     business_nature_code: Optional[str] = None
     mortgages_total: Optional[str] = None
     email: Optional[str] = None
+    nar1_show_phone: Optional[bool] = None
+    business_name: Optional[str] = None
     ar_last_date: Optional[str] = None
     ar_next_date: Optional[str] = None
     ar_due_date: Optional[str] = None
@@ -723,10 +735,10 @@ async def get_company(
                    .eq("entity_id", company_id).execute().data) or []),
         q(lambda: (sb.table("contacts").select("*")
                    .eq("entity_id", company_id).execute().data) or []),
-        # Removed documents come back too — dropped from their section, kept in
-        # Document History, marked (Levi 2026-09-04).
+        # Live documents only: Document History, which showed removed ones, was
+        # retired on 2026-11-21 (the audit trail records every removal).
         q(lambda: document_service.list_documents(
-            owner_kind="entity", owner_id=company_id, include_deleted=True)),
+            owner_kind="entity", owner_id=company_id)),
         # CR's section 11 in its own right, not just the class names hanging
         # off each shareholding: the return states the company's share capital
         # whether or not anyone currently holds it.
@@ -1630,16 +1642,40 @@ async def list_company_documents(
 async def upload_company_document(
     company_id: str,
     file: UploadFile = File(...),
-    document_type_code: str = Form(...),
+    bucket: Optional[str] = Form(None),
+    upload_id: Optional[str] = Form(None),
+    document_type_code: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
     user=Depends(live_company("write")),
 ):
+    """One file. With `bucket` (the profile's drop zones, 2026-11-21) it is
+    always a new document; with `document_type_code` it versions in place on
+    (company, type) as it always has."""
     content = await file.read()
+    if bucket:
+        return await document_service.upload_to_bucket(
+            owner_kind="entity", owner_id=company_id, bucket=bucket,
+            file_name=file.filename, content=content,
+            mime_type=file.content_type, user=user, upload_id=upload_id)
+    if not document_type_code:
+        raise HTTPException(status_code=422,
+                            detail="Choose a bucket to upload this file into")
     return await document_service.upload_document(
         owner_kind="entity", owner_id=company_id,
         document_type_code=document_type_code, file_name=file.filename,
         content=content, mime_type=file.content_type, title=title, user=user,
     )
+
+
+@router.patch("/{company_id}/documents")
+async def edit_company_documents(
+    company_id: str,
+    body: document_service.DocumentEdit,
+    user=Depends(live_company("write")),
+):
+    """Move, describe or tag many of this company's documents at once."""
+    return await document_service.update_documents(
+        owner_kind="entity", owner_id=company_id, edit=body, user=user)
 
 
 # --------------------------------------------------------------------------- #

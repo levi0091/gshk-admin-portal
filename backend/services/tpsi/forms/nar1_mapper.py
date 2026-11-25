@@ -50,6 +50,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from services.tpsi.forms.cr_vocabularies import (
+    BUSINESS_NATURE,
     CAPACITY_BODY_CORPORATE,
     CAPACITY_INDIVIDUAL,
     HKG,
@@ -808,7 +809,104 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
     if person.get("email") and not person.get("hide_email_on_forms"):
         block["indvEmailAddr"] = person["email"]
     block.update(_identity(identity_documents.get(person["id"], []), problems, where))
+    if hkg_only:
+        block.update(_individual_secretary_licence(person))
     return {k: v for k, v in block.items() if v not in ("", None, {})}
+
+
+#: What an individual secretary with no licence and no recorded reason files
+#: (GSHK 2026-11-21: "Default it to 'Not for business'"). CR requires a reason
+#: whenever `exempted` is Y, and an individual acting as one client's secretary
+#: is not carrying on a trust or company service business.
+DEFAULT_TCSP_EXEMPTION_REASON = "Not for business"
+
+#: indSec's indvTcspNo and reason limits (nar1_schema.json).
+_TCSP_NO_MAX = 20
+_TCSP_REASON_MAX = 350
+
+
+def _individual_secretary_licence(person: dict) -> dict:
+    """indSec's indvTcspNo / exempted / reason (migration 038 columns).
+
+    CR: exempted "Must be Y if tcspNo is empty, must be N if tcspNo is
+    filled", and reason is "Required if exempted is Y". So this always says one
+    or the other; leaving all three out printed an unanswered section 12A on
+    every return with a natural-person secretary.
+    """
+    # Over CR's length is treated as absent, never truncated and never sent:
+    # the persons screen does not cap either column, and an optional field
+    # must not turn a fileable return into a FormValidationError. A cut-off
+    # licence number would be somebody else's licence.
+    licence = (person.get("tcsp_licence_no") or "").strip()
+    if licence and len(licence) <= _TCSP_NO_MAX:
+        return {"indvTcspNo": licence, "exempted": "N"}
+    reason = (person.get("tcsp_exemption_reason") or "").strip()
+    if not reason or len(reason) > _TCSP_REASON_MAX:
+        reason = DEFAULT_TCSP_EXEMPTION_REASON
+    return {"exempted": "Y", "reason": reason}
+
+
+#: CR's brName, telNo and totalAmountMortCharge limits (nar1_schema.json).
+_BR_NAME_MAX = 150
+_TEL_NO_LEN = 8
+_MORT_CHARGE_MAX = 120
+
+
+def _business_name(entity: dict) -> str | None:
+    """NAR1 s2, "Business Name (If any)", from `entities.business_name`.
+
+    Only what GSHK entered for it (migration 066), never the Viewpoint BR
+    record in `business_names`, which is the company's own name for nearly
+    every company -- GSHK 2026-11-23: "Please do not default it." Empty files
+    nothing and the draft prints "N/A", as CR's own return does. Longer than
+    CR's box is omitted rather than cut, like every optional field here.
+    """
+    name = (entity.get("business_name") or "").strip()
+    return name if name and len(name) <= _BR_NAME_MAX else None
+
+
+def _hk_telephone(value: str | None) -> str | None:
+    """The 8 digits CR's telNo takes, or None.
+
+    The form prints "+852" beside the box itself, and `contacts.contact_value`
+    stores the dial code ("+852 3500 1234"), so the code is stripped. A number
+    that is not a Hong Kong one is not filed at all: shortening it would put
+    a different, valid-looking number on a statutory return.
+    """
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) == _TEL_NO_LEN + 3 and digits.startswith("852"):
+        digits = digits[3:]
+    return digits if len(digits) == _TEL_NO_LEN else None
+
+
+def _company_particulars(entity: dict, graph: dict) -> dict:
+    """NAR1 s2 business name, the business nature code, s8 phone, s9 mortgages.
+
+    All four are Mandatory = N, so each is OMITTED, never refused, when it is
+    missing or not something CR would take. A filing must not fail over a field
+    CR does not require (CLAUDE.md, CR field fidelity).
+
+    `natureDesc` is not sent: CR's worksheet says it is "filled in by system
+    after Web-Form validation" and its validate example omits it, like
+    dateReturnMadeUp. The draft prints the description from the code instead
+    (`nar1_form.fill`).
+    """
+    out: dict = {}
+    business_name = _business_name(entity)
+    if business_name:
+        out["brName"] = business_name
+    code = (entity.get("business_nature_code") or "").strip()
+    if code in BUSINESS_NATURE:
+        out["nature"] = code
+    # GSHK's default for s8 is "Not use": filed only when somebody chose to.
+    if entity.get("nar1_show_phone"):
+        phone = _hk_telephone(graph.get("company_phone"))
+        if phone:
+            out["telNo"] = phone
+    mortgages = (entity.get("mortgages_total") or "").strip()
+    if mortgages and len(mortgages) <= _MORT_CHARGE_MAX:
+        out["totalAmountMortCharge"] = mortgages
+    return out
 
 
 def _corporate(name: str, addr: dict | None, problems: list[str],
@@ -1315,6 +1413,7 @@ def map_entity(graph: dict, *, year: int, signatory: dict | None = None,
     # empty element, which claims the company has no address.
     if (entity.get("email") or "").strip():
         data["emailAddr"] = entity["email"].strip()
+    data.update(_company_particulars(entity, graph))
 
     data.update(_officer_lists(graph, problems))
 

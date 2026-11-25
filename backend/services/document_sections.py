@@ -6,14 +6,14 @@ screens render from what it returns — the same rule the CR form contract follo
 would drift from the API that enforces it, and the way you would find out is a
 NAR1 rejected at CR.
 
-TWO LEVELS, which the screen makes visible:
+TWO SHAPES, which the screen makes visible (GSHK 2026-11-21):
 
-  section       the heading and the card — Identity Documents, Proof of Address,
-                Other Documents. Rendered even when EMPTY, with its own upload
-                button, because an operator has to be able to add the first one.
-  document type the row in the picker — Passport, HKID, Utility Bill. This is
-                what `documents` versions on, so re-uploading a passport
+  identity      a person's Identity Documents: typed RECORDS (Passport, HKID)
+                carrying the number CR files. A re-uploaded passport scan
                 supersedes the passport and leaves the HKID alone (migration 036).
+  bucket        everything else, on both profiles. Files are dropped in many at
+                a time with no type to choose, then tagged and described in bulk.
+                See BUCKETS below.
 
 WHAT CR ACTUALLY ASKS FOR, and why the fields differ by type. NAR1 and NNC1 have
 exactly two identity boxes per individual (`services/cr_forms/contract.py`):
@@ -81,9 +81,8 @@ IDENTITY_FIELDS: dict[str, dict[str, list[str]]] = {
     },
 }
 
-#: Ordered sections, and which owner each belongs to. A section renders whether
-#: or not it holds anything, so this list — not the uploaded rows — is what
-#: decides the headings on a profile.
+#: The one section that is not a bucket: a person's identity RECORDS, each
+#: carrying a number CR files. Unchanged by the 2026-11-21 bucket redesign.
 SECTIONS = [
     {
         "key": IDENTITY_CATEGORY,
@@ -91,86 +90,256 @@ SECTIONS = [
         "description": "Passport, HKID and other identity documents — the numbers filed with CR",
         "owner_types": ["person"],
         # The scan is evidence for the number; the number is the filing. A
-        # passport recorded without a scan is still filable, so the file is
-        # optional here and required in every other section, where the file is
-        # the only thing there is.
+        # passport recorded without a scan is still filable.
         "file_required": False,
-    },
-    {
-        "key": "address_proof",
-        "label": "Proof of Address",
-        "description": "Evidence of the residential or registered address on file",
-        "owner_types": ["person", "company"],
-        "file_required": True,
-    },
-    {
-        "key": "government_form",
-        "label": "Government Forms",
-        "description": "Forms filed with the Companies Registry",
-        "owner_types": ["company"],
-        "file_required": True,
-    },
-    {
-        "key": "statutory",
-        "label": "Statutory Documents",
-        "description": "Constitutional and resolution documents",
-        "owner_types": ["company"],
-        "file_required": True,
-    },
-    {
-        "key": "certificate",
-        "label": "Certificates",
-        "description": "Certificates issued for this company",
-        "owner_types": ["company"],
-        "file_required": True,
-    },
-    {
-        # Migration 050. What a director or secretary signed to take or leave
-        # office: a resignation letter, the board resolution, a consent to act.
-        # Filed on the OFFICER's profile — a person, or the body corporate's own
-        # company record — when the ND2A that relied on them is filed. Its own
-        # section rather than "Other Documents", because these are the evidence
-        # behind a statutory filing and "which resolution appointed her" is a
-        # question somebody will come back to ask.
-        "key": "officer_change",
-        "label": "Appointment & Cessation Documents",
-        "description": "Resignation letters, board resolutions and consents "
-                       "behind an ND2A or ND2B",
-        "owner_types": ["person", "company"],
-        "file_required": True,
-    },
-    {
-        "key": "kyc",
-        "label": "KYC Documents",
-        "description": "Screening and due-diligence material",
-        "owner_types": ["person", "company"],
-        "file_required": True,
-    },
-    {
-        "key": "internal",
-        "label": "Other Documents",
-        "description": "Anything that does not belong to a section above",
-        "owner_types": ["person", "company"],
-        "file_required": True,
     },
 ]
 
-#: Where a document whose category matches no section is shown. A category can
-#: only arrive here by a migration adding one without touching this file, and a
-#: document that renders nowhere is worse than one under the wrong heading.
-FALLBACK_SECTION = "internal"
-
-_SECTION_KEYS = {s["key"] for s in SECTIONS}
-
 
 def sections_for(owner_type: str) -> list[dict]:
-    """The sections a profile of this owner type renders, in order."""
+    """The typed sections a profile of this owner type renders, in order."""
     return [s for s in SECTIONS if owner_type in s["owner_types"]]
 
 
-def section_of(category: str | None) -> str:
-    """Which section a `document_types.category` belongs under."""
-    return category if category in _SECTION_KEYS else FALLBACK_SECTION
+# ── BUCKETS (GSHK 2026-11-21) ───────────────────────────────────────────────
+#
+# GSHK do not have time to pick a document type and type a description for
+# every file. Everything that is not an identity record is now dropped into one
+# of a few BUCKETS, many files at a time, and described afterwards in bulk.
+#
+# A bucket is NOT a document type. `documents.bucket` is its own column
+# (migration 065) and a bucket upload is filed under the generic `other` type,
+# so it never versions over another file: twenty payment slips are twenty
+# rows, not version 20 of one. The `suggestions` are what GSHK listed as
+# typically living in each bucket; the screen offers them as tags and never
+# requires one.
+#
+# A row whose `bucket` is NULL was written by something that still files by
+# TYPE (a signed NAR1, an ND2A's resignation letter, everything uploaded before
+# this change). `bucket_of()` places it from its type, so no backfill is needed
+# and none of those callers had to learn about buckets.
+
+# EVERY document lands in one of GSHK's buckets. There is no "Other" bucket
+# (Levi 2026-11-21: "follow the buckets I define … find a suitable bucket and
+# park the documents there"). A person has one bucket, so everything that is
+# not an identity document is in it; a company's unplaceable rows go to its
+# DEFAULT bucket, where an operator can Move them if they belong elsewhere.
+
+#: Retired with the fallback bucket. A row stored under it (none on DEV or
+#: PROD, 2026-11-21) is placed by its type like any unbucketed row.
+RETIRED_BUCKETS = frozenset({"other"})
+
+BUCKETS = [
+    {
+        "key": "annual_return",
+        "label": "Annual Return (NAR1)",
+        "description": "Filed annual returns",
+        "owner_types": ["company"],
+        "suggestions": ["Filed NAR1"],
+    },
+    {
+        "key": "corporate_identity",
+        "label": "Corporate Identity & Due Diligence",
+        "description": "Licence, constitution, address proof and AML of the corporate entity",
+        "owner_types": ["company"],
+        "suggestions": [
+            "Business Licence", "Articles of Association", "Address Proof",
+            "AML Case Report",
+        ],
+    },
+    {
+        "key": "br_renewal",
+        "label": "Business Registration Renewal",
+        "description": "Renewed business registration certificates",
+        "owner_types": ["company"],
+        "suggestions": ["Renewed BR"],
+    },
+    {
+        "key": "maintenance",
+        "label": "Maintenance",
+        "description": "Filings and instruments after incorporation",
+        "owner_types": ["company"],
+        "suggestions": [
+            "Filed ND2A", "Filed ND2B", "Filed NR1", "Filed NNC2", "Filed NSC1",
+            "Stamped Share Transfer", "Filed IRC3111A",
+        ],
+    },
+    {
+        "key": "payments",
+        "label": "Payments",
+        "description": "Payment slips",
+        "owner_types": ["company"],
+        "suggestions": ["Payment Slip"],
+    },
+    {
+        "key": "incorporation",
+        "label": "Incorporation / Statutory Registers",
+        "description": "Incorporation papers and the statutory registers",
+        "owner_types": ["company"],
+        "suggestions": [
+            "Filed NNC1", "Certificate of Incorporation", "Articles of Association",
+            "First Business Licence", "First Written Resolution",
+            "Certificate of Incumbency", "Register of Members",
+            "Register of Directors", "Register of Secretaries",
+            "Significant Controller Register", "Onboarding Forms",
+        ],
+    },
+    {
+        "key": "kyc",
+        "label": "KYC & AML",
+        "description": "Address proof and AML reports for this individual",
+        "owner_types": ["person"],
+        "suggestions": ["Address Proof", "AML Case Report", "AML Passport Report"],
+    },
+]
+
+BUCKET_KEYS = tuple(b["key"] for b in BUCKETS)
+
+#: Type codes whose bucket is not decided by their category alone.
+_BUCKET_BY_CODE = {
+    "company": {
+        "nar1": "annual_return",
+        # The client's emailed approval of a NAR1 (migration 061): evidence for
+        # one annual return, filed beside it.
+        "approval_receipt": "annual_return",
+        "nnc1": "incorporation",
+        "nd2a": "maintenance",
+        "nd2b": "maintenance",
+    },
+    "person": {},
+}
+
+#: Where a row lands when neither its code nor its category says. A person has
+#: one bucket. A company's leftovers (the generic `other` type, anything a
+#: future migration adds before this table learns it) are due-diligence papers
+#: far more often than anything else on the profile.
+DEFAULT_BUCKET = {"company": "corporate_identity", "person": "kyc"}
+
+#: A CR filing receipt is the receipt for ONE filing, and that filing decides
+#: its bucket. The form is named in the receipt's title or file name, which
+#: every receipt writer sets ("ND2A-2026-0001 — CR receipt", "… NAR1 2026.pdf").
+_RECEIPT_FORM_BUCKET = (
+    ("nar1", "annual_return"),
+    ("nnc1", "incorporation"),
+)
+_RECEIPT_DEFAULT = "maintenance"     # ND2A, ND2B and every later officer form
+
+#: `document_types.category` -> bucket, per owner. `identity` is absent on
+#: purpose: a person's identity scans render on their identity records.
+_BUCKET_BY_CATEGORY = {
+    "company": {
+        "statutory": "incorporation",
+        "certificate": "incorporation",
+        "government_form": "maintenance",
+        "address_proof": "corporate_identity",
+        "kyc": "corporate_identity",
+        "officer_change": "maintenance",
+    },
+    "person": {
+        "address_proof": "kyc",
+        "kyc": "kyc",
+    },
+}
+
+#: Per drop. GSHK asked for the existing cap of twenty to stay.
+MAX_FILES_PER_UPLOAD = 20
+#: Supabase Storage's default per-object ceiling. A larger file would be
+#: refused by Storage after the whole body had crossed the wire; refusing it
+#: first, by name, is the kinder answer.
+MAX_FILE_BYTES = 50 * 1024 * 1024
+#: As permissive as GSHK asked for (any document, sheet, slide, image, text,
+#: e-mail or archive) and closed only to what EXECUTES when opened. A file
+#: stored here is later downloaded onto a colleague's machine; a script is the
+#: one thing this portal must not hand out.
+BLOCKED_EXTENSIONS = frozenset({
+    "exe", "msi", "bat", "cmd", "com", "scr", "pif", "cpl", "dll", "sys",
+    "vbs", "vbe", "js", "jse", "wsf", "wsh", "ps1", "psm1", "hta", "jar",
+    "sh", "app", "lnk", "reg", "msc", "gadget", "inf",
+})
+MAX_TAGS = 12
+MAX_TAG_LENGTH = 60
+MAX_DESCRIPTION_LENGTH = 500
+
+
+def upload_limits() -> dict:
+    """What the screen must refuse before sending — served, so the two agree."""
+    return {
+        "max_files": MAX_FILES_PER_UPLOAD,
+        "max_file_bytes": MAX_FILE_BYTES,
+        "blocked_extensions": sorted(BLOCKED_EXTENSIONS),
+        "max_tags": MAX_TAGS,
+        "max_tag_length": MAX_TAG_LENGTH,
+        "max_description_length": MAX_DESCRIPTION_LENGTH,
+    }
+
+
+def owner_type_of(owner_kind: str) -> str:
+    """`documents` owner kind ('entity' | 'person') -> 'company' | 'person'."""
+    return "person" if owner_kind == "person" else "company"
+
+
+def buckets_for(owner_type: str) -> list[dict]:
+    """The buckets a profile of this owner type renders, in order."""
+    return [b for b in BUCKETS if owner_type in b["owner_types"]]
+
+
+def is_bucket_for(owner_type: str, key) -> bool:
+    return any(b["key"] == key for b in buckets_for(owner_type))
+
+
+def bucket_of(owner_type: str, doc: dict):
+    """Which bucket a stored `documents` row is shown in, always one of the
+    owner's own buckets.
+
+    The row's own `bucket` wins: a person chose it. Otherwise it is placed by
+    its type, then by the owner's default. None means "not a bucket document
+    at all": a person's identity scan, which renders on its identity record.
+    """
+    chosen = doc.get("bucket")
+    if chosen and is_bucket_for(owner_type, chosen):
+        return chosen
+    code = doc.get("document_type_code")
+    category = (doc.get("document_types") or {}).get("category")
+    if owner_type == "person" and (
+            category == IDENTITY_CATEGORY or is_identity_code(code)
+            or code == LEGACY_IDENTITY_CODE):
+        return None
+    if owner_type == "company" and code == "cr_receipt":
+        said = f"{doc.get('title') or ''} {doc.get('file_name') or ''}".lower()
+        return next((b for form, b in _RECEIPT_FORM_BUCKET if form in said),
+                    _RECEIPT_DEFAULT)
+    return (_BUCKET_BY_CODE.get(owner_type, {}).get(code or "")
+            or _BUCKET_BY_CATEGORY.get(owner_type, {}).get(category or "")
+            or DEFAULT_BUCKET.get(owner_type, "corporate_identity"))
+
+
+def extension_of(file_name) -> str:
+    name = (file_name or "").strip().lower()
+    return name.rsplit(".", 1)[1] if "." in name else ""
+
+
+def upload_refusal(file_name, size: int):
+    """Why this file may not be stored, in words an operator can act on, or None."""
+    if size <= 0:
+        return "The file is empty"
+    if size > MAX_FILE_BYTES:
+        return f"The file is larger than {MAX_FILE_BYTES // (1024 * 1024)} MB"
+    ext = extension_of(file_name)
+    if ext in BLOCKED_EXTENSIONS:
+        return f".{ext} files can run code when opened, so they cannot be stored here"
+    return None
+
+
+def normalise_tags(tags) -> list[str]:
+    """Trimmed, single-spaced, de-duplicated ignoring case, order kept."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tags or []:
+        tag = " ".join(str(raw or "").split())[:MAX_TAG_LENGTH]
+        if tag and tag.casefold() not in seen:
+            seen.add(tag.casefold())
+            out.append(tag)
+    return out
 
 
 def id_type_for_code(code: str | None) -> str | None:

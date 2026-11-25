@@ -35,6 +35,8 @@ const CLIENT = {
   documents: [{
     id: 'd1', document_type_code: 'coi', current_version: 1, status: 'active',
     file_name: 'brand-guideline-v3.pdf', updated_at: '2026-06-04T09:30:00Z',
+    bucket: 'incorporation', tags: ['Certificate of Incorporation'],
+    uploaded_at: '2026-06-04T09:30:00Z',
     document_types: { code: 'coi', label: 'Certificate of Incorporation',
                       category: 'certificate' },
     document_versions: [{ id: 'v1', version_number: 1,
@@ -56,8 +58,10 @@ const CLIENT = {
   business_nature_code: '070',
   business_nature_desc: 'Activities of head offices',
   mortgages_total: 'Nil',
-  business_names: [{ id: 'bn1', business_name: 'Skyline Advisory',
-                     business_name_zh: '天際顧問' }],
+  business_name: 'Skyline Advisory',
+  // Viewpoint's BR record: the company's own name, which is NOT a business
+  // name and must not be shown as one (GSHK 2026-11-23).
+  business_names: [{ id: 'bn1', business_name: 'BR Record Name Limited' }],
   share_classes: [{
     id: 'sc1', class_name: 'Ordinary', currency: 'HKD',
     total_issued: 10000, issued_amount: 10000, total_paid: 10000,
@@ -129,17 +133,21 @@ const CONTRACT = {
   },
 }
 
-// A company's documents are filed under sections exactly as a person's are
-// (migration 036). `certificate` is the one the fixture document lands in.
+// A company's documents are in GSHK's buckets (migration 065). The fixture
+// document is a Certificate of Incorporation, so the API placed it in
+// Incorporation / Statutory Registers.
 const SECTIONS = {
-  sections: [
-    { key: 'certificate', label: 'Certificates', is_identity: false,
-      description: 'Certificates issued for this company', file_required: true,
-      types: [{ code: 'coi', label: 'Certificate of Incorporation', id_type: null }] },
-    { key: 'address_proof', label: 'Proof of Address', is_identity: false,
-      description: 'Evidence of the registered address on file', file_required: true,
-      types: [{ code: 'addr_utility_bill', label: 'Utility Bill', id_type: null }] },
+  sections: [],
+  buckets: [
+    { key: 'payments', label: 'Payments', description: 'Payment slips',
+      suggestions: ['Payment Slip'] },
+    { key: 'incorporation', label: 'Incorporation / Statutory Registers',
+      description: 'Incorporation papers', suggestions: ['Certificate of Incorporation'] },
+    { key: 'other', label: 'Other Documents', description: '', suggestions: [],
+      fallback: true },
   ],
+  upload_limits: { max_files: 20, max_file_bytes: 52428800, blocked_extensions: ['exe'],
+                   max_tags: 12, max_tag_length: 60, max_description_length: 500 },
   identity_fields: {},
 }
 
@@ -156,12 +164,8 @@ const mockGet = (data) =>
     return Promise.resolve(data)
   })
 
-// Document History tags each group with its SECTION, so a heading appears
-// twice on the page. The section card is the one whose match is a `.card-title`.
-const sectionCard = label =>
-  screen.getAllByText(label)
-    .filter(el => el.classList.contains('card-title') || el.closest('.card-title'))[0]
-    .closest('.card')
+// A bucket is a <section> named by its heading.
+const bucket = name => screen.getByRole('region', { name: new RegExp(`^${name}`) })
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -335,58 +339,44 @@ describe('CompanyProfilePage', () => {
       .toBeInTheDocument()
   })
 
-  it('names the document TYPE, not just the uploaded file name', async () => {
+  // GSHK 2026-11-21: no types, no per-file form, no Document History.
+  it('files documents into buckets and shows when each was uploaded', async () => {
     renderPage()
-    // the file name alone ("brand-guideline-v3.pdf") does not say what the
-    // document IS — the type must be shown
-    await screen.findByText('Document History')
-    const certs = sectionCard('Certificates')
-    expect(within(certs).getByText('Certificate of Incorporation')).toBeInTheDocument()
-    expect(within(certs).getByText(/brand-guideline-v3\.pdf/)).toBeInTheDocument()
-    expect(within(certs).getByRole('button', { name: 'Download' })).toBeInTheDocument()
+    await screen.findByText('Documents')
+    const inc = bucket('Incorporation / Statutory Registers')
+    expect(within(inc).getByText('brand-guideline-v3.pdf')).toBeInTheDocument()
+    expect(within(inc).getByText('Certificate of Incorporation')).toBeInTheDocument()
+    expect(within(inc).getByText('04 Jun 2026')).toBeInTheDocument()
+    // An empty bucket is still a drop target, and the fallback is hidden.
+    expect(within(bucket('Payments')).getByText(/Nothing here yet/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /^Other Documents/ })).toBeNull()
+    expect(screen.queryByText('Document History')).toBeNull()
+    expect(screen.queryByText('SUPERSEDED')).toBeNull()
   })
 
-  // Levi 2026-09-04: "this is the same for the body corporation upload document
-  // features" — download and remove from the section, not only the history.
-  it('files company documents into sections, empty ones included', async () => {
-    renderPage()
-    await screen.findByText('Document History')
-
-    expect(sectionCard('Certificates')).toBeInTheDocument()
-    const proof = sectionCard('Proof of Address')
-    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
-    expect(within(proof).getByRole('button', { name: 'Upload Document' })).toBeInTheDocument()
-
-    // The page-header button offered every type at once and is gone.
-    const header = document.querySelector('.pg-hdr')
-    expect(within(header).queryByRole('button', { name: 'Upload Document' })).toBeNull()
-  })
-
-  it('soft-deletes a company document from its section', async () => {
+  it('soft-deletes a company document from its bucket', async () => {
     const user = userEvent.setup()
     api.del.mockResolvedValue({})
     renderPage()
-    await screen.findByText('Document History')
+    await screen.findByText('Documents')
 
-    await user.click(within(sectionCard('Certificates')).getByRole('button', { name: 'Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Remove brand-guideline-v3.pdf' }))
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove document' })
-    expect(within(dialog).getByText(/stays in Document History/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/recorded in the audit trail/)).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
 
     await waitFor(() => expect(api.del).toHaveBeenCalledWith('/documents/d1'))
+    await waitFor(() => expect(screen.queryByText('brand-guideline-v3.pdf')).toBeNull())
   })
 
-  it('downloads the VERSION that was clicked, not always the current one', async () => {
-    // Every Download button in the history used to sign the CURRENT version's
-    // path, so v1 and v2 both handed back v2 under two different file names.
-    // The older bytes have always been in `document_versions.storage_path`;
-    // nothing read them.
+  it('still downloads an EARLIER version of a versioned document', async () => {
     const user = userEvent.setup()
     mockGet({
       ...CLIENT,
       documents: [{
         id: 'd1', document_type_code: 'coi', current_version: 2, status: 'active',
-        file_name: 'coi-v2.pdf', updated_at: '2026-06-04T09:30:00Z',
+        file_name: 'coi-v2.pdf', bucket: 'incorporation', tags: [],
+        uploaded_at: '2026-06-04T09:30:00Z',
         document_types: { code: 'coi', label: 'Certificate of Incorporation',
                           category: 'certificate' },
         document_versions: [
@@ -398,41 +388,12 @@ describe('CompanyProfilePage', () => {
       }],
     })
     renderPage()
-    await screen.findByText('Document History')
+    await screen.findByText('Documents')
 
-    const superseded = (await screen.findByText('SUPERSEDED')).closest('.doc-ver')
-    await user.click(within(superseded).getByRole('button', { name: 'Download' }))
-
+    await user.click(screen.getByRole('button', { name: 'v2' }))
+    await user.click(screen.getByRole('button', { name: /^v1 · / }))
     await waitFor(() => expect(api.get).toHaveBeenCalledWith(
       '/documents/d1/versions/1/download'))
-  })
-
-  it('sets the document TYPE in its own colour, in both places (item 13)', async () => {
-    // Levi 2026-09-04: "make it clearer maybe in bigger font or color to make
-    // it more prominent the type of document it is. maybe a different document
-    // type a different colour". The colour is keyed to the type CODE, so the
-    // same type reads the same in its section and in the history.
-    renderPage()
-    await screen.findByText('Document History')
-
-    const chips = document.querySelectorAll('.doc-type-chip')
-    expect(chips.length).toBeGreaterThanOrEqual(2)
-    const classes = [...chips].map(
-      c => [...c.classList].find(n => n.startsWith('doc-type-c')))
-    expect(new Set(classes).size).toBe(1)
-    expect(chips[0].textContent).toBe('Certificate of Incorporation')
-  })
-
-  it('scopes the upload picker to the section it was opened from', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await screen.findByText('Document History')
-
-    await user.click(
-      within(sectionCard('Proof of Address')).getByRole('button', { name: 'Upload Document' }))
-    await screen.findByRole('dialog', { name: 'Upload Document' })
-    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
-      '/documents/types?owner_type=company&category=address_proof'))
   })
 
   // -- Editing under a live case (wireframe_v11 "Edit conflicts with a live
@@ -533,14 +494,13 @@ describe('CompanyProfilePage — the CR form fields', () => {
   const findInfoCard = async () =>
     (await screen.findByText('Company Information')).closest('.card')
 
-  it('shows the business name (B9)', async () => {
-    // 5,026 rows have sat in `business_names` since the ETL and no screen has
-    // ever read one.
+  it('shows the business name GSHK entered, not the BR record (B9)', async () => {
     renderPage()
     await findInfoCard()
 
     expect(screen.getByText('Business Name')).toBeInTheDocument()
-    expect(screen.getByText(/Skyline Advisory/)).toBeInTheDocument()
+    expect(screen.getByText('Skyline Advisory')).toBeInTheDocument()
+    expect(screen.queryByText(/BR Record Name Limited/)).not.toBeInTheDocument()
   })
 
   it('shows business nature as its code AND the description it drives (B5)', async () => {
@@ -1042,47 +1002,40 @@ describe('CompanyProfilePage — a read-only role', () => {
   // the company. What survives is the read/write line, which is the one that
   // was ever worth drawing.
 
-  it('renders no upload button for a company it cannot edit', async () => {
+  it('renders no upload or edit control for a company it cannot edit', async () => {
     // `companies:write` now. Reading opens the record and the papers on it;
     // adding to them is a change to the record.
     renderPage()
-    await screen.findByText('Document History')
-    const card = sectionCard('Certificates')
+    await screen.findByText('Documents')
+    const card = bucket('Incorporation / Statutory Registers')
 
-    expect(within(card).queryByRole('button', { name: /Upload Document/ }))
-      .not.toBeInTheDocument()
-    // The SECTION still renders: what is on file is a fact worth reading.
-    expect(card).toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /Upload/ })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /Add a tag/ })).not.toBeInTheDocument()
+    // The BUCKET still renders: what is on file is a fact worth reading.
+    expect(within(card).getByText('brand-guideline-v3.pdf')).toBeInTheDocument()
   })
 
   it('DOWNLOADS on companies:read, but offers no Remove', async () => {
-    // The split that matters. This role can read the company, so it can read
-    // the papers filed against it — and removing one is a write it does not
-    // hold.
     renderPage()
-    await screen.findByText('Document History')
-    const card = sectionCard('Certificates')
+    await screen.findByText('Documents')
+    const card = bucket('Incorporation / Statutory Registers')
 
-    expect(within(card).getByRole('button', { name: 'Download' })).toBeEnabled()
-    expect(within(card).queryByRole('button', { name: 'Remove' }))
-      .not.toBeInTheDocument()
-    expect(within(card).getByText('Certificate of Incorporation')).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Download brand-guideline-v3.pdf' }))
+      .toBeEnabled()
+    expect(within(card).queryByRole('button', { name: /^Remove/ })).not.toBeInTheDocument()
   })
 
-  it('gives a company EDITOR the upload and remove it was refused before', async () => {
-    // The complaint this reversed: a role granted Companies (edit) could not
-    // upload the certificate of incorporation for a company it was trusted to
-    // edit the CR number of, and had to be given a second grant nobody knew to
-    // ask for.
+  it('gives a company EDITOR upload, describe and remove', async () => {
     auth.hasPermission = holding('companies:read', 'companies:write')
     renderPage()
-    await screen.findByText('Document History')
-    const card = sectionCard('Certificates')
+    await screen.findByText('Documents')
+    const card = bucket('Incorporation / Statutory Registers')
 
-    expect(within(card).getByRole('button', { name: /Upload Document/ }))
+    expect(within(card).getByRole('button', { name: /Upload/ })).toBeEnabled()
+    expect(within(card).getByRole('textbox', { name: /Description of/ })).toBeEnabled()
+    expect(within(card).getByRole('button', { name: 'Remove brand-guideline-v3.pdf' }))
       .toBeEnabled()
-    expect(within(card).getByRole('button', { name: 'Download' })).toBeEnabled()
-    expect(within(card).getByRole('button', { name: 'Remove' })).toBeEnabled()
   })
 })
 
@@ -1133,7 +1086,8 @@ describe('CompanyProfilePage — soft delete (migration 049)', () => {
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete company' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /New case/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Upload Document/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Upload$/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: /^Description of/ })).not.toBeInTheDocument()
   })
 
   it('restores, and re-reads the company', async () => {

@@ -9,8 +9,8 @@ import { IDENTITY_FIELD, identityRules } from '../lib/documentSections.js'
  *
  * TWO THINGS ARE BEING SAVED AND THEY BEHAVE DIFFERENTLY. The NUMBER is
  * overwritten — a person holds one passport record, and re-recording it
- * replaces what was there. The SCAN is versioned — the previous file stays in
- * Document History, marked superseded. Before this existed, uploading a
+ * replaces what was there. The SCAN is versioned — the previous file is kept
+ * as an earlier version. Before this existed, uploading a
  * passport did neither: it appended a file to history under a type called
  * "Identity Document Scan" and never touched the passport record at all.
  *
@@ -114,7 +114,7 @@ export default function IdentityDocumentModal({
               <span className="f-hint" style={{ color: 'var(--carrot)' }}>
                 A {selected.label} is already on file ({replacing.id_number}). Saving
                 REPLACES those details. Any scan you attach is kept as a new version —
-                the previous file stays in Document History.
+                the previous file is kept as an earlier version.
               </span>
             )}
           </div>

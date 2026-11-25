@@ -120,28 +120,34 @@ def test_sections_group_their_types_under_the_right_heading():
     assert identity["file_required"] is False   # the number is the filing
     assert identity["types"] == [
         {"code": "id_passport", "label": "Passport", "id_type": "passport"}]
-    assert by_key["address_proof"]["is_identity"] is False
+    # Address proof is a BUCKET now (2026-11-21), not a typed section.
+    assert "address_proof" not in by_key
     assert body["identity_fields"]["hkid"]["fields"] == ["id_number"]
 
 
-def test_a_section_with_types_but_no_uploads_still_comes_back():
-    """An empty section with its own button is how the first document gets
-    added — the whole point of point 2. Nothing has been uploaded here at all."""
-    resp = _sections([
-        {"code": "addr_utility_bill", "label": "Utility Bill", "category": "address_proof"},
-    ])
-    assert [s["key"] for s in resp.json()["sections"]] == ["address_proof"]
-
-
-def test_a_section_with_no_types_at_all_is_not_offered():
-    """Not empty — INERT. Its upload button would open a picker with nothing in
-    it, which is a worse answer than no section."""
-    resp = _sections([
+def test_a_person_gets_identity_then_one_kyc_bucket():
+    """GSHK 2026-11-21: identity documents unchanged; address proof, AML case
+    report and AML passport report share ONE bucket, and it is the only one:
+    no fallback (Levi 2026-11-21)."""
+    body = _sections([
         {"code": "id_passport", "label": "Passport", "category": "identity"},
-    ])
-    keys = [s["key"] for s in resp.json()["sections"]]
-    assert keys == ["identity"]
-    assert "kyc" not in keys
+    ]).json()
+    assert [s["key"] for s in body["sections"]] == ["identity"]
+    assert [b["key"] for b in body["buckets"]] == ["kyc"]
+    kyc = body["buckets"][0]
+    assert kyc["fallback"] is False
+    assert {"Address Proof", "AML Case Report", "AML Passport Report"} \
+        <= set(kyc["suggestions"])
+
+
+def test_buckets_come_back_even_with_no_types_at_all():
+    """A bucket needs no document type: it is where untyped files go."""
+    body = _sections([], owner_type="company").json()
+    assert body["sections"] == []
+    assert [b["key"] for b in body["buckets"]] == [
+        "annual_return", "corporate_identity", "br_renewal", "maintenance",
+        "payments", "incorporation"]
+    assert body["upload_limits"]["max_files"] == 20
 
 
 def test_sections_refuse_an_owner_type_that_is_neither():
@@ -525,13 +531,13 @@ def test_removing_an_identity_document_needs_write_permission():
     assert resp.status_code == 403
 
 
-# ── removed documents stay in the history ─────────────────────────────────────
+# ── removed documents: the audit trail is their history now ──────────────────
 
-def test_a_profile_asks_for_removed_documents_too():
-    """"we should also be able to remove the document if we want to, but it is a
-    soft delete, and the old document should be still in the history." Filtering
-    the row out of the read as well threw away the half of the soft delete the
-    trail depends on."""
+def test_a_profile_no_longer_asks_for_removed_documents():
+    """Document History was removed on 2026-11-21 ("it is already stored in
+    audit logs"), and it was the only screen that showed a removed document.
+    The row and its bytes are still retained (OQ-2); the profile just stops
+    downloading what it no longer draws."""
     person = {"id": "p1", "full_name": "Jane", "residential_address_id": None}
     with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
          patch("routers.persons.get_supabase") as msb, \
@@ -544,7 +550,7 @@ def test_a_profile_asks_for_removed_documents_too():
         resp = client.get("/persons/p1", headers=H)
 
     assert resp.status_code == 200
-    assert docs.call_args.kwargs["include_deleted"] is True
+    assert not docs.call_args.kwargs.get("include_deleted")
 
 
 def test_list_documents_still_hides_removed_ones_by_default():

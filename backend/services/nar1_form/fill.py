@@ -58,6 +58,7 @@ from services.nar1_form import appearance
 from services.nar1_form import field_map as fm
 from services.tpsi import fees
 from services.tpsi.forms.cr_vocabularies import (
+    BUSINESS_NATURE,
     HKG,
     display_country,
     display_district,
@@ -988,7 +989,10 @@ def _compose(model: dict, *, company_type: str, presenter: dict,
         m1["company_name"]: _company_name(model),
         m1["business_name"]: _get(model, "brName") or NOT_APPLICABLE,
         m1["business_nature_code"]: _get(model, "nature"),
-        m1["business_nature_desc"]: _get(model, "natureDesc"),
+        # CR writes natureDesc only after validation, so before then the
+        # description is CR's own wording for the code, from the same sheet.
+        m1["business_nature_desc"]: (_get(model, "natureDesc")
+                                     or BUSINESS_NATURE.get(_get(model, "nature"), "")),
         m1["return_date_dd"]: dd,
         m1["return_date_mm"]: mm,
         m1["return_date_yyyy"]: yyyy,

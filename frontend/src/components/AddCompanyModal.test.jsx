@@ -100,6 +100,8 @@ describe('AddCompanyModal', () => {
         company_type: 'P',
         incorporation_place: 'HK',
         company_phone: '+852 3500 1234',
+        // GSHK's "Not use" default, said explicitly rather than left out.
+        nar1_show_phone: false,
       })
     })
     // The address goes through its own endpoint, so a company created here
@@ -233,6 +235,32 @@ describe('AddCompanyModal — dialling code (UAT F-3)', () => {
         '/companies',
         expect.objectContaining({ company_phone: '+65 3500 1234' }),
       )
+    })
+  })
+
+  it('takes a business name at creation, as Edit does', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await fillRequired(user)
+    await user.type(screen.getByLabelText('Business Name'), 'Test Trading')
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/companies', expect.objectContaining({ business_name: 'Test Trading' }))
+    })
+  })
+
+  it('can put the phone on the NAR1 from the start', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await fillRequired(user)
+    await user.click(screen.getByLabelText('Show this phone on the NAR1 (section 8)'))
+    await user.click(screen.getByRole('button', { name: 'Create Company' }))
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/companies', expect.objectContaining({ nar1_show_phone: true }))
     })
   })
 

@@ -59,13 +59,23 @@ const PERSON = {
 
 const renderPage = () => render(<MemoryRouter><PersonProfilePage /></MemoryRouter>)
 
-// Document History tags each group with its SECTION, so a heading like
-// "Proof of Address" appears twice on the page. The section card is the one
-// whose match is a `.card-title`.
+// A bucket is a <section> named by its heading (GSHK 2026-11-21).
+const bucket = name => screen.getByRole('region', { name: new RegExp(`^${name}`) })
+// The Identity Documents card, found by its `.card-title`.
 const sectionCard = label =>
   screen.getAllByText(label)
     .filter(el => el.classList.contains('card-title')
                   || el.closest('.card-title'))[0].closest('.card')
+
+// One file in the KYC & AML bucket, as the API places it.
+const KYC_DOC = {
+  id: 'd10', document_type_code: 'other', current_version: 1, status: 'active',
+  file_name: 'clp.pdf', bucket: 'kyc', tags: ['Address Proof'],
+  uploaded_at: '2026-08-11T01:05:00Z',
+  document_types: { code: 'other', label: 'Other', category: 'internal' },
+  document_versions: [{ id: 'v1', version_number: 1, file_name: 'clp.pdf',
+                        created_at: '2026-08-11T01:05:00Z' }],
+}
 
 // The profile forms now read their dropdowns from /lookups, so api.get has to
 // answer per-URL rather than returning the same payload for everything.
@@ -110,21 +120,12 @@ const SECTIONS = {
         { code: 'id_other', label: 'Other Identity Document', id_type: 'other' },
       ],
     },
-    {
-      key: 'address_proof', label: 'Proof of Address', is_identity: false,
-      description: 'Evidence of the residential address on file',
-      file_required: true,
-      types: [
-        { code: 'addr_utility_bill', label: 'Utility Bill', id_type: null },
-        { code: 'addr_bank_statement', label: 'Bank Statement', id_type: null },
-      ],
-    },
-    {
-      key: 'internal', label: 'Other Documents', is_identity: false,
-      description: 'Anything that does not belong to a section above',
-      file_required: true,
-      types: [{ code: 'other', label: 'Other', id_type: null }],
-    },
+  ],
+  buckets: [
+    { key: 'kyc', label: 'KYC & AML', description: 'Address proof and AML reports',
+      suggestions: ['Address Proof', 'AML Case Report', 'AML Passport Report'] },
+    { key: 'other', label: 'Other Documents', description: '', suggestions: [],
+      fallback: true },
   ],
   identity_fields: {
     hkid: { fields: ['id_number'], required: ['id_number'] },
@@ -253,15 +254,12 @@ describe('PersonProfilePage', () => {
     expect(screen.getByText('PRIMARY')).toBeInTheDocument()
   })
 
-  it('groups document history by type with current + superseded versions', async () => {
+  it('keeps an identity scan on its identity record, out of the KYC bucket', async () => {
     renderPage()
-    await screen.findByText('Document History')
-    expect(screen.getByText('2 versions')).toBeInTheDocument()
-    // newest version is CURRENT, older preserved as SUPERSEDED
-    expect(screen.getByText('CURRENT')).toBeInTheDocument()
-    expect(screen.getByText('SUPERSEDED')).toBeInTheDocument()
-    expect(screen.getByText(/v2 · hkid-both\.pdf/)).toBeInTheDocument()
-    expect(screen.getByText(/v1 · hkid-front\.pdf/)).toBeInTheDocument()
+    await screen.findByText('Documents')
+    expect(within(bucket('KYC & AML')).getByText(/Nothing here yet/)).toBeInTheDocument()
+    expect(screen.queryByText(/hkid-both\.pdf/)).toBeNull()
+    expect(screen.queryByText('Document History')).toBeNull()
   })
 
   it('shows the role roll-up read-only and links out to each company', async () => {
@@ -578,17 +576,17 @@ describe('PersonProfilePage — the CR form fields', () => {
  * empty, and there should still be a button to add document to that section."
  */
 describe('PersonProfilePage — document sections', () => {
-  it('renders a section per category, empty ones included', async () => {
+  it('renders Identity Documents, then one KYC & AML bucket', async () => {
     renderPage()
-    await screen.findByText(/Identity Documents/)
+    await screen.findByText('Documents')
 
-    expect(screen.getByText('Proof of Address')).toBeInTheDocument()
-    expect(screen.getByText('Other Documents')).toBeInTheDocument()
-    // Nothing has been uploaded as proof of address, and the section is still
-    // there — an empty section with a button is how the first one gets added.
-    const proof = sectionCard('Proof of Address')
-    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
-    expect(within(proof).getByRole('button', { name: 'Upload Document' })).toBeInTheDocument()
+    expect(screen.getByText(/Identity Documents/)).toBeInTheDocument()
+    const kyc = bucket('KYC & AML')
+    expect(within(kyc).getByText(/Nothing here yet/)).toBeInTheDocument()
+    expect(within(kyc).getByRole('button', { name: /Upload/ })).toBeInTheDocument()
+    // The typed sections are gone, and so is the empty fallback.
+    expect(screen.queryByText('Proof of Address')).toBeNull()
+    expect(screen.queryByRole('region', { name: /^Other Documents/ })).toBeNull()
   })
 
   it('drops the page-header Upload button in favour of per-section ones', async () => {
@@ -599,7 +597,7 @@ describe('PersonProfilePage — document sections', () => {
     await screen.findByText(/Identity Documents/)
 
     const header = document.querySelector('.pg-hdr')
-    expect(within(header).queryByRole('button', { name: 'Upload Document' })).toBeNull()
+    expect(within(header).queryByRole('button', { name: /Upload/ })).toBeNull()
   })
 
   it('names the identity section button for what it actually does', async () => {
@@ -621,16 +619,21 @@ describe('PersonProfilePage — document sections', () => {
     expect(within(dialog).queryByRole('option', { name: 'Utility Bill' })).toBeNull()
   })
 
-  it('opens a section upload scoped to that section only', async () => {
+  it('uploads picked files straight into KYC & AML, with no type to choose', async () => {
     const user = userEvent.setup()
+    api.upload.mockResolvedValue({ ...KYC_DOC, id: 'd20', file_name: 'aml.pdf', tags: [] })
     renderPage()
-    await screen.findByText('Document History')
-    const proof = sectionCard('Proof of Address')
+    await screen.findByText('Documents')
 
-    await user.click(within(proof).getByRole('button', { name: 'Upload Document' }))
-    await screen.findByRole('dialog', { name: 'Upload Document' })
-    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
-      '/documents/types?owner_type=person&category=address_proof'))
+    const input = within(bucket('KYC & AML')).getByLabelText('Choose files for KYC & AML')
+    await user.upload(input, new File(['%PDF'], 'aml.pdf', { type: 'application/pdf' }))
+
+    await waitFor(() => expect(api.upload).toHaveBeenCalledTimes(1))
+    const [path, form] = api.upload.mock.calls[0]
+    expect(path).toBe('/persons/p1/documents')
+    expect(form.get('bucket')).toBe('kyc')
+    expect(form.get('document_type_code')).toBeNull()
+    expect(await within(bucket('KYC & AML')).findByText('aml.pdf')).toBeInTheDocument()
   })
 
   it('says "unavailable", not "none", when the sections cannot be loaded', async () => {
@@ -793,84 +796,39 @@ describe('PersonProfilePage — the identity card and the history', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
-  it('downloads and removes an uploaded document from its own section', async () => {
-    // "we should also be able to download the document from the documents
-    // section not just the history section."
+  it('downloads and removes an uploaded document from its bucket', async () => {
     const user = userEvent.setup()
     api.del.mockResolvedValue({})
-    mockGet({
-      ...PERSON,
-      documents: [{
-        id: 'd10', document_type_code: 'addr_utility_bill', current_version: 1,
-        status: 'active', file_name: 'clp.pdf',
-        document_types: { code: 'addr_utility_bill', label: 'Utility Bill',
-                          category: 'address_proof' },
-        document_versions: [{ id: 'v1', version_number: 1, file_name: 'clp.pdf',
-                              created_at: '2026-08-11T01:05:00Z' }],
-      }],
-    })
+    mockGet({ ...PERSON, documents: [KYC_DOC] })
     renderPage()
-    await screen.findByText('Document History')
-    const proof = sectionCard('Proof of Address')
+    await screen.findByText('Documents')
+    const kyc = bucket('KYC & AML')
 
-    expect(within(proof).getByRole('button', { name: 'Download' })).toBeInTheDocument()
-    await user.click(within(proof).getByRole('button', { name: 'Remove' }))
+    expect(within(kyc).getByRole('button', { name: 'Download clp.pdf' })).toBeInTheDocument()
+    expect(within(kyc).getByText('Address Proof')).toBeInTheDocument()
+    await user.click(within(kyc).getByRole('button', { name: 'Remove clp.pdf' }))
 
     const dialog = await screen.findByRole('alertdialog', { name: 'Remove document' })
-    expect(within(dialog).getByText(/stays in Document History/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/recorded in the audit trail/)).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
 
     await waitFor(() => expect(api.del).toHaveBeenCalledWith('/documents/d10'))
   })
 
-  it('a removed document leaves its section and stays in the history', async () => {
-    mockGet({
-      ...PERSON,
-      documents: [{
-        id: 'd11', document_type_code: 'addr_utility_bill', current_version: 1,
-        status: 'deleted', file_name: 'wrong-client.pdf',
-        document_types: { code: 'addr_utility_bill', label: 'Utility Bill',
-                          category: 'address_proof' },
-        document_versions: [{ id: 'v1', version_number: 1,
-                              file_name: 'wrong-client.pdf',
-                              created_at: '2026-08-12T03:00:00Z' }],
-      }],
-    })
+  it('does not list a removed document', async () => {
+    mockGet({ ...PERSON, documents: [{ ...KYC_DOC, status: 'deleted', file_name: 'wrong.pdf' }] })
     renderPage()
-    await screen.findByText('Document History')
-    const proof = sectionCard('Proof of Address')
-    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
-
-    const history = sectionCard('Document History')
-    // Twice: on the group, and on the version that was live when it went.
-    expect(within(history).getAllByText('REMOVED')).toHaveLength(2)
-    expect(within(history).getByText(/wrong-client\.pdf/)).toBeInTheDocument()
-    // Not "SUPERSEDED": nothing replaced it, and not downloadable, because
-    // `create_signed_url` 404s a deleted document.
-    expect(within(history).queryByText('SUPERSEDED')).toBeNull()
-    expect(within(history).queryByRole('button', { name: 'Download' })).toBeNull()
+    await screen.findByText('Documents')
+    expect(screen.queryByText('wrong.pdf')).toBeNull()
   })
 
-  it('names the section and the exact upload time in Document History', async () => {
-    mockGet({
-      ...PERSON,
-      documents: [{
-        id: 'd1', document_type_code: 'id_passport', current_version: 1,
-        document_types: { code: 'id_passport', label: 'Passport', category: 'identity' },
-        document_versions: [{ id: 'v1', version_number: 1, file_name: 'p.pdf',
-                              created_at: '2026-06-04T09:30:00Z' }],
-      }],
-    })
+  it('shows the upload date quietly, and the exact time on hover', async () => {
+    mockGet({ ...PERSON, documents: [{ ...KYC_DOC, uploaded_at: '2026-06-04T09:30:00Z' }] })
     renderPage()
-    await screen.findByText('Document History')
-
-    const history = screen.getByText('Document History').closest('.card')
-    // "Passport" alone does not say whether it was filed as identity or as
-    // proof of address, and the two now live in different sections.
-    expect(within(history).getByText('Identity Documents')).toBeInTheDocument()
-    expect(within(history).getByText(/v1 · p\.pdf/)).toBeInTheDocument()
+    await screen.findByText('Documents')
+    const date = within(bucket('KYC & AML')).getByText('04 Jun 2026')
     // Hong Kong wall-clock: 09:30 UTC is 17:30 the same day in HK.
-    expect(within(history).getByText(/17:30/)).toBeInTheDocument()
+    expect(date.getAttribute('title')).toMatch(/17:30/)
   })
 })
 
@@ -939,12 +897,11 @@ describe('PersonProfilePage — the tester role (persons read+write)', () => {
   // wanted that distinction: a person's papers now follow the person.
   it('can file a person\'s other documents too, not just identity records', async () => {
     renderPage()
-    await screen.findByText(/Identity Documents/)
-    const proof = sectionCard('Proof of Address')
+    await screen.findByText('Documents')
+    const kyc = bucket('KYC & AML')
 
-    expect(within(proof).getByRole('button', { name: /Upload Document/ }))
-      .toBeEnabled()
-    expect(within(proof).getByText('Nothing uploaded yet.')).toBeInTheDocument()
+    expect(within(kyc).getByRole('button', { name: /Upload/ })).toBeEnabled()
+    expect(within(kyc).getByText(/Nothing here yet/)).toBeInTheDocument()
   })
 })
 
@@ -1009,18 +966,16 @@ describe('PersonProfilePage — a persons:read-only role', () => {
     // It replaces a `Download scan` assertion that could not fail: no identity
     // document in this file's fixture carries a `scan_document_id`, so that
     // button was absent for every role and the test proved nothing about
-    // permissions. Document History is where this fixture actually has a
-    // document.
+    // permissions. A KYC & AML file is what this test downloads instead.
+    mockGet({ ...PERSON, documents: [KYC_DOC] })
     renderPage()
-    const history = await screen.findByText('Document History')
-    const card = history.closest('.card')
+    await screen.findByText('Documents')
+    const card = bucket('KYC & AML')
 
-    expect(within(card).getAllByRole('button', { name: /^Download$/ }).length)
-      .toBeGreaterThan(0)
-    expect(within(card).queryByRole('button', { name: /Upload Document/ }))
-      .not.toBeInTheDocument()
-    expect(within(card).queryByRole('button', { name: /^Remove$/ }))
-      .not.toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Download clp.pdf' })).toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /Upload/ })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: /^Remove/ })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('textbox')).not.toBeInTheDocument()
   })
 })
 

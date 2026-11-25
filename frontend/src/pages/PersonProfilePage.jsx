@@ -3,13 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { formatDate, formatDateTime } from '../lib/format.js'
 import { downloadDocument } from '../lib/download.js'
-import UploadDocumentModal from '../components/UploadDocumentModal.jsx'
 import IdentityDocumentModal from '../components/IdentityDocumentModal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import VipBar, { VipChip } from '../components/VipBar.jsx'
-import {
-  DocumentSection, SectionDocuments, DocumentHistory, RemoveDocumentBody,
-} from '../components/DocumentSections.jsx'
+import { DocumentSection } from '../components/DocumentSections.jsx'
+import DocumentBuckets from '../components/DocumentBuckets.jsx'
 import FormField, { displayValue } from '../components/FormField.jsx'
 import {
   AddressesCard, BookUnavailable, DocumentCompanies, useParticularsBook,
@@ -19,7 +17,7 @@ import { useFormContract, fieldWarning } from '../lib/formContract.js'
 import FieldWarning, { WarningCount } from '../components/FieldWarning.jsx'
 import { idNumberProblem } from '../lib/hkid.js'
 import {
-  useDocumentSections, groupBySection, fieldsForStoredDocument, identityRules,
+  useDocumentSections, fieldsForStoredDocument, identityRules,
 } from '../lib/documentSections.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { ReadOnlyNote } from '../components/RequirePermission.jsx'
@@ -266,13 +264,12 @@ export default function PersonProfilePage() {
   const lookups = useLookups()
   const contract = useFormContract()
   const {
-    sections, identity_fields: identityFields,
+    sections, buckets, upload_limits: uploadLimits, identity_fields: identityFields,
     ready: sectionsReady, error: sectionsError,
   } = useDocumentSections('person')
   const [busy, setBusy] = useState(false)
-  // The section whose upload dialog is open, or null. One piece of state
-  // rather than one flag per section — a second dialog can never open behind
-  // the first.
+  // The identity section while its Add dialog is open, or null. Uploaded
+  // files are not here: they go into the KYC & AML bucket (DocumentBuckets).
   const [uploadInto, setUploadInto] = useState(null)
   const { hasPermission } = useAuth()
   // `persons:read` opened this page. The person's own fields and their
@@ -356,17 +353,14 @@ export default function PersonProfilePage() {
     }
   }
 
-  // What the Remove dialog is about, or null. One piece of state for both kinds
-  // of removal — an identity record and an uploaded file are removed
-  // differently, and `kind` is what the confirm text and the request key off.
+  // The identity record the Remove dialog is about, or null. Uploaded files
+  // are removed from their bucket (DocumentBuckets), not here.
   const [removing, setRemoving] = useState(null)
 
   async function confirmRemove() {
     setBusy(true)
     try {
-      await (removing.kind === 'identity'
-        ? api.del(`/persons/${personId}/identity-documents/${removing.doc.id}`)
-        : api.del(`/documents/${removing.doc.id}`))
+      await api.del(`/persons/${personId}/identity-documents/${removing.doc.id}`)
       setRemoving(null)
       load()
     } catch (err) {
@@ -402,12 +396,6 @@ export default function PersonProfilePage() {
   const idDocs = person.identity_documents || []
   const primary = idDocs.find(d => d.is_primary) || idDocs[0]
 
-  // Uploads filed under the section their type belongs to (migration 036).
-  // Removed ones are dropped here and kept in Document History, which is what a
-  // soft delete is for.
-  const live = (person.documents || []).filter(d => d.status !== 'deleted')
-  const bySection = groupBySection(live, sections)
-  const sectionLabels = Object.fromEntries(sections.map(s => [s.key, s.label]))
 
   // WHICH DOCUMENT THE SYSTEM ACTUALLY QUOTES. `person_registry` and
   // `audit_subject.primary_id_number` both order on `is_primary DESC,
@@ -463,9 +451,6 @@ export default function PersonProfilePage() {
               .filter(Boolean).join(' · ')}
           </div>
         </div>
-        {/* No page-level Upload button. It offered every document type at once
-            from a place that named no section, which is how a passport got
-            filed as an "Identity Document Scan". Each section carries its own. */}
         {caps.deletePerson && (
           <div className="pg-actions">
             <button className="btn btn-outline btn-danger-outline"
@@ -510,10 +495,9 @@ export default function PersonProfilePage() {
         />
       )}
 
-      {/* The two removals are not the same act and the dialog says which one
-          this is. A file is soft-deleted and stays in the history; an identity
-          record is deleted outright, because `nar1_mapper` reads that table and
-          would go on FILING a number the operator had removed. */}
+      {/* An identity record is deleted outright, unlike a file, because
+          `nar1_mapper` reads that table and would go on FILING a number the
+          operator had removed. */}
       {removing?.kind === 'identity' && (
         <ConfirmDialog
           title="Remove identity document"
@@ -529,36 +513,12 @@ export default function PersonProfilePage() {
           <p className="confirm-note">
             The number is deleted — it is recorded in the audit trail and nowhere
             else. {removing.doc.scan_document_id
-              ? 'The scan is kept, and stays in Document History.'
+              ? 'The scan file is kept.'
               : 'There is no scan attached.'}
             {' '}NAR1 and NNC1 carry an HKID or passport number for every
             individual, so a person left holding neither blocks their return.
           </p>
         </ConfirmDialog>
-      )}
-
-      {removing?.kind === 'document' && (
-        <ConfirmDialog
-          title="Remove document"
-          busy={busy}
-          onCancel={() => setRemoving(null)}
-          onConfirm={confirmRemove}
-        >
-          <RemoveDocumentBody doc={removing.doc} />
-        </ConfirmDialog>
-      )}
-
-      {uploadInto && !uploadInto.is_identity && (
-        <UploadDocumentModal
-          ownerKind="person"
-          ownerId={personId}
-          ownerName={person.full_name}
-          category={uploadInto.key}
-          sectionLabel={uploadInto.label}
-          existingTypes={(bySection[uploadInto.key] || []).map(d => d.document_type_code)}
-          onClose={() => setUploadInto(null)}
-          onUploaded={() => { setUploadInto(null); load() }}
-        />
       )}
 
       {!canWrite && !isDeleted && (
@@ -664,8 +624,10 @@ export default function PersonProfilePage() {
             </div>
           )}
 
-          {/* One card per section, present whether or not it holds anything. */}
-          {sections.map(section => section.is_identity ? (
+          {/* Identity Documents keep their own card and fields (GSHK
+              2026-11-21: "no changes"); everything else is the KYC & AML
+              bucket below. */}
+          {sections.filter(section => section.is_identity).map(section => (
             <DocumentSection key={section.key} section={section}
                              count={idDocs.length}
                              onAdd={() => setUploadInto(section)}
@@ -700,40 +662,21 @@ export default function PersonProfilePage() {
                 />
               ))}
             </DocumentSection>
-          ) : (
-            <DocumentSection key={section.key} section={section}
-                             count={(bySection[section.key] || []).length}
-                             onAdd={() => setUploadInto(section)}
-                             canAdd={canUploadDoc}>
-              {(bySection[section.key] || []).length === 0 ? (
-                <div className="empty-state" style={{ padding: '16px 0' }}>
-                  Nothing uploaded yet.
-                </div>
-              ) : (
-                <SectionDocuments
-                  documents={bySection[section.key]}
-                  busy={busy}
-                  onRemove={doc => setRemoving({ kind: 'document', doc })}
-                  canDownload={canDownloadDoc}
-                  canRemove={canRemoveDoc}
-                />
-              )}
-            </DocumentSection>
           ))}
 
-          {/* Document History */}
-          <div className="card mb-16">
-            <div className="card-hdr">
-              <div>
-                <div className="card-title">Document History</div>
-                <div className="card-sub">
-                  Every upload, by section and type · newest version is current, older versions preserved
-                </div>
-              </div>
-            </div>
-            <DocumentHistory documents={person.documents} sectionLabels={sectionLabels}
-                             canDownload={canDownloadDoc} />
-          </div>
+          {sectionsReady && !sectionsError && (
+            <DocumentBuckets
+              ownerKind="person"
+              ownerId={personId}
+              ownerName={person.full_name}
+              documents={person.documents}
+              buckets={buckets}
+              limits={uploadLimits}
+              canEdit={canUploadDoc}
+              canRemove={canRemoveDoc}
+              canDownload={canDownloadDoc}
+            />
+          )}
 
           {/* Appointments & Roles — read-only */}
           <div className="card">

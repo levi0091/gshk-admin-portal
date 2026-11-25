@@ -105,7 +105,8 @@ async def load_entity_graph(entity_id: str) -> dict:
     def q(fn):
         return asyncio.to_thread(fn)
 
-    entity_rows, officers, secretaries, share_classes, shareholdings = await asyncio.gather(
+    (entity_rows, officers, secretaries, share_classes, shareholdings,
+     phones) = await asyncio.gather(
         q(lambda: sb.table("entities").select("*").eq("id", entity_id).execute().data),
         q(lambda: sb.table("entity_officers").select("*")
           .eq("entity_id", entity_id).eq("is_current", True).execute().data),
@@ -115,6 +116,11 @@ async def load_entity_graph(entity_id: str) -> dict:
           .eq("entity_id", entity_id).execute().data),
         q(lambda: sb.table("shareholdings").select("*")
           .eq("entity_id", entity_id).eq("is_current", True).execute().data),
+        # NAR1 s8. The profile reads the same rows, so the draft can only
+        # print what the operator can see there.
+        q(lambda: sb.table("contacts").select("contact_value, is_preferred")
+          .eq("entity_id", entity_id).eq("contact_type", "phone")
+          .execute().data),
     )
     if not entity_rows:
         raise LookupError(f"no entity {entity_id}")
@@ -258,6 +264,12 @@ async def load_entity_graph(entity_id: str) -> dict:
         # `corporate_name` and showed Viewpoint's code ("GETSTA") as the
         # company secretary on the Data Verification screen.
         "entities": corporate_entities,
+        # The preferred number first, as PUT /company-phone and the profile
+        # read it.
+        "company_phone": next(
+            (p.get("contact_value") for p in sorted(
+                phones or [], key=lambda p: not p.get("is_preferred"))
+             if p.get("contact_value")), None),
         # CURRENT parties whose own record has been deleted (migration 049).
         # Deleting one is refused while it holds a current role, so this is
         # only ever a re-import or a race getting round that -- and the mapper

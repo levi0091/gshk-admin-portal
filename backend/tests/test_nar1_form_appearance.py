@@ -684,3 +684,45 @@ def test_a_character_neither_CJK_face_carries_still_refuses_loudly():
     with pytest.raises((ap.AppearanceError, fill.FormFillError)) as excinfo:
         fill.render(build_xml(directors=("😀 EMOJI",)))
     assert "😀" in str(excinfo.value) or "U+1F600" in str(excinfo.value)
+
+
+def test_layout_cuts_one_long_word_across_lines_before_it_shrinks():
+    """GSHK 2026-11-23: keep the size while the box can hold the lines."""
+    ap.register_fonts()
+    lines, size = ap.layout("KOHKOHKOHKOHKOHKOHKOH", (0.0, 0.0, 140.0, 30.0))
+    assert size == ap.DEFAULT_SIZE
+    assert len(lines) == 2 and "".join(lines) == "KOHKOHKOHKOHKOHKOHKOH"
+    assert all(ap.measure(line, size) <= 140.0 - 2 * ap._INSET for line in lines)
+
+
+def test_layout_shrinks_a_long_word_in_a_one_line_box():
+    """No second line to cut onto, so the word stays whole and shrinks."""
+    ap.register_fonts()
+    lines, size = ap.layout("KOHKOHKOHKOHKOHKOHKOH", (0.0, 0.0, 140.0, 14.0))
+    assert lines == ["KOHKOHKOHKOHKOHKOHKOH"]
+    assert size < ap.DEFAULT_SIZE
+    assert ap.measure(lines[0], size) <= 140.0 - ap._INSET
+
+
+def test_layout_wraps_words_before_it_shrinks_them():
+    ap.register_fonts()
+    lines, size = ap.layout("KOHKOHKOH KOHKOH KOHKOH", (0.0, 0.0, 140.0, 30.0))
+    assert len(lines) == 2
+    assert size == ap.DEFAULT_SIZE
+    assert all(word in ("KOHKOHKOH", "KOHKOH") for l in lines for word in l.split())
+
+
+def test_wrap_cuts_words_only_when_asked():
+    ap.register_fonts()
+    word = "KOHKOHKOHKOHKOHKOHKOH"
+    assert ap.wrap(word, 60.0, 10.0) == [word]
+    pieces = ap.wrap(word, 60.0, 10.0, break_words=True)
+    assert len(pieces) > 1 and "".join(pieces) == word
+    assert "-" not in "".join(pieces)
+
+
+@pytest.mark.parametrize("value", ["CHAN", "Flat A, 12/F", "Ordinary", "1"])
+def test_a_value_that_already_fitted_keeps_its_size(value):
+    """The across-check only bites on a word wider than the box."""
+    ap.register_fonts()
+    assert ap.layout(value, (0.0, 0.0, 140.0, 30.0)) == ([value], ap.DEFAULT_SIZE)

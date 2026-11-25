@@ -23,7 +23,6 @@ import path from 'node:path'
 
 import AddPersonModal from './AddPersonModal.jsx'
 import IdentityDocumentModal from './IdentityDocumentModal.jsx'
-import UploadDocumentModal from './UploadDocumentModal.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 import CloseCaseModal from './case/CloseCaseModal.jsx'
 import CopyPartiesModal from './CopyPartiesModal.jsx'
@@ -193,15 +192,6 @@ describe.runIf(SHOOT)('modal visual harness', () => {
         existing={[{ id: 'i1', id_type: 'passport', id_number: 'K1234567' }]}
         initialType="id_passport" onClose={noop} onSaved={noop} />,
       () => waitFor(() => screen.getByText(/REPLACES those details/)))
-  })
-
-  it('upload into a section', async () => {
-    await dump('m5-upload-section',
-      <UploadDocumentModal
-        ownerKind="person" ownerId="p1" ownerName="Chan Tai Man"
-        category="address_proof" sectionLabel="Proof of Address"
-        onClose={noop} onUploaded={noop} />,
-      () => waitFor(() => screen.getByRole('option', { name: 'Tenancy Agreement' })))
   })
 
   it('close a case — the one dialog with no undo behind it', async () => {

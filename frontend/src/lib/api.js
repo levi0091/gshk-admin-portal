@@ -129,7 +129,10 @@ export function describeApiError(detail, fallback = 'API error') {
 
 /** Multipart upload — must NOT set Content-Type; the browser adds the boundary. */
 async function apiUpload(path, formData) {
-  const resp = await fetch(`${BASE}${path}`, {
+  // Through sendOrExplain: a reply the browser cannot read (a dropped
+  // connection, or an edge's error page with no CORS headers) used to reach
+  // the screen as the browser's own "Failed to fetch" (GSHK 2026-11-21).
+  const resp = await sendOrExplain(`${BASE}${path}`, {
     method: 'POST',
     headers: await getAuthHeaders(),
     body: formData,

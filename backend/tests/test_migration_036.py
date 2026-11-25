@@ -102,8 +102,12 @@ def test_every_active_type_lands_in_a_section_that_exists():
             "SELECT DISTINCT category FROM public.document_types "
             "WHERE is_active AND applies_to IN ('person', 'both')")
         categories = {r[0] for r in cur.fetchall()}
-    person_sections = {s["key"] for s in document_sections.sections_for("person")}
-    assert categories <= person_sections, categories - person_sections
+    # Since 2026-11-21 a category lands either in the Identity section or in a
+    # bucket; `bucket_of` answers None only for identity.
+    for category in categories:
+        placed = document_sections.bucket_of(
+            "person", {"document_types": {"category": category}})
+        assert placed is not None or category == document_sections.IDENTITY_CATEGORY, category
 
 
 def test_an_identity_document_can_reference_its_scan():

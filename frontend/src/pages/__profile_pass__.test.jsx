@@ -219,6 +219,57 @@ describe('CompanyProfilePage — the 2026-09-04 pass', () => {
       '/companies/e1/company-phone', { company_phone: '+852 9000 1111' }))
   })
 
+  it('says the phone is not used on the NAR1 until somebody chooses it', async () => {
+    // GSHK 2026-11-21: "Default it to 'Not use'" (migration 064).
+    renderPage()
+    expect(await screen.findByText('Not used on NAR1')).toBeInTheDocument()
+  })
+
+  it('lets the business name be entered from Edit (GSHK 2026-11-23)', async () => {
+    // It was printed on the profile and missing from this form.
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText('Company Information')).closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+
+    const box = screen.getByLabelText('Business Name')
+    expect(box).toHaveValue('')
+    await user.type(box, 'Test Trading')
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/companies/e1', { business_name: 'Test Trading' }))
+  })
+
+  it('turns the phone on for the NAR1 and sends a real boolean', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = (await screen.findByText('Company Information')).closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+
+    const box = screen.getByLabelText('Show this phone on the NAR1 (section 8)')
+    expect(box).not.toBeChecked()
+    await user.click(box)
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/companies/e1', { nar1_show_phone: true }))
+  })
+
+  it('does not send the phone choice when nobody touched it', async () => {
+    // A company from before migration 064 has no flag at all; that is false.
+    const user = userEvent.setup()
+    mockGet({ ...CLIENT, cr_number: '2100031' })
+    renderPage()
+    const card = (await screen.findByText('Company Information')).closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+    await user.clear(screen.getByLabelText('CR No.'))
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    expect(api.patch.mock.calls[0][1]).not.toHaveProperty('nar1_show_phone')
+  })
+
   it('sends an emptied field so it can actually be cleared', async () => {
     // Deleting a value and pressing Save used to do nothing at all, and looked
     // exactly like a save that worked — the old value came back on reload.

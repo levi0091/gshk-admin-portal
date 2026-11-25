@@ -22,7 +22,7 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/brNo'):
         ('mapped', 'entities.br_number', True, 20),
     ('NAR1', 'submission/Eform/formModel/brName'):
-        ('mapped', 'business_names.business_name', False, 150),
+        ('mapped', 'entities.business_name', False, 150),
     ('NAR1', 'submission/Eform/formModel/nature'):
         ('mapped', 'entities.business_nature_code', False, 5),
     ('NAR1', 'submission/Eform/formModel/natureDesc'):
@@ -104,11 +104,11 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NAR1', 'submission/Eform/formModel/indSecList/indSec/indvPptNo'):
         ('derived', "CR's PARTIAL passport number, as indvHkidNo", False, 25),
     ('NAR1', 'submission/Eform/formModel/indSecList/indSec/tcspNo'):
-        ('unsourced', "an individual secretary's own TCSP licence; no persons column holds it and Viewpoint's only %tcsp% matches are workflow-template flags", False, 20),
+        ('mapped', 'persons.tcsp_licence_no', False, 20),
     ('NAR1', 'submission/Eform/formModel/indSecList/indSec/exempted'):
-        ('unsourced', 'as tcspNo on an individual secretary', False, 1),
+        ('derived', 'Y unless persons.tcsp_licence_no is set, as CR requires', False, 1),
     ('NAR1', 'submission/Eform/formModel/indSecList/indSec/reason'):
-        ('unsourced', 'as tcspNo on an individual secretary', False, 350),
+        ('mapped', 'persons.tcsp_exemption_reason', False, 350),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpChiName'):
         ('mapped', 'entities.company_name_zh', False, 50),
     ('NAR1', 'submission/Eform/formModel/corpSecList/corpSec/corpEngName'):
@@ -450,11 +450,11 @@ FIELDS: dict[tuple[str, str], tuple[str, str, bool, int | None]] = {
     ('NNC1', 'submission/Eform/formModel/indSecList/indSec/passportNo'):
         ('mapped', 'person_identity_documents.id_number', False, 25),
     ('NNC1', 'submission/Eform/formModel/indSecList/indSec/tcspNo'):
-        ('unsourced', "an individual secretary's own TCSP licence; no persons column holds it and Viewpoint's only %tcsp% matches are workflow-template flags", False, 20),
+        ('mapped', 'persons.tcsp_licence_no', False, 20),
     ('NNC1', 'submission/Eform/formModel/indSecList/indSec/exempted'):
-        ('unsourced', 'as tcspNo on an individual secretary', False, 1),
+        ('derived', 'Y unless persons.tcsp_licence_no is set, as CR requires', False, 1),
     ('NNC1', 'submission/Eform/formModel/indSecList/indSec/reason'):
-        ('unsourced', 'as tcspNo on an individual secretary', False, 350),
+        ('mapped', 'persons.tcsp_exemption_reason', False, 350),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/chiName'):
         ('mapped', 'persons.full_name_zh', False, 50),
     ('NNC1', 'submission/Eform/formModel/corpSecList/corpSec/engName'):

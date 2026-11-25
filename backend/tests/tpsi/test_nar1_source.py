@@ -528,3 +528,27 @@ async def test_an_unlinked_persons_primary_document_comes_first():
     with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
         graph = await nar1_source.load_entity_graph("e1")
     assert [d["id"] for d in graph["identity_documents"]["p1"]] == ["new", "old"]
+
+
+
+async def test_the_preferred_phone_is_loaded():
+    """NAR1 s8 reads the same rows the company profile shows."""
+    sb = _Supabase({
+        "entities": [ENTITY],
+        "contacts": [
+            {"entity_id": "e1", "contact_type": "phone",
+             "contact_value": "+852 2000 0000", "is_preferred": False},
+            {"entity_id": "e1", "contact_type": "phone",
+             "contact_value": "+852 3500 1234", "is_preferred": True},
+        ],
+    })
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        g = await nar1_source.load_entity_graph("e1")
+    assert g["company_phone"] == "+852 3500 1234"
+
+
+async def test_a_company_with_no_phone_loads_none():
+    sb = _Supabase({"entities": [ENTITY]})
+    with patch("services.tpsi.forms.nar1_source.get_supabase", return_value=sb):
+        g = await nar1_source.load_entity_graph("e1")
+    assert g["company_phone"] is None

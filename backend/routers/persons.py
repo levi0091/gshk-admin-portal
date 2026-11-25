@@ -494,10 +494,10 @@ async def get_person(
         ).data
         if address:
             address["shared_by"] = address_service.count_references(sb, address["id"])
-    # Removed documents come back too — they are dropped from their section and
-    # kept, marked, in Document History.
+    # Live documents only. Removed ones were shown in Document History, which
+    # was retired on 2026-11-21: the audit trail records every removal.
     documents = document_service.list_documents(
-        owner_kind="person", owner_id=person_id, include_deleted=True)
+        owner_kind="person", owner_id=person_id)
 
     rollup = _role_rollup(sb, person_id)
     return {
@@ -1194,16 +1194,42 @@ async def list_person_documents(
 async def upload_person_document(
     person_id: str,
     file: UploadFile = File(...),
-    document_type_code: str = Form(...),
+    bucket: Optional[str] = Form(None),
+    upload_id: Optional[str] = Form(None),
+    document_type_code: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
     user=Depends(live_person("write")),
 ):
+    """One file. With `bucket` it is always a new document (2026-11-21); with
+    `document_type_code` it versions in place on (person, type).
+
+    Identity scans do not come through here: they carry a number and come
+    through POST /persons/{id}/identity-documents."""
     content = await file.read()
+    if bucket:
+        return await document_service.upload_to_bucket(
+            owner_kind="person", owner_id=person_id, bucket=bucket,
+            file_name=file.filename, content=content,
+            mime_type=file.content_type, user=user, upload_id=upload_id)
+    if not document_type_code:
+        raise HTTPException(status_code=422,
+                            detail="Choose a bucket to upload this file into")
     return await document_service.upload_document(
         owner_kind="person", owner_id=person_id,
         document_type_code=document_type_code, file_name=file.filename,
         content=content, mime_type=file.content_type, title=title, user=user,
     )
+
+
+@router.patch("/{person_id}/documents")
+async def edit_person_documents(
+    person_id: str,
+    body: document_service.DocumentEdit,
+    user=Depends(live_person("write")),
+):
+    """Move, describe or tag many of this person's documents at once."""
+    return await document_service.update_documents(
+        owner_kind="person", owner_id=person_id, edit=body, user=user)
 
 
 # --------------------------------------------------------------------------- #

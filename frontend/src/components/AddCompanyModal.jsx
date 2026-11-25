@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api.js'
 import AddressBlock from './AddressBlock.jsx'
 import FormField from './FormField.jsx'
+import { NAR1_PHONE_FIELD } from '../lib/nar1Phone.js'
 import { EMPTY_ADDRESS, addressPayload } from '../lib/address.js'
 import { useLookups } from '../lib/lookups.js'
 import useDiscardGuard from '../lib/useDiscardGuard.js'
@@ -52,6 +53,8 @@ const DIAL_CODES = [
 // a lookup added to one appears in the other rather than being copied.
 const OPTIONAL_FIELDS = [
   { key: 'company_name_zh', label: 'Chinese Name', full: true },
+  // NAR1 s2 (migration 066): parity with the profile's Edit form.
+  { key: 'business_name', label: 'Business Name', full: true },
   { key: 'cr_number', label: 'CR No.' },
   { key: 'incorporation_date', label: 'Incorporation Date', type: 'date' },
   // The code is picked and CR derives the description from it — the backend
@@ -72,6 +75,7 @@ const EMPTY_FORM = {
   incorporation_place: '',
   ...Object.fromEntries(OPTIONAL_FIELDS.map(f => [f.key, ''])),
   phone_code: DEFAULT_DIAL_CODE, phone_number: '',
+  [NAR1_PHONE_FIELD.key]: false,
 }
 
 // Hong Kong by default: this form creates HK companies, and the district
@@ -261,6 +265,9 @@ export default function AddCompanyModal({ onClose, onCreated }) {
               </div>
               {errors.company_phone && <span className="f-error">{errors.company_phone}</span>}
             </div>
+            <FormField field={NAR1_PHONE_FIELD} value={form[NAR1_PHONE_FIELD.key]}
+                       lookups={lookups}
+                       onChange={(k, v) => setForm(f => ({ ...f, [k]: v }))} />
           </div>
 
           <div className="f-legend"><span className="f-req">*</span> Fields marked with an asterisk are required.</div>

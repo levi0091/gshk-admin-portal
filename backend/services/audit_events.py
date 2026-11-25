@@ -41,6 +41,8 @@ GF_FLAGS_CHANGED = "GF_FLAGS_CHANGED"
 GF_DOC_UPLOADED = "GF_DOC_UPLOADED"
 GF_DOC_VERSION = "GF_DOC_VERSION"
 GF_DOC_DELETED = "GF_DOC_DELETED"
+# A document moved to another bucket, described or tagged (migration 065).
+GF_DOC_UPDATED = "GF_DOC_UPDATED"
 # Soft delete of a whole record (migration 049). Viewpoint's ADN has no
 # deleting counterpart, and OFD / OCAD delete a ROLE, not the party.
 GF_COMPANY_DELETED = "GF_COMPANY_DELETED"
@@ -170,6 +172,7 @@ _COMPANY_FIELD_CODES = {
     "business_nature_code": VP_STATUTORY,
     "business_nature_desc": VP_STATUTORY,
     "mortgages_total": VP_STATUTORY,
+    "business_name": VP_STATUTORY,   # NAR1 s2 (migration 066)
     # NAR1 s16 — where a statutory register is kept. Statutory for the same
     # reason: moving the Register of Members changes what the return says.
     "record_location": VP_STATUTORY,
@@ -228,6 +231,10 @@ _PERSON_FIELD_CODES = {
     "place_of_birth": VP_COMPLIANCE,
     "marital_status": VP_COMPLIANCE,
     "date_of_death": VP_COMPLIANCE,
+    # An individual secretary's own licence, filed on NAR1 s12A since
+    # 2026-11-21. Same folder as the company's licence above.
+    "tcsp_licence_no": VP_STATUTORY,
+    "tcsp_exemption_reason": VP_STATUTORY,
 }
 
 # (relation, operation) -> code. Officers and secretaries are both statutory

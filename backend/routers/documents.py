@@ -67,15 +67,18 @@ async def list_document_sections(
     owner_type: str = "person",
     user=Depends(_ANY_PROFILE_READER),
 ):
-    """The sections a profile renders, and what each type inside them carries.
+    """What a profile's documents area renders: typed sections, then buckets.
 
     Served rather than hardcoded in the screen for the reason the CR form
     contract is served (CLAUDE.md §3): the rule that a passport needs an issuing
     country is enforced by the API, so the screen must read it from the same
-    place or the two drift, and the way that surfaces is a rejected filing.
+    place or the two drift, and the way that surfaces is a rejected filing. The
+    same goes for the upload limits: the screen refuses a 21st file or an .exe
+    before sending, and the API refuses it again with the same numbers.
 
-    Sections come back whether or not anything has been uploaded into them — an
-    empty section with its own button is how the first document gets added.
+    `sections` is now only a person's Identity Documents; everything else is a
+    bucket (GSHK 2026-11-21). Both come back whether or not anything has been
+    uploaded into them, since an empty one is how the first document gets added.
     """
     if owner_type not in ("company", "person"):
         raise HTTPException(400, "owner_type must be 'company' or 'person'")
@@ -89,12 +92,11 @@ async def list_document_sections(
 
     by_section: dict[str, list[dict]] = {}
     for t in types:
-        by_section.setdefault(
-            document_sections.section_of(t.get("category")), []).append({
-                "code": t["code"],
-                "label": t["label"],
-                "id_type": document_sections.id_type_for_code(t["code"]),
-            })
+        by_section.setdefault(t.get("category"), []).append({
+            "code": t["code"],
+            "label": t["label"],
+            "id_type": document_sections.id_type_for_code(t["code"]),
+        })
 
     return {
         "sections": [
@@ -107,12 +109,21 @@ async def list_document_sections(
                 "types": by_section[s["key"]],
             }
             for s in document_sections.sections_for(owner_type)
-            # A section holding no active TYPE is not empty, it is inert: its
-            # upload button would open a picker with nothing in it. An empty
-            # section still renders — that is how the first document gets added
-            # — but only where there is something to add.
+            # A typed section holding no active TYPE is inert: its Add button
+            # would open a picker with nothing in it.
             if by_section.get(s["key"])
         ],
+        "buckets": [
+            {
+                "key": b["key"],
+                "label": b["label"],
+                "description": b["description"],
+                "suggestions": b["suggestions"],
+                "fallback": bool(b.get("fallback")),
+            }
+            for b in document_sections.buckets_for(owner_type)
+        ],
+        "upload_limits": document_sections.upload_limits(),
         "identity_fields": document_sections.IDENTITY_FIELDS,
     }
 
