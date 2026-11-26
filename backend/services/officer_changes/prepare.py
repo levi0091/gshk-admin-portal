@@ -45,12 +45,25 @@ def for_cr(form_code: str, data: dict) -> dict:
     matched individual officier." / "No matched corporate officier."). CR keeps
     names in capitals; Viewpoint's, and so many profiles' and baselines', are
     mixed case. Only the XML sent to CR changes — never the profile, and not the
-    PDF, which prints the name as entered (Levi, 2026-11-12)."""
+    PDF, which prints the name as entered (Levi, 2026-11-12).
+
+    The same goes for the NAME OF AN e-REGISTRY ACCOUNT that signs: the form's
+    own signatory when a director signs, and each appointee's consent. CR
+    checks `selectPersonName` against the account and holds it in capitals.
+    PROD ND2A-2026-0014 (2026-11-26) named RYANYIUHK as "YIU, Wai Cheung", as
+    typed on the profile, and CR refused the signatory as not authorised; the
+    same account had validated five times as "YIU, WAI CHEUNG" (Levi: capitals
+    for CR only). It is an account's name only where `selectPersonId` sits
+    beside it. Without one, `selectPersonName` names a BODY CORPORATE, which
+    is left as it is: "Get Started HK Limited" has validated hundreds of times."""
     for beans, fields in _HELD_NAMES.get(form_code, {}).items():
         for bean in data.get(beans) or []:
             for field in fields:
                 if bean.get(field):
                     bean[field] = bean[field].upper()
+    for block in [data, *(data.get("appOfNpBeans") or [])]:
+        if block.get("selectPersonId") and block.get("selectPersonName"):
+            block["selectPersonName"] = block["selectPersonName"].upper()
     return data
 
 
