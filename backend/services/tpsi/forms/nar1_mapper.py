@@ -49,6 +49,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
+from services import appointment_links
 from services.tpsi.forms.cr_vocabularies import (
     BUSINESS_NATURE,
     CAPACITY_BODY_CORPORATE,
@@ -788,16 +789,27 @@ def _associated_signatory(corporate_name: str, capacity: str, br_no: str,
 def _individual(person: dict, addresses: dict, identity_documents: dict,
                 problems: list[str], *, hkg_only: bool = False) -> dict:
     """`hkg_only` is set for an individual COMPANY SECRETARY and nobody else:
-    indSec/stdAddress carries "Region. Must be HKG", indDir/resDir do not."""
+    indSec/stdAddress carries "Region. Must be HKG", indDir/resDir do not.
+
+    `stdAddress` is CR's "Correspondence Address" (indDir, resDir) and "Hong
+    Kong Correspondence Address" (indSec), so it is the correspondence address
+    this appointment links to (`appointment_links.CORRESPONDENCE`), and the
+    residential address only when there is none — the "same as residential"
+    rule the ND2 side already uses. Filing the residential address regardless
+    left an ND2B that changed only a correspondence address off the next NAR1,
+    and put a protected residential address in a public field (PROD, ABMOS
+    LIMITED, 2026-11-26). A link to an address that no longer exists falls back
+    too, as a dangling residential link does."""
     where = f"person {person.get('full_name') or person.get('id')}"
+    address = addresses.get(person.get(appointment_links.CORRESPONDENCE)) \
+        if person.get(appointment_links.CORRESPONDENCE) else None
+    if address is None:
+        address = addresses.get(person.get("residential_address_id"))
     block = {
         "indvChiName": person.get("full_name_zh") or "",
         "indvEngSname": person.get("surname") or "",
         "indvEngOname": person.get("given_names") or "",
-        "stdAddress": _address(
-            addresses.get(person.get("residential_address_id")), problems, where,
-            hkg_only=hkg_only,
-        ),
+        "stdAddress": _address(address, problems, where, hkg_only=hkg_only),
     }
     if person.get("former_name"):
         block["indvPrevEngName"] = person["former_name"]
