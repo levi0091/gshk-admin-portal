@@ -8,8 +8,10 @@ exactly the behaviour before links existed.
 """
 import copy
 
+import pytest
+
 from services import appointment_links as links
-from services.tpsi.forms import nar1
+from services.tpsi.forms import nar1, nar1_mapper
 from tests.tpsi.test_nar1_mapper import ADDR, graph, mapped, person
 
 DOCS = [{"id": "H", "person_id": "p1", "id_type": "hkid", "id_number": "A123456(7)",
@@ -101,3 +103,118 @@ def test_nar1_files_the_passport_and_address_linked_to_this_company():
 def test_nar1_is_byte_identical_without_links():
     plain = nar1.build_nar1_xml(mapped(_passport_graph()))
     assert nar1.build_nar1_xml(mapped(_linked(_passport_graph()))) == plain
+
+
+# -- the correspondence address (PROD, ABMOS LIMITED, 2026-11-26) ----------------------
+#
+# CR's NAR1 labels indDir/resDir stdAddress "Correspondence Address" and indSec's
+# "Hong Kong Correspondence Address". The mapper filed the residential address
+# there regardless, so an ND2B changing only a director's correspondence address
+# never reached the next NAR1, and a protected residential address went into a
+# public field.
+
+CORR = {**ADDR, "line1": "Suite C, Level 7", "line2": "Corr Plaza 77",
+        "line3": "50 Stanley Street"}
+
+
+def _corr_graph(role="director", link=None, **graph_over):
+    officer = {"person_id": "p1", "party_type": "individual", "role": role,
+               "is_current": True, **(link or {})}
+    return graph(officers=[officer], persons={"p1": person()},
+                 addresses={"a2": ADDR, "a9": {**ADDR, "line1": "Flat 9"}, "c1": CORR},
+                 **graph_over)
+
+
+def test_a_linked_correspondence_address_rides_on_the_person():
+    p = {"id": "p1", "residential_address_id": "A1"}
+    out = links.correspondence_for(p, {"correspondence_address_id": "C1"})
+    assert out[links.CORRESPONDENCE] == "C1"
+    assert out["residential_address_id"] == "A1"
+    assert links.CORRESPONDENCE not in p  # the input is not mutated
+    assert links.correspondence_for(p, {}) is p
+
+
+def test_apply_to_graph_carries_a_correspondence_only_link():
+    persons = {"p1": {"id": "p1", "residential_address_id": "A1"}}
+    links.apply_to_graph(persons, {}, [{"person_id": "p1", "is_current": True,
+                                        "correspondence_address_id": "C1"}])
+    assert persons["p1"][links.CORRESPONDENCE] == "C1"
+    assert persons["p1"]["residential_address_id"] == "A1"
+
+
+def test_apply_to_graph_keeps_both_links_of_one_appointment():
+    persons = {"p1": {"id": "p1", "residential_address_id": "A1"}}
+    links.apply_to_graph(persons, {}, [{"person_id": "p1", "is_current": True,
+                                        "residential_address_id": "A9",
+                                        "correspondence_address_id": "C1"}])
+    assert persons["p1"]["residential_address_id"] == "A9"
+    assert persons["p1"][links.CORRESPONDENCE] == "C1"
+
+
+def test_extra_address_ids_names_correspondence_links_too():
+    officers = [{"person_id": "p1", "residential_address_id": "A9",
+                 "correspondence_address_id": "C1"},
+                {"person_id": "p2", "correspondence_address_id": "C2"},
+                {"corporate_entity_id": "c1", "correspondence_address_id": "CX"}]
+    assert links.extra_address_ids(officers) == {"A9", "C1", "C2"}
+
+
+def test_nar1_files_a_directors_correspondence_address():
+    xml = nar1.build_nar1_xml(mapped(_linked(_corr_graph(
+        link={"correspondence_address_id": "c1"}))))
+    assert "Corr Plaza 77" in xml
+    assert "Res Tower" not in xml
+
+
+def test_nar1_files_correspondence_over_a_linked_residential_address():
+    xml = nar1.build_nar1_xml(mapped(_linked(_corr_graph(
+        link={"residential_address_id": "a9", "correspondence_address_id": "c1"}))))
+    assert "Corr Plaza 77" in xml
+    assert "Flat 9" not in xml
+
+
+def test_nar1_files_a_reserve_directors_correspondence_address():
+    xml = nar1.build_nar1_xml(mapped(_linked(_corr_graph(
+        role="reserve_director", link={"correspondence_address_id": "c1"}))))
+    assert "Corr Plaza 77" in xml
+
+
+def test_nar1_without_a_correspondence_link_files_the_residential_address():
+    xml = nar1.build_nar1_xml(mapped(_linked(_corr_graph(
+        link={"residential_address_id": "a9"}))))
+    assert "Flat 9" in xml and "Corr Plaza 77" not in xml
+
+
+def test_a_correspondence_link_to_a_missing_address_falls_back():
+    xml = nar1.build_nar1_xml(mapped(_linked(_corr_graph(
+        link={"correspondence_address_id": "GONE"}))))
+    assert "Res Tower" in xml
+
+
+def _secretary_graph(corr):
+    """p1 is an individual secretary (register row + appointment carrying the
+    correspondence link); p2 is the director, so the return has one."""
+    officers = [{"person_id": "p2", "party_type": "individual", "role": "director",
+                 "is_current": True},
+                {"person_id": "p1", "party_type": "individual",
+                 "role": "company_secretary", "is_current": True,
+                 "correspondence_address_id": "c1"}]
+    return graph(officers=officers,
+                 secretaries=[{"person_id": "p1", "is_current": True}],
+                 persons={"p1": person(), "p2": person("p2", residential_address_id="a9")},
+                 addresses={"a2": ADDR, "a9": {**ADDR, "line1": "Flat 9"}, "c1": corr})
+
+
+def test_nar1_files_an_individual_secretarys_hong_kong_correspondence_address():
+    xml = nar1.build_nar1_xml(mapped(_linked(_secretary_graph(CORR))))
+    assert "Corr Plaza 77" in xml
+    assert "Flat B" not in xml  # the secretary's own residential address
+
+
+def test_a_secretarys_correspondence_address_outside_hong_kong_is_refused():
+    """CR: indSec/stdAddress is the "Hong Kong Correspondence Address". A
+    linked one abroad is refused before CR even when the residential address
+    is in Hong Kong — filing the residential one instead would misstate it."""
+    abroad = {**CORR, "city": "SYDNEY", "country": "AU", "is_hk_address": False}
+    with pytest.raises(nar1_mapper.MappingError):
+        mapped(_linked(_secretary_graph(abroad)))

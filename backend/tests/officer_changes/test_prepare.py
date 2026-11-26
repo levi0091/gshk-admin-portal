@@ -267,3 +267,39 @@ def test_for_cr_capitalises_only_the_names_that_identify_a_held_officer():
 def test_for_cr_leaves_an_empty_name_empty():
     out = prepare.for_cr("Nd2a", {"resCesBeans": [{"indvEngSname": "", "corpEngName": None}]})
     assert out["resCesBeans"][0] == {"indvEngSname": "", "corpEngName": None}
+
+
+# PROD ND2A-2026-0014 (2026-11-26): the director signed with e-Registry account
+# RYANYIUHK, whose name the profile holds as "YIU, Wai Cheung" while CR holds
+# "YIU, WAI CHEUNG", and CR refused the signatory as not authorised. Levi: the
+# name goes to CR in capitals; the profile, screens and PDF keep it as entered.
+def test_for_cr_capitalises_a_natural_signers_account_name():
+    for code in ("Nd2a", "Nd2b"):
+        out = prepare.for_cr(code, {"selectPersonId": "RYANYIUHK",
+                                    "selectPersonName": "YIU, Wai Cheung",
+                                    "selectCapacityDesc": "Director"})
+        assert out["selectPersonName"] == "YIU, WAI CHEUNG"
+        assert out["selectPersonId"] == "RYANYIUHK"
+        assert out["selectCapacityDesc"] == "Director"
+
+
+def test_for_cr_capitalises_a_consent_account_name():
+    out = prepare.for_cr("Nd2a", {"appOfNpBeans": [
+        {"indvEngSname": "Law", "selectPersonId": "LAWPIKYI",
+         "selectPersonName": "Law, Pik Yi Rebecca"}]})
+    bean = out["appOfNpBeans"][0]
+    assert bean["selectPersonName"] == "LAW, PIK YI REBECCA"
+    assert bean["indvEngSname"] == "Law"  # an appointee is not a held officer
+
+
+def test_for_cr_leaves_a_body_corporate_signatory_name_alone():
+    """No selectPersonId means selectPersonName names a COMPANY, which CR has
+    accepted hundreds of times as "Get Started HK Limited"."""
+    corporate = {"selectAssoBrNo": "67169839", "selectPersonName": "Get Started HK Limited",
+                 "associatedPersonId": "CHEWYAN02", "associatedPersonName": "Koh, Chew Yan",
+                 "appOfBcBeans": [{"corpEngName": "New Co Limited",
+                                   "selectPersonName": "New Co Limited"}]}
+    out = prepare.for_cr("Nd2a", corporate)
+    assert out["selectPersonName"] == "Get Started HK Limited"
+    assert out["associatedPersonName"] == "Koh, Chew Yan"  # out of scope (Levi)
+    assert out["appOfBcBeans"][0]["selectPersonName"] == "New Co Limited"

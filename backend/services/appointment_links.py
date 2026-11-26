@@ -15,11 +15,17 @@ The link lives on the officer row (migration 053):
                                           hide the passport, nor the reverse).
   entity_officers.residential_address_id  the residential address THIS company
                                           files.
-  entity_officers.correspondence_address_id  (already there, migration 028)
+  entity_officers.correspondence_address_id  the correspondence address THIS
+                                          company files (migration 028). NAR1
+                                          files it where CR asks for a
+                                          "Correspondence Address"; see
+                                          `CORRESPONDENCE`.
 
 NULL means "the person's default" — `persons.residential_address_id` and the
 primary document of each type — which is exactly what every reader did before
-links existed, so a party nobody has linked files byte-for-byte as before.
+links existed, so a party nobody has linked files byte-for-byte as before. A
+NULL correspondence link means "same as residential", the rule the ND2 side
+already uses (`officer_changes.particulars.diff`).
 
 PURE, and outside `services.officer_changes` on purpose: the NAR1 loader calls
 it, and importing that package from `nar1_source` would close an import cycle.
@@ -59,17 +65,36 @@ def person_for(person: dict, officer: dict | None) -> dict:
     return {**person, "residential_address_id": linked}
 
 
+#: The key `apply_to_graph` puts on a person dict for the correspondence address
+#: their appointment HERE links to. Not a `persons` column — persons have no
+#: correspondence address of their own; only an appointment does. Readers
+#: (`nar1_mapper._individual`) fall back to the residential address without it.
+CORRESPONDENCE = "appointment_correspondence_address_id"
+
+
+def correspondence_for(person: dict, officer: dict | None) -> dict:
+    """The person carrying the appointment's correspondence address, when it has
+    one. The SAME dict comes back when it has none."""
+    linked = (officer or {}).get("correspondence_address_id")
+    if not linked or linked == person.get(CORRESPONDENCE):
+        return person
+    return {**person, CORRESPONDENCE: linked}
+
+
 def _linked_officers(officers: list[dict]):
     for officer in officers or []:
         if officer.get("is_current", True) and officer.get("person_id") and (
-                officer.get("residential_address_id") or officer.get("identity_document_id")):
+                officer.get("residential_address_id") or officer.get("identity_document_id")
+                or officer.get("correspondence_address_id")):
             yield officer
 
 
 def extra_address_ids(officers: list[dict]) -> set[str]:
-    """Residential addresses the appointments link to — for a loader to fetch."""
-    return {o["residential_address_id"] for o in officers or []
-            if o.get("person_id") and o.get("residential_address_id")}
+    """Residential and correspondence addresses the appointments link to — for a
+    loader to fetch."""
+    return {o[key] for o in officers or [] if o.get("person_id")
+            for key in ("residential_address_id", "correspondence_address_id")
+            if o.get(key)}
 
 
 def apply_to_graph(persons: dict, identity_documents: dict, officers: list[dict]) -> None:
@@ -77,15 +102,18 @@ def apply_to_graph(persons: dict, identity_documents: dict, officers: list[dict]
     company files them. A graph is one company, so this is unambiguous — except
     for a person holding two roles there, where the first linked row wins (CR
     holds one set of particulars per person per company)."""
-    done_address, done_document = set(), set()
+    done_address, done_document, done_correspondence = set(), set(), set()
     for officer in _linked_officers(officers):
         pid = officer["person_id"]
         person = persons.get(pid)
         if person is None:
             continue
         if officer.get("residential_address_id") and pid not in done_address:
-            persons[pid] = person_for(person, officer)
+            persons[pid] = person_for(persons[pid], officer)
             done_address.add(pid)
+        if officer.get("correspondence_address_id") and pid not in done_correspondence:
+            persons[pid] = correspondence_for(persons[pid], officer)
+            done_correspondence.add(pid)
         if officer.get("identity_document_id") and pid not in done_document:
             identity_documents[pid] = documents_for(identity_documents.get(pid) or [],
                                                     officer["identity_document_id"])
