@@ -8,8 +8,10 @@ exactly the behaviour before links existed.
 """
 import copy
 
+import pytest
+
 from services import appointment_links as links
-from services.tpsi.forms import nar1
+from services.tpsi.forms import nar1, nar1_mapper
 from tests.tpsi.test_nar1_mapper import ADDR, graph, mapped, person
 
 DOCS = [{"id": "H", "person_id": "p1", "id_type": "hkid", "id_number": "A123456(7)",
@@ -187,3 +189,32 @@ def test_a_correspondence_link_to_a_missing_address_falls_back():
     xml = nar1.build_nar1_xml(mapped(_linked(_corr_graph(
         link={"correspondence_address_id": "GONE"}))))
     assert "Res Tower" in xml
+
+
+def _secretary_graph(corr):
+    """p1 is an individual secretary (register row + appointment carrying the
+    correspondence link); p2 is the director, so the return has one."""
+    officers = [{"person_id": "p2", "party_type": "individual", "role": "director",
+                 "is_current": True},
+                {"person_id": "p1", "party_type": "individual",
+                 "role": "company_secretary", "is_current": True,
+                 "correspondence_address_id": "c1"}]
+    return graph(officers=officers,
+                 secretaries=[{"person_id": "p1", "is_current": True}],
+                 persons={"p1": person(), "p2": person("p2", residential_address_id="a9")},
+                 addresses={"a2": ADDR, "a9": {**ADDR, "line1": "Flat 9"}, "c1": corr})
+
+
+def test_nar1_files_an_individual_secretarys_hong_kong_correspondence_address():
+    xml = nar1.build_nar1_xml(mapped(_linked(_secretary_graph(CORR))))
+    assert "Corr Plaza 77" in xml
+    assert "Flat B" not in xml  # the secretary's own residential address
+
+
+def test_a_secretarys_correspondence_address_outside_hong_kong_is_refused():
+    """CR: indSec/stdAddress is the "Hong Kong Correspondence Address". A
+    linked one abroad is refused before CR even when the residential address
+    is in Hong Kong — filing the residential one instead would misstate it."""
+    abroad = {**CORR, "city": "SYDNEY", "country": "AU", "is_hk_address": False}
+    with pytest.raises(nar1_mapper.MappingError):
+        mapped(_linked(_secretary_graph(abroad)))
