@@ -103,6 +103,12 @@ def _match(choices: list[dict], address_id):
     return next((c for c in choices if address_id in c["address_ids"]), None)
 
 
+def is_choice(choices: list[dict], address_id) -> bool:
+    """Is `address_id` one of these choices (by id, or a duplicate row of the same
+    content)? The write path's test for a chosen id."""
+    return _match(choices, address_id) is not None
+
+
 def resolve(person: dict | None, choices: list[dict], chosen_id=None, home: dict | None = None) -> dict:
     """The rule. `home` is the person's default residential address."""
     in_use = [c for c in choices if c["used_by"]]

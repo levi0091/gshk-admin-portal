@@ -26,7 +26,7 @@ from db.supabase import get_supabase
 from services import nar1_case_status, nar1_cases, soft_delete
 from services.officer_changes import (
     apply, capacities, checks, deadlines, documents, eservice, particulars, prepare,
-    rules, secretaries_after, signer_choice,
+    profile_correspondence, rules, secretaries_after, signer_choice,
 )
 from services.tpsi import credentials, fees
 from services.tpsi import filings as tpsi_filings
@@ -51,8 +51,13 @@ _ADDRESS_KEYS = ("line1", "line2", "line3", "city", "state_region", "postal_code
 #: a later stage (KYC, consent, what filing applied).
 _WRITABLE = {
     "cessation": {"effective_date", "cessation_reason", "date_of_death", "executor_name"},
-    "appointment": {"capacity", "effective_date", "correspondence_same_as_residential",
-                    "correspondence_address", "section5_confirmed",
+    # `correspondence_address_id` only CHOOSES among the addresses the person's
+    # profile already holds; no address is typed on an appointment any more
+    # (Levi 2026-11-28). The old `correspondence_same_as_residential` /
+    # `correspondence_address` columns are history: a stale client that still
+    # sends them is ignored, not refused.
+    "appointment": {"capacity", "effective_date", "correspondence_address_id",
+                    "section5_confirmed",
                     "consent_person_id", "consent_capacity", "alternate_to_officer_id"},
     "change": set(),
 }
@@ -312,13 +317,17 @@ def _party_of(officer: dict) -> dict:
     return party
 
 
-def _check_address(address) -> dict:
-    if not isinstance(address, dict) or not str(address.get("line1") or "").strip() \
-            or not str(address.get("country") or "").strip():
-        raise ValueError("A correspondence address needs at least its first line "
-                         "and its country")
-    return {k: (str(address.get(k)).strip() if address.get(k) is not None else None)
-            for k in _ADDRESS_KEYS}
+def _check_correspondence_choice(row: dict) -> None:
+    """An appointment may name which of the person's own correspondence addresses
+    it files, and no other: an id from somebody else's profile (or a stray
+    `addresses` row) would print an address the profile does not hold."""
+    chosen = row.get("correspondence_address_id")
+    if not chosen:
+        row["correspondence_address_id"] = None
+        return
+    choices = profile_correspondence.for_persons([row["person_id"]]).get(row["person_id"], [])
+    if not profile_correspondence.is_choice(choices, chosen):
+        raise ValueError("That correspondence address is not one on this person's profile")
 
 
 def _check_alternate_to(case: dict, row: dict) -> None:
@@ -358,8 +367,8 @@ def _check_appointment(case: dict, row: dict, entries: list[dict],
                 row.get("consent_person_id") and str(row.get("consent_capacity") or "").strip()):
             raise ValueError("A body corporate director needs the person who signs its "
                              "consent and their capacity")
-    elif row.get("correspondence_same_as_residential") is False:
-        row["correspondence_address"] = _check_address(row.get("correspondence_address"))
+    else:
+        _check_correspondence_choice(row)
     party_col = "person_id" if row.get("person_id") else "corporate_entity_id"
     sitting = (get_supabase().table("entity_officers").select("*")
                .eq("entity_id", case["entity_id"]).eq(party_col, row[party_col])
@@ -454,7 +463,6 @@ def _new_row(case: dict, payload: dict, entries: list[dict], user_id) -> dict:
         if key in payload:
             row[key] = payload[key]
     row["effective_date"] = row.get("effective_date") or None
-    row.setdefault("correspondence_same_as_residential", True)
     _check_appointment(case, row, entries)
     return row
 
@@ -526,8 +534,8 @@ def update_entry(case: dict, entry_id: str, patch: dict, *, user_id) -> tuple[di
     if before["kind"] == "appointment":
         others = [e for e in list_entries(case["id"]) if e["id"] != entry_id]
         _check_appointment(case, merged, others, exclude_id=entry_id)
-        if "correspondence_address" in merged:
-            changes["correspondence_address"] = merged["correspondence_address"]
+        if "correspondence_address_id" in changes:
+            changes["correspondence_address_id"] = merged.get("correspondence_address_id")
         if merged.get("alternate_to_officer_id") != before.get("alternate_to_officer_id"):
             # Also covers a capacity edited away from alternate, which the check
             # cleared on `merged`.
@@ -954,7 +962,10 @@ def _parties(entries: list[dict]) -> dict:
     ids = sorted(people)
     docs = (get_supabase().table("person_identity_documents").select("*")
             .in_("person_id", ids).execute().data or []) if ids else []
-    return {"people": people, "corps": corps, "addresses": addresses, "docs": docs}
+    appointees = sorted({e["person_id"] for e in entries
+                         if e.get("kind") == "appointment" and e.get("person_id")})
+    return {"people": people, "corps": corps, "addresses": addresses, "docs": docs,
+            "correspondence": profile_correspondence.for_persons(appointees)}
 
 
 def _party_view(entry: dict, ctx: dict) -> dict:
@@ -973,7 +984,7 @@ def _party_view(entry: dict, ctx: dict) -> dict:
             missing.append("email address")
         if not hkid and not passport:
             missing.append("HKID or passport")
-        return {
+        view = {
             "name": person.get("full_name") or "(unnamed person)",
             "name_zh": person.get("full_name_zh") or "",
             "email": person.get("email") or "",
@@ -986,6 +997,17 @@ def _party_view(entry: dict, ctx: dict) -> dict:
                           "issuing_country": passport.get("issuing_country")}
                          if passport else None),
         }
+        if entry.get("kind") == "appointment":
+            # Which address the form prints, from the profile (Levi 2026-11-28);
+            # `choices` lets the drawer offer the person's own addresses when
+            # there are several.
+            resolved = profile_correspondence.resolve(
+                person, ctx.get("correspondence", {}).get(entry["person_id"], []),
+                entry.get("correspondence_address_id"), home)
+            view["correspondence_on_form"] = {
+                k: resolved[k] for k in ("status", "address_id", "printed_kind",
+                                         "printed_address", "choices")}
+        return view
     corp = ctx["corps"].get(entry.get("corporate_entity_id") or "") or {}
     office = ctx["addresses"].get(corp.get("registered_address_id") or "")
     missing = [label for label, ok in (("registered office address", office),

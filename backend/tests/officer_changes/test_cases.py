@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from services import nar1_cases
-from services.officer_changes import cases, particulars
+from services.officer_changes import cases, particulars, profile_correspondence
 from tests.officer_changes.fakes import FakeSupabase
 
 USER = {"id": "U1", "display_name": "Staff"}
@@ -54,13 +54,14 @@ def _tables():
         "person_eservice_credentials": [],
         "tpsi_filings": [],
         "contacts": [],
+        "person_addresses": [],
     }
 
 
 @pytest.fixture
 def db(monkeypatch):
     fake = FakeSupabase(_tables())
-    for module in (cases, particulars, nar1_cases):
+    for module in (cases, particulars, nar1_cases, profile_correspondence):
         monkeypatch.setattr(module, "get_supabase", lambda: fake)
     monkeypatch.setattr(cases.soft_delete, "is_deleted", lambda sb, t, i: False)
     return fake
@@ -143,7 +144,7 @@ def test_a_cessation_takes_its_party_from_the_officer_row(db, nd2a):
       "capacity": "director", "effective_date": "2026-09-28"}, "consent"),
     ({"kind": "appointment", "party_type": "individual", "person_id": "P9",
       "capacity": "director", "effective_date": "2026-09-28",
-      "correspondence_same_as_residential": False}, "correspondence"),
+      "correspondence_address_id": "A2"}, "not one on this person's profile"),
     ({"kind": "appointment", "party_type": "individual", "person_id": "P9",
       "capacity": "alternate_director", "effective_date": "2026-09-28"}, "acts for"),
     ({"kind": "appointment", "party_type": "individual", "person_id": "P9",
@@ -1046,3 +1047,91 @@ def test_maintenance_is_for_an_nd2b_change_only(db, nd2a):
     with pytest.raises(cases.CaseRefused) as exc:
         cases.mark_maintenance(nd2a, entry["id"], "email", user_id="U1")
     assert exc.value.reason == "not_a_change"
+
+
+# -- an appointment's correspondence address follows the profile (Levi 2026-11-28) ----
+
+def _record_correspondence(db, person_id, address_id, line1):
+    db.tables["addresses"].append(
+        {"id": address_id, "line1": line1, "city": "CENTRAL", "country": "HK"})
+    db.tables["person_addresses"].append(
+        {"id": f"PA-{address_id}", "person_id": person_id, "address_id": address_id,
+         "kind": "correspondence"})
+
+
+def _appoint(nd2a, **extra):
+    return cases.add_entry(nd2a, {"kind": "appointment", "party_type": "individual",
+                                  "person_id": "P9", "capacity": "director",
+                                  "effective_date": "2026-09-28", **extra},
+                           user_id="U1")
+
+
+def _party(db, nd2a):
+    data = asyncio.run(cases.composite(nd2a["id"], user=USER))
+    return next(e for e in data["entries"] if e["kind"] == "appointment")["party"]
+
+
+def test_an_appointment_may_choose_an_address_on_the_profile(db, nd2a):
+    _record_correspondence(db, "P9", "C1", "Corr Plaza 1")
+    entry = _appoint(nd2a, correspondence_address_id="C1")
+    assert entry["correspondence_address_id"] == "C1"
+
+
+def test_an_appointment_refuses_an_address_that_is_not_on_the_profile(db, nd2a):
+    _record_correspondence(db, "P1", "C1", "Somebody else's")
+    with pytest.raises(ValueError, match="not one on this person's profile"):
+        _appoint(nd2a, correspondence_address_id="C1")
+
+
+def test_an_appointment_can_clear_its_choice(db, nd2a):
+    _record_correspondence(db, "P9", "C1", "Corr Plaza 1")
+    entry = _appoint(nd2a, correspondence_address_id="C1")
+    _, after = cases.update_entry(nd2a, entry["id"],
+                                  {"correspondence_address_id": None}, user_id="U1")
+    assert after["correspondence_address_id"] is None
+
+
+def test_the_old_typed_address_fields_are_ignored_not_stored(db, nd2a):
+    entry = _appoint(nd2a, correspondence_same_as_residential=False,
+                     correspondence_address={"line1": "Typed by hand"})
+    assert not entry.get("correspondence_address")
+    assert not entry.get("correspondence_same_as_residential")
+
+
+def test_the_party_view_prints_the_profiles_only_correspondence_address(db, nd2a):
+    _record_correspondence(db, "P9", "C1", "Corr Plaza 1")
+    _appoint(nd2a)
+    on_form = _party(db, nd2a)["correspondence_on_form"]
+    assert on_form["status"] == "recorded"
+    assert on_form["printed_kind"] == "correspondence"
+    assert on_form["printed_address"]["line1"] == "Corr Plaza 1"
+
+
+def test_the_party_view_is_ambiguous_with_several_and_none_chosen(db, nd2a):
+    _record_correspondence(db, "P9", "C1", "Corr Plaza 1")
+    _record_correspondence(db, "P9", "C2", "Elsewhere Road 2")
+    _appoint(nd2a)
+    on_form = _party(db, nd2a)["correspondence_on_form"]
+    assert on_form["status"] == "ambiguous"
+    assert on_form["printed_address"] is None
+    assert len(on_form["choices"]) == 2
+
+
+def test_the_party_view_follows_a_residential_person_home(db, nd2a):
+    _record_correspondence(db, "P9", "C1", "Corr Plaza 1")
+    _record_correspondence(db, "P9", "C2", "Elsewhere Road 2")
+    next(p for p in db.tables["persons"] if p["id"] == "P9").update(
+        residential_address_id="A1", address_on_forms="residential")
+    _appoint(nd2a)
+    on_form = _party(db, nd2a)["correspondence_on_form"]
+    assert on_form["printed_kind"] == "residential"
+    assert on_form["printed_address"]["line1"] == "Flat A"
+
+
+def test_the_party_view_files_the_home_address_when_the_profile_has_none(db, nd2a):
+    next(p for p in db.tables["persons"] if p["id"] == "P9").update(
+        residential_address_id="A1")
+    _appoint(nd2a)
+    on_form = _party(db, nd2a)["correspondence_on_form"]
+    assert on_form["status"] == "none"
+    assert on_form["printed_address"]["line1"] == "Flat A"
