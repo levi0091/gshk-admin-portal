@@ -92,6 +92,7 @@ class World:
     def __init__(self):
         self.persons, self.entities, self.addresses = {}, {}, {}
         self.docs, self.eservice = {}, {}
+        self.profile_corr = {}
         self.entries = []
         self._n = 0
 
@@ -125,6 +126,7 @@ class World:
             "persons": self.persons, "entities": self.entities,
             "addresses": self.addresses, "identity_documents": self.docs,
             "eservice": self.eservice,
+            "profile_correspondence": self.profile_corr,
         }
 
 
@@ -200,12 +202,17 @@ def _natural(world, bean):
                                "eservice_person_name": _v(bean, "selectPersonName"),
                                "configured": True, "has_password": True}
     same = home is None or corr == home
+    if not same:
+        # CR's example prints a correspondence address apart from the home. On the
+        # profile that is the person's one recorded correspondence address, which the
+        # form follows; nothing is typed on the appointment (Levi 2026-11-28).
+        aid = world.address(corr)
+        world.profile_corr[pid] = [{"address_id": aid, "address": world.addresses[aid],
+                                    "address_ids": [aid], "used_by": []}]
     world.entries.append({
         "id": world._id("N"), "kind": "appointment", "capacity": _CPTY[_v(bean, "cpty")],
         "party_type": "individual", "person_id": pid,
-        "effective_date": _v(bean, "indvDtAppt"),
-        "correspondence_same_as_residential": same,
-        "correspondence_address": None if same else corr})
+        "effective_date": _v(bean, "indvDtAppt")})
 
 
 def _corporate(world, bean):
