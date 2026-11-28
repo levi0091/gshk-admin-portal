@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { useLookups } from '../../lib/lookups.js'
-import AddressBlock from '../AddressBlock.jsx'
+import { Link } from 'react-router-dom'
+import { oneLine } from '../particulars/ParticularsByCompany.jsx'
 import Drawer from './Drawer.jsx'
 import { officerChangeApi } from './api.js'
 import { errorOf } from './workflow.js'
@@ -11,7 +12,6 @@ const CONSENT_CAPACITIES = ['Director', 'Company Secretary', 'Authorized Person'
 // Offered only where the consent is for an alternate director: the person
 // signing for a body corporate may themselves be its alternate director.
 const ALTERNATE_CONSENT_CAPACITIES = ['Director', 'Alternate Director', 'Company Secretary', 'Authorized Person']
-const BLANK_ADDRESS = { line1: '', line2: '', line3: '', city: '', country: '' }
 
 /**
  * Get Started HK Limited's BR number. GSHK is the company secretary of nearly
@@ -31,6 +31,84 @@ function useGshk(enabled) {
     return () => { live = false }
   }, [enabled, gshk])
   return enabled ? gshk : null
+}
+
+/**
+ * What the person's profile will print as the correspondence address on a form
+ * (Levi 2026-11-28): the profile's own "Address shown on forms" setting decides,
+ * so the drawer shows the answer rather than asking for an address again. A
+ * failed or slow read stays quiet and never blocks saving; the server decides.
+ */
+function usePrintedAddress(personId) {
+  const [book, setBook] = useState(null)
+  useEffect(() => {
+    setBook(null)
+    if (!personId) return undefined
+    let live = true
+    api.get(`/persons/${personId}/particulars-by-company`)
+      .then(d => { if (live) setBook(d || null) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [personId])
+  return book
+}
+
+function printedHint(book) {
+  const c = book.new_appointment_correspondence || {}
+  if (book.address_on_forms === 'residential') {
+    return "The person's profile asks for the residential address on forms."
+  }
+  if (c.status === 'none' || c.printed_kind === 'residential') {
+    return "No correspondence address on the person's profile, so the residential address is used."
+  }
+  return "From the person's profile (Address shown on forms: Correspondence address)."
+}
+
+function ProfileLink({ personId }) {
+  return (
+    <Link to={`/persons/${personId}`} target="_blank" rel="noreferrer">
+      Change on the person's profile
+    </Link>
+  )
+}
+
+function CorrespondenceOnForm({ personId, book, lookups, pick, onPick }) {
+  const c = book?.new_appointment_correspondence
+  if (!c) return null
+  const choose = c.status === 'ambiguous' && book.address_on_forms === 'correspondence'
+  if (choose) {
+    return (
+      <div className="f-group">
+        <label className="f-label" htmlFor="oc-corr-pick">
+          Which correspondence address? <span className="f-req">*</span>
+        </label>
+        <select id="oc-corr-pick" className="f-select" value={pick}
+                onChange={e => onPick(e.target.value)}>
+          <option value="">Choose an address…</option>
+          {(c.choices || []).map(ch => {
+            const n = (ch.used_by || []).length
+            return (
+              <option key={ch.address_id} value={ch.address_id}>
+                {oneLine(ch.address, lookups)}
+                {n > 0 ? ` (used by ${n} ${n === 1 ? 'company' : 'companies'})` : ''}
+              </option>
+            )
+          })}
+        </select>
+        <div className="f-hint">
+          The person's profile holds more than one correspondence address. <ProfileLink personId={personId} />
+        </div>
+      </div>
+    )
+  }
+  const text = c.printed_address ? oneLine(c.printed_address, lookups) : ''
+  return (
+    <div className="f-group" data-testid="corr-printed">
+      <span className="f-label">Correspondence address on the form</span>
+      <div className="f-static">{text || '—'}</div>
+      <div className="f-hint">{printedHint(book)} <ProfileLink personId={personId} /></div>
+    </div>
+  )
 }
 
 function usePartySearch(kind, term) {
@@ -117,8 +195,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   const [capacity, setCapacity] = useState(entry?.capacity || 'director')
   const [alternateTo, setAlternateTo] = useState(entry?.alternate_to_officer_id || '')
   const [date, setDate] = useState(entry?.effective_date || '')
-  const [sameAddress, setSameAddress] = useState(entry ? entry.correspondence_same_as_residential !== false : true)
-  const [address, setAddress] = useState({ ...BLANK_ADDRESS, ...(entry?.correspondence_address || {}) })
+  const [corrPick, setCorrPick] = useState(entry?.correspondence_address_id || '')
   const [section5, setSection5] = useState(Boolean(entry?.section5_confirmed))
   const [signer, setSigner] = useState(entry?.consent_person_id
     ? { id: entry.consent_person_id, full_name: entry.consent_person_name } : null)
@@ -127,6 +204,12 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
 
   const natural = kind === 'person'
+  const personId = natural ? (editing ? entry.person_id : party?.id) || null : null
+  const book = usePrintedAddress(personId)
+  // More than one correspondence address on the profile and no way to tell which
+  // this company files: the operator picks, from the profile's own addresses.
+  const mustPick = Boolean(natural && book?.address_on_forms === 'correspondence'
+    && book?.new_appointment_correspondence?.status === 'ambiguous')
   const alternate = capacity === 'alternate_director'
   // A body corporate that joins as a director OR an alternate needs somebody to
   // sign its consent to act.
@@ -151,8 +234,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
     // officer would keep an "alternate to" it no longer has.
     else if (editing && entry.alternate_to_officer_id) body.alternate_to_officer_id = null
     if (natural) {
-      body.correspondence_same_as_residential = sameAddress
-      body.correspondence_address = sameAddress ? null : address
+      body.correspondence_address_id = mustPick ? corrPick || null : null
       body.section5_confirmed = naturalSecretary ? section5 : false
     }
     if (corporateDirector) {
@@ -179,7 +261,7 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
   }
 
   // The date may wait until Signing (Jacqueline A1).
-  const ready = party && (sameAddress || !natural || (address.line1 && address.country))
+  const ready = party && (!mustPick || corrPick)
     && (!corporateDirector || signer) && (!naturalSecretary || section5)
     && (!alternate || alternateTo)
 
@@ -247,23 +329,9 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
         </div>
       </div>
 
-      {natural && (
-        <div className="f-group">
-          <label className="check-row">
-            <input type="checkbox" checked={sameAddress} onChange={e => setSameAddress(e.target.checked)} />
-            Correspondence address is the same as the residential address
-          </label>
-          {!sameAddress && (
-            // The profile's own address editor: CR's Country & Region list and,
-            // for Hong Kong, CR's districts. Free text here typed values like
-            // "Hong Kong" / "Wan Chai" that the CR mapping then refused.
-            <div style={{ marginTop: 8 }} data-testid="corr-address">
-              <AddressBlock value={address} lookups={lookups}
-                            onChange={(key, value) => setAddress(a => ({ ...a, [key]: value }))} />
-              <div className="f-hint">This address is printed on the public record.</div>
-            </div>
-          )}
-        </div>
+      {natural && personId && (
+        <CorrespondenceOnForm personId={personId} book={book} lookups={lookups}
+                              pick={corrPick} onPick={setCorrPick} />
       )}
 
       {naturalSecretary && (

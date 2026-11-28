@@ -131,16 +131,113 @@ describe('CessationDrawer — the secretary register', () => {
 
 describe('AppointmentDrawer', () => {
   const entry = { id: 'n2', kind: 'appointment', party_type: 'individual', person_id: 'p9',
-    capacity: 'director', effective_date: '2026-09-29', party: { name: 'HO New' },
-    correspondence_same_as_residential: true }
+    capacity: 'director', effective_date: '2026-09-29', party: { name: 'HO New' } }
 
-  it('shows the correspondence boxes only when the tick is cleared', async () => {
+  const ADDR = { line1: '1 Queen Rd', line2: '', line3: '', city: 'Central', country: 'HK' }
+  const ADDR2 = { line1: '9 Nathan Rd', line2: '', line3: '', city: 'Kowloon', country: 'HK' }
+  const book = (over = {}) => ({
+    address_on_forms: 'correspondence',
+    new_appointment_correspondence: { status: 'in_use', address_id: 'a1', address: ADDR,
+      printed_kind: 'correspondence', printed_address: ADDR, choices: [], ...over.corr },
+    ...over.top,
+  })
+  const serve = b => get.mockImplementation(url =>
+    Promise.resolve(url === '/persons/p9/particulars-by-company' ? b : {}))
+  const save = async () => userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+  it('shows what the profile prints instead of asking for a correspondence address', async () => {
+    serve(book())
+    patch.mockResolvedValue({ id: 'k1' })
     wrap(<AppointmentDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
-    const tick = screen.getByLabelText(/Correspondence address is the same as the residential address/)
-    expect(tick).toBeChecked()
+    const block = await screen.findByTestId('corr-printed')
+    expect(block).toHaveTextContent('Correspondence address on the form')
+    expect(block).toHaveTextContent(/1 Queen Rd/)
+    expect(block).toHaveTextContent("From the person's profile (Address shown on forms: Correspondence address).")
+    expect(screen.queryByLabelText(/Correspondence address is the same as the residential address/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('corr-address')).not.toBeInTheDocument()
-    await userEvent.click(tick)
-    expect(screen.getByTestId('corr-address')).toBeInTheDocument()
+    const link = within(block).getByRole('link', { name: "Change on the person's profile" })
+    expect(link).toHaveAttribute('href', '/persons/p9')
+    await save()
+    await waitFor(() => expect(patch).toHaveBeenCalled())
+    const body = patch.mock.calls[0][1]
+    expect(body.correspondence_address_id).toBeNull()
+    expect(body).not.toHaveProperty('correspondence_same_as_residential')
+    expect(body).not.toHaveProperty('correspondence_address')
+  })
+
+  it('says the residential address is asked for when the profile is set that way', async () => {
+    serve(book({ top: { address_on_forms: 'residential' },
+      corr: { printed_kind: 'residential', printed_address: ADDR2 } }))
+    wrap(<AppointmentDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
+    const block = await screen.findByTestId('corr-printed')
+    expect(block).toHaveTextContent("The person's profile asks for the residential address on forms.")
+    expect(block).toHaveTextContent(/9 Nathan Rd/)
+  })
+
+  it('says so when there is no correspondence address and the residential one is used', async () => {
+    serve(book({ corr: { status: 'none', address_id: null, address: null,
+      printed_kind: 'residential', printed_address: ADDR2 } }))
+    wrap(<AppointmentDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
+    const block = await screen.findByTestId('corr-printed')
+    expect(block).toHaveTextContent(
+      "No correspondence address on the person's profile, so the residential address is used.")
+  })
+
+  describe('when the profile holds several correspondence addresses', () => {
+    const ambiguous = () => book({ corr: { status: 'ambiguous', address_id: null, address: null,
+      printed_address: null,
+      choices: [{ address_id: 'a1', address: ADDR, used_by: ['e1', 'e2'] },
+                { address_id: 'a2', address: ADDR2, used_by: [] }] } })
+
+    it('requires a pick from the profile\'s own addresses and sends its id', async () => {
+      serve(ambiguous())
+      patch.mockResolvedValue({ id: 'k1' })
+      wrap(<AppointmentDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
+      const select = await screen.findByLabelText(/Which correspondence address\?/)
+      expect(screen.queryByTestId('corr-printed')).not.toBeInTheDocument()
+      const options = within(select).getAllByRole('option')
+      expect(options).toHaveLength(3)
+      expect(options[1]).toHaveTextContent(/1 Queen Rd.*used by 2 companies/)
+      expect(options[2]).not.toHaveTextContent(/used by/)
+      expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+      await userEvent.selectOptions(select, 'a2')
+      await save()
+      await waitFor(() => expect(patch).toHaveBeenCalled())
+      expect(patch.mock.calls[0][1].correspondence_address_id).toBe('a2')
+    })
+
+    it('preselects the address already chosen on the entry', async () => {
+      serve(ambiguous())
+      wrap(<AppointmentDrawer data={BASE} entry={{ ...entry, correspondence_address_id: 'a1' }}
+                              onClose={() => {}} onSaved={() => {}} />)
+      expect(await screen.findByLabelText(/Which correspondence address\?/)).toHaveValue('a1')
+      expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled()
+    })
+
+    it('does not ask when the profile prints the residential address anyway', async () => {
+      serve({ ...ambiguous(), address_on_forms: 'residential' })
+      patch.mockResolvedValue({ id: 'k1' })
+      wrap(<AppointmentDrawer data={BASE} entry={{ ...entry, correspondence_address_id: 'a1' }}
+                              onClose={() => {}} onSaved={() => {}} />)
+      await screen.findByTestId('corr-printed')
+      expect(screen.queryByLabelText(/Which correspondence address\?/)).not.toBeInTheDocument()
+      await save()
+      await waitFor(() => expect(patch).toHaveBeenCalled())
+      expect(patch.mock.calls[0][1].correspondence_address_id).toBeNull()
+    })
+  })
+
+  it('stays quiet and still saves when the profile read fails', async () => {
+    get.mockImplementation(url => url === '/persons/p9/particulars-by-company'
+      ? Promise.reject(new Error('boom')) : Promise.resolve({}))
+    patch.mockResolvedValue({ id: 'k1' })
+    wrap(<AppointmentDrawer data={BASE} entry={entry} onClose={() => {}} onSaved={() => {}} />)
+    await waitFor(() => expect(get).toHaveBeenCalledWith('/persons/p9/particulars-by-company'))
+    expect(screen.queryByTestId('corr-printed')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await save()
+    await waitFor(() => expect(patch).toHaveBeenCalled())
+    expect(patch.mock.calls[0][1].correspondence_address_id).toBeNull()
   })
 
   it('asks the Section 5 question for a natural-person secretary only', async () => {
