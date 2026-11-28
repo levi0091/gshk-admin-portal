@@ -160,7 +160,7 @@ describe('AppointmentDrawer', () => {
     await save()
     await waitFor(() => expect(patch).toHaveBeenCalled())
     const body = patch.mock.calls[0][1]
-    expect(body.correspondence_address_id).toBeNull()
+    expect(body).not.toHaveProperty('correspondence_address_id')
     expect(body).not.toHaveProperty('correspondence_same_as_residential')
     expect(body).not.toHaveProperty('correspondence_address')
   })
@@ -223,7 +223,8 @@ describe('AppointmentDrawer', () => {
       expect(screen.queryByLabelText(/Which correspondence address\?/)).not.toBeInTheDocument()
       await save()
       await waitFor(() => expect(patch).toHaveBeenCalled())
-      expect(patch.mock.calls[0][1].correspondence_address_id).toBeNull()
+      // Not asked, so not sent: the stored choice is kept, not wiped.
+      expect(patch.mock.calls[0][1]).not.toHaveProperty('correspondence_address_id')
     })
   })
 
@@ -237,7 +238,7 @@ describe('AppointmentDrawer', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     await save()
     await waitFor(() => expect(patch).toHaveBeenCalled())
-    expect(patch.mock.calls[0][1].correspondence_address_id).toBeNull()
+    expect(patch.mock.calls[0][1]).not.toHaveProperty('correspondence_address_id')
   })
 
   it('asks the Section 5 question for a natural-person secretary only', async () => {

@@ -1091,6 +1091,28 @@ def test_an_appointment_can_clear_its_choice(db, nd2a):
     assert after["correspondence_address_id"] is None
 
 
+def test_a_choice_that_left_the_profile_does_not_block_other_edits(db, nd2a):
+    # Review finding: the stored id is re-checked on every update. Once the
+    # address is removed from the profile, an unrelated edit must still save,
+    # and the stale choice is cleared rather than refused.
+    _record_correspondence(db, "P9", "C1", "Corr Plaza 1")
+    entry = _appoint(nd2a, correspondence_address_id="C1")
+    db.tables["person_addresses"][:] = [r for r in db.tables["person_addresses"]
+                                        if r["address_id"] != "C1"]
+    _, after = cases.update_entry(nd2a, entry["id"],
+                                  {"effective_date": "2026-09-29"}, user_id="U1")
+    assert after["effective_date"] == "2026-09-29"
+    assert after["correspondence_address_id"] is None
+
+
+def test_writing_a_choice_that_is_not_on_the_profile_is_still_refused(db, nd2a):
+    _record_correspondence(db, "P9", "C1", "Corr Plaza 1")
+    entry = _appoint(nd2a)
+    with pytest.raises(ValueError, match="not one on this person's profile"):
+        cases.update_entry(nd2a, entry["id"],
+                           {"correspondence_address_id": "NOPE"}, user_id="U1")
+
+
 def test_the_old_typed_address_fields_are_ignored_not_stored(db, nd2a):
     entry = _appoint(nd2a, correspondence_same_as_residential=False,
                      correspondence_address={"line1": "Typed by hand"})

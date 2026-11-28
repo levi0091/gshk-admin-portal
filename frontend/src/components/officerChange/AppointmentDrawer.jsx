@@ -82,7 +82,7 @@ function CorrespondenceOnForm({ personId, book, lookups, pick, onPick }) {
         <label className="f-label" htmlFor="oc-corr-pick">
           Which correspondence address? <span className="f-req">*</span>
         </label>
-        <select id="oc-corr-pick" className="f-select" value={pick}
+        <select id="oc-corr-pick" className="f-select" value={pick} aria-required="true"
                 onChange={e => onPick(e.target.value)}>
           <option value="">Choose an address…</option>
           {(c.choices || []).map(ch => {
@@ -234,7 +234,11 @@ export default function AppointmentDrawer({ data, entry, onClose, onSaved }) {
     // officer would keep an "alternate to" it no longer has.
     else if (editing && entry.alternate_to_officer_id) body.alternate_to_officer_id = null
     if (natural) {
-      body.correspondence_address_id = mustPick ? corrPick || null : null
+      // Sent only when the drawer asks for it. Otherwise an edit leaves a stored
+      // choice alone (the profile may be ambiguous again later, or its read may
+      // have failed), and the API ignores a choice the rule no longer needs.
+      if (mustPick) body.correspondence_address_id = corrPick || null
+      else if (!editing) body.correspondence_address_id = null
       body.section5_confirmed = naturalSecretary ? section5 : false
     }
     if (corporateDirector) {

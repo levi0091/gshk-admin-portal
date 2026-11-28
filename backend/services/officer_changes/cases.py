@@ -317,16 +317,24 @@ def _party_of(officer: dict) -> dict:
     return party
 
 
-def _check_correspondence_choice(row: dict) -> None:
+def _check_correspondence_choice(row: dict, *, strict: bool = True) -> None:
     """An appointment may name which of the person's own correspondence addresses
     it files, and no other: an id from somebody else's profile (or a stray
-    `addresses` row) would print an address the profile does not hold."""
+    `addresses` row) would print an address the profile does not hold.
+
+    Only a choice being WRITTEN is refused (`strict`). One stored earlier that
+    has since left the profile is cleared quietly instead, as the rule already
+    ignores it: refusing would block every later edit of the appointment over a
+    field the drawer no longer offers (grandfathering, CLAUDE.md §3)."""
     chosen = row.get("correspondence_address_id")
     if not chosen:
         row["correspondence_address_id"] = None
         return
     choices = profile_correspondence.for_persons([row["person_id"]]).get(row["person_id"], [])
     if not profile_correspondence.is_choice(choices, chosen):
+        if not strict:
+            row["correspondence_address_id"] = None
+            return
         raise ValueError("That correspondence address is not one on this person's profile")
 
 
@@ -353,7 +361,7 @@ def _check_alternate_to(case: dict, row: dict) -> None:
 
 
 def _check_appointment(case: dict, row: dict, entries: list[dict],
-                       exclude_id: str | None = None) -> None:
+                       exclude_id: str | None = None, *, strict_choice: bool = True) -> None:
     if row.get("capacity") not in _CAPACITIES:
         raise ValueError("The capacity must be Director, Alternate Director or "
                          "Company Secretary")
@@ -368,7 +376,7 @@ def _check_appointment(case: dict, row: dict, entries: list[dict],
             raise ValueError("A body corporate director needs the person who signs its "
                              "consent and their capacity")
     else:
-        _check_correspondence_choice(row)
+        _check_correspondence_choice(row, strict=strict_choice)
     party_col = "person_id" if row.get("person_id") else "corporate_entity_id"
     sitting = (get_supabase().table("entity_officers").select("*")
                .eq("entity_id", case["entity_id"]).eq(party_col, row[party_col])
@@ -533,8 +541,12 @@ def update_entry(case: dict, entry_id: str, patch: dict, *, user_id) -> tuple[di
                 changes["executor_name"] = None
     if before["kind"] == "appointment":
         others = [e for e in list_entries(case["id"]) if e["id"] != entry_id]
-        _check_appointment(case, merged, others, exclude_id=entry_id)
-        if "correspondence_address_id" in changes:
+        _check_appointment(case, merged, others, exclude_id=entry_id,
+                           strict_choice="correspondence_address_id" in changes)
+        if ("correspondence_address_id" in changes
+                or merged.get("correspondence_address_id")
+                != before.get("correspondence_address_id")):
+            # Written, or a stale stored choice the check just cleared.
             changes["correspondence_address_id"] = merged.get("correspondence_address_id")
         if merged.get("alternate_to_officer_id") != before.get("alternate_to_officer_id"):
             # Also covers a capacity edited away from alternate, which the check
