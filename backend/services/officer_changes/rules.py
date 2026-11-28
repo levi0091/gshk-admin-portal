@@ -63,6 +63,21 @@ def _has_address(address: dict | None) -> bool:
     return any(str(address.get(k) or "").strip() for k in ("line1", "line2", "line3"))
 
 
+def _printed_address(party: dict) -> dict | None:
+    """The address ND2A prints in a natural person's `indvCorrAddr`. It comes
+    from the party view's `correspondence_on_form` (the profile rule); a party
+    view without one prints the residential address."""
+    on_form = party.get("correspondence_on_form")
+    return on_form.get("printed_address") if on_form else party.get("residential_address")
+
+
+def _corr_ambiguous(party: dict) -> bool:
+    """The profile holds several correspondence addresses, none chosen, and the
+    person files correspondence: the form would print nothing."""
+    on_form = party.get("correspondence_on_form")
+    return bool(on_form) and on_form.get("printed_kind") is None
+
+
 #: ND2B address items whose new value must exist: an address changed to
 #: nothing is not a change CR can register (CR prints "-").
 _ADDRESS_ITEMS = {"residential_address", "correspondence_address", "address"}
@@ -284,6 +299,7 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
 
     # -- each appointment ----------------------------------------------------------
     underage, no_dob, not_hk, no_section5, no_id, no_address = [], [], [], [], [], []
+    ambiguous_corr: list[str] = []
     for e in (e for e in entries if e.get("kind") == "appointment"):
         party = e.get("party") or {}
         name = party.get("name") or "the appointee"
@@ -297,10 +313,10 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
                 underage.append(name)
         if e.get("capacity") == "company_secretary":
             if individual:
-                address = (party.get("residential_address")
-                           if e.get("correspondence_same_as_residential", True)
-                           else e.get("correspondence_address"))
-                if not _is_hk(address):
+                # The address the form PRINTS, which follows the profile (Levi
+                # 2026-11-28). An ambiguous profile prints nothing and is
+                # reported on its own, not as "not in Hong Kong".
+                if not _corr_ambiguous(party) and not _is_hk(_printed_address(party)):
                     not_hk.append(name)
                 if not e.get("section5_confirmed"):
                     no_section5.append(name)
@@ -309,14 +325,13 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
         if individual and not party.get("hkid") and not (party.get("passport") or {}).get("number"):
             no_id.append(name)
         if individual:
-            separate = e.get("correspondence_same_as_residential") is False
-            if separate and not _has_address(e.get("correspondence_address")):
-                missing = True
-            elif separate and e.get("capacity") == "company_secretary":
+            if _corr_ambiguous(party):
+                ambiguous_corr.append(name)
+            if e.get("capacity") == "company_secretary":
                 # CR's form holds only a natural-person secretary's
-                # correspondence address (`indvResAddr` is a director's), so a
-                # separate one is all the form needs (review S1).
-                missing = False
+                # correspondence address (`indvResAddr` is a director's), so the
+                # printed one is all the form needs (review S1).
+                missing = not _corr_ambiguous(party) and not _has_address(_printed_address(party))
             else:
                 missing = not _has_address(party.get("residential_address"))
         else:
@@ -377,10 +392,15 @@ def evaluate(officers_now: list[dict], entries: list[dict], *, company: dict,
             f"No HKID or passport on record for {_join(no_id)}. Add one to their "
             "profile before sending — the form cannot go out with NIL."))
         checks.append(_check(
-            "address_present", not no_address,
-            "Every new officer has the address the form carries." if not no_address else
-            f"No address on record for {_join(no_address)}. Add it to their profile "
-            "before sending."))
+            "address_present", not (no_address or ambiguous_corr),
+            "Every new officer has the address the form carries."
+            if not (no_address or ambiguous_corr) else
+            " ".join(filter(None, [
+                f"No address on record for {_join(no_address)}. Add it to their "
+                "profile before sending." if no_address else "",
+                f"The profile of {_join(ambiguous_corr)} holds several correspondence "
+                "addresses. Choose the one this appointment files." if ambiguous_corr
+                else ""]))))
     else:
         # The ND2B half of the same note ("ND2B form can still be sent even no
         # identification number", ND2B-2026-0013): a line that changes an

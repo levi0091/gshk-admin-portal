@@ -31,12 +31,20 @@ def appoint(person=None, corp=None, capacity="director", when="2026-09-28", **pa
     entry = {"kind": "appointment", "capacity": capacity,
              "party_type": "individual" if person else "corporate",
              "person_id": person, "corporate_entity_id": corp, "effective_date": when,
-             "correspondence_same_as_residential": True,
-             "correspondence_address": None, "section5_confirmed": False,
+             "section5_confirmed": False,
              "party": {"date_of_birth": "1980-01-01", "residential_address": HK_HOME,
                        "address": HK_HOME, "hkid": "A1234563", "passport": None,
                        **party}}
     return entry
+
+
+def on_form(printed, kind="correspondence", status="in_use"):
+    """The party view's `correspondence_on_form`: what ND2A prints for the person
+    (Levi 2026-11-28: it follows the profile, nothing is typed on the entry)."""
+    return {"status": status, "printed_kind": kind, "printed_address": printed}
+
+
+AMBIGUOUS = on_form(None, kind=None, status="ambiguous")
 
 
 def run(entries, officers=BOARD, company=PRIVATE, deadline=None):
@@ -104,8 +112,8 @@ def test_a_natural_secretary_needs_a_hong_kong_address_and_section_5():
                     residential_address=UK_HOME)
     result = run([entry])
     assert check(result, "secretary_hong_kong")["ok"] is False
-    entry["correspondence_same_as_residential"] = False
-    entry["correspondence_address"] = HK_HOME
+    # the profile's correspondence address is the one printed, and it is in Hong Kong
+    entry["party"]["correspondence_on_form"] = on_form(HK_HOME)
     assert check(run([entry]), "secretary_hong_kong")["ok"] is False  # no section 5 yet
     entry["section5_confirmed"] = True
     assert check(run([entry]), "secretary_hong_kong")["ok"] is True
@@ -247,12 +255,12 @@ def test_an_address_needs_a_line_and_a_country():
     assert check(result, "address_present")["ok"] is False
 
 
-def test_a_separate_correspondence_address_must_be_given():
+def test_an_ambiguous_profile_correspondence_address_blocks_until_one_is_chosen():
     entry = appoint(person="P9")
-    entry["correspondence_same_as_residential"] = False
-    entry["correspondence_address"] = None
-    assert check(run([entry]), "address_present")["ok"] is False
-    entry["correspondence_address"] = HK_HOME
+    entry["party"]["correspondence_on_form"] = AMBIGUOUS
+    c = check(run([entry]), "address_present")
+    assert c["ok"] is False and "several correspondence addresses" in c["text"]
+    entry["party"]["correspondence_on_form"] = on_form(HK_HOME, status="chosen")
     assert check(run([entry]), "address_present")["ok"] is True
 
 
@@ -320,11 +328,24 @@ def test_an_address_of_building_and_street_with_a_country_is_enough():
     assert check(result, "address_present")["ok"] is True
 
 
-def test_a_secretary_with_a_separate_correspondence_address_needs_no_residential():
+def test_a_secretary_with_a_profile_correspondence_address_needs_no_residential():
     entry = appoint(person="P9", capacity="company_secretary", residential_address=None)
-    entry["correspondence_same_as_residential"] = False
-    entry["correspondence_address"] = HK_HOME
+    entry["party"]["correspondence_on_form"] = on_form(HK_HOME)
     assert check(run([entry]), "address_present")["ok"] is True
+
+
+def test_a_secretarys_printed_address_is_the_one_checked_for_hong_kong():
+    # a UK home but a Hong Kong correspondence address on the profile: fine;
+    # the reverse is not, whatever the home address says.
+    entry = appoint(person="P9", capacity="company_secretary", residential_address=UK_HOME)
+    entry["section5_confirmed"] = True
+    entry["party"]["correspondence_on_form"] = on_form(HK_HOME)
+    assert check(run([entry]), "secretary_hong_kong")["ok"] is True
+    entry["party"]["correspondence_on_form"] = on_form(UK_HOME)
+    assert check(run([entry]), "secretary_hong_kong")["ok"] is False
+    entry["party"]["correspondence_on_form"] = AMBIGUOUS  # reported as ambiguity instead
+    assert check(run([entry]), "secretary_hong_kong")["ok"] is True
+    assert check(run([entry]), "address_present")["ok"] is False
 
 
 def test_nd2b_with_a_real_new_passport_passes():
