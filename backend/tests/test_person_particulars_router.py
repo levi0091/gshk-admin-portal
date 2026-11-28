@@ -70,7 +70,9 @@ def db():
     })
     with patch("routers.persons.get_supabase", return_value=fake), \
          patch("services.person_particulars.get_supabase", return_value=fake), \
-         patch("services.officer_changes.particulars.get_supabase", return_value=fake):
+         patch("services.officer_changes.particulars.get_supabase", return_value=fake), \
+         patch("services.officer_changes.profile_correspondence.get_supabase",
+               return_value=fake):
         yield fake
 
 
@@ -113,6 +115,47 @@ def test_the_book_lists_each_entry_with_the_companies_using_it(db, admin):
     ids = {d["document_id"]: d for d in data["identity"]}
     assert ids["D1"]["used_by"] == ["E1"] and ids["D2"]["used_by"] == ["E2"]
     assert ids["D1"]["is_primary"] is True
+
+
+def test_the_book_says_which_address_a_new_appointment_would_print(db, admin):
+    """P1's one correspondence address (A3) is in use at E1, so a new ND2A
+    follows it; `address_on_forms` defaults to 'correspondence'."""
+    data = client.get("/persons/P1/particulars-by-company", headers=H).json()
+    assert data["address_on_forms"] == "correspondence"
+    new = data["new_appointment_correspondence"]
+    assert (new["status"], new["address_id"], new["printed_kind"]) == (
+        "in_use", "A3", "correspondence")
+    assert new["printed_address"]["line1"] == "Room 1201"
+    assert [c["address_id"] for c in new["choices"]] == ["A3"]
+
+
+def test_a_person_filing_residential_prints_the_home_address(db, admin):
+    next(p for p in db.tables["persons"] if p["id"] == "P1")["address_on_forms"] = "residential"
+    data = client.get("/persons/P1/particulars-by-company", headers=H).json()
+    assert data["address_on_forms"] == "residential"
+    new = data["new_appointment_correspondence"]
+    assert new["printed_kind"] == "residential"
+    assert new["printed_address"]["line1"] == "Flat A, 10/F"
+
+
+def test_a_person_with_no_correspondence_address_prints_the_home_address(db, admin):
+    db.tables["person_addresses"] = [r for r in db.tables["person_addresses"]
+                                     if r["kind"] != "correspondence"]
+    _officer(db, "O1")["correspondence_address_id"] = None
+    new = client.get("/persons/P1/particulars-by-company",
+                     headers=H).json()["new_appointment_correspondence"]
+    assert new["status"] == "none" and new["choices"] == []
+    assert new["printed_kind"] == "residential"
+    assert new["printed_address"]["line1"] == "Flat A, 10/F"
+
+
+def test_two_correspondence_addresses_in_use_are_ambiguous(db, admin):
+    _officer(db, "O2")["correspondence_address_id"] = "A2"
+    new = client.get("/persons/P1/particulars-by-company",
+                     headers=H).json()["new_appointment_correspondence"]
+    assert new["status"] == "ambiguous"
+    assert new["printed_kind"] is None and new["printed_address"] is None
+    assert {c["address_id"] for c in new["choices"]} == {"A2", "A3"}
 
 
 def test_an_address_set_by_an_older_route_still_appears(db, admin):

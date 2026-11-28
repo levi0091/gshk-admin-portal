@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from db.supabase import get_supabase
 from services import address_service
-from services.officer_changes import particulars
+from services.officer_changes import particulars, profile_correspondence
 
 ROLES = ("director", "company_secretary", "alternate_director")
 KINDS = ("residential", "correspondence")
@@ -152,9 +152,19 @@ def book(person_id: str) -> dict:
         "expiry_date": d.get("expiry_date"), "used_by": used[d["id"]],
     } for d in sorted(docs, key=lambda d: (str(d.get("id_type")), not d.get("is_primary")))]
 
+    # What a NEW ND2A appointment of this person would print: the rule of
+    # `profile_correspondence`, asked with no choice on the entry (Levi 2026-11-28).
+    choices = profile_correspondence.for_persons([person_id]).get(person_id, [])
+    new_appointment = profile_correspondence.resolve(
+        person, choices, None, _address(rows.get(default)))
+
     return {
         "companies": [{"entity_id": c["entity_id"], "company_name": c.get("company_name"),
                        "roles": c["roles"]} for c in companies],
+        "address_on_forms": person.get("address_on_forms") or "correspondence",
+        "new_appointment_correspondence": {
+            k: new_appointment[k] for k in ("status", "address_id", "address", "printed_kind",
+                                            "printed_address", "choices")},
         "default_residential_address_id": default,
         "residential": residential,
         "correspondence": correspondence,
