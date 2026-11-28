@@ -288,6 +288,22 @@ def test_as_serialised_keeps_an_empty_elements_attributes():
     assert crypto.as_serialised('<cr:x id="a" k="v"></cr:x>') == '<cr:x id="a" k="v"/>'
 
 
+def test_as_serialised_collapses_only_the_inner_of_two_same_named_elements():
+    assert crypto.as_serialised("<cr:a><cr:a></cr:a></cr:a>") == "<cr:a><cr:a/></cr:a>"
+
+
+def test_as_serialised_writes_no_space_before_the_slash():
+    """XMLSerializer emits `<x/>`; whitespace inside a tag is not in the DOM."""
+    assert crypto.as_serialised("<cr:x ></cr:x>") == "<cr:x/>"
+    assert crypto.as_serialised('<cr:x id="a" ></cr:x>') == '<cr:x id="a"/>'
+
+
+def test_as_serialised_leaves_an_attribute_holding_a_raw_gt_alone():
+    """A documented, safe miss: CR escapes `>` in attribute values, so this
+    never arrives, and leaving it is the old behaviour, not a new wrong one."""
+    assert crypto.as_serialised('<cr:x k="a>b"></cr:x>') == '<cr:x k="a>b"></cr:x>'
+
+
 def test_as_serialised_collapses_every_empty_element_unprefixed_too():
     xml = "<r><cr:a></cr:a><b></b><cr:c>1</cr:c><cr:d></cr:d></r>"
     assert crypto.as_serialised(xml) == "<r><cr:a/><b/><cr:c>1</cr:c><cr:d/></r>"
