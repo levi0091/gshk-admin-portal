@@ -284,6 +284,26 @@ def test_sign_signs_the_eform_element_only_not_the_signatures():
     assert "EFormSignatures" not in captured["eform"]
 
 
+def test_sign_digests_an_empty_element_as_crs_serialiser_writes_it():
+    """PROD 2026-11-28 SIGN_ERR000011: CR digests XMLSerializer output, which
+    writes an element with no children as <x/>. The payload keeps CR's bytes."""
+    xml = VALIDATED_XML.replace(
+        "<cr:formCode>NAR1</cr:formCode>",
+        "<cr:formCode>NAR1</cr:formCode><cr:compNameC></cr:compNameC>")
+    captured = {}
+    client = MagicMock()
+    client.post_form.return_value = SIGN_OK
+    with patch.object(filings, "get_filing",
+                      return_value=_row(stage=filings.STAGE_VALIDATED, validated_xml=xml)), \
+         patch.object(filings, "_update"), \
+         patch("services.tpsi.crypto.build_pin_sign",
+               side_effect=lambda eform, *a, **k: captured.setdefault("eform", eform) or "<cr:PinSign/>"):
+        filings.sign(client, "f1", "USERID", "pw")
+    assert "<cr:compNameC/>" in captured["eform"]
+    assert "<cr:compNameC></cr:compNameC>" not in captured["eform"]
+    assert "<cr:compNameC></cr:compNameC>" in client.post_form.call_args[0][2]
+
+
 def test_sign_never_stores_the_password():
     client = MagicMock()
     client.post_form.return_value = SIGN_OK

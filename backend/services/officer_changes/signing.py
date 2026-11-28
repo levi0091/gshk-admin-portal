@@ -33,7 +33,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from services.tpsi import filings
-from services.tpsi.crypto import build_pin_sign, signing_public_key_pem
+from services.tpsi.crypto import as_serialised, build_pin_sign, signing_public_key_pem
 from services.tpsi.errors import TpsiError
 from services.tpsi.soap import (
     CR_NS, DS_NS, append_to_signatures, parse_response, text_of,
@@ -47,7 +47,9 @@ class ConsentCredentialMissing(Exception):
 
 
 def bean_fragment(submission_xml: str, bean_id: str) -> str:
-    """The bean CR's reference program digests for consent `bean_id`."""
+    """The bean CR's reference program digests for consent `bean_id`, as
+    XMLSerializer writes it: `xmlns:cr` declared, empty elements self-closing
+    (`crypto.as_serialised`)."""
     pattern = rf'<(\w+:)?({"|".join(_BEANS)})\b[^>]*\bid="{re.escape(bean_id)}"[^>]*>'
     match = re.search(pattern, submission_xml)
     if not match:
@@ -61,7 +63,7 @@ def bean_fragment(submission_xml: str, bean_id: str) -> str:
     if prefix and f"xmlns:{prefix[:-1]}=" not in sliced.split(">", 1)[0]:
         sliced = re.sub(rf"^<{prefix}{tag}\b",
                         f'<{prefix}{tag} xmlns:{prefix[:-1]}="{CR_NS}"', sliced, count=1)
-    return sliced
+    return as_serialised(sliced)
 
 
 def insert_form_data_signatures(submission_xml: str, fragment: str) -> str:
