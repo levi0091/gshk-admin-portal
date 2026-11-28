@@ -36,7 +36,7 @@ def test_067_revises_066_and_is_the_head():
     m = _migration()
     assert (m.revision, m.down_revision) == ("067", "066")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["067"]
+    assert script.get_heads() == ["068"]
 
 
 def test_the_column_defaults_to_correspondence_and_allows_only_two_values():

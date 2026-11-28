@@ -32,7 +32,7 @@ def test_064_revises_063_and_is_the_head():
     m = _migration()
     assert (m.revision, m.down_revision) == ("064", "063")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["067"]
+    assert script.get_heads() == ["068"]
 
 
 def test_the_phone_is_off_for_every_company_until_somebody_turns_it_on():

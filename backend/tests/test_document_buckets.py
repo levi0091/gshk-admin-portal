@@ -53,7 +53,7 @@ def test_the_migration_checks_exactly_the_buckets_the_code_knows():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     ini = pathlib.Path(__file__).parent.parent / "alembic.ini"
-    assert ScriptDirectory.from_config(Config(str(ini))).get_heads() == ["067"]
+    assert ScriptDirectory.from_config(Config(str(ini))).get_heads() == ["068"]
 
 
 def test_the_migration_seeds_its_audit_code_as_g_flowdesk():
