@@ -184,7 +184,8 @@ def as_serialised(fragment: str) -> str:
     An element holding anything, whitespace included, is a text node away
     from empty and comes back byte for byte.
     """
-    return _EMPTY_ELEMENT.sub(lambda m: f"<{m.group(1)}{m.group(2) or ''}/>", fragment)
+    return _EMPTY_ELEMENT.sub(
+        lambda m: f"<{m.group(1)}{(m.group(2) or '').rstrip()}/>", fragment)
 
 
 def encryption_key(rand: str, cr_public_key_pem: str) -> str:
