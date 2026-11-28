@@ -107,31 +107,96 @@ def test_a_shareholder_who_holds_no_appointment_files_the_residential_address():
 
 # -- ND2A ----------------------------------------------------------------------------
 
-def test_nd2a_files_the_residential_address_when_the_profile_says_so(monkeypatch):
+def _nd2a_printed(monkeypatch, *, flag=None, choices=(), entry_extra=None, secretary=False):
+    """What `indvCorrAddr` is built from, and the problems the mapper raised."""
     from services.officer_changes import nd2a_mapper
 
-    seen = {}
+    seen, problems = {}, []
 
-    def fake(addr, problems, where, **kw):
+    def fake(addr, problems_, where, **kw):
         if "correspondence" in where:
             seen["corr"] = addr
+            seen["hkg_only"] = kw.get("hkg_only")
         return {}
 
     monkeypatch.setattr(nd2a_mapper, "cr_address", fake)
     monkeypatch.setattr(nd2a_mapper, "full_ids", lambda *a, **k: {})
-    entry = {"kind": "appointment", "capacity": "director", "person_id": "p1",
-             "correspondence_same_as_residential": False, "correspondence_address": CORR}
-    for flag, expected in ((None, CORR), ("correspondence", CORR), ("residential", HOME)):
-        p = {"id": "p1", "surname": "CHAN", "given_names": "TAI MAN",
-             "residential_address_id": "a2",
-             **({"address_on_forms": flag} if flag else {})}
-        g = {"persons": {"p1": p}, "addresses": {"a2": HOME}, "identity_documents": {}}
-        seen.clear()
-        try:
-            nd2a_mapper._natural_appointment(g, entry, "S1", [], False)
-        except (KeyError, TypeError):
-            pass  # later blocks may want more of the graph; the address is set first
-        assert seen["corr"] is expected, flag
+    entry = {"kind": "appointment", "person_id": "p1", "effective_date": "2026-11-01",
+             **(entry_extra or {}),
+             "capacity": "company_secretary" if secretary else "director"}
+    p = {"id": "p1", "surname": "CHAN", "given_names": "TAI MAN",
+         "residential_address_id": "a2", **({"address_on_forms": flag} if flag else {})}
+    g = {"persons": {"p1": p}, "addresses": {"a2": HOME}, "identity_documents": {},
+         "profile_correspondence": {"p1": list(choices)}}
+    try:
+        nd2a_mapper._natural_appointment(g, entry, "S1", problems, False)
+    except (KeyError, TypeError):
+        pass  # later blocks may want more of the graph; the address is set first
+    return seen, problems
+
+
+def _choice(address_id, address, used_by=("E1",)):
+    from services.officer_changes import profile_correspondence as pc
+    return {"address_id": address_id, "address": pc.normalised(address),
+            "address_ids": [address_id], "used_by": list(used_by)}
+
+
+def test_nd2a_files_the_profiles_correspondence_address_by_default(monkeypatch):
+    from services.officer_changes import profile_correspondence as pc
+    for flag in (None, "correspondence"):
+        seen, problems = _nd2a_printed(monkeypatch, flag=flag,
+                                       choices=[_choice("c1", CORR)])
+        assert seen["corr"] == pc.normalised(CORR), flag
+        assert not problems
+
+
+def test_nd2a_files_the_residential_address_when_the_profile_says_so(monkeypatch):
+    seen, _ = _nd2a_printed(monkeypatch, flag="residential",
+                            choices=[_choice("c1", CORR)])
+    assert seen["corr"] == HOME or seen["corr"]["line1"] == HOME["line1"]
+
+
+def test_nd2a_files_the_residential_address_when_the_profile_has_no_correspondence(monkeypatch):
+    seen, problems = _nd2a_printed(monkeypatch, choices=[])
+    assert seen["corr"]["line1"] == HOME["line1"] and not problems
+
+
+def test_nd2a_is_a_problem_when_the_profile_holds_several_and_none_is_chosen(monkeypatch):
+    other = {**CORR, "line1": "Elsewhere"}
+    seen, problems = _nd2a_printed(
+        monkeypatch, choices=[_choice("c1", CORR), _choice("c2", other, ("E2",))])
+    assert seen["corr"] is None
+    assert any("the profile holds several correspondence addresses" in m for m in problems)
+
+
+def test_nd2a_the_entry_chooses_among_several(monkeypatch):
+    other = {**CORR, "line1": "Elsewhere"}
+    seen, problems = _nd2a_printed(
+        monkeypatch, choices=[_choice("c1", CORR), _choice("c2", other, ("E2",))],
+        entry_extra={"correspondence_address_id": "c2"})
+    assert seen["corr"]["line1"] == "Elsewhere" and not problems
+
+
+def test_nd2a_ambiguity_is_no_problem_for_a_residential_person(monkeypatch):
+    other = {**CORR, "line1": "Elsewhere"}
+    seen, problems = _nd2a_printed(
+        monkeypatch, flag="residential",
+        choices=[_choice("c1", CORR), _choice("c2", other, ("E2",))])
+    assert seen["corr"]["line1"] == HOME["line1"] and not problems
+
+
+def test_nd2a_ignores_the_old_typed_address_fields(monkeypatch):
+    typed = {**CORR, "line1": "Typed by hand"}
+    seen, _ = _nd2a_printed(
+        monkeypatch, choices=[_choice("c1", CORR)],
+        entry_extra={"correspondence_same_as_residential": False,
+                     "correspondence_address": typed})
+    assert seen["corr"]["line1"] == CORR["line1"]
+
+
+def test_nd2a_a_secretary_keeps_the_hong_kong_only_rule(monkeypatch):
+    seen, _ = _nd2a_printed(monkeypatch, secretary=True, choices=[_choice("c1", CORR)])
+    assert seen["hkg_only"] is True
 
 
 # -- ND2B ----------------------------------------------------------------------------

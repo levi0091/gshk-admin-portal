@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 from db.supabase import get_supabase
-from services.officer_changes import capacities, eservice
+from services.officer_changes import capacities, eservice, profile_correspondence
 from services.tpsi.forms import nar1_source
 
 
@@ -60,6 +60,12 @@ async def load_graph(entity_id: str, entries: list[dict]) -> dict:
 
     signers = [e.get("consent_person_id") or e.get("person_id") for e in entries
                if e.get("kind") == "appointment" and e.get("capacity") in capacities.DIRECTORS]
+    # The profile's correspondence addresses, per appointee: ND2A prints them
+    # instead of an address typed on the appointment (Levi 2026-11-28).
+    appointees = sorted({e["person_id"] for e in entries
+                         if e.get("kind") == "appointment" and e.get("person_id")})
+    graph["profile_correspondence"] = await q(
+        lambda: profile_correspondence.for_persons(appointees))
     graph["eservice"] = await q(lambda: eservice.metadata_for([s for s in signers if s]))
 
     # What CR holds about each officer LEAVING: the ND2B baseline for this
