@@ -799,12 +799,12 @@ def _individual(person: dict, addresses: dict, identity_documents: dict,
     left an ND2B that changed only a correspondence address off the next NAR1,
     and put a protected residential address in a public field (PROD, ABMOS
     LIMITED, 2026-11-26). A link to an address that no longer exists falls back
-    too, as a dangling residential link does."""
+    too, as a dangling residential link does. A person whose profile says
+    "residential address on forms" files the residential one here regardless
+    (`persons.address_on_forms`, Levi 2026-11-28); the rule is
+    `appointment_links.filed_address`, shared with Schedule 1."""
     where = f"person {person.get('full_name') or person.get('id')}"
-    address = addresses.get(person.get(appointment_links.CORRESPONDENCE)) \
-        if person.get(appointment_links.CORRESPONDENCE) else None
-    if address is None:
-        address = addresses.get(person.get("residential_address_id"))
+    address = appointment_links.filed_address(person, addresses)
     block = {
         "indvChiName": person.get("full_name_zh") or "",
         "indvEngSname": person.get("surname") or "",
@@ -1244,8 +1244,14 @@ def _allottee(holding: dict, graph: dict, problems: list[str]) -> dict | None:
             "indvChiName": person.get("full_name_zh") or "",
             "indvSurname": person.get("surname") or "",
             "indvOtherName": person.get("given_names") or "",
+            # Schedule 1 is the PUBLIC register of members, so it prints the
+            # same address as the officer boxes: the correspondence address
+            # this company links to, unless the person chose the residential
+            # one, and the residential address when there is none (Levi
+            # 2026-11-28). A shareholder with no appointment here has no
+            # correspondence link, and so files the residential address.
             "allotteeAddr": _address(
-                graph["addresses"].get(person.get("residential_address_id")),
+                appointment_links.filed_address(person, graph["addresses"]),
                 problems, f"shareholder {person.get('full_name')}"
             ),
         }

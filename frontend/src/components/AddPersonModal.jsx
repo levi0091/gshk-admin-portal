@@ -4,6 +4,7 @@ import DiscardConfirm from './DiscardConfirm.jsx'
 import { useLookups } from '../lib/lookups.js'
 import useDiscardGuard from '../lib/useDiscardGuard.js'
 import { api } from '../lib/api.js'
+import { ADDRESS_ON_FORMS_FIELD } from '../lib/addressOnForms.js'
 
 // NAR1's labels, and NAR1's fields (PRD §10.5). Marital Status is gone for
 // the same reason it is gone from the profile: neither form asks for it, and
@@ -41,6 +42,8 @@ const FIELDS = [
   // what the box says (PRD nd2-change-requests §1).
   { key: 'hide_email_on_forms', label: 'Do not print this email on forms (NAR1, ND2A, ND2B)',
     type: 'checkbox', full: true },
+  // Left unset, the API applies the default (correspondence), migration 067.
+  ADDRESS_ON_FORMS_FIELD,
   { key: 'phone', label: 'Phone' },
   // A TCSP licence held by an individual (migration 038).
   { key: 'tcsp_licence_no', label: 'TCSP Licence No.' },

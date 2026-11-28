@@ -39,6 +39,8 @@ TRACKED_PERSON_FIELDS = frozenset({
     "surname", "given_names", "full_name", "full_name_zh", "alias_en",
     "alias_zh", "email", "residential_address_id", "tcsp_licence_no",
     "tcsp_exemption_reason",
+    # Moves what CR is told the correspondence address is (migration 067).
+    "address_on_forms",
 })
 TRACKED_ENTITY_FIELDS = frozenset({
     "company_name", "company_name_zh", "email", "registered_address_id",
@@ -143,6 +145,11 @@ def snapshot_person(person_id: str) -> dict:
         # email, never by blanking it: a blank would itself differ from a
         # baseline that holds the address. `diff` reads it off the CURRENT side.
         "hide_email": bool(person.get("hide_email_on_forms")),
+        # `persons.address_on_forms` (migration 067, Levi 2026-11-28). True
+        # makes every company file the residential address in the
+        # correspondence slot; `_current_for` applies it, so `diff` sees a
+        # switch as item (e) wherever the two addresses differ.
+        "residential_on_forms": person.get("address_on_forms") == "residential",
         "hkid": _s(hkid.get("id_number")) if hkid else "",
         "passport": ({"number": _s(passport.get("id_number")),
                       "issuing_country": _s(passport.get("issuing_country"))}
@@ -427,7 +434,11 @@ def _current_for(current: dict, entity_id: str, links: dict) -> dict:
     if current.get("party_type") == "corporate":
         return current
     link = links.get(entity_id) or {}
-    out = {**current, "correspondence_address": link.get("correspondence")}
+    # A person who chose the residential address on forms files no
+    # correspondence address of their own anywhere: None is "same as
+    # residential" (migration 067).
+    out = {**current, "correspondence_address": (
+        None if current.get("residential_on_forms") else link.get("correspondence"))}
     if link.get("residential") is not None:
         out["residential_address"] = link["residential"]
     document = link.get("document")

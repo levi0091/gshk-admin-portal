@@ -522,3 +522,61 @@ def test_a_new_person_can_be_created_with_the_email_hidden():
                                              "hide_email_on_forms": True}, headers=H)
     assert resp.status_code in (200, 201), resp.text
     assert sb.table.return_value.insert.call_args.args[0]["hide_email_on_forms"] is True
+
+
+# -- address_on_forms (migration 067, Levi 2026-11-28) ------------------------------
+
+@pytest.mark.parametrize("old,new", [("correspondence", "residential"),
+                                     ("residential", "correspondence")])
+def test_address_on_forms_is_editable_audited_and_captures_the_nd2b_baseline(old, new):
+    """Switching it moves what CR is told the correspondence address is, so the
+    ND2B baseline is captured BEFORE the write, as for any tracked particular."""
+    field = "address_on_forms"
+    current = {"id": "p1", "full_name": "Jane", field: old}
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.particulars.capture_before_edit") as capture, \
+         patch("routers.persons.audit_subject.primary_id_number", return_value=None), \
+         patch("routers.persons.log_events", new=AsyncMock()) as audit:
+        sb = msb.return_value
+        sb.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = current
+        sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+            {**current, field: new}]
+        resp = client.patch("/persons/p1", json={field: new}, headers=H)
+    assert resp.status_code == 200, resp.text
+    capture.assert_called_once()
+    assert sb.table.return_value.update.call_args.args[0] == {field: new}
+    (event,) = audit.await_args.args[0]
+    assert event["action_type"] == "PERSON_FIELD_UPDATED"
+    assert event["before_state"] == {"field": field, "old": old}
+    assert event["after_state"] == {"field": field, "new": new}
+
+
+@pytest.mark.parametrize("bad", ["", "home", "Residential", True, 1])
+def test_address_on_forms_takes_only_its_two_values(bad):
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase"):
+        resp = client.patch("/persons/p1", json={"address_on_forms": bad}, headers=H)
+    assert resp.status_code == 422
+
+
+def test_address_on_forms_needs_persons_write():
+    with patch("middleware.auth._resolve_user", return_value=REGULAR), \
+         patch("middleware.auth.get_supabase") as msb:
+        msb.return_value.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        resp = client.patch("/persons/p1", json={"address_on_forms": "residential"}, headers=H)
+    assert resp.status_code == 403
+
+
+def test_a_new_person_can_be_created_with_the_residential_address_on_forms():
+    with patch("middleware.auth._resolve_user", return_value=SUPER_ADMIN), \
+         patch("routers.persons.get_supabase") as msb, \
+         patch("routers.persons.audit_subject.for_person", return_value={}), \
+         patch("routers.persons.log_event", new=AsyncMock()):
+        sb = msb.return_value
+        sb.table.return_value.insert.return_value.execute.return_value.data = [
+            {"id": "p9", "full_name": "Jane", "address_on_forms": "residential"}]
+        resp = client.post("/persons", json={"full_name": "Jane",
+                                             "address_on_forms": "residential"}, headers=H)
+    assert resp.status_code in (200, 201), resp.text
+    assert sb.table.return_value.insert.call_args.args[0]["address_on_forms"] == "residential"

@@ -33,7 +33,22 @@ export default function FormField({ field, value, lookups, onChange }) {
     )
   }
 
-  const control = lookup ? (
+  // A fixed choice with a default and no blank option (address_on_forms,
+  // migration 067): the column is NOT NULL, so "Select…" would offer an answer
+  // the API refuses. An unset value shows the default the database applies.
+  const control = type === 'choice' ? (
+    <select
+      id={id}
+      className="f-select"
+      value={value ?? field.default ?? ''}
+      onChange={e => onChange(key, e.target.value)}
+      aria-describedby={field.hint ? `${id}_hint` : undefined}
+    >
+      {field.options.map(o => (
+        <option key={o.code} value={o.code}>{o.label}</option>
+      ))}
+    </select>
+  ) : lookup ? (
     <select
       id={id}
       className="f-select"
@@ -65,6 +80,7 @@ export default function FormField({ field, value, lookups, onChange }) {
         {label}{required && <span className="f-req"> *</span>}
       </label>
       {control}
+      {field.hint && <span className="f-hint" id={`${id}_hint`}>{field.hint}</span>}
     </div>
   )
 }
@@ -77,6 +93,10 @@ export default function FormField({ field, value, lookups, onChange }) {
 export function displayValue(field, value, lookups) {
   // React prints `true` as nothing, so a ticked box needs words (review B4).
   if (field.type === 'checkbox') return value === true ? 'Yes' : null
+  if (field.type === 'choice') {
+    const code = value ?? field.default
+    return field.options.find(o => o.code === code)?.label ?? code ?? null
+  }
   if (value == null || value === '') return null
   if (!field.lookup) return value
   const values = lookups?.[field.lookup]

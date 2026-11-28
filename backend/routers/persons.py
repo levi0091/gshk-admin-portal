@@ -6,7 +6,7 @@ roll-up (read-only from the link tables), and document history.
 """
 import asyncio
 import sys
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from pydantic import BaseModel, StrictBool
@@ -66,6 +66,10 @@ _EDITABLE_FIELDS = {
     # Keeps this person's email off NAR1 / ND2A / ND2B (migration 058, Levi
     # 2026-10-29). Not a CR particular, so it is not in TRACKED_PERSON_FIELDS.
     "hide_email_on_forms",
+    # Which address NAR1 / ND2A / ND2B print where a correspondence address
+    # goes, and in NAR1's Schedule 1 (migration 067, Levi 2026-11-28). It IS in
+    # TRACKED_PERSON_FIELDS: switching it changes what CR holds.
+    "address_on_forms",
 }
 
 #: "VIP clients are those who have more than three companies with us" (GSHK
@@ -137,6 +141,11 @@ class IdentityDocumentIn(BaseModel):
     is_primary: bool = True
 
 
+#: `persons.address_on_forms` (migration 067): what the forms print where a
+#: correspondence address goes, and in NAR1's Schedule 1.
+AddressOnForms = Literal["correspondence", "residential"]
+
+
 class CreatePersonRequest(BaseModel):
     # Matches `UpdatePersonRequest`. A field this model does not declare is
     # REFUSED rather than dropped on the floor: `identity_document` used to be
@@ -182,6 +191,9 @@ class CreatePersonRequest(BaseModel):
     # coerces "false" and 1, and this is a flag whose wrong reading either puts
     # an address on a statutory form or takes it off one.
     hide_email_on_forms: Optional[StrictBool] = None
+    # Two values and no others; omitted means the column default,
+    # 'correspondence' (migration 067).
+    address_on_forms: Optional[AddressOnForms] = None
 
 
 class UpdatePersonRequest(BaseModel):
@@ -217,6 +229,7 @@ class UpdatePersonRequest(BaseModel):
     # `False` survives the `is not None` filter below, so unticking reaches the
     # database. Strict for the reason given on CreatePersonRequest.
     hide_email_on_forms: Optional[StrictBool] = None
+    address_on_forms: Optional[AddressOnForms] = None
 
 
 def _person_subject(sb, person_id: str) -> dict:

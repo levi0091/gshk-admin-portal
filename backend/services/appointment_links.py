@@ -72,6 +72,32 @@ def person_for(person: dict, officer: dict | None) -> dict:
 CORRESPONDENCE = "appointment_correspondence_address_id"
 
 
+#: `persons.address_on_forms` (migration 067): the value that makes every form
+#: print the residential address where a correspondence address would go.
+RESIDENTIAL_ON_FORMS = "residential"
+
+
+def files_residential(person: dict | None) -> bool:
+    """True when the person asked for the residential address on their forms
+    (NAR1, ND2A, ND2B) instead of a correspondence address (Levi 2026-11-28).
+    The default, and anything unrecognised, is the correspondence address,
+    because that is the choice that keeps a home address off a public form."""
+    return (person or {}).get("address_on_forms") == RESIDENTIAL_ON_FORMS
+
+
+def filed_address(person: dict, addresses: dict) -> dict | None:
+    """The address a form prints for this person in a correspondence slot, and
+    in NAR1's Schedule 1: the correspondence address this company links to,
+    unless the person chose the residential one, and the residential address
+    whenever there is no correspondence address to print (Levi 2026-11-28)."""
+    linked = person.get(CORRESPONDENCE)
+    if linked and not files_residential(person):
+        found = addresses.get(linked)
+        if found is not None:
+            return found
+    return addresses.get(person.get("residential_address_id"))
+
+
 def correspondence_for(person: dict, officer: dict | None) -> dict:
     """The person carrying the appointment's correspondence address, when it has
     one. The SAME dict comes back when it has none."""

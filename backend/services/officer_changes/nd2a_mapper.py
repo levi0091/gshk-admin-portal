@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 
+from services import appointment_links
 from services.officer_changes import capacities
 from services.officer_changes import secretaries_after as sa
 from services.tpsi.forms import nar1_mapper as nm
@@ -259,9 +260,14 @@ def _natural_appointment(graph, entry, bean_id, problems, for_esign,
         problems.append(f"{where}: no English name on record")
     if entry["capacity"] == capacities.ALTERNATE:
         bean.update(alt_to(graph, entry, problems, where))
-    home =(graph.get("addresses") or {}).get(person.get("residential_address_id"))
+    home = (graph.get("addresses") or {}).get(person.get("residential_address_id"))
+    # The entry's own correspondence address, unless the person's profile says
+    # their forms print the residential one (`persons.address_on_forms`, Levi
+    # 2026-11-28). An entry marked "not the same" but left blank is still the
+    # mapping problem it always was, not a silent fallback.
     correspondence = (entry.get("correspondence_address")
-                      if entry.get("correspondence_same_as_residential") is False else home)
+                      if entry.get("correspondence_same_as_residential") is False
+                      and not appointment_links.files_residential(person) else home)
     bean["indvCorrAddr"] = cr_address(correspondence, problems,
                                       f"{where} (correspondence address)", hkg_only=secretary)
     if not secretary:

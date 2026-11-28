@@ -186,3 +186,30 @@ describe('AddPersonModal — hide email on forms', () => {
     expect(onClose).toHaveBeenCalled()
   })
 })
+
+// migration 067: the same choice as the profile, defaulting to correspondence.
+describe('AddPersonModal — address shown on forms', () => {
+  it('defaults to the correspondence address and sends nothing for it', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    expect(screen.getByLabelText('Address shown on forms (NAR1, ND2A, ND2B)'))
+      .toHaveValue('correspondence')
+    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
+    await user.click(screen.getByRole('button', { name: 'Create Person' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/persons', {
+      full_name: 'Chan Tai Man',
+    }))
+  })
+
+  it('posts residential when chosen', async () => {
+    const user = userEvent.setup()
+    renderModal()
+    await user.type(screen.getByLabelText(/Full Name/), 'Chan Tai Man')
+    await user.selectOptions(screen.getByLabelText('Address shown on forms (NAR1, ND2A, ND2B)'),
+      'residential')
+    await user.click(screen.getByRole('button', { name: 'Create Person' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/persons', {
+      full_name: 'Chan Tai Man', address_on_forms: 'residential',
+    }))
+  })
+})

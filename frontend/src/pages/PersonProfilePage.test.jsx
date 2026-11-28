@@ -1054,3 +1054,42 @@ describe('PersonProfilePage — identification and addresses by company (Levi 20
     expect(screen.queryByText('Residential Address')).not.toBeInTheDocument()
   })
 })
+
+// migration 067 (Levi 2026-11-28): correspondence by default, residential on request.
+describe('PersonProfilePage — address shown on forms', () => {
+  const openEdit = async user => {
+    const card = (await screen.findByText('Personal Information')).closest('.card')
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+    return card
+  }
+
+  it('reads as the correspondence address when the API omits the field', async () => {
+    renderPage()
+    await screen.findByText('Personal Information')
+    expect(screen.getByText('Address shown on forms')).toBeInTheDocument()
+    expect(screen.getByText(/Correspondence address \(residential if none on record\)/))
+      .toBeInTheDocument()
+  })
+
+  it('choosing residential PATCHes it, and only it', async () => {
+    const user = userEvent.setup()
+    mockGet({ ...PERSON, address_on_forms: 'correspondence' })
+    renderPage()
+    const card = await openEdit(user)
+    await user.selectOptions(screen.getByLabelText('Address shown on forms (NAR1, ND2A, ND2B)'),
+      'residential')
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      '/persons/p1', { address_on_forms: 'residential' }))
+  })
+
+  it('sends nothing for it when left at the default the API did not send', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const card = await openEdit(user)
+    await user.type(screen.getByLabelText('Occupation'), 'x')
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    expect(api.patch.mock.calls[0][1]).not.toHaveProperty('address_on_forms')
+  })
+})

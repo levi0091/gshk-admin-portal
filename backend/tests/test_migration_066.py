@@ -32,7 +32,7 @@ def test_066_revises_065_and_is_the_head():
     m = _migration()
     assert (m.revision, m.down_revision) == ("066", "065")
     script = ScriptDirectory.from_config(Config(os.path.join(_HERE, "alembic.ini")))
-    assert script.get_heads() == ["066"]
+    assert script.get_heads() == ["067"]
 
 
 def test_the_column_starts_empty_for_every_company():

@@ -118,3 +118,31 @@ describe('optionsFor', () => {
     expect(optionsFor(undefined, 'M')).toEqual([{ code: 'M', label: 'M (not in list)' }])
   })
 })
+
+describe('FormField — fixed choice (address_on_forms, migration 067)', () => {
+  const FIELD = { key: 'address_on_forms', label: 'Address shown on forms', type: 'choice',
+    default: 'correspondence', hint: 'Used on NAR1, ND2A and ND2B.',
+    options: [{ code: 'correspondence', label: 'Correspondence address' },
+      { code: 'residential', label: 'Residential address' }] }
+
+  it('shows the default when unset, and offers no blank option', () => {
+    render(<FormField field={FIELD} value={undefined} onChange={() => {}} />)
+    const select = screen.getByLabelText('Address shown on forms')
+    expect(select).toHaveValue('correspondence')
+    expect(screen.queryByRole('option', { name: 'Select…' })).not.toBeInTheDocument()
+    expect(screen.getByText('Used on NAR1, ND2A and ND2B.')).toBeInTheDocument()
+  })
+
+  it('reports the chosen code', async () => {
+    const onChange = vi.fn()
+    render(<FormField field={FIELD} value="correspondence" onChange={onChange} />)
+    await userEvent.setup().selectOptions(screen.getByLabelText('Address shown on forms'),
+      'residential')
+    expect(onChange).toHaveBeenCalledWith('address_on_forms', 'residential')
+  })
+
+  it('renders the label of the stored value, and of the default when unset', () => {
+    expect(displayValue(FIELD, 'residential')).toBe('Residential address')
+    expect(displayValue(FIELD, null)).toBe('Correspondence address')
+  })
+})

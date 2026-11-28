@@ -24,6 +24,7 @@ import { ReadOnlyNote } from '../components/RequirePermission.jsx'
 import { personProfileCaps, asDeleted } from '../lib/screenCapabilities.js'
 import EServiceCredentialCard from '../components/officerChange/EServiceCredentialCard.jsx'
 import ParticularsChangeAlert from '../components/officerChange/ParticularsChangeAlert.jsx'
+import { ADDRESS_ON_FORMS_FIELD } from '../lib/addressOnForms.js'
 import {
   DeleteRecordModal, DeletedBanner, RecordGone, createdOn,
 } from '../components/SoftDelete.jsx'
@@ -67,6 +68,9 @@ const EDITABLE = [
   // "Email hidden on forms", not a row reading "Yes" under a long question.
   { key: 'hide_email_on_forms', label: 'Do not print this email on forms (NAR1, ND2A, ND2B)',
     readLabel: 'Email hidden on forms', type: 'checkbox', full: true, onlyWhenSet: true },
+  // Correspondence by default; residential when the client wants it (migration
+  // 067, Levi 2026-11-28). Always shown read-only: the default is an answer.
+  { ...ADDRESS_ON_FORMS_FIELD, readLabel: 'Address shown on forms' },
   { key: 'phone', label: 'Phone' },
   // A TCSP licence held by an INDIVIDUAL (migration 038). The Company Secretary
   // tile on every company profile prints "TCSP Licence No.", and it could only
@@ -312,7 +316,8 @@ export default function PersonProfilePage() {
 
   // What a field holds on the record, in the shape the draft holds it. A box
   // is a boolean whether or not the API sent the key (an older deploy omits it).
-  const stored = (f, p) => (f.type === 'checkbox' ? p[f.key] === true : (p[f.key] ?? ''))
+  const stored = (f, p) => (f.type === 'checkbox' ? p[f.key] === true
+    : (p[f.key] ?? f.default ?? ''))
 
   function startEdit() {
     setDraft(Object.fromEntries(EDITABLE.map(f => [f.key, stored(f, person)])))
