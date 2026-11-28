@@ -267,3 +267,60 @@ def test_a_stray_character_is_a_clear_value_error_not_corrupt_der():
     corrupt = line[:60] + "&amp;" + line[60:]
     with pytest.raises(ValueError, match="X509Certificate"):
         crypto.signing_public_key_pem(_validated(corrupt))
+
+
+# ---------------------------------------------------------------------------
+# PROD 2026-11-28: SIGN_ERR000011 "Please note that the form data has been
+# tampered." on an ND2A appointing a body-corporate secretary with no Chinese
+# name. CR digests XMLSerializer output, and XMLSerializer writes an element
+# with no children as <x/>, never <x></x>. We hashed CR's bytes verbatim.
+# 3 of 3 tampered filings carried an empty <cr:corpChiName></cr:corpChiName>;
+# 0 of the 381 filings ever signed on PROD carried any empty element.
+# ---------------------------------------------------------------------------
+
+
+def test_as_serialised_writes_an_empty_element_self_closing():
+    xml = "<cr:a><cr:corpChiName></cr:corpChiName><cr:b>x</cr:b></cr:a>"
+    assert crypto.as_serialised(xml) == "<cr:a><cr:corpChiName/><cr:b>x</cr:b></cr:a>"
+
+
+def test_as_serialised_keeps_an_empty_elements_attributes():
+    assert crypto.as_serialised('<cr:x id="a" k="v"></cr:x>') == '<cr:x id="a" k="v"/>'
+
+
+def test_as_serialised_collapses_only_the_inner_of_two_same_named_elements():
+    assert crypto.as_serialised("<cr:a><cr:a></cr:a></cr:a>") == "<cr:a><cr:a/></cr:a>"
+
+
+def test_as_serialised_writes_no_space_before_the_slash():
+    """XMLSerializer emits `<x/>`; whitespace inside a tag is not in the DOM."""
+    assert crypto.as_serialised("<cr:x ></cr:x>") == "<cr:x/>"
+    assert crypto.as_serialised('<cr:x id="a" ></cr:x>') == '<cr:x id="a"/>'
+
+
+def test_as_serialised_leaves_an_attribute_holding_a_raw_gt_alone():
+    """A documented, safe miss: CR escapes `>` in attribute values, so this
+    never arrives, and leaving it is the old behaviour, not a new wrong one."""
+    assert crypto.as_serialised('<cr:x k="a>b"></cr:x>') == '<cr:x k="a>b"></cr:x>'
+
+
+def test_as_serialised_collapses_every_empty_element_unprefixed_too():
+    xml = "<r><cr:a></cr:a><b></b><cr:c>1</cr:c><cr:d></cr:d></r>"
+    assert crypto.as_serialised(xml) == "<r><cr:a/><b/><cr:c>1</cr:c><cr:d/></r>"
+
+
+@pytest.mark.parametrize("xml", [
+    "<cr:x> </cr:x>",                      # whitespace is a text child
+    "<cr:x>0</cr:x>",
+    "<cr:x><cr:y/></cr:x>",                # has a child
+    "<cr:x></cr:y>",                       # not the same element
+    "<cr:formDataSignatures/>",            # already self-closing
+    '<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>',
+    '<cr:EForm xmlns:cr="http://interfaces.service.webservice.icris3e.cr.gov.hk/" id="eForm">'
+    "<cr:formModel><cr:brNo>73534450</cr:brNo><cr:compNameC>啟動</cr:compNameC>"
+    "</cr:formModel><cr:formDataSignatures/></cr:EForm>",
+])
+def test_as_serialised_leaves_anything_not_empty_byte_for_byte(xml):
+    """The 381 signatures CR has accepted had no empty element, so their
+    digest input must come out exactly as it went in."""
+    assert crypto.as_serialised(xml) == xml

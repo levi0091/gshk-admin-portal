@@ -404,8 +404,11 @@ def validate(client, filing_id: str) -> dict:
 def _extract_eform(submission_xml: str) -> str:
     """The overall signature signs the <EForm> element, not the whole document.
 
-    Sliced as text, prefix discovered from the document: the digest is over
-    these exact bytes, so it must not be re-serialised.
+    Sliced as text, prefix discovered from the document, and then given the
+    two differences CR's XMLSerializer makes and a raw slice does not: the
+    `xmlns:cr` declaration below, and every empty element written self-closing
+    (`crypto.as_serialised`, PROD 2026-11-28 SIGN_ERR000011). Nothing else is
+    re-serialised: every other byte must be CR's.
     """
     import re as _re
 
@@ -436,7 +439,9 @@ def _extract_eform(submission_xml: str) -> str:
             sliced,
             count=1,
         )
-    return sliced
+    from services.tpsi.crypto import as_serialised
+
+    return as_serialised(sliced)
 
 
 # ---------------------------------------------------------------------------
