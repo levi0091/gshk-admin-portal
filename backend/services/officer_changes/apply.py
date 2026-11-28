@@ -14,7 +14,9 @@ the Confirmation stage, which reverses exactly what this module recorded.
     is the only place the portal keeps it.
   * appointment → a new `entity_officers` row (written to `entry.officer_id`),
     and the appointment's ND2B baseline, carrying the correspondence address
-    the ND2A filed (spec B-15). No `company_secretaries` row is written: the
+    the ND2A filed (spec B-15). That address is one the person's profile already
+    holds, so the row LINKS it and no `addresses` row is ever inserted (Levi
+    2026-11-28). No `company_secretaries` row is written: the
     mapper falls back to `entity_officers`, exactly as it does for every
     company created in the portal.
   * change → nothing on the profile (it is already right, answer 14); the
@@ -32,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 
 from db.supabase import get_supabase
-from services.officer_changes import particulars
+from services.officer_changes import particulars, profile_correspondence
 from services.officer_changes.deadlines import _as_date
 
 _CAPACITY = {"director": "director", "company_secretary": "company secretary",
@@ -169,15 +171,13 @@ def _apply_appointment(sb, case, entry, user) -> dict:
     corporate = entry.get("party_type") == "corporate"
     party = _party(entry)
     before = particulars.baseline(case["entity_id"], **party)
-    # The appointment's own correspondence address, when it differs from the
-    # residential one — so the profile shows what CR was told (Jacqueline B4).
+    # The address the ND2A filed is one the profile already holds: link it, never
+    # insert a copy (Levi 2026-11-28).
     correspondence_id = None
-    if not corporate and entry.get("correspondence_same_as_residential") is False \
-            and isinstance(entry.get("correspondence_address"), dict):
-        address = {k: entry["correspondence_address"].get(k) for k in
-                   ("line1", "line2", "line3", "city", "state_region", "postal_code",
-                    "country")}
-        correspondence_id = sb.table("addresses").insert(address).execute().data[0]["id"]
+    if not corporate:
+        resolved = _resolved_correspondence(sb, entry)
+        if resolved["status"] in ("chosen", "in_use", "recorded"):
+            correspondence_id = resolved["address_id"]
     new_officer = {
         "entity_id": case["entity_id"],
         "person_id": None if corporate else entry.get("person_id"),
@@ -205,6 +205,22 @@ def _apply_appointment(sb, case, entry, user) -> dict:
     return record
 
 
+def _resolved_correspondence(sb, entry: dict) -> dict:
+    """`profile_correspondence.resolve` for an individual appointee, from the
+    profile as it stands now."""
+    person_id = entry["person_id"]
+    found = sb.table("persons").select("*").eq("id", person_id).execute().data
+    person = found[0] if found else {}
+    home = None
+    if person.get("residential_address_id"):
+        rows = (sb.table("addresses").select("*")
+                .eq("id", person["residential_address_id"]).execute().data)
+        home = rows[0] if rows else None
+    choices = profile_correspondence.for_persons([person_id]).get(person_id, [])
+    return profile_correspondence.resolve(
+        person, choices, entry.get("correspondence_address_id"), home)
+
+
 def _filed_view(case: dict, entry: dict, before: dict | None, new_officer_id: str) -> dict:
     """What CR holds about the appointee once the ND2A is filed.
 
@@ -217,9 +233,14 @@ def _filed_view(case: dict, entry: dict, before: dict | None, new_officer_id: st
     party = _party(entry)
     keep = before is not None and _holds_another_appointment(case, party, new_officer_id)
     snapshot = before if keep else particulars.snapshot_current(**party)
-    if entry.get("party_type") != "corporate" \
-            and entry.get("correspondence_same_as_residential") is False:
-        snapshot = {**snapshot, "correspondence_address": entry.get("correspondence_address")}
+    if entry.get("party_type") != "corporate":
+        # The baseline holds an explicit correspondence address only when the form
+        # printed one; "same as residential" is the absence of one.
+        resolved = _resolved_correspondence(get_supabase(), entry)
+        printed = (resolved["printed_address"]
+                   if resolved["printed_kind"] == "correspondence"
+                   else None)
+        snapshot = {**snapshot, "correspondence_address": printed}
     return snapshot
 
 

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from services.officer_changes import apply, particulars
+from services.officer_changes import apply, particulars, profile_correspondence
 from tests.officer_changes.fakes import FakeSupabase
 
 USER = {"id": "U1", "display_name": "Staff"}
@@ -25,7 +25,11 @@ def _db():
                     {"id": "P9", "full_name": "HO New", "surname": "HO",
                      "given_names": "New", "email": "p9@example.com",
                      "residential_address_id": "A1"}],
-        "addresses": [{"id": "A1", **HOME}, {"id": "A2", **OFFICE}],
+        # P9's profile holds ONE correspondence address (A3), so an ND2A for them
+        # files it without being told which (Levi 2026-11-28).
+        "addresses": [{"id": "A1", **HOME}, {"id": "A2", **OFFICE}, {"id": "A3", **OFFICE}],
+        "person_addresses": [{"id": "PA1", "person_id": "P9", "address_id": "A3",
+                              "kind": "correspondence"}],
         "person_identity_documents": [],
         "entity_officers": [
             {"id": "O1", "entity_id": "E1", "person_id": "P1", "party_type": "individual",
@@ -48,6 +52,7 @@ def db(monkeypatch):
     fake = _db()
     monkeypatch.setattr(apply, "get_supabase", lambda: fake)
     monkeypatch.setattr(particulars, "get_supabase", lambda: fake)
+    monkeypatch.setattr(profile_correspondence, "get_supabase", lambda: fake)
     return fake
 
 
@@ -67,8 +72,8 @@ CEASE_SECRETARY = {"id": "N2", "case_id": "K1", "kind": "cessation",
                    "party": {"name": "Get Started HK Limited"}}
 APPOINT = {"id": "N3", "case_id": "K1", "kind": "appointment", "capacity": "director",
            "party_type": "individual", "person_id": "P9", "officer_id": None,
-           "effective_date": "2026-09-29", "correspondence_same_as_residential": False,
-           "correspondence_address": OFFICE, "party": {"name": "HO New"}}
+           "effective_date": "2026-09-29", "correspondence_address_id": None,
+           "party": {"name": "HO New"}}
 
 
 def _run(fn, case, entries):
@@ -167,8 +172,7 @@ def test_a_re_appointment_files_todays_particulars_not_a_ceased_ones_baseline(db
         "particulars": {"party_type": "individual",
                         "name_en": {"surname": "HO", "given_names": "Old"},
                         "email": "old@example.com", "correspondence_address": None}})
-    entries = _entries(db, {**APPOINT, "correspondence_same_as_residential": True,
-                            "correspondence_address": None})
+    entries = _entries(db, APPOINT)
     _run(apply.apply_changes, CASE, entries)
     base = particulars.baseline("E1", person_id="P9")
     assert base["name_en"]["given_names"] == "New" and base["email"] == "p9@example.com"
@@ -181,8 +185,7 @@ def test_a_second_appointment_keeps_the_baseline_cr_holds_for_the_first(db):
     particulars.capture_before_edit(person_id="P1", user_id="U1")
     db.tables["persons"][0]["email"] = "new@example.com"
     entries = _entries(db, {**APPOINT, "id": "N5", "capacity": "company_secretary",
-                            "person_id": "P1", "correspondence_same_as_residential": True,
-                            "correspondence_address": None, "party": {"name": "CHAN Tai Man"}})
+                            "person_id": "P1", "party": {"name": "CHAN Tai Man"}})
     _run(apply.apply_changes, CASE, entries)
     assert particulars.baseline("E1", person_id="P1")["email"] == "p1@example.com"
 
@@ -201,24 +204,49 @@ def test_undo_reverses_exactly_what_was_applied(db):
     assert db.rows("nar1_cases")[0]["changes_undone_at"]
 
 
-def test_nd2a_filing_writes_correspondence_address_id(db):
-    """The appointment's own correspondence address reaches the officer row, so
-    the profile shows what CR was told (Jacqueline B4) and a later edit of it is
-    compared against the right value."""
+def test_nd2a_filing_links_the_profiles_correspondence_address(db):
+    """The officer row LINKS the address the profile already holds (Levi
+    2026-11-28), so the profile shows what CR was told (Jacqueline B4) and a later
+    edit of it is compared against the right value. No `addresses` row is added."""
     entries = _entries(db, APPOINT)
+    before = [a["id"] for a in db.rows("addresses")]
     _run(apply.apply_changes, CASE, entries)
     new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
-    address = next(a for a in db.rows("addresses") if a["id"] == new["correspondence_address_id"])
-    assert address["line1"] == "Room 1" and address["country"] == "HK"
+    assert new["correspondence_address_id"] == "A3"
+    assert [a["id"] for a in db.rows("addresses")] == before
     assert particulars.pending_for_officer("E1", person_id="P9", capacity="director") == []
 
 
-def test_same_as_residential_writes_no_correspondence_address(db):
-    entries = _entries(db, {**APPOINT, "correspondence_same_as_residential": True,
-                            "correspondence_address": None})
+def test_an_explicit_choice_is_the_one_linked(db):
+    db.tables["addresses"].append({"id": "A4", "line1": "Elsewhere", "city": "KOWLOON",
+                                   "country": "HK"})
+    db.tables["person_addresses"].append(
+        {"id": "PA2", "person_id": "P9", "address_id": "A4", "kind": "correspondence"})
+    entries = _entries(db, {**APPOINT, "correspondence_address_id": "A4"})
+    _run(apply.apply_changes, CASE, entries)
+    new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
+    assert new["correspondence_address_id"] == "A4"
+    assert particulars.baseline("E1", person_id="P9")["correspondence_address"]["line1"] \
+        == "Elsewhere"
+
+
+def test_a_residential_person_links_no_correspondence_address(db):
+    next(p for p in db.tables["persons"] if p["id"] == "P9")["address_on_forms"] = "residential"
+    entries = _entries(db, APPOINT)
+    _run(apply.apply_changes, CASE, entries)
+    new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
+    assert new["correspondence_address_id"] == "A3"  # the link is still the profile's own
+    # ...but the form printed the home address, so the baseline holds no explicit one.
+    assert particulars.baseline("E1", person_id="P9")["correspondence_address"] is None
+
+
+def test_a_person_with_no_correspondence_address_links_none(db):
+    db.tables["person_addresses"].clear()
+    entries = _entries(db, APPOINT)
     _run(apply.apply_changes, CASE, entries)
     new = next(o for o in db.rows("entity_officers") if o.get("person_id") == "P9")
     assert not new.get("correspondence_address_id")
+    assert particulars.baseline("E1", person_id="P9")["correspondence_address"] is None
 
 
 def _second_directorship(db):
