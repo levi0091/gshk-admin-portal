@@ -156,6 +156,37 @@ def user_signature(
     return base64.b64encode(blob.encode()).decode()
 
 
+# An element with nothing at all between its tags. The backreference keeps it
+# to one element (`<a></b>` is not empty), and `[^<>]*` keeps the match inside
+# a single start tag; CR's XML carries no `>` in an attribute value.
+_EMPTY_ELEMENT = re.compile(r"<([\w.-]+(?::[\w.-]+)?)(\s[^<>]*?)?></\1>")
+
+
+def as_serialised(fragment: str) -> str:
+    """`fragment` as CR's digest sees it: every empty element self-closing.
+
+    CR's reference program digests `XMLSerializer` output of the parsed
+    subtree, never the bytes on the wire, and the DOM Parsing spec has
+    XMLSerializer write an element outside the HTML namespace that has no
+    children as `<cr:x/>`, never `<cr:x></cr:x>`. CR's own validate response
+    uses the long form, so a slice of it hashes to something CR never computes,
+    and CR answers SIGN_ERR000011 "Please note that the form data has been
+    tampered."
+
+    PROD, 2026-11-28: an ND2A appointing a body-corporate secretary with no
+    Chinese name carried `<cr:corpChiName></cr:corpChiName>`, and every
+    signature on it was refused, the consent included. All three refused
+    filings carried that one empty element; none of the 381 filings CR had
+    accepted a signature on carried any.
+
+    ONLY the digest input goes through this. The payload sent to CR keeps CR's
+    bytes: CR parses it, and to a parser both spellings are the same element.
+    An element holding anything, whitespace included, is a text node away
+    from empty and comes back byte for byte.
+    """
+    return _EMPTY_ELEMENT.sub(lambda m: f"<{m.group(1)}{m.group(2) or ''}/>", fragment)
+
+
 def encryption_key(rand: str, cr_public_key_pem: str) -> str:
     """BASE64( RSA( random32 ) ) using CR's public key."""
     key = load_pem_public_key(cr_public_key_pem.encode())

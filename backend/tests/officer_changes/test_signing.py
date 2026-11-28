@@ -184,3 +184,53 @@ def test_a_receipt_that_names_its_reference_is_left_alone():
     assert signing.with_document_ref(receipt) == receipt
     no_barcode = {**CR_TEST_RECEIPT, "docCodesWithBarcode": None}
     assert signing.with_document_ref(no_barcode) == no_barcode
+
+
+# PROD 2026-11-28, an ND2A appointing a body-corporate secretary with no Chinese
+# name: CR's validated form carried <cr:corpChiName></cr:corpChiName> and both
+# PinSigns came back SIGN_ERR000011 "form data has been tampered". CR digests
+# XMLSerializer output, which writes an empty element as <x/>. Synthetic data;
+# the shape is the PROD filing's.
+WITH_EMPTY = (
+    '<cr:submission><cr:EForm id="eForm"><cr:formModel id="formData">'
+    "<cr:selectPersonId>ER-OUTGOING</cr:selectPersonId>"
+    "<cr:appOfBcBeans><cr:appOfBcBean><cr:corpBrNo>12345678</cr:corpBrNo>"
+    "<cr:corpChiName></cr:corpChiName><cr:corpEngName>NEW SEC LIMITED</cr:corpEngName>"
+    "<cr:cpty>S</cr:cpty></cr:appOfBcBean></cr:appOfBcBeans>"
+    '<cr:appOfNpBeans><cr:appOfNpBean id="S1"><cr:cpty>D</cr:cpty>'
+    "<cr:indvChiName></cr:indvChiName><cr:indvEngSname>CHAN</cr:indvEngSname>"
+    "<cr:selectPersonId>ER-DIR-1</cr:selectPersonId></cr:appOfNpBean></cr:appOfNpBeans>"
+    "</cr:formModel><cr:formDataSignatures/></cr:EForm>"
+    '<cr:EFormSignatures><ds:Signature id="CR">crsig</ds:Signature></cr:EFormSignatures>'
+    "</cr:submission>"
+)
+
+
+def test_both_digests_see_an_empty_element_as_crs_serialiser_writes_it(chain):
+    chain["filing"]["validated_xml"] = WITH_EMPTY
+    client = FakeClient()
+    signing.sign(client, "F1", signatory_user_id="ER-OUTGOING", eservice_password="pw",
+                 consents=[{"bean_id": "S1", "user_id": "ER-DIR-1", "password": PASSWORD}])
+    consent, overall = chain["pins"]
+    assert consent["input"] == (
+        f'<cr:appOfNpBean xmlns:cr="{CR_NS}" id="S1"><cr:cpty>D</cr:cpty>'
+        "<cr:indvChiName/><cr:indvEngSname>CHAN</cr:indvEngSname>"
+        "<cr:selectPersonId>ER-DIR-1</cr:selectPersonId></cr:appOfNpBean>")
+    assert "<cr:corpChiName/>" in overall["input"]
+    assert "<cr:indvChiName/>" in overall["input"]
+    assert "<cr:corpChiName></cr:corpChiName>" not in overall["input"]
+    # Only the DIGEST changes: CR is sent its own bytes back, which parse to
+    # the same document.
+    payload = client.calls[0][2]
+    assert "<cr:corpChiName></cr:corpChiName>" in payload
+    assert "<cr:indvChiName></cr:indvChiName>" in payload
+
+
+def test_a_form_with_no_empty_element_digests_exactly_as_before(chain):
+    signing.sign(FakeClient(), "F1", signatory_user_id="STAFF-1",
+                 eservice_password="pw", consents=CONSENTS[:1])
+    consent, overall = chain["pins"]
+    assert consent["input"] == (
+        f'<cr:appOfNpBean xmlns:cr="{CR_NS}" id="S1"><cr:cpty>D</cr:cpty>'
+        "<cr:selectPersonId>ER-DIR-1</cr:selectPersonId></cr:appOfNpBean>")
+    assert overall["input"].startswith(f'<cr:EForm xmlns:cr="{CR_NS}" id="eForm">')
